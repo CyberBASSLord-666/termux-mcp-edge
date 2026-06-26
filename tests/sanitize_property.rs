@@ -5,7 +5,9 @@ use termux_mcp_server::tools::FileSystemTools;
 
 proptest! {
     #[test]
-    fn sanitize_accepts_simple_file_names_inside_the_safe_root(name in "[a-zA-Z0-9_.-]{1,64}") {
+    fn sanitize_accepts_simple_file_names_inside_the_safe_root(
+        name in "[a-zA-Z0-9_.-]{1,64}"
+    ) {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let root = temp_dir.path().canonicalize().expect("canonicalize temp root");
         let tools = FileSystemTools::new(vec![root.clone()]);
