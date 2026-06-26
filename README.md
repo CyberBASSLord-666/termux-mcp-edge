@@ -14,7 +14,7 @@ Production-grade Model Context Protocol server for high-end Android devices, esp
 
 This server implements **zero-trust principles** by default. All tool calls are authenticated and sandboxed. For simplicity the binary supports a static bearer token, but for enterprise deployments you should integrate with an OAuth 2.1 provider using PKCE (Proof Key for Code Exchange) to obtain short-lived access tokens. See [`docs/SECURITY.md`](docs/SECURITY.md) for a detailed discussion of threats, authentication patterns and hardening guidelines.
 
-Startup now fails closed when no bearer token is configured. Local unauthenticated development requires the explicit `MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true` opt-in and a localhost bind address (`127.0.0.1` or `::1`). Do not enable this mode for remotely exposed, tunneled, LAN-accessible, or rish-capable deployments.
+Startup now fails closed when no bearer token is configured. Empty or whitespace-only bearer tokens are rejected. Local unauthenticated development requires the explicit `MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true` opt-in and a localhost bind address (`localhost`, `127.0.0.1`, or `::1`). Do not enable this mode for remotely exposed, tunneled, LAN-accessible, or rish-capable deployments.
 
 ## Architecture
 
@@ -118,7 +118,7 @@ This removes the need to open inbound ports on your device while still allowing 
 
 ## Authentication
 
-Set the `MCP__AUTH__STATIC_TOKEN` environment variable to a strong random string. All requests must include:
+Set the `MCP__AUTH__STATIC_TOKEN` environment variable to a strong random string. Empty or whitespace-only token values are rejected at startup. All requests must include:
 
 ```http
 Authorization: Bearer <your-token>
@@ -128,7 +128,7 @@ For local development only, an unauthenticated listener can be started by settin
 
 ```bash
 export MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true
-export MCP__SERVER__HOST=127.0.0.1
+export MCP__SERVER__HOST=localhost
 ```
 
 This opt-in is rejected for non-loopback bind addresses and must not be used with remote transports, tunnels, shared networks, or rish-capable tool exposure.
@@ -138,7 +138,3 @@ This opt-in is rejected for non-loopback bind addresses and must not be used wit
 ```http
 GET /health
 ```
-
-## Extending Tools
-
-Add new tools by implementing the `#[tool]` macro in `src/tools/`. The architecture is designed for clean extension.
