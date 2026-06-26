@@ -8,7 +8,7 @@
 //! - Proper ASGI-equivalent lifespan handling via Axum
 //! - Single-binary deployment optimized for runit supervision
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
 use anyhow::bail;
 use axum::{routing::get, Router};
@@ -32,8 +32,8 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
 
-    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
-    validate_auth_posture(&config, addr)?;
+    validate_auth_posture(&config, &config.server.host)?;
+    let addr = format!("{}:{}", config.server.host, config.server.port).parse()?;
 
     // Keep filesystem tools initialized so startup validates the configured safe roots,
     // while avoiding the unavailable rmcp 0.1 server transport API until a compatible
@@ -56,8 +56,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_auth_posture(config: &AppConfig, addr: SocketAddr) -> anyhow::Result<()> {
-    if config.auth.static_token.is_some() {
+fn validate_auth_posture(config: &AppConfig, host: &str) -> anyhow::Result<()> {
+    if let Some(ref token) = config.auth.static_token {
+        if token.trim().is_empty() {
+            bail!("MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode");
+        }
+
         info!("Static token authentication configured");
         return Ok(());
     }
@@ -68,9 +72,9 @@ fn validate_auth_posture(config: &AppConfig, addr: SocketAddr) -> anyhow::Result
         );
     }
 
-    if !is_loopback(addr.ip()) {
+    if !is_loopback_host(host) {
         bail!(
-            "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to 127.0.0.1 or ::1"
+            "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1"
         );
     }
 
@@ -80,8 +84,12 @@ fn validate_auth_posture(config: &AppConfig, addr: SocketAddr) -> anyhow::Result
     Ok(())
 }
 
-fn is_loopback(ip: IpAddr) -> bool {
-    ip.is_loopback()
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 async fn health_check() -> &'static str {
