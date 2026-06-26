@@ -116,7 +116,7 @@ async fn filesystem_listing_skips_broken_symlinks() {
 
 #[tokio::test]
 async fn system_tools_instantiation_is_zero_state() {
-    let system = SystemTools::default();
+    let system = SystemTools;
     let cloned = system.clone();
     assert_eq!(std::mem::size_of_val(&cloned), 0);
 }
