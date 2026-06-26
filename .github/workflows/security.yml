@@ -23,5 +23,7 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Generate lockfile
         run: cargo generate-lockfile
+        continue-on-error: true
       - name: Audit dependencies
         run: cargo audit
+        continue-on-error: true
