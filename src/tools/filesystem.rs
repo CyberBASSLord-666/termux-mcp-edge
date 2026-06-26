@@ -152,7 +152,7 @@ impl FileSystemTools {
         Ok(())
     }
 
-    pub async fn list_directory_inner(
+    pub async fn list_directory(
         &self,
         path: String,
         max_depth: Option<u32>,
@@ -177,7 +177,7 @@ impl FileSystemTools {
         })
     }
 
-    pub async fn read_file_inner(&self, path: String) -> Result<ReadFileResult, AppError> {
+    pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
         let content = fs::read_to_string(&safe_path).await?;
@@ -194,7 +194,7 @@ impl FileSystemTools {
         })
     }
 
-    pub async fn write_file_inner(
+    pub async fn write_file(
         &self,
         path: String,
         content: String,
@@ -292,12 +292,12 @@ impl FileSystemTools {
     #[tool(
         description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
     )]
-    pub async fn list_directory(
+    pub async fn mcp_list_directory(
         &self,
         Parameters(params): Parameters<ListDirectoryParams>,
     ) -> Result<String, String> {
         let result = self
-            .list_directory_inner(params.path, params.max_depth)
+            .list_directory(params.path, params.max_depth)
             .await
             .map_err(|error| error.to_string())?;
         json_tool_result(result)
@@ -306,12 +306,12 @@ impl FileSystemTools {
     #[tool(
         description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
     )]
-    pub async fn read_file(
+    pub async fn mcp_read_file(
         &self,
         Parameters(params): Parameters<ReadFileParams>,
     ) -> Result<String, String> {
         let result = self
-            .read_file_inner(params.path)
+            .read_file(params.path)
             .await
             .map_err(|error| error.to_string())?;
         json_tool_result(result)
@@ -320,11 +320,11 @@ impl FileSystemTools {
     #[tool(
         description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
     )]
-    pub async fn write_file(
+    pub async fn mcp_write_file(
         &self,
         Parameters(params): Parameters<WriteFileParams>,
     ) -> Result<String, String> {
-        self.write_file_inner(params.path, params.content, params.dry_run)
+        self.write_file(params.path, params.content, params.dry_run)
             .await
             .map_err(|error| error.to_string())
     }
