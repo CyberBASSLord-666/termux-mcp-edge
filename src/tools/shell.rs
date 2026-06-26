@@ -19,12 +19,11 @@ pub struct ShellResult {
 impl ShellTools {
     #[tool(description = "Execute a shell command via rish (requires Shizuku)")]
     pub async fn rish_exec(&self, command: String) -> Result<ShellResult, AppError> {
-        // In production, this should use proper process spawning with timeout
         let output = std::process::Command::new("rish")
             .arg("-c")
             .arg(&command)
             .output()
-            .map_err(|e| AppError::Io(e))?;
+            .map_err(AppError::Io)?;
 
         Ok(ShellResult {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),

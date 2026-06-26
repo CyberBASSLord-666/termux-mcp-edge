@@ -28,6 +28,8 @@ curl -fsS http://127.0.0.1:8000/health
 
 For MCP-level validation, use the MCP Inspector from a trusted desktop environment and authenticate with the configured bearer token or OAuth flow.
 
+For repository-level validation, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat CI as the authority before merging automated improvement branches.
+
 ## Service supervision
 
 Install Termux services:
@@ -43,6 +45,14 @@ sv-enable mcp-server
 sv up mcp-server
 sv status mcp-server
 ```
+
+## Filesystem tool operating rules
+
+- Configure `MCP__FILE__SAFE_ROOTS` to the smallest practical set of Android paths.
+- Prefer `/storage/emulated/0/Documents` or a dedicated project directory over all shared storage.
+- Avoid exposing write access unless the caller and network path are trusted.
+- Keep directory listing depth low; the server enforces bounded traversal to protect battery, memory, and latency.
+- Use dry-run mode before destructive or high-impact file writes.
 
 ## Release process
 

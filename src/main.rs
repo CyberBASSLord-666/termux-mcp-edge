@@ -9,11 +9,10 @@
 //! - Single-binary deployment optimized for runit supervision
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use axum::{routing::get, Router};
-use rmcp::server::axum::McpAxumServer;
 use rmcp::server::auth::StaticTokenVerifier;
+use rmcp::server::axum::McpAxumServer;
 use rmcp::server::Server;
 use tokio::signal;
 use tracing::{info, warn};
@@ -28,7 +27,6 @@ use crate::tools::FileSystemTools;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize structured logging
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -39,11 +37,9 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting Termux MCP Server v5.0 (Rust)");
 
-    // Load configuration
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
 
-    // === Zero-Trust Authentication ===
     let auth_verifier = if let Some(token) = &config.auth.static_token {
         info!("Static token authentication enabled");
         Some(StaticTokenVerifier::new(token.clone(), vec!["admin:all".to_string()]))
@@ -52,7 +48,6 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // === Build MCP Server ===
     let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
     let mcp_server = Server::builder()
         .name("termux-mcp-server")
@@ -61,13 +56,11 @@ async fn main() -> anyhow::Result<()> {
         .auth(auth_verifier)
         .build();
 
-    // === Axum Router with proper lifespan handling ===
     let app = Router::new()
         .route("/health", get(health_check))
         .merge(McpAxumServer::new(mcp_server).into_router())
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
-    // === Bind & Serve ===
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     info!("Listening on http://{}", addr);
 
