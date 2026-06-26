@@ -39,7 +39,10 @@ impl AppConfig {
             .set_default("auth.static_token", None::<String>)?
             .set_default(
                 "file.safe_roots",
-                vec!["/storage/emulated/0".to_string(), "/sdcard".to_string()],
+                vec![
+                    "/storage/emulated/0".to_string(),
+                    "/sdcard".to_string(),
+                ],
             )?
             .add_source(config::Environment::with_prefix("MCP").separator("__"))
             .build()?;
