@@ -40,37 +40,52 @@ impl FileSystemTools {
     /// new file while still preventing symlink and parent-directory escapes.
     pub fn sanitize(&self, input: &str) -> Result<PathBuf, AppError> {
         if input.trim().is_empty() || input.contains('\0') {
-            return Err(AppError::PathTraversal { attempted: input.to_string() });
+            return Err(AppError::PathTraversal {
+                attempted: input.to_string(),
+            });
         }
 
         let candidate = Path::new(input);
         if !candidate.is_absolute() {
-            return Err(AppError::PathTraversal { attempted: input.to_string() });
+            return Err(AppError::PathTraversal {
+                attempted: input.to_string(),
+            });
         }
 
-        if candidate.components().any(|component| matches!(component, Component::ParentDir)) {
-            return Err(AppError::PathTraversal { attempted: input.to_string() });
+        if candidate
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(AppError::PathTraversal {
+                attempted: input.to_string(),
+            });
         }
 
         let resolved = if candidate.exists() {
-            candidate.canonicalize().map_err(|_| AppError::PathTraversal { attempted: input.to_string() })?
-        } else {
-            let parent = candidate
-                .parent()
-                .ok_or_else(|| AppError::PathTraversal { attempted: input.to_string() })?;
-            let file_name = candidate
-                .file_name()
-                .ok_or_else(|| AppError::PathTraversal { attempted: input.to_string() })?;
-            let canonical_parent = parent
+            candidate
                 .canonicalize()
-                .map_err(|_| AppError::PathTraversal { attempted: input.to_string() })?;
+                .map_err(|_| AppError::PathTraversal {
+                    attempted: input.to_string(),
+                })?
+        } else {
+            let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
+                attempted: input.to_string(),
+            })?;
+            let file_name = candidate.file_name().ok_or_else(|| AppError::PathTraversal {
+                attempted: input.to_string(),
+            })?;
+            let canonical_parent = parent.canonicalize().map_err(|_| AppError::PathTraversal {
+                attempted: input.to_string(),
+            })?;
             canonical_parent.join(file_name)
         };
 
         if self.safe_roots.iter().any(|root| resolved.starts_with(root)) {
             Ok(resolved)
         } else {
-            Err(AppError::PathTraversal { attempted: input.to_string() })
+            Err(AppError::PathTraversal {
+                attempted: input.to_string(),
+            })
         }
     }
 
@@ -158,12 +173,11 @@ impl FileSystemTools {
     ) -> Result<ListDirResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
-        let depth = max_depth
-            .unwrap_or(DEFAULT_LIST_DEPTH)
-            .clamp(1, MAX_LIST_DEPTH);
+        let depth = max_depth.unwrap_or(DEFAULT_LIST_DEPTH).clamp(1, MAX_LIST_DEPTH);
 
         let mut entries = Vec::new();
-        self.collect_entries_iterative(&safe_path, &mut entries, depth).await?;
+        self.collect_entries_iterative(&safe_path, &mut entries, depth)
+            .await?;
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.list.latency_seconds").record(duration);
@@ -208,12 +222,14 @@ impl FileSystemTools {
             return Ok("DRY-RUN".to_string());
         }
 
-        let parent = safe_path
-            .parent()
-            .ok_or_else(|| AppError::PathTraversal { attempted: path.clone() })?;
+        let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
+            attempted: path.clone(),
+        })?;
         let file_name = safe_path
             .file_name()
-            .ok_or_else(|| AppError::PathTraversal { attempted: path.clone() })?
+            .ok_or_else(|| AppError::PathTraversal {
+                attempted: path.clone(),
+            })?
             .to_string_lossy();
         let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
 
