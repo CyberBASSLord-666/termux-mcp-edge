@@ -11,9 +11,6 @@
 use std::net::SocketAddr;
 
 use axum::{routing::get, Router};
-use rmcp::server::auth::StaticTokenVerifier;
-use rmcp::server::axum::McpAxumServer;
-use rmcp::server::Server;
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -40,28 +37,19 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
 
-    let auth_verifier = if let Some(token) = &config.auth.static_token {
-        info!("Static token authentication enabled");
-        Some(StaticTokenVerifier::new(
-            token.clone(),
-            vec!["admin:all".to_string()],
-        ))
+    if config.auth.static_token.is_some() {
+        info!("Static token authentication configured");
     } else {
-        warn!("No authentication token configured! Server will run unauthenticated.");
-        None
-    };
+        warn!("No authentication token configured! Remote MCP transports must stay disabled.");
+    }
 
-    let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
-    let mcp_server = Server::builder()
-        .name("termux-mcp-server")
-        .version(env!("CARGO_PKG_VERSION"))
-        .tools(file_tools)
-        .auth(auth_verifier)
-        .build();
+    // Keep filesystem tools initialized so startup validates the configured safe roots,
+    // while avoiding the unavailable rmcp 0.1 server transport API until a compatible
+    // transport integration is selected deliberately.
+    let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
 
     let app = Router::new()
         .route("/health", get(health_check))
-        .merge(McpAxumServer::new(mcp_server).into_router())
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
