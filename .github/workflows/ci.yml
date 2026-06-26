@@ -25,6 +25,25 @@ jobs:
       - name: Cache cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
 
+      - name: Capture rmcp API diagnostics
+        run: |
+          cargo fetch
+          rmcp_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -type d -path "*/rmcp-0.1.5" | head -n 1)"
+          mkdir -p rmcp-diagnostics
+          cp "$rmcp_dir/src/handler/server/tool.rs" rmcp-diagnostics/tool.rs
+          grep -R "Parameters" "$rmcp_dir/src" > rmcp-diagnostics/parameters.txt || true
+          grep -R "IntoCallToolResult" "$rmcp_dir/src" > rmcp-diagnostics/into-call-tool-result.txt || true
+          find "$rmcp_dir" -maxdepth 3 -type f | sort > rmcp-diagnostics/files.txt
+        continue-on-error: true
+
+      - name: Upload rmcp API diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmcp-api-diagnostics
+          path: rmcp-diagnostics
+          if-no-files-found: ignore
+
       - name: Capture rustfmt diagnostics
         run: cargo fmt --all -- --check 2>&1 | tee rustfmt.log
         continue-on-error: true
