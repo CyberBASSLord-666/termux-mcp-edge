@@ -1,24 +1,38 @@
-//! Example end-to-end mock MCP client test harness.
-//! This demonstrates how to test the server without a real LLM client.
+//! Lightweight mock-client style coverage for direct tool invocation.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use termux_mcp_server::tools::FileSystemTools;
 
-// In a real advanced test, you would use rmcp client capabilities
-// or spin up the server in-process and make JSON-RPC calls.
-
 #[tokio::test]
-async fn test_filesystem_tool_via_mock() {
-    // This is a simplified example. Full mock would involve
-    // creating a test transport and calling tools programmatically.
-    let tools = FileSystemTools::new(vec!["/tmp".into()]);
-    assert!(tools.sanitize("/tmp/safe.txt").is_ok());
+async fn filesystem_tool_can_be_invoked_directly_with_safe_paths() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let root = temp_dir.path().canonicalize().expect("canonicalize temp root");
+    let tools = FileSystemTools::new(vec![root.clone()]);
+    let target = root.join("mock-client.txt");
+
+    let write_result = tools
+        .write_file(
+            target.to_string_lossy().into_owned(),
+            "mock client payload".to_string(),
+            None,
+        )
+        .await
+        .expect("direct write should succeed");
+
+    assert_eq!(write_result, "Wrote 19 bytes");
+
+    let read_result = tools
+        .read_file(target.to_string_lossy().into_owned())
+        .await
+        .expect("direct read should succeed");
+
+    assert_eq!(read_result.content, "mock client payload");
 }
 
 #[tokio::test]
-async fn test_basic_latency() {
-    // Placeholder for metrics testing
+async fn async_runtime_timer_advances_for_latency_sensitive_tests() {
+    let start = Instant::now();
     tokio::time::sleep(Duration::from_millis(10)).await;
-    assert!(true);
+    assert!(start.elapsed() >= Duration::from_millis(10));
 }
