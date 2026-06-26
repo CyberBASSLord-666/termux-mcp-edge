@@ -11,16 +11,10 @@
 use std::net::SocketAddr;
 
 use axum::{routing::get, Router};
+use termux_mcp_server::{config::AppConfig, tools::FileSystemTools};
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-mod config;
-mod error;
-mod tools;
-
-use crate::config::AppConfig;
-use crate::tools::FileSystemTools;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
