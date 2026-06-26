@@ -108,7 +108,10 @@ impl FileSystemTools {
                 }
 
                 let entry_path = entry.path();
-                let metadata = entry.metadata().await?;
+                let Ok(metadata) = entry.metadata().await else {
+                    counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
+                    continue;
+                };
                 let is_dir = metadata.is_dir();
                 let size = metadata.len();
                 let modified = metadata.modified().ok().map(|mtime| {
@@ -222,21 +225,28 @@ impl FileSystemTools {
     ) -> Result<String, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
-
-        if dry_run.unwrap_or(false) {
-            counter!("mcp.fs.write.dry_runs_total").increment(1);
-            return Ok("DRY-RUN".to_string());
-        }
-
         let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
             attempted: path.clone(),
         })?;
+
+        if !self.safe_roots.iter().any(|root| parent.starts_with(root)) {
+            return Err(AppError::PathTraversal {
+                attempted: path.clone(),
+            });
+        }
+
         let file_name = safe_path
             .file_name()
             .ok_or_else(|| AppError::PathTraversal {
                 attempted: path.clone(),
             })?
             .to_string_lossy();
+
+        if dry_run.unwrap_or(false) {
+            counter!("mcp.fs.write.dry_runs_total").increment(1);
+            return Ok("DRY-RUN".to_string());
+        }
+
         let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
 
         if let Err(err) = fs::write(&tmp, content.as_bytes()).await {
