@@ -25,6 +25,18 @@ jobs:
       - name: Cache cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
 
+      - name: Capture rustfmt diagnostics
+        run: cargo fmt --all -- --check 2>&1 | tee rustfmt.log
+        continue-on-error: true
+
+      - name: Upload rustfmt diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfmt-diagnostics
+          path: rustfmt.log
+          if-no-files-found: ignore
+
       - name: Format check
         run: cargo fmt --all -- --check
 
