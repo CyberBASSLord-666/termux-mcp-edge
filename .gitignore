@@ -1,0 +1,31 @@
+# Rust / Cargo
+target/
+Cargo.lock
+
+# Local environment and secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.termux_mcp_token
+config/local.*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and generated artifacts
+*.log
+logs/
+dist/
+release/
+coverage/
+*.tar.gz
+*.zip

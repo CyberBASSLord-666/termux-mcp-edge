@@ -1,0 +1,9 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# runit service for Termux MCP Server (Rust)
+exec 2>&1
+
+export MCP__SERVER__HOST="127.0.0.1"
+export MCP__SERVER__PORT="8000"
+export MCP__AUTH__STATIC_TOKEN="$(cat $HOME/.termux_mcp_token 2>/dev/null || echo 'CHANGE_ME')"
+
+exec $HOME/bin/termux-mcp-server

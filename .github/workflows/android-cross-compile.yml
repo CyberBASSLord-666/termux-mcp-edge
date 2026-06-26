@@ -1,0 +1,40 @@
+name: Android Cross Compile
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  android-aarch64:
+    name: Build aarch64-linux-android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Cross compile
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
+        run: ./scripts/cross_compile.sh
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-mcp-server-aarch64-linux-android
+          path: target/aarch64-linux-android/release/termux-mcp-server
