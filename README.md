@@ -14,6 +14,8 @@ Production-grade Model Context Protocol server for high-end Android devices, esp
 
 This server implements **zero-trust principles** by default. All tool calls are authenticated and sandboxed. For simplicity the binary supports a static bearer token, but for enterprise deployments you should integrate with an OAuth 2.1 provider using PKCE (Proof Key for Code Exchange) to obtain short-lived access tokens. See [`docs/SECURITY.md`](docs/SECURITY.md) for a detailed discussion of threats, authentication patterns and hardening guidelines.
 
+Startup now fails closed when no bearer token is configured. Local unauthenticated development requires the explicit `MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true` opt-in and a localhost bind address (`127.0.0.1` or `::1`). Do not enable this mode for remotely exposed, tunneled, LAN-accessible, or rish-capable deployments.
+
 ## Architecture
 
 - **Language**: Rust edition 2021
@@ -112,7 +114,7 @@ cloudflared tunnel run <YOUR_TUNNEL_NAME> &
 exec /data/data/com.termux/files/home/termux-mcp-server
 ```
 
-This removes the need to open inbound ports on your device while still allowing trusted agents to reach the service.
+This removes the need to open inbound ports on your device while still allowing trusted agents to reach the service. Keep `MCP__AUTH__STATIC_TOKEN` configured whenever any tunnel, VPN, LAN, reverse proxy, or non-loopback listener can reach the server.
 
 ## Authentication
 
@@ -121,6 +123,15 @@ Set the `MCP__AUTH__STATIC_TOKEN` environment variable to a strong random string
 ```http
 Authorization: Bearer <your-token>
 ```
+
+For local development only, an unauthenticated listener can be started by setting:
+
+```bash
+export MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true
+export MCP__SERVER__HOST=127.0.0.1
+```
+
+This opt-in is rejected for non-loopback bind addresses and must not be used with remote transports, tunnels, shared networks, or rish-capable tool exposure.
 
 ## Health Check
 
