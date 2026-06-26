@@ -45,10 +45,16 @@ proptest! {
 #[test]
 fn sanitize_rejects_common_android_and_linux_escape_targets() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
-    let root = temp_dir.path().canonicalize().expect("canonicalize temp root");
+    let root = temp_dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize temp root");
     let tools = FileSystemTools::new(vec![root]);
 
     for path in ["/etc/passwd", "/data/data", "/system/build.prop", "", "\0"] {
-        assert!(tools.sanitize(path).is_err(), "expected rejection for {path:?}");
+        assert!(
+            tools.sanitize(path).is_err(),
+            "expected rejection for {path:?}"
+        );
     }
 }
