@@ -44,6 +44,42 @@ async fn filesystem_sanitize_read_write_and_list_are_safe_rooted() {
 }
 
 #[tokio::test]
+async fn filesystem_write_rejects_exact_safe_root_target() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let root = temp_dir.path().canonicalize().expect("canonicalize temp root");
+    let tools = FileSystemTools::new(vec![root.clone()]);
+
+    let result = tools
+        .write_file(root.to_string_lossy().into_owned(), "blocked".to_string(), Some(true))
+        .await;
+
+    assert!(result.is_err(), "safe root itself is not a writable file target");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn filesystem_listing_skips_broken_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let root = temp_dir.path().canonicalize().expect("canonicalize temp root");
+    let tools = FileSystemTools::new(vec![root.clone()]);
+    let broken_link = root.join("broken-link");
+
+    symlink(root.join("missing-target"), &broken_link).expect("create broken symlink");
+
+    let listing = tools
+        .list_directory(root.to_string_lossy().into_owned(), Some(1))
+        .await
+        .expect("listing should skip broken symlinks");
+
+    assert!(
+        listing.entries.iter().all(|entry| entry.path != broken_link.to_string_lossy()),
+        "broken symlink should not be returned as a safe file entry"
+    );
+}
+
+#[tokio::test]
 async fn system_tools_instantiation_is_zero_state() {
     let system = SystemTools::default();
     let cloned = system.clone();
