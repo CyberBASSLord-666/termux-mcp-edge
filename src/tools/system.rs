@@ -179,10 +179,7 @@ impl SystemTools {
     }
 
     #[tool(description = "Find element by text (case-insensitive contains)")]
-    pub async fn find_element_by_text(
-        &self,
-        text: String,
-    ) -> Result<Option<UiElement>, AppError> {
+    pub async fn find_element_by_text(&self, text: String) -> Result<Option<UiElement>, AppError> {
         let dump = self.dump_ui_hierarchy().await?;
         let search = text.to_lowercase();
         let found = dump.elements.into_iter().find(|element| {
@@ -195,9 +192,7 @@ impl SystemTools {
         Ok(found)
     }
 
-    #[tool(
-        description = "Find element by text and return center tap coordinates"
-    )]
+    #[tool(description = "Find element by text and return center tap coordinates")]
     pub async fn find_element_and_get_tap_coordinates(
         &self,
         text: String,
@@ -274,12 +269,7 @@ fn parse_bounds(bounds: &str) -> Option<(i32, i32, i32, i32)> {
             .collect();
 
         if left_top.len() == 2 && right_bottom.len() == 2 {
-            return Some((
-                left_top[0],
-                left_top[1],
-                right_bottom[0],
-                right_bottom[1],
-            ));
+            return Some((left_top[0], left_top[1], right_bottom[0], right_bottom[1]));
         }
     }
 
