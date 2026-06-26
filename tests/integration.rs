@@ -10,14 +10,22 @@ async fn filesystem_sanitize_read_write_and_list_are_safe_rooted() {
 
     let file_path = root.join("notes.txt");
     let dry_run = tools
-        .write_file(file_path.to_string_lossy().into_owned(), "ignored".to_string(), Some(true))
+        .write_file(
+            file_path.to_string_lossy().into_owned(),
+            "ignored".to_string(),
+            Some(true),
+        )
         .await
         .expect("dry-run write succeeds");
     assert_eq!(dry_run, "DRY-RUN");
     assert!(!file_path.exists(), "dry-run must not create the target file");
 
     let write_result = tools
-        .write_file(file_path.to_string_lossy().into_owned(), "hello".to_string(), Some(false))
+        .write_file(
+            file_path.to_string_lossy().into_owned(),
+            "hello".to_string(),
+            Some(false),
+        )
         .await
         .expect("write succeeds");
     assert_eq!(write_result, "Wrote 5 bytes");
@@ -40,7 +48,9 @@ async fn filesystem_sanitize_read_write_and_list_are_safe_rooted() {
 
     assert!(tools.sanitize("relative/path.txt").is_err());
     assert!(tools.sanitize("/etc/passwd").is_err());
-    assert!(tools.sanitize(&format!("{}/../escape.txt", root.display())).is_err());
+    assert!(tools
+        .sanitize(&format!("{}/../escape.txt", root.display()))
+        .is_err());
 }
 
 #[tokio::test]
@@ -50,7 +60,11 @@ async fn filesystem_write_rejects_exact_safe_root_target() {
     let tools = FileSystemTools::new(vec![root.clone()]);
 
     let result = tools
-        .write_file(root.to_string_lossy().into_owned(), "blocked".to_string(), Some(true))
+        .write_file(
+            root.to_string_lossy().into_owned(),
+            "blocked".to_string(),
+            Some(true),
+        )
         .await;
 
     assert!(result.is_err(), "safe root itself is not a writable file target");
@@ -74,7 +88,10 @@ async fn filesystem_listing_skips_broken_symlinks() {
         .expect("listing should skip broken symlinks");
 
     assert!(
-        listing.entries.iter().all(|entry| entry.path != broken_link.to_string_lossy()),
+        listing
+            .entries
+            .iter()
+            .all(|entry| entry.path != broken_link.to_string_lossy()),
         "broken symlink should not be returned as a safe file entry"
     );
 }
