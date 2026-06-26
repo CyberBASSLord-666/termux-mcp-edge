@@ -12,6 +12,8 @@ use tokio::process::Command as TokioCommand;
 
 use crate::error::AppError;
 
+const UI_DUMP_PATH: &str = "/sdcard/window_dump.xml";
+
 #[derive(Clone, Default)]
 pub struct SystemTools;
 
@@ -121,8 +123,22 @@ impl SystemTools {
     #[tool(description = "Dump UI hierarchy (parsed)")]
     pub async fn dump_ui_hierarchy(&self) -> Result<UiDumpResult, AppError> {
         let start = Instant::now();
-        let cmd = "uiautomator dump /sdcard/window_dump.xml 2>/dev/null && cat /sdcard/window_dump.xml";
-        let output = TokioCommand::new("rish").arg("-c").arg(cmd).output().await?;
+        let dump_command = format!("uiautomator dump {UI_DUMP_PATH}");
+        let dump_output = TokioCommand::new("rish")
+            .arg("-c")
+            .arg(&dump_command)
+            .output()
+            .await?;
+        if !dump_output.status.success() {
+            counter!("mcp.ui.dump_errors_total").increment(1);
+        }
+
+        let read_command = format!("cat {UI_DUMP_PATH}");
+        let output = TokioCommand::new("rish")
+            .arg("-c")
+            .arg(&read_command)
+            .output()
+            .await?;
         let xml = String::from_utf8_lossy(&output.stdout).to_string();
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.ui.latency_seconds").record(duration);
