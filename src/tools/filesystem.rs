@@ -116,6 +116,16 @@ impl FileSystemTools {
                 }
 
                 let entry_path = entry.path();
+                let Ok(file_type) = entry.file_type().await else {
+                    counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
+                    continue;
+                };
+
+                if file_type.is_symlink() && !entry_path.exists() {
+                    counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
+                    continue;
+                }
+
                 let Ok(metadata) = entry.metadata().await else {
                     counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
                     continue;
