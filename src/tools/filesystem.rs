@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use metrics::{counter, histogram};
+use rmcp::handler::server::tool::Parameters;
 use rmcp::tool;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -71,16 +73,22 @@ impl FileSystemTools {
             let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
-            let file_name = candidate.file_name().ok_or_else(|| AppError::PathTraversal {
-                attempted: input.to_string(),
-            })?;
+            let file_name = candidate
+                .file_name()
+                .ok_or_else(|| AppError::PathTraversal {
+                    attempted: input.to_string(),
+                })?;
             let canonical_parent = parent.canonicalize().map_err(|_| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
             canonical_parent.join(file_name)
         };
 
-        if self.safe_roots.iter().any(|root| resolved.starts_with(root)) {
+        if self
+            .safe_roots
+            .iter()
+            .any(|root| resolved.starts_with(root))
+        {
             Ok(resolved)
         } else {
             Err(AppError::PathTraversal {
@@ -108,6 +116,16 @@ impl FileSystemTools {
                 }
 
                 let entry_path = entry.path();
+                let Ok(file_type) = entry.file_type().await else {
+                    counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
+                    continue;
+                };
+
+                if file_type.is_symlink() && !entry_path.exists() {
+                    counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
+                    continue;
+                }
+
                 let Ok(metadata) = entry.metadata().await else {
                     counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
                     continue;
@@ -143,34 +161,7 @@ impl FileSystemTools {
 
         Ok(())
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileInfo {
-    pub path: String,
-    pub size: u64,
-    pub is_dir: bool,
-    pub modified: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListDirResult {
-    pub path: String,
-    pub entries: Vec<FileInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReadFileResult {
-    pub path: String,
-    pub content: String,
-    pub size: usize,
-}
-
-#[tool]
-impl FileSystemTools {
-    #[tool(
-        description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
-    )]
     pub async fn list_directory(
         &self,
         path: String,
@@ -178,7 +169,9 @@ impl FileSystemTools {
     ) -> Result<ListDirResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
-        let depth = max_depth.unwrap_or(DEFAULT_LIST_DEPTH).clamp(1, MAX_LIST_DEPTH);
+        let depth = max_depth
+            .unwrap_or(DEFAULT_LIST_DEPTH)
+            .clamp(1, MAX_LIST_DEPTH);
 
         let mut entries = Vec::new();
         self.collect_entries_iterative(&safe_path, &mut entries, depth)
@@ -194,9 +187,6 @@ impl FileSystemTools {
         })
     }
 
-    #[tool(
-        description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
-    )]
     pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
@@ -214,9 +204,6 @@ impl FileSystemTools {
         })
     }
 
-    #[tool(
-        description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
-    )]
     pub async fn write_file(
         &self,
         path: String,
@@ -264,5 +251,91 @@ impl FileSystemTools {
         counter!("mcp.fs.write.bytes_total").increment(content.len() as u64);
 
         Ok(format!("Wrote {} bytes", content.len()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileInfo {
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub modified: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListDirResult {
+    pub path: String,
+    pub entries: Vec<FileInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReadFileResult {
+    pub path: String,
+    pub content: String,
+    pub size: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ListDirectoryParams {
+    pub path: String,
+    pub max_depth: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReadFileParams {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WriteFileParams {
+    pub path: String,
+    pub content: String,
+    pub dry_run: Option<bool>,
+}
+
+fn json_tool_result<T: Serialize>(result: T) -> Result<String, String> {
+    serde_json::to_string(&result).map_err(|error| error.to_string())
+}
+
+#[tool]
+impl FileSystemTools {
+    #[tool(
+        description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
+    )]
+    pub async fn mcp_list_directory(
+        &self,
+        Parameters(params): Parameters<ListDirectoryParams>,
+    ) -> Result<String, String> {
+        let result = self
+            .list_directory(params.path, params.max_depth)
+            .await
+            .map_err(|error| error.to_string())?;
+        json_tool_result(result)
+    }
+
+    #[tool(
+        description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
+    )]
+    pub async fn mcp_read_file(
+        &self,
+        Parameters(params): Parameters<ReadFileParams>,
+    ) -> Result<String, String> {
+        let result = self
+            .read_file(params.path)
+            .await
+            .map_err(|error| error.to_string())?;
+        json_tool_result(result)
+    }
+
+    #[tool(
+        description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
+    )]
+    pub async fn mcp_write_file(
+        &self,
+        Parameters(params): Parameters<WriteFileParams>,
+    ) -> Result<String, String> {
+        self.write_file(params.path, params.content, params.dry_run)
+            .await
+            .map_err(|error| error.to_string())
     }
 }

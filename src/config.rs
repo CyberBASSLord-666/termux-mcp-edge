@@ -33,14 +33,12 @@ pub struct FileConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
+        let default_safe_roots = vec![String::from("/storage/emulated/0"), String::from("/sdcard")];
         let cfg = config::Config::builder()
             .set_default("server.host", "127.0.0.1")?
             .set_default("server.port", 8000)?
             .set_default("auth.static_token", None::<String>)?
-            .set_default(
-                "file.safe_roots",
-                vec!["/storage/emulated/0".to_string(), "/sdcard".to_string()],
-            )?
+            .set_default("file.safe_roots", default_safe_roots)?
             .add_source(config::Environment::with_prefix("MCP").separator("__"))
             .build()?;
 
