@@ -18,7 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout@v4 resolved 2026-06-26
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Generate lockfile

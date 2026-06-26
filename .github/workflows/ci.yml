@@ -15,15 +15,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout@v4 resolved 2026-06-26
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # dtolnay/rust-toolchain@stable resolved 2026-06-26
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo registry and build outputs
-        uses: Swatinem/rust-cache@v2
+        # Swatinem/rust-cache@v2 resolved 2026-06-26
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Capture rmcp API diagnostics
         run: |
@@ -38,7 +41,8 @@ jobs:
 
       - name: Upload rmcp API diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact@v4 resolved 2026-06-26
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: rmcp-api-diagnostics
           path: rmcp-diagnostics
@@ -50,7 +54,8 @@ jobs:
 
       - name: Upload rustfmt diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact@v4 resolved 2026-06-26
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: rustfmt-diagnostics
           path: rustfmt.log
@@ -65,7 +70,8 @@ jobs:
 
       - name: Upload clippy diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact@v4 resolved 2026-06-26
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: clippy-diagnostics
           path: clippy.log
