@@ -168,9 +168,7 @@ pub struct ReadFileResult {
 
 #[tool]
 impl FileSystemTools {
-    #[tool(
-        description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
-    )]
+    #[tool(description = "List a safe-rooted directory with bounded breadth-first traversal and metrics")]
     pub async fn list_directory(
         &self,
         path: String,
@@ -194,9 +192,7 @@ impl FileSystemTools {
         })
     }
 
-    #[tool(
-        description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
-    )]
+    #[tool(description = "Read a UTF-8 file from a configured safe root with byte and latency metrics")]
     pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
@@ -214,9 +210,7 @@ impl FileSystemTools {
         })
     }
 
-    #[tool(
-        description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
-    )]
+    #[tool(description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode")]
     pub async fn write_file(
         &self,
         path: String,
