@@ -42,10 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     let auth_verifier = if let Some(token) = &config.auth.static_token {
         info!("Static token authentication enabled");
-        Some(StaticTokenVerifier::new(
-            token.clone(),
-            vec!["admin:all".to_string()],
-        ))
+        Some(StaticTokenVerifier::new(token.clone(), vec!["admin:all".to_string()]))
     } else {
         warn!("No authentication token configured! Server will run unauthenticated.");
         None
