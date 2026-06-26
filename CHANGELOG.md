@@ -3,7 +3,9 @@
 ## 2026-06-26 — Authentication Posture Hardening
 
 - Changed startup authentication behavior to fail closed when `MCP__AUTH__STATIC_TOKEN` is missing.
+- Rejected empty or whitespace-only `MCP__AUTH__STATIC_TOKEN` values at startup.
 - Added explicit `MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true` local-development opt-in, constrained to loopback bind addresses.
+- Allowed `localhost` as an explicit loopback hostname for local-only unauthenticated development.
 - Documented the unauthenticated-mode constraints in `README.md` and `docs/SECURITY.md`.
 
 ## 2026-06-26 — Automated Filesystem Safety Pass
