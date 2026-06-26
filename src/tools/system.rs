@@ -195,7 +195,9 @@ impl SystemTools {
         Ok(found)
     }
 
-    #[tool(description = "Find element by text and return center tap coordinates")]
+    #[tool(
+        description = "Find element by text and return center tap coordinates"
+    )]
     pub async fn find_element_and_get_tap_coordinates(
         &self,
         text: String,
