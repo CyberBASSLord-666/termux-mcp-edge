@@ -12,7 +12,11 @@ async fn filesystem_tool_can_be_invoked_directly_with_safe_paths() {
     let target = root.join("mock-client.txt");
 
     let write_result = tools
-        .write_file(target.to_string_lossy().into_owned(), "mock client payload".to_string(), None)
+        .write_file(
+            target.to_string_lossy().into_owned(),
+            "mock client payload".to_string(),
+            None,
+        )
         .await
         .expect("direct write should succeed");
 
