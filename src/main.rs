@@ -33,7 +33,8 @@ async fn main() -> anyhow::Result<()> {
     info!(?config.server, "Configuration loaded");
 
     validate_auth_posture(&config, &config.server.host)?;
-    let addr = format!("{}:{}", config.server.host, config.server.port).parse()?;
+    let display_addr = format!("{}:{}", config.server.host, config.server.port);
+    let bind_addr = (config.server.host.as_str(), config.server.port);
 
     // Keep filesystem tools initialized so startup validates the configured safe roots,
     // while avoiding the unavailable rmcp 0.1 server transport API until a compatible
@@ -44,9 +45,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
-    info!("Listening on http://{}", addr);
+    info!("Listening on http://{}", display_addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
