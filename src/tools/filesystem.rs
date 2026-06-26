@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use metrics::{counter, histogram};
+use rmcp::handler::server::tool::Parameters;
 use rmcp::tool;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -149,35 +151,8 @@ impl FileSystemTools {
 
         Ok(())
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileInfo {
-    pub path: String,
-    pub size: u64,
-    pub is_dir: bool,
-    pub modified: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ListDirResult {
-    pub path: String,
-    pub entries: Vec<FileInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReadFileResult {
-    pub path: String,
-    pub content: String,
-    pub size: usize,
-}
-
-#[tool]
-impl FileSystemTools {
-    #[tool(
-        description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
-    )]
-    pub async fn list_directory(
+    pub async fn list_directory_inner(
         &self,
         path: String,
         max_depth: Option<u32>,
@@ -202,10 +177,7 @@ impl FileSystemTools {
         })
     }
 
-    #[tool(
-        description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
-    )]
-    pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
+    pub async fn read_file_inner(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
         let content = fs::read_to_string(&safe_path).await?;
@@ -222,10 +194,7 @@ impl FileSystemTools {
         })
     }
 
-    #[tool(
-        description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
-    )]
-    pub async fn write_file(
+    pub async fn write_file_inner(
         &self,
         path: String,
         content: String,
@@ -272,5 +241,91 @@ impl FileSystemTools {
         counter!("mcp.fs.write.bytes_total").increment(content.len() as u64);
 
         Ok(format!("Wrote {} bytes", content.len()))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileInfo {
+    pub path: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub modified: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListDirResult {
+    pub path: String,
+    pub entries: Vec<FileInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReadFileResult {
+    pub path: String,
+    pub content: String,
+    pub size: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ListDirectoryParams {
+    pub path: String,
+    pub max_depth: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReadFileParams {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct WriteFileParams {
+    pub path: String,
+    pub content: String,
+    pub dry_run: Option<bool>,
+}
+
+fn json_tool_result<T: Serialize>(result: T) -> Result<String, String> {
+    serde_json::to_string(&result).map_err(|error| error.to_string())
+}
+
+#[tool]
+impl FileSystemTools {
+    #[tool(
+        description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
+    )]
+    pub async fn list_directory(
+        &self,
+        Parameters(params): Parameters<ListDirectoryParams>,
+    ) -> Result<String, String> {
+        let result = self
+            .list_directory_inner(params.path, params.max_depth)
+            .await
+            .map_err(|error| error.to_string())?;
+        json_tool_result(result)
+    }
+
+    #[tool(
+        description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
+    )]
+    pub async fn read_file(
+        &self,
+        Parameters(params): Parameters<ReadFileParams>,
+    ) -> Result<String, String> {
+        let result = self
+            .read_file_inner(params.path)
+            .await
+            .map_err(|error| error.to_string())?;
+        json_tool_result(result)
+    }
+
+    #[tool(
+        description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
+    )]
+    pub async fn write_file(
+        &self,
+        Parameters(params): Parameters<WriteFileParams>,
+    ) -> Result<String, String> {
+        self.write_file_inner(params.path, params.content, params.dry_run)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
