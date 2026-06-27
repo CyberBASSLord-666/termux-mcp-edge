@@ -6,7 +6,7 @@ This document outlines the security considerations and recommended countermeasur
 
 ### Unauthenticated Endpoints and Remote Code Execution
 
-Misconfigured MCP servers frequently expose endpoints that lack proper authentication.  This can allow attackers to execute arbitrary code.  A notable example was a critical CVE (CVE‑2025‑49596) in the Anthropic MCP Inspector; the vulnerability stemmed from **unauthenticated communication between the client and proxy**, which allowed remote code execution simply by luring a developer to a malicious website【817876964395207†L329-L347】.  The lesson is clear: **never expose unauthenticated endpoints**.
+Misconfigured MCP servers frequently expose endpoints that lack proper authentication.  A notable example was a critical CVE (CVE‑2025‑49596) in the Anthropic MCP Inspector; the vulnerability stemmed from **unauthenticated communication between the client and proxy**, which allowed remote code execution simply by luring a developer to a malicious website【817876964395207†L329-L347】.  The lesson is clear: **never expose unauthenticated endpoints**.
 
 ### Server‑Side Request Forgery (SSRF)
 
@@ -19,6 +19,17 @@ Tools that fetch user‑controlled URLs can be abused to access internal service
 An MCP server must **demand cryptographically verifiable client identity and explicit scoped authorization**.  You **cannot rely on static API keys or long‑lived session cookies**【817876964395207†L357-L361】.  The recommended pattern is to adopt modern **OAuth 2.1** with **Proof Key for Code Exchange (PKCE)**.  PKCE protects against code interception; the client generates a random secret, hashes it, and sends the hash to the authorization server.  When exchanging the authorization code for an access token, the client must present the original secret.  If an attacker intercepts the redirect, they cannot reuse the code because they do not possess the initial secret【817876964395207†L357-L374】.
 
 Static bearer tokens are supported in this implementation for simplicity, but they should only be used in trusted, air‑gapped environments.  For enterprise deployments you should integrate the server with a dedicated authorization service (e.g. OAuth 2.1 with PKCE) and verify tokens via JSON Web Token (JWT) signatures.
+
+### Fail Closed Without an Explicit Token
+
+Startup requires `MCP__AUTH__STATIC_TOKEN` by default.  A missing token fails closed before the HTTP listener starts.  The only supported exception is explicit local development mode:
+
+```bash
+export MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true
+export MCP__SERVER__HOST=127.0.0.1
+```
+
+This opt-in is rejected for non-loopback bind addresses.  It is unsafe for Cloudflare Tunnel, VPN, LAN, reverse-proxy, port-forwarded, shared-device, or rish-capable deployments.  Treat any unauthenticated listener as local-only and disposable.
 
 ### Reject the Token‑Passthrough Anti‑pattern
 
@@ -77,4 +88,4 @@ Prepare an incident response plan that includes token revocation, secret rotatio
 
 ## Conclusion
 
-Security is a process, not a checkbox.  The Termux MCP server ships with sensible defaults—path sanitization, safe roots, metrics, and optional bearer token authentication—but secure deployments must go further.  Employ modern authentication with PKCE, harden the runtime environment, and continuously monitor and update your deployment.
+Security is a process, not a checkbox.  The Termux MCP server ships with sensible defaults—path sanitization, safe roots, metrics, and fail-closed bearer-token posture—but secure deployments must go further.  Employ modern authentication with PKCE, harden the runtime environment, and continuously monitor and update your deployment.

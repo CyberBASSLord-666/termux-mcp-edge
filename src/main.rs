@@ -8,8 +8,9 @@
 //! - Proper ASGI-equivalent lifespan handling via Axum
 //! - Single-binary deployment optimized for runit supervision
 
-use std::net::SocketAddr;
+use std::net::IpAddr;
 
+use anyhow::bail;
 use axum::{routing::get, Router};
 use termux_mcp_server::{config::AppConfig, tools::FileSystemTools};
 use tokio::signal;
@@ -31,11 +32,9 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
 
-    if config.auth.static_token.is_some() {
-        info!("Static token authentication configured");
-    } else {
-        warn!("No authentication token configured! Remote MCP transports must stay disabled.");
-    }
+    validate_auth_posture(&config, &config.server.host)?;
+    let display_addr = format!("{}:{}", config.server.host, config.server.port);
+    let bind_addr = (config.server.host.as_str(), config.server.port);
 
     // Keep filesystem tools initialized so startup validates the configured safe roots,
     // while avoiding the unavailable rmcp 0.1 server transport API until a compatible
@@ -46,10 +45,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
-    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
-    info!("Listening on http://{}", addr);
+    info!("Listening on http://{}", display_addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -57,6 +55,42 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Server shutdown complete");
     Ok(())
+}
+
+fn validate_auth_posture(config: &AppConfig, host: &str) -> anyhow::Result<()> {
+    if let Some(ref token) = config.auth.static_token {
+        if token.trim().is_empty() {
+            bail!("MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode");
+        }
+
+        info!("Static token authentication configured");
+        return Ok(());
+    }
+
+    if !config.auth.allow_unauthenticated_localhost_only {
+        bail!(
+            "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development"
+        );
+    }
+
+    if !is_loopback_host(host) {
+        bail!(
+            "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1"
+        );
+    }
+
+    warn!(
+        "Unauthenticated local-only development mode enabled; do not expose this listener remotely"
+    );
+    Ok(())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
 }
 
 async fn health_check() -> &'static str {

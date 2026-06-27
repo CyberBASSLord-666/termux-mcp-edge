@@ -19,9 +19,12 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthConfig {
-    /// Optional static token for simple deployments.
+    /// Static bearer token for simple deployments.
     /// For production, consider integrating with external IdP.
     pub static_token: Option<String>,
+    /// Explicit unsafe/local-only opt-in for development without a bearer token.
+    /// When true, startup still requires binding to localhost.
+    pub allow_unauthenticated_localhost_only: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -38,6 +41,7 @@ impl AppConfig {
             .set_default("server.host", "127.0.0.1")?
             .set_default("server.port", 8000)?
             .set_default("auth.static_token", None::<String>)?
+            .set_default("auth.allow_unauthenticated_localhost_only", false)?
             .set_default("file.safe_roots", default_safe_roots)?
             .add_source(config::Environment::with_prefix("MCP").separator("__"))
             .build()?;
