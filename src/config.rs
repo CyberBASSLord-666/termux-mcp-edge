@@ -5,8 +5,10 @@ use std::path::PathBuf;
 use anyhow::bail;
 use serde::Deserialize;
 
-const DEFAULT_FILE_SAFE_ROOT: &str =
-    "/data/data/com.termux/files/home/termux-mcp-edge-files";
+const DEFAULT_FILE_SAFE_ROOT: &str = concat!(
+    "/data/data/com.termux/files/home/",
+    "termux-mcp-edge-files"
+);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -90,15 +92,13 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
         };
+        let broad_storage = PathBuf::from("/storage/emulated/0");
+        let sdcard = PathBuf::from("/sdcard");
 
         validate_file_safe_roots(&file).expect("default safe root should validate");
         assert_eq!(file.safe_roots, vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]);
-        assert!(
-            !file
-                .safe_roots
-                .contains(&PathBuf::from("/storage/emulated/0"))
-        );
-        assert!(!file.safe_roots.contains(&PathBuf::from("/sdcard")));
+        assert!(!file.safe_roots.contains(&broad_storage));
+        assert!(!file.safe_roots.contains(&sdcard));
     }
 
     #[test]
