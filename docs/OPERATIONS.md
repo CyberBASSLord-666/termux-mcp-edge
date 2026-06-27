@@ -12,6 +12,7 @@ This project currently runs a small Rust/Axum HTTP service on Android through Te
 - Termux runtime.
 - `termux-services` / runit supervision.
 - Bearer-token startup posture for constrained deployments.
+- Narrow dedicated filesystem safe-root default.
 - MCP transport restoration tracked separately from the current health-check runtime.
 
 ## Required Android Hardening
@@ -63,6 +64,18 @@ sv-enable mcp-server
 sv up mcp-server
 sv status mcp-server
 ```
+
+## Filesystem Safe Roots
+
+The default filesystem safe root is the dedicated Termux-home directory:
+
+```text
+/data/data/com.termux/files/home/termux-mcp-edge-files
+```
+
+This deliberately avoids broad Android shared-storage defaults such as `/storage/emulated/0` and `/sdcard`. If filesystem tools are restored, keep `MCP__FILE__SAFE_ROOTS` constrained to one or more dedicated project directories. Avoid all shared storage unless the deployment has a reviewed operational requirement and matching authorization controls.
+
+Safe-root configuration is validated at startup. Empty safe-root lists, relative paths, and filesystem root `/` are rejected.
 
 ## Current Tool Exposure
 
