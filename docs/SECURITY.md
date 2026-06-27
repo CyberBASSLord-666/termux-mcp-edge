@@ -58,7 +58,7 @@ When filesystem tools are restored, path-taking code must canonicalize or safely
 The default safe root is deliberately narrow and points to a dedicated Termux-home directory:
 
 ```text
-/data/data/com.termux/files/home/termux-mcp-edge-files
+/data/data/com.termux/files/home/mcp-files
 ```
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not default safe roots. Empty safe-root lists, relative paths, and filesystem root `/` are rejected during configuration validation.
