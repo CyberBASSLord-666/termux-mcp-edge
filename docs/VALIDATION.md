@@ -1,18 +1,10 @@
 # Validation
 
-## Current automated pass
+## Current Runtime Validation Scope
 
-This pass was performed through the GitHub connector from the canonical repository state on `main`.
+The current compiled runtime is an Axum HTTP health-check service. MCP transport and MCP tool endpoints are not compiled into the current release line.
 
-### Static checks completed
-
-- Confirmed repository existence, visibility, default branch, and write permissions.
-- Confirmed `README.md`, `Cargo.toml`, `CHANGELOG.md`, GitHub Actions CI, Android cross-compile workflow, and Dependabot configuration are present.
-- Inspected filesystem implementation and tests before patching.
-- Verified the Rust language rule behind the primary compile-risk fix: directly recursive `async fn` bodies require boxing or a non-recursive implementation because the future must have a known size.
-- Verified the current MCP specification exposes tools through server capabilities, `tools/list`, and `tools/call`; this pass preserves tool-oriented behavior and improves the safety boundary around filesystem tool execution.
-
-### Validation commands to run locally
+## Required Repository Gates
 
 Run these from a Rust-enabled desktop or Termux environment with the Android build prerequisites installed:
 
@@ -23,15 +15,40 @@ cargo test --workspace --all-targets
 cargo build --release
 ```
 
-For Android cross-compilation:
+The GitHub CI workflow enforces format, Clippy, and tests. The Security workflow generates a lockfile and runs `cargo audit`.
+
+## Runtime Smoke Test
+
+After building or installing the binary, verify liveness:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+```
+
+Expected response:
+
+```text
+ok
+```
+
+## Android Cross-Compilation
 
 ```bash
 rustup target add aarch64-linux-android
 ANDROID_NDK_HOME=/path/to/android-ndk ./scripts/cross_compile.sh
 ```
 
-### Validation not completed in this run
+## MCP Transport Restoration Gate
 
-The ChatGPT execution context used for this automated pass does not provide a Rust compiler, Cargo dependency resolution, or an Android NDK toolchain. Because of that, `cargo fmt`, `cargo clippy`, `cargo test`, and Android cross-compilation were not executed inside this run.
+Do not mark the project as MCP-runtime-ready until a future PR restores transport integration and proves:
 
-The patch was therefore validated by source inspection and by aligning the code with stable Rust async recursion constraints and MCP tool-safety expectations. CI should be treated as the compile/test authority after the pull request is opened.
+1. Exact-head CI success.
+2. Exact-head Security success.
+3. MCP tool discovery works.
+4. At least one MCP tool call works.
+5. Authentication and authorization behavior is documented and tested.
+6. README, operations, and security docs match the implemented runtime.
+
+## Current Known Limitation
+
+The current runtime intentionally does not expose MCP transport or MCP tools. This is a documented safety posture after removing vulnerable and incompatible dependency surfaces. Restoring transport is product work, not a cleanup-only change.
