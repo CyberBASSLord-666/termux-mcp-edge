@@ -2,35 +2,43 @@
 
 ## Purpose
 
-This project is designed to run a small, secure MCP server on Android through Termux, preferably on high-end devices such as the Samsung Galaxy Z Fold 6.
+This project currently runs a small Rust/Axum HTTP service on Android through Termux. The compiled runtime exposes a health-check endpoint and validates startup security posture. MCP transport and MCP tool endpoints are not exposed in the current runtime.
 
-## Baseline operating model
+## Baseline Operating Model
 
 - Rust single-binary service.
+- Axum HTTP runtime.
+- `GET /health` endpoint for runtime liveness.
 - Termux runtime.
 - `termux-services` / runit supervision.
-- Optional Cloudflare named tunnel for remote ingress.
-- Bearer-token authentication for constrained deployments, with OAuth 2.1 / PKCE recommended for enterprise exposure.
+- Bearer-token startup posture for constrained deployments.
+- MCP transport restoration tracked separately from the current health-check runtime.
 
-## Required Android hardening
+## Required Android Hardening
 
 1. Set Termux battery usage to unrestricted.
 2. Remove Termux from sleeping or deep-sleeping app lists.
 3. Use `termux-wake-lock` only when persistent background operation is required.
 4. On Android 14 or later, enable **Developer options → Disable child process restrictions**.
-5. Avoid direct public port exposure. Prefer a named Cloudflare Tunnel or a VPN-bound endpoint.
+5. Avoid direct public port exposure. Prefer a named tunnel or VPN-bound endpoint only after authentication is configured.
 
-## Runtime validation
+## Runtime Validation
 
 ```bash
 curl -fsS http://127.0.0.1:8000/health
 ```
 
-For MCP-level validation, use the MCP Inspector from a trusted desktop environment and authenticate with the configured bearer token or OAuth flow.
+Expected response:
 
-For repository-level validation, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat CI as the authority before merging automated improvement branches.
+```text
+ok
+```
 
-## Service supervision
+MCP-level validation is not applicable until MCP transport is restored. When MCP transport returns, add validation for tool discovery and at least one tool call before claiming MCP readiness.
+
+For repository-level validation, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat CI and Security as merge gates before merging remediation branches.
+
+## Service Supervision
 
 Install Termux services:
 
@@ -38,7 +46,7 @@ Install Termux services:
 pkg install termux-services
 ```
 
-Create a bearer token file before enabling the service:
+Create a bearer-token file before enabling the service:
 
 ```bash
 umask 077
@@ -46,7 +54,7 @@ openssl rand -hex 32 > "$HOME/.termux_mcp_token"
 chmod 600 "$HOME/.termux_mcp_token"
 ```
 
-The packaged runit script fails before starting the server if `$HOME/.termux_mcp_token` is missing, empty, or whitespace-only. It does not supply a default bearer token.
+The packaged runit script fails before starting the server if the token file is missing, empty, or whitespace-only. It does not supply a default bearer token.
 
 Create or install the runit service script from `scripts/runit/mcp-server/run`, then start it:
 
@@ -56,18 +64,16 @@ sv up mcp-server
 sv status mcp-server
 ```
 
-## Filesystem tool operating rules
+## Current Tool Exposure
 
-- Configure `MCP__FILE__SAFE_ROOTS` to the smallest practical set of Android paths.
-- Prefer `/storage/emulated/0/Documents` or a dedicated project directory over all shared storage.
-- Avoid exposing write access unless the caller and network path are trusted.
-- Keep directory listing depth low; the server enforces bounded traversal to protect battery, memory, and latency.
-- Use dry-run mode before destructive or high-impact file writes.
+No MCP tools are exposed by the current compiled runtime. Filesystem and platform tool work must remain gated behind a future transport-restoration PR with explicit tests, documentation, and Security validation.
 
-## Release process
+## Release Process
 
 1. Validate with `cargo fmt`, `cargo clippy`, and `cargo test`.
-2. Cross-compile with `scripts/cross_compile.sh`.
-3. Copy the release binary to `$HOME/bin/termux-mcp-server` on Android.
-4. Restart the runit service.
-5. Verify `/health` and MCP tool listing.
+2. Confirm the Security workflow passes.
+3. Cross-compile with `scripts/cross_compile.sh`.
+4. Copy the release binary to `$HOME/bin/termux-mcp-server` on Android.
+5. Restart the runit service.
+6. Verify `/health` returns `ok`.
+7. Do not claim MCP readiness until MCP transport validation is added and passing.
