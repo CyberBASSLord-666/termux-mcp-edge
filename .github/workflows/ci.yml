@@ -31,19 +31,6 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Capture clippy diagnostics
-        run: cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee clippy.log
-        continue-on-error: true
-
-      - name: Upload clippy diagnostics
-        if: always()
-        # actions/upload-artifact@v4 resolved 2026-06-26
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: clippy-diagnostics
-          path: clippy.log
-          if-no-files-found: ignore
-
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
