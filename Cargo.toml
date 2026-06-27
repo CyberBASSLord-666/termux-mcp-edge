@@ -10,7 +10,7 @@ keywords = ["mcp", "android", "termux", "edge-computing", "ai-agent"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
-rmcp = { version = "0.1.6", features = ["server", "transport-sse"] }
+rmcp = { version = "1.8.0", features = ["server"] }
 schemars = "0.8"
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
