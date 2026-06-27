@@ -82,14 +82,39 @@ See [`docs/VALIDATION.md`](docs/VALIDATION.md) for validation expectations and k
 
 ## Running with Supervision
 
-Create runit service at `$PREFIX/var/service/mcp-server/run`:
+Create a bearer-token file before enabling the service:
+
+```bash
+umask 077
+openssl rand -hex 32 > "$HOME/.termux_mcp_token"
+chmod 600 "$HOME/.termux_mcp_token"
+```
+
+The packaged runit script fails closed if this token file is missing, empty, or whitespace-only. Create runit service at `$PREFIX/var/service/mcp-server/run`:
 
 ```bash
 #!/data/data/com.termux/files/usr/bin/sh
+set -eu
 exec 2>&1
-export MCP__AUTH__STATIC_TOKEN="your-secure-token-here"
-export MCP__FILE__SAFE_ROOTS='["/storage/emulated/0/Documents"]'
-exec /data/data/com.termux/files/home/termux-mcp-server
+
+TOKEN_FILE="$HOME/.termux_mcp_token"
+
+if [ ! -s "$TOKEN_FILE" ]; then
+  echo "ERROR: $TOKEN_FILE is missing or empty. Create it with a strong bearer token before starting the service." >&2
+  exit 1
+fi
+
+TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+if [ -z "$(printf '%s' "$TOKEN" | tr -d '[:space:]')" ]; then
+  echo "ERROR: $TOKEN_FILE contains only whitespace. Replace it with a strong bearer token." >&2
+  exit 1
+fi
+
+export MCP__SERVER__HOST="127.0.0.1"
+export MCP__SERVER__PORT="8000"
+export MCP__AUTH__STATIC_TOKEN="$TOKEN"
+
+exec "$HOME/bin/termux-mcp-server"
 ```
 
 Enable with:
