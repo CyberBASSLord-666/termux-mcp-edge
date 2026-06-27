@@ -1,4 +1,4 @@
-//! Centralized error types for the MCP server.
+//! Centralized error types for the server.
 
 use thiserror::Error;
 
@@ -9,9 +9,6 @@ pub enum AppError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("MCP protocol error: {0}")]
-    Mcp(#[from] rmcp::Error),
 
     #[error("Configuration error: {0}")]
     Config(#[from] config::ConfigError),

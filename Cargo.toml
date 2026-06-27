@@ -10,8 +10,6 @@ keywords = ["mcp", "android", "termux", "edge-computing", "ai-agent"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
-rmcp = { version = "0.1", features = ["server", "transport-sse"] }
-schemars = "0.8"
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 tower = { version = "0.4", features = ["util"] }
@@ -26,7 +24,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio-util = { version = "0.7", features = ["io"] }
 bytes = "1"
-jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }

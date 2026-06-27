@@ -38,6 +38,16 @@ Install Termux services:
 pkg install termux-services
 ```
 
+Create a bearer token file before enabling the service:
+
+```bash
+umask 077
+openssl rand -hex 32 > "$HOME/.termux_mcp_token"
+chmod 600 "$HOME/.termux_mcp_token"
+```
+
+The packaged runit script fails before starting the server if `$HOME/.termux_mcp_token` is missing, empty, or whitespace-only. It does not supply a default bearer token.
+
 Create or install the runit service script from `scripts/runit/mcp-server/run`, then start it:
 
 ```bash
