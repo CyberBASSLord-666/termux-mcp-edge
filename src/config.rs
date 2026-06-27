@@ -92,7 +92,11 @@ mod tests {
 
         validate_file_safe_roots(&file).expect("default safe root should validate");
         assert_eq!(file.safe_roots, vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]);
-        assert!(!file.safe_roots.contains(&PathBuf::from("/storage/emulated/0")));
+        assert!(
+            !file
+                .safe_roots
+                .contains(&PathBuf::from("/storage/emulated/0"))
+        );
         assert!(!file.safe_roots.contains(&PathBuf::from("/sdcard")));
     }
 
