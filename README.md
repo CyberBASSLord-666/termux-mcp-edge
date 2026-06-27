@@ -11,7 +11,7 @@ MCP transport and MCP tool endpoints are intentionally **not compiled into the c
 - **Current MCP transport:** not exposed.
 - **Current filesystem/tool endpoints:** not exposed.
 - **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
-- **Filesystem safe-root default:** `/data/data/com.termux/files/home/termux-mcp-edge-files`, not broad shared storage.
+- **Filesystem safe-root default:** `/data/data/com.termux/files/home/mcp-files`, not broad shared storage.
 - **Deployment target:** Termux on Android, supervised by `termux-services` / runit.
 
 ## Design Goals
@@ -41,7 +41,7 @@ This opt-in is rejected for non-loopback bind addresses and must not be used wit
 The built-in filesystem safe-root default is intentionally narrow:
 
 ```text
-/data/data/com.termux/files/home/termux-mcp-edge-files
+/data/data/com.termux/files/home/mcp-files
 ```
 
 The service no longer defaults to broad Android shared-storage roots such as `/storage/emulated/0` or `/sdcard`. If future filesystem tools are restored, operators should keep `MCP__FILE__SAFE_ROOTS` limited to a dedicated project directory and avoid granting all shared storage unless there is a specific reviewed need.
