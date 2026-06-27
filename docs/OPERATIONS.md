@@ -70,7 +70,7 @@ sv status mcp-server
 The default filesystem safe root is the dedicated Termux-home directory:
 
 ```text
-/data/data/com.termux/files/home/termux-mcp-edge-files
+/data/data/com.termux/files/home/mcp-files
 ```
 
 This deliberately avoids broad Android shared-storage defaults such as `/storage/emulated/0` and `/sdcard`. If filesystem tools are restored, keep `MCP__FILE__SAFE_ROOTS` constrained to one or more dedicated project directories. Avoid all shared storage unless the deployment has a reviewed operational requirement and matching authorization controls.
