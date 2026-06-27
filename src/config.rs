@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use anyhow::bail;
 use serde::Deserialize;
 
-const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/termux-mcp-edge-files";
+const DEFAULT_FILE_SAFE_ROOT: &str =
+    "/data/data/com.termux/files/home/termux-mcp-edge-files";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
