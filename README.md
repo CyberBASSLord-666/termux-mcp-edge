@@ -1,28 +1,47 @@
 # Termux MCP Edge (Rust)
 
-Production-grade Model Context Protocol server for high-end Android devices, especially Termux deployments on Samsung Galaxy Z Fold-class hardware.
+Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The current compiled runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
+
+MCP transport and MCP tool endpoints are intentionally **not compiled into the current runtime**. Earlier `rmcp`-backed transport and tool code was quarantined or removed while dependency advisories and API compatibility were being addressed. Restoring MCP transport is tracked separately and must be validated with exact-head CI, Security, and an MCP tool-list/tool-call smoke test before release.
+
+## Current Runtime Scope
+
+- **Runtime:** Rust single binary using Axum.
+- **Current HTTP endpoint:** `GET /health`.
+- **Current MCP transport:** not exposed.
+- **Current filesystem/tool endpoints:** not exposed.
+- **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
+- **Deployment target:** Termux on Android, supervised by `termux-services` / runit.
 
 ## Design Goals
 
-- Memory efficiency and thermal resilience on mobile hardware
-- Zero-trust authentication
-- Robust filesystem operations with symlink protection
-- Single-binary deployment optimized for `termux-services` + runit
-- Proper async task lifecycle management
+- Memory efficiency and thermal resilience on mobile hardware.
+- Fail-closed startup posture for networked deployments.
+- Clear separation between current runtime behavior and future MCP transport work.
+- Single-binary deployment optimized for `termux-services` and runit.
+- CI and Security workflows as merge gates for every remediation branch.
 
-## Security & Authentication
+## Security and Authentication
 
-This server implements **zero-trust principles** by default. All tool calls are authenticated and sandboxed. For simplicity the binary supports a static bearer token, but for enterprise deployments you should integrate with an OAuth 2.1 provider using PKCE (Proof Key for Code Exchange) to obtain short-lived access tokens. See [`docs/SECURITY.md`](docs/SECURITY.md) for a detailed discussion of threats, authentication patterns and hardening guidelines.
+Set `MCP__AUTH__STATIC_TOKEN` to a strong random value before starting the service. Empty or whitespace-only values are rejected at startup.
 
-Startup now fails closed when no bearer token is configured. Empty or whitespace-only bearer tokens are rejected. Local unauthenticated development requires the explicit `MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true` opt-in and a localhost bind address (`localhost`, `127.0.0.1`, or `::1`). Do not enable this mode for remotely exposed, tunneled, LAN-accessible, or rish-capable deployments.
+Local unauthenticated development requires both conditions:
+
+```bash
+export MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true
+export MCP__SERVER__HOST=localhost
+```
+
+This opt-in is rejected for non-loopback bind addresses and must not be used with tunnels, LAN exposure, reverse proxies, or shared network access.
 
 ## Architecture
 
-- **Language**: Rust edition 2021
-- **MCP Framework**: `rmcp` + Axum
-- **Transport**: Streamable HTTP (`stateless_http` equivalent)
-- **Supervision**: `termux-services` + runit
-- **Networking**: Named Cloudflare Tunnel or VPN-bound endpoint recommended
+- **Language:** Rust edition 2021.
+- **HTTP framework:** Axum.
+- **Transport currently compiled:** health-check HTTP route only.
+- **MCP framework dependency:** not compiled in the current runtime.
+- **Supervision:** `termux-services` / runit.
+- **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
 
 ## Quick Build
 
@@ -40,49 +59,17 @@ rustup target add aarch64-linux-android
 ANDROID_NDK_HOME=/path/to/android-ndk ./scripts/cross_compile.sh
 ```
 
-Transfer the resulting binary from `target/aarch64-linux-android/release/termux-mcp-server` to your device.
+Transfer the resulting binary from `target/aarch64-linux-android/release/termux-mcp-server` to the device.
 
-See [`docs/VALIDATION.md`](docs/VALIDATION.md) for validation expectations and known limits of automated improvement runs.
+## Termux Setup
 
-## Samsung Galaxy Z Fold 6 Specific Setup
+Install the supervisor:
 
-1. **Disable Phantom Process Killer**:
-   - Enable Developer Options
-   - Toggle **"Disable child process restrictions"**. On Android 14 or newer this option stops the system from terminating background processes【48348016950568†L254-L271】. If you disable Developer Options later, the toggle resets automatically.
+```bash
+pkg install termux-services
+```
 
-2. **Disable RAM Plus**:
-   - Settings → Device Care → Memory → Turn off RAM Plus
-
-3. **Battery & Background**:
-   - Set Termux to **Unrestricted** battery usage
-   - Remove Termux from Deep sleeping apps
-   - Disable Auto Blocker (Security and Privacy)
-   - In Termux’s notification panel, tap **Acquire wakelock**. A wakelock prevents the device from entering deep sleep so your server continues running in the background. Only hold a wakelock while the server is in use and release it as soon as possible to preserve battery life【402006191980019†L497-L512】.
-
-4. **Wake Lock** in Termux:
-   ```bash
-   termux-wake-lock
-   ```
-   Note that acquiring a wakelock consumes battery; avoid holding it longer than needed【402006191980019†L497-L512】.
-
-## General Termux Setup
-
-1. **Install `termux-services`**:
-   ```bash
-   pkg install termux-services
-   ```
-   Restart Termux so the runit supervisor starts. All services live under `$PREFIX/var/service`【725050930974417†L52-L69】.
-
-2. **Create a service directory and `run` script** for the server. An example is provided in the next section. Enable the service with:
-   ```bash
-   sv-enable <service>
-   sv up <service>
-   ```
-   These commands integrate with runit to supervise your server【725050930974417†L52-L109】.
-
-## Running with Supervision
-
-Create a bearer-token file before enabling the service:
+Create a local bearer-token file before enabling the runit service:
 
 ```bash
 umask 077
@@ -90,76 +77,36 @@ openssl rand -hex 32 > "$HOME/.termux_mcp_token"
 chmod 600 "$HOME/.termux_mcp_token"
 ```
 
-The packaged runit script fails closed if this token file is missing, empty, or whitespace-only. Create runit service at `$PREFIX/var/service/mcp-server/run`:
+The packaged runit script fails before starting the service if the token file is missing, empty, or whitespace-only.
 
-```bash
-#!/data/data/com.termux/files/usr/bin/sh
-set -eu
-exec 2>&1
-
-TOKEN_FILE="$HOME/.termux_mcp_token"
-
-if [ ! -s "$TOKEN_FILE" ]; then
-  echo "ERROR: $TOKEN_FILE is missing or empty. Create it with a strong bearer token before starting the service." >&2
-  exit 1
-fi
-
-TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
-if [ -z "$(printf '%s' "$TOKEN" | tr -d '[:space:]')" ]; then
-  echo "ERROR: $TOKEN_FILE contains only whitespace. Replace it with a strong bearer token." >&2
-  exit 1
-fi
-
-export MCP__SERVER__HOST="127.0.0.1"
-export MCP__SERVER__PORT="8000"
-export MCP__AUTH__STATIC_TOKEN="$TOKEN"
-
-exec "$HOME/bin/termux-mcp-server"
-```
-
-Enable with:
+Start the service:
 
 ```bash
 sv-enable mcp-server
 sv up mcp-server
+sv status mcp-server
 ```
 
-## Filesystem safety model
-
-Filesystem tools only operate on absolute paths that resolve under configured safe roots. Keep `MCP__FILE__SAFE_ROOTS` narrow, prefer a dedicated project directory, and use dry-run writes before modifying important files.
-
-Directory listing is bounded by depth and entry count to protect latency, memory, and battery on mobile hardware.
-
-## Exposing the server
-
-For remote access we recommend running the server behind a **named Cloudflare Tunnel** instead of exposing raw ports. Use the provided script `scripts/setup_named_tunnel.sh` to create a tunnel and route a DNS name to it. Then update your runit `run` script to invoke:
+## Runtime Validation
 
 ```bash
-cloudflared tunnel run <YOUR_TUNNEL_NAME> &
-exec /data/data/com.termux/files/home/termux-mcp-server
+curl -fsS http://127.0.0.1:8000/health
 ```
 
-This removes the need to open inbound ports on your device while still allowing trusted agents to reach the service. Keep `MCP__AUTH__STATIC_TOKEN` configured whenever any tunnel, VPN, LAN, reverse proxy, or non-loopback listener can reach the server.
+Expected response:
 
-## Authentication
-
-Set the `MCP__AUTH__STATIC_TOKEN` environment variable to a strong random string. Empty or whitespace-only token values are rejected at startup. All requests must include:
-
-```http
-Authorization: Bearer <your-token>
+```text
+ok
 ```
 
-For local development only, an unauthenticated listener can be started by setting:
+## MCP Transport Restoration Gate
 
-```bash
-export MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true
-export MCP__SERVER__HOST=localhost
-```
+Do not claim MCP readiness until all of the following are true:
 
-This opt-in is rejected for non-loopback bind addresses and must not be used with remote transports, tunnels, shared networks, or rish-capable tool exposure.
+1. A compatible MCP transport implementation is restored intentionally.
+2. Dependency advisories for the chosen MCP stack are closed or documented with an accepted exception.
+3. CI and Security workflows are green on the exact PR head.
+4. A smoke test proves MCP tool discovery and at least one tool call.
+5. README, operations, security, and validation docs match the runtime behavior.
 
-## Health Check
-
-```http
-GET /health
-```
+See `docs/VALIDATION.md` for repository validation expectations.
