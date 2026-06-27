@@ -55,6 +55,14 @@ Any PR restoring MCP transport must include:
 
 When filesystem tools are restored, path-taking code must canonicalize or safely resolve paths and enforce configured safe roots. Write access should remain disabled or tightly scoped until authorization and operator consent are implemented.
 
+The default safe root is deliberately narrow and points to a dedicated Termux-home directory:
+
+```text
+/data/data/com.termux/files/home/mcp-files
+```
+
+Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not default safe roots. Empty safe-root lists, relative paths, and filesystem root `/` are rejected during configuration validation.
+
 When platform or command-capable tools are restored, they must be feature-gated, documented, tested, and protected by explicit authorization policy. They must not be accidentally re-exported through broad module imports.
 
 ## Deployment Hardening
@@ -62,9 +70,10 @@ When platform or command-capable tools are restored, they must be feature-gated,
 - Bind to localhost unless a remote access path is explicitly required.
 - Configure a strong bearer token before using tunnels or LAN access.
 - Prefer a VPN-bound endpoint or named tunnel over raw port exposure.
+- Keep filesystem safe roots limited to dedicated project directories.
 - Rotate tokens after suspected exposure.
 - Keep CI, Security, and dependency scanning enabled.
 
 ## Incident Response
 
-If compromise is suspected, stop the runit service, rotate bearer tokens, inspect logs, update dependencies, and redeploy only after CI and Security are green.
+If compromise is suspected, stop the runit service, rotate bearer tokens, inspect logs, update dependencies, validate filesystem safe-root scope, and redeploy only after CI and Security are green.

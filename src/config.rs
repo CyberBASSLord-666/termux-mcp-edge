@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
+use anyhow::bail;
 use serde::Deserialize;
+
+const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -36,7 +39,7 @@ pub struct FileConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
-        let default_safe_roots = vec![String::from("/storage/emulated/0"), String::from("/sdcard")];
+        let default_safe_roots = vec![String::from(DEFAULT_FILE_SAFE_ROOT)];
         let cfg = config::Config::builder()
             .set_default("server.host", "127.0.0.1")?
             .set_default("server.port", 8000)?
@@ -46,6 +49,80 @@ impl AppConfig {
             .add_source(config::Environment::with_prefix("MCP").separator("__"))
             .build()?;
 
-        Ok(cfg.try_deserialize()?)
+        let config: Self = cfg.try_deserialize()?;
+        validate_file_safe_roots(&config.file)?;
+        Ok(config)
+    }
+}
+
+fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
+    if file.safe_roots.is_empty() {
+        bail!("MCP__FILE__SAFE_ROOTS must contain at least one absolute safe root");
+    }
+
+    for root in &file.safe_roots {
+        if root.as_os_str().is_empty() {
+            bail!("MCP__FILE__SAFE_ROOTS contains an empty safe root");
+        }
+
+        if !root.is_absolute() {
+            bail!(
+                "MCP__FILE__SAFE_ROOTS contains a non-absolute safe root: {}",
+                root.display()
+            );
+        }
+
+        if root == std::path::Path::new("/") {
+            bail!("MCP__FILE__SAFE_ROOTS must not include filesystem root /");
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_file_safe_root_is_narrow_termux_home_directory() {
+        let file = FileConfig {
+            safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
+        };
+        let broad_storage = PathBuf::from("/storage/emulated/0");
+        let sdcard = PathBuf::from("/sdcard");
+
+        validate_file_safe_roots(&file).expect("default safe root should validate");
+        assert_eq!(file.safe_roots, vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]);
+        assert!(!file.safe_roots.contains(&broad_storage));
+        assert!(!file.safe_roots.contains(&sdcard));
+    }
+
+    #[test]
+    fn empty_safe_roots_are_rejected() {
+        let file = FileConfig { safe_roots: vec![] };
+
+        let err = validate_file_safe_roots(&file).expect_err("empty safe roots must fail closed");
+        assert!(err.to_string().contains("at least one absolute safe root"));
+    }
+
+    #[test]
+    fn relative_safe_roots_are_rejected() {
+        let file = FileConfig {
+            safe_roots: vec![PathBuf::from("relative/path")],
+        };
+
+        let err = validate_file_safe_roots(&file).expect_err("relative safe roots must fail");
+        assert!(err.to_string().contains("non-absolute safe root"));
+    }
+
+    #[test]
+    fn filesystem_root_is_rejected() {
+        let file = FileConfig {
+            safe_roots: vec![PathBuf::from("/")],
+        };
+
+        let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");
+        assert!(err.to_string().contains("must not include filesystem root"));
     }
 }
