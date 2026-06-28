@@ -1,10 +1,8 @@
 //! High-value system tools with robust UI finding and metrics.
 
-use std::process::Command;
 use std::time::Instant;
 
 use metrics::{counter, histogram};
-use rmcp::tool;
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,9 +56,7 @@ pub struct UiQueryResult {
     pub count: usize,
 }
 
-#[tool]
 impl SystemTools {
-    #[tool(description = "Read sensor with rich structured data")]
     pub async fn read_sensor(&self, sensor: String) -> Result<SensorReading, AppError> {
         let start = Instant::now();
         let output = TokioCommand::new("termux-sensor")
@@ -72,6 +68,7 @@ impl SystemTools {
         histogram!("mcp.sensor.latency_seconds").record(duration);
         counter!("mcp.sensor.calls_total").increment(1);
 
+        ensure_success("termux-sensor", &output)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (values, accuracy) = parse_sensor_json(&stdout, &sensor);
 
@@ -81,14 +78,14 @@ impl SystemTools {
             accuracy,
         })
     }
-
-    #[tool(description = "Get recent logcat")]
     pub async fn get_logcat(&self, lines: Option<u32>) -> Result<LogcatResult, AppError> {
         let start = Instant::now();
         let count = lines.unwrap_or(100);
-        let output = Command::new("logcat")
+        let output = TokioCommand::new("logcat")
             .args(["-d", "-t", &count.to_string()])
-            .output()?;
+            .output()
+            .await?;
+        ensure_success("logcat", &output)?;
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.logcat.latency_seconds").record(duration);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,8 +94,6 @@ impl SystemTools {
             lines: stdout.lines().map(str::to_string).collect(),
         })
     }
-
-    #[tool(description = "Execute via rish with metrics")]
     pub async fn rish_exec(&self, command: String) -> Result<CommandResult, AppError> {
         let start = Instant::now();
         let output = TokioCommand::new("rish")
@@ -119,8 +114,6 @@ impl SystemTools {
             exit_code: output.status.code().unwrap_or(-1),
         })
     }
-
-    #[tool(description = "Dump UI hierarchy (parsed)")]
     pub async fn dump_ui_hierarchy(&self) -> Result<UiDumpResult, AppError> {
         let start = Instant::now();
         let dump_command = format!("uiautomator dump {UI_DUMP_PATH}");
@@ -131,6 +124,7 @@ impl SystemTools {
             .await?;
         if !dump_output.status.success() {
             counter!("mcp.ui.dump_errors_total").increment(1);
+            return Err(command_failure("uiautomator dump", &dump_output));
         }
 
         let read_command = format!("cat {UI_DUMP_PATH}");
@@ -139,6 +133,8 @@ impl SystemTools {
             .arg(&read_command)
             .output()
             .await?;
+        ensure_success("cat UI hierarchy dump", &output)?;
+        let _ = tokio::fs::remove_file(UI_DUMP_PATH).await;
         let xml = String::from_utf8_lossy(&output.stdout).to_string();
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.ui.latency_seconds").record(duration);
@@ -146,8 +142,6 @@ impl SystemTools {
 
         Ok(UiDumpResult { elements })
     }
-
-    #[tool(description = "Find elements by resource ID (robust)")]
     pub async fn find_elements_by_resource_id(
         &self,
         resource_id: String,
@@ -170,8 +164,6 @@ impl SystemTools {
             elements,
         })
     }
-
-    #[tool(description = "Find elements by class")]
     pub async fn find_elements_by_class(
         &self,
         class_name: String,
@@ -193,8 +185,6 @@ impl SystemTools {
             elements,
         })
     }
-
-    #[tool(description = "Find element by text (case-insensitive contains)")]
     pub async fn find_element_by_text(&self, text: String) -> Result<Option<UiElement>, AppError> {
         let dump = self.dump_ui_hierarchy().await?;
         let search = text.to_lowercase();
@@ -207,8 +197,6 @@ impl SystemTools {
 
         Ok(found)
     }
-
-    #[tool(description = "Find element by text and return center tap coordinates")]
     pub async fn find_element_and_get_tap_coordinates(
         &self,
         text: String,
@@ -290,4 +278,20 @@ fn parse_bounds(bounds: &str) -> Option<(i32, i32, i32, i32)> {
     }
 
     None
+}
+
+fn ensure_success(command: &str, output: &std::process::Output) -> Result<(), AppError> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure(command, output))
+    }
+}
+
+fn command_failure(command: &str, output: &std::process::Output) -> AppError {
+    AppError::CommandFailed {
+        command: command.to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    }
 }

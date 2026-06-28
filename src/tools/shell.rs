@@ -1,7 +1,7 @@
 //! Shell execution tools via rish (Shizuku) for elevated commands.
 
-use rmcp::tool;
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 
 use crate::error::AppError;
 
@@ -15,14 +15,13 @@ pub struct ShellResult {
     pub exit_code: i32,
 }
 
-#[tool]
 impl ShellTools {
-    #[tool(description = "Execute a shell command via rish (requires Shizuku)")]
     pub async fn rish_exec(&self, command: String) -> Result<ShellResult, AppError> {
-        let output = std::process::Command::new("rish")
+        let output = Command::new("rish")
             .arg("-c")
             .arg(&command)
             .output()
+            .await
             .map_err(AppError::Io)?;
 
         Ok(ShellResult {

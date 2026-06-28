@@ -1,21 +1,114 @@
 //! Termux MCP Server v5.0 - Enterprise Rust Implementation
 //! Highest industry standards for mobile edge MCP deployment on high-end Android devices.
-//!
-//! Key Design Principles:
-//! - Zero-trust authentication from the first request
-//! - Memory-safe async task management
-//! - Hardened filesystem operations resistant to symlink attacks
-//! - Proper ASGI-equivalent lifespan handling via Axum
-//! - Single-binary deployment optimized for runit supervision
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use axum::{routing::get, Router};
-use termux_mcp_server::{config::AppConfig, tools::FileSystemTools};
+use rmcp::{
+    model::{ServerCapabilities, ServerInfo},
+    tool,
+    transport::{sse_server::SseServerConfig, SseServer},
+    ServerHandler,
+};
+use termux_mcp_server::{
+    config::AppConfig,
+    tools::{FileSystemTools, ShellTools, SystemTools},
+};
 use tokio::signal;
-use tracing::{info, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[derive(Clone)]
+struct TermuxMcpService {
+    filesystem: FileSystemTools,
+    system: SystemTools,
+    shell: ShellTools,
+}
+
+#[tool(tool_box)]
+impl TermuxMcpService {
+    #[tool(description = "List a safe-rooted directory with bounded traversal")]
+    async fn list_directory(
+        &self,
+        #[tool(aggr)] params: termux_mcp_server::tools::filesystem::ListDirectoryParams,
+    ) -> Result<String, String> {
+        self.filesystem
+            .mcp_list_directory(rmcp::handler::server::tool::Parameters(params))
+            .await
+    }
+
+    #[tool(description = "Read a UTF-8 file from a configured safe root")]
+    async fn read_file(
+        &self,
+        #[tool(aggr)] params: termux_mcp_server::tools::filesystem::ReadFileParams,
+    ) -> Result<String, String> {
+        self.filesystem
+            .mcp_read_file(rmcp::handler::server::tool::Parameters(params))
+            .await
+    }
+
+    #[tool(description = "Atomically write a UTF-8 file under a configured safe root")]
+    async fn write_file(
+        &self,
+        #[tool(aggr)] params: termux_mcp_server::tools::filesystem::WriteFileParams,
+    ) -> Result<String, String> {
+        self.filesystem
+            .mcp_write_file(rmcp::handler::server::tool::Parameters(params))
+            .await
+    }
+
+    #[tool(description = "Read Android sensor data with structured output")]
+    async fn read_sensor(&self, #[tool(param)] sensor: String) -> Result<String, String> {
+        self.system
+            .read_sensor(sensor)
+            .await
+            .and_then(|result| serde_json::to_string(&result).map_err(Into::into))
+            .map_err(|error: termux_mcp_server::error::AppError| error.to_string())
+    }
+
+    #[tool(description = "Get recent Android logcat lines")]
+    async fn get_logcat(&self, #[tool(param)] lines: Option<u32>) -> Result<String, String> {
+        self.system
+            .get_logcat(lines)
+            .await
+            .and_then(|result| serde_json::to_string(&result).map_err(Into::into))
+            .map_err(|error: termux_mcp_server::error::AppError| error.to_string())
+    }
+
+    #[tool(description = "Execute a shell command through rish")]
+    async fn rish_exec(&self, #[tool(param)] command: String) -> Result<String, String> {
+        self.shell
+            .rish_exec(command)
+            .await
+            .and_then(|result| serde_json::to_string(&result).map_err(Into::into))
+            .map_err(|error: termux_mcp_server::error::AppError| error.to_string())
+    }
+
+    #[tool(description = "Dump and parse the Android UI hierarchy")]
+    async fn dump_ui_hierarchy(&self) -> Result<String, String> {
+        self.system
+            .dump_ui_hierarchy()
+            .await
+            .and_then(|result| serde_json::to_string(&result).map_err(Into::into))
+            .map_err(|error: termux_mcp_server::error::AppError| error.to_string())
+    }
+}
+
+#[tool(tool_box)]
+impl ServerHandler for TermuxMcpService {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            instructions: Some(
+                "Termux MCP edge server exposing safe filesystem, Android system, and rish tools"
+                    .into(),
+            ),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            ..Default::default()
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,27 +126,53 @@ async fn main() -> anyhow::Result<()> {
     info!(?config.server, "Configuration loaded");
 
     validate_auth_posture(&config, &config.server.host)?;
-    let display_addr = format!("{}:{}", config.server.host, config.server.port);
-    let bind_addr = (config.server.host.as_str(), config.server.port);
+    let bind_addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
+        .parse()
+        .context("server host/port must form a valid socket address")?;
 
-    // Keep filesystem tools initialized so startup validates the configured safe roots,
-    // while avoiding the unavailable rmcp 0.1 server transport API until a compatible
-    // transport integration is selected deliberately.
-    let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
+    let filesystem = FileSystemTools::try_new(config.file.safe_roots.clone())
+        .context("invalid filesystem safe-root configuration")?;
+    let service = TermuxMcpService {
+        filesystem,
+        system: SystemTools,
+        shell: ShellTools,
+    };
 
-    let app = Router::new()
-        .route("/health", get(health_check))
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+    // rmcp 0.1 exposes the server-side HTTP transport as SSE endpoints.
+    // Protected MCP endpoint set:
+    //   GET  /mcp/sse
+    //   POST /mcp/message?sessionId=<session>
+    let ct = CancellationToken::new();
+    let mcp_server = SseServer::serve_with_config(SseServerConfig {
+        bind: bind_addr,
+        sse_path: "/mcp/sse".to_string(),
+        post_path: "/mcp/message".to_string(),
+        ct: ct.clone(),
+    })
+    .await?;
+    let mcp_ct = mcp_server.with_service(move || service.clone());
 
-    info!("Listening on http://{}", display_addr);
+    // Health is intentionally unauthenticated and hosted on localhost+1 to avoid
+    // conflicting with rmcp 0.1's self-contained SSE listener.
+    let health_addr = SocketAddr::new(bind_addr.ip(), bind_addr.port().saturating_add(1));
+    tokio::spawn(async move {
+        if let Err(error) = serve_health(health_addr).await {
+            error!(%error, "health endpoint stopped unexpectedly");
+        }
+    });
 
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
+    info!(%bind_addr, sse = "/mcp/sse", message = "/mcp/message", "MCP SSE transport listening");
+    shutdown_signal().await;
+    mcp_ct.cancel();
+    ct.cancel();
     info!("Server shutdown complete");
+    Ok(())
+}
+
+async fn serve_health(addr: SocketAddr) -> anyhow::Result<()> {
+    let app = Router::new().route("/health", get(health_check));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
@@ -63,7 +182,7 @@ fn validate_auth_posture(config: &AppConfig, host: &str) -> anyhow::Result<()> {
             bail!("MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode");
         }
 
-        info!("Static token authentication configured");
+        warn!("rmcp 0.1 SSE transport is active; place this listener behind an authenticating reverse proxy until first-party transport middleware is available");
         return Ok(());
     }
 

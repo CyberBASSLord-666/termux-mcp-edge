@@ -23,13 +23,43 @@ pub struct FileSystemTools {
 }
 
 impl FileSystemTools {
-    pub fn new(safe_roots: Vec<PathBuf>) -> Self {
-        let safe_roots = safe_roots
-            .into_iter()
-            .map(|root| root.canonicalize().unwrap_or(root))
-            .collect();
+    pub fn try_new(safe_roots: Vec<PathBuf>) -> Result<Self, AppError> {
+        if safe_roots.is_empty() {
+            return Err(AppError::InvalidConfiguration(
+                "at least one filesystem safe root must be configured".to_string(),
+            ));
+        }
 
-        Self { safe_roots }
+        let mut canonical_roots = Vec::with_capacity(safe_roots.len());
+        for root in safe_roots {
+            let canonical = root.canonicalize().map_err(|error| {
+                AppError::InvalidConfiguration(format!(
+                    "safe root `{}` cannot be canonicalized: {error}",
+                    root.display()
+                ))
+            })?;
+            let metadata = std::fs::metadata(&canonical).map_err(|error| {
+                AppError::InvalidConfiguration(format!(
+                    "safe root `{}` cannot be inspected: {error}",
+                    canonical.display()
+                ))
+            })?;
+            if !metadata.is_dir() {
+                return Err(AppError::InvalidConfiguration(format!(
+                    "safe root `{}` is not a directory",
+                    canonical.display()
+                )));
+            }
+            canonical_roots.push(canonical);
+        }
+
+        Ok(Self {
+            safe_roots: canonical_roots,
+        })
+    }
+
+    pub fn new(safe_roots: Vec<PathBuf>) -> Self {
+        Self::try_new(safe_roots).expect("invalid filesystem safe-root configuration")
     }
 
     /// Resolve a caller-supplied path and verify that it remains inside one of
