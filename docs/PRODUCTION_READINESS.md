@@ -23,7 +23,7 @@ Every pull request must satisfy these gates before merge:
 
 ## Transport Restoration Policy
 
-MCP transport restoration must be staged. A broad feature PR should not restore transport and all tool classes at once without a complete threat model.
+MCP transport restoration must be staged. A broad feature PR should not restore transport and all tool classes at once without a complete threat model. See [MCP Transport Threat Model](TRANSPORT_THREAT_MODEL.md) before restoring any transport route.
 
 Minimum staged path:
 
