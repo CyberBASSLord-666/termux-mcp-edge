@@ -58,7 +58,9 @@ impl AppConfig {
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
     if let Some(ref token) = config.auth.static_token {
         if token.trim().is_empty() {
-            bail!("MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode");
+            bail!(
+                "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode"
+            );
         }
 
         return Ok(AuthPosture::StaticTokenConfigured);
@@ -122,7 +124,11 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn app_config(host: &str, static_token: Option<&str>, allow_localhost_only: bool) -> AppConfig {
+    fn app_config(
+        host: &str,
+        static_token: Option<&str>,
+        allow_localhost_only: bool,
+    ) -> AppConfig {
         AppConfig {
             server: ServerConfig {
                 host: host.to_owned(),
@@ -205,7 +211,10 @@ mod tests {
         let err = validate_runtime_auth_posture(&config)
             .expect_err("missing token must fail closed by default");
 
-        assert!(err.to_string().contains("MCP__AUTH__STATIC_TOKEN is required"));
+        assert!(
+            err.to_string()
+                .contains("MCP__AUTH__STATIC_TOKEN is required")
+        );
     }
 
     #[test]
