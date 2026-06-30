@@ -59,7 +59,7 @@ pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthP
     if let Some(ref token) = config.auth.static_token {
         if token.trim().is_empty() {
             bail!(
-                "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode"
+                "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode",
             );
         }
 
@@ -68,13 +68,13 @@ pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthP
 
     if !config.auth.allow_unauthenticated_localhost_only {
         bail!(
-            "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development"
+            "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development",
         );
     }
 
     if !is_loopback_host(&config.server.host) {
         bail!(
-            "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1"
+            "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1",
         );
     }
 
