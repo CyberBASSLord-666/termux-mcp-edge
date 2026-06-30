@@ -202,7 +202,8 @@ mod tests {
     fn missing_token_requires_explicit_localhost_only_opt_in() {
         let config = app_config("127.0.0.1", None, false);
 
-        let err = validate_runtime_auth_posture(&config).expect_err("missing token must fail closed by default");
+        let err = validate_runtime_auth_posture(&config)
+            .expect_err("missing token must fail closed by default");
 
         assert!(err.to_string().contains("MCP__AUTH__STATIC_TOKEN is required"));
     }
@@ -212,7 +213,8 @@ mod tests {
         for host in ["localhost", "127.0.0.1", "::1"] {
             let config = app_config(host, None, true);
 
-            let posture = validate_runtime_auth_posture(&config).expect("loopback development mode should validate");
+            let posture = validate_runtime_auth_posture(&config)
+                .expect("loopback development mode should validate");
 
             assert_eq!(posture, AuthPosture::UnauthenticatedLocalhostOnly);
         }
@@ -223,7 +225,8 @@ mod tests {
         for host in ["0.0.0.0", "192.168.1.10", "example.com"] {
             let config = app_config(host, None, true);
 
-            let err = validate_runtime_auth_posture(&config).expect_err("non-loopback unauthenticated listener must fail closed");
+            let err = validate_runtime_auth_posture(&config)
+                .expect_err("non-loopback unauthenticated listener must fail closed");
 
             assert!(err.to_string().contains("only allowed on localhost"));
         }
