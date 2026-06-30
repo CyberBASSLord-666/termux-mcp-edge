@@ -10,7 +10,7 @@
 
 use axum::{routing::get, Router};
 use termux_mcp_server::{
-    config::{AuthPosture, AppConfig, validate_runtime_auth_posture},
+    config::{AppConfig, AuthPosture, validate_runtime_auth_posture},
     tools::FileSystemTools,
 };
 use tokio::signal;
