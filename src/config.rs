@@ -1,11 +1,17 @@
 //! Configuration management with strong validation.
 
-use std::path::PathBuf;
+use std::{net::IpAddr, path::PathBuf};
 
 use anyhow::bail;
 use serde::Deserialize;
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
+const EMPTY_STATIC_TOKEN_ERROR: &str =
+    "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode";
+const MISSING_STATIC_TOKEN_ERROR: &str =
+    "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development";
+const REMOTE_UNAUTHENTICATED_ERROR: &str =
+    "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -55,6 +61,40 @@ impl AppConfig {
     }
 }
 
+pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
+    if let Some(ref token) = config.auth.static_token {
+        if token.trim().is_empty() {
+            bail!(EMPTY_STATIC_TOKEN_ERROR);
+        }
+
+        return Ok(AuthPosture::StaticTokenConfigured);
+    }
+
+    if !config.auth.allow_unauthenticated_localhost_only {
+        bail!(MISSING_STATIC_TOKEN_ERROR);
+    }
+
+    if !is_loopback_host(&config.server.host) {
+        bail!(REMOTE_UNAUTHENTICATED_ERROR);
+    }
+
+    Ok(AuthPosture::UnauthenticatedLocalhostOnly)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthPosture {
+    StaticTokenConfigured,
+    UnauthenticatedLocalhostOnly,
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
 fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     if file.safe_roots.is_empty() {
         bail!("MCP__FILE__SAFE_ROOTS must contain at least one absolute safe root");
@@ -83,6 +123,22 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_config(host: &str, static_token: Option<&str>, allow_localhost_only: bool) -> AppConfig {
+        AppConfig {
+            server: ServerConfig {
+                host: host.to_owned(),
+                port: 8000,
+            },
+            auth: AuthConfig {
+                static_token: static_token.map(str::to_owned),
+                allow_unauthenticated_localhost_only: allow_localhost_only,
+            },
+            file: FileConfig {
+                safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
+            },
+        }
+    }
 
     #[test]
     fn default_file_safe_root_is_narrow_termux_home_directory() {
@@ -124,5 +180,59 @@ mod tests {
 
         let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");
         assert!(err.to_string().contains("must not include filesystem root"));
+    }
+
+    #[test]
+    fn static_token_auth_posture_is_accepted_for_non_loopback_hosts() {
+        let config = app_config("0.0.0.0", Some("configured-token"), false);
+
+        let posture = validate_runtime_auth_posture(&config).expect("token auth should validate");
+
+        assert_eq!(posture, AuthPosture::StaticTokenConfigured);
+    }
+
+    #[test]
+    fn empty_static_token_is_rejected() {
+        let config = app_config("127.0.0.1", Some("   "), true);
+
+        let err = validate_runtime_auth_posture(&config).expect_err("empty token must fail closed");
+
+        assert!(err.to_string().contains("configured but empty"));
+    }
+
+    #[test]
+    fn missing_token_requires_explicit_localhost_only_opt_in() {
+        let config = app_config("127.0.0.1", None, false);
+
+        let err = validate_runtime_auth_posture(&config)
+            .expect_err("missing token must fail closed by default");
+
+        assert!(err
+            .to_string()
+            .contains("MCP__AUTH__STATIC_TOKEN is required"));
+    }
+
+    #[test]
+    fn unauthenticated_localhost_only_mode_accepts_loopback_hosts() {
+        for host in ["localhost", "127.0.0.1", "::1"] {
+            let config = app_config(host, None, true);
+
+            let posture = validate_runtime_auth_posture(&config)
+                .expect("loopback development mode should validate");
+
+            assert_eq!(posture, AuthPosture::UnauthenticatedLocalhostOnly);
+        }
+    }
+
+    #[test]
+    fn unauthenticated_localhost_only_mode_rejects_non_loopback_hosts() {
+        for host in ["0.0.0.0", "192.168.1.10", "example.com"] {
+            let config = app_config(host, None, true);
+
+            let err = validate_runtime_auth_posture(&config)
+                .expect_err("non-loopback unauthenticated listener must fail closed");
+
+            assert!(err.to_string().contains("only allowed on localhost"));
+        }
     }
 }
