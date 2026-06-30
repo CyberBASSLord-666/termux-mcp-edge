@@ -40,6 +40,7 @@ Minimum staged path:
 - Keep filesystem scope restricted to dedicated project directories.
 - Treat broad Android shared storage as an exception requiring review.
 - Do not claim production MCP readiness until transport and tool behavior are validated on the exact release candidate.
+- See [MCP Tool Authorization Policy](TOOL_AUTHORIZATION_POLICY.md) before exposing MCP tool discovery or invocation.
 
 ## Release Checklist
 
