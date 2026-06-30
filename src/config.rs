@@ -124,11 +124,7 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn app_config(
-        host: &str,
-        static_token: Option<&str>,
-        allow_localhost_only: bool,
-    ) -> AppConfig {
+    fn app_config(host: &str, static_token: Option<&str>, allow_localhost_only: bool) -> AppConfig {
         AppConfig {
             server: ServerConfig {
                 host: host.to_owned(),
