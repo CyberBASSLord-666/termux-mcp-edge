@@ -6,9 +6,12 @@ use anyhow::bail;
 use serde::Deserialize;
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
-const EMPTY_STATIC_TOKEN_ERROR: &str = "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode";
-const MISSING_STATIC_TOKEN_ERROR: &str = "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development";
-const REMOTE_UNAUTHENTICATED_ERROR: &str = "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1";
+const EMPTY_STATIC_TOKEN_ERROR: &str =
+    "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode";
+const MISSING_STATIC_TOKEN_ERROR: &str =
+    "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development";
+const REMOTE_UNAUTHENTICATED_ERROR: &str =
+    "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
