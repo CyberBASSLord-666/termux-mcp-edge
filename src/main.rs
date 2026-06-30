@@ -8,7 +8,7 @@
 //! - Proper ASGI-equivalent lifespan handling via Axum
 //! - Single-binary deployment optimized for runit supervision
 
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 use termux_mcp_server::{
     config::{AppConfig, AuthPosture, validate_runtime_auth_posture},
     tools::FileSystemTools,
