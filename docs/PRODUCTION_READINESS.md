@@ -1,47 +1,113 @@
-# Production Readiness
+# Production Readiness Checklist
 
-## Current Release Line
+This checklist defines the minimum production-readiness gate for the current conservative Termux runtime and for any future MCP transport restoration work.
 
-The current `main` branch is a conservative Axum health-check runtime. It does not expose MCP transport or MCP tools. Transport restoration should be implemented in smaller validated changes.
+## Current Supported Runtime
 
-## Merge Gates
+The current supported runtime is the Axum health-check service on `main`.
 
-Every pull request must satisfy these gates before merge:
+Production readiness for the current line means:
 
-1. Exact-head CI passes.
-2. Exact-head Security passes.
-3. Dependency alerts are reviewed after dependency or workflow changes.
-4. Documentation matches the compiled runtime behavior.
-5. Runtime behavior is tested or covered by a smoke-test note.
+- `GET /health` is the only exposed HTTP route.
+- MCP transport is not exposed.
+- MCP tool discovery and invocation are not exposed.
+- Filesystem, platform, command-capable, network, browser, package-manager, rish, and Shizuku-backed tools are not exposed.
+- Startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
+- Local unauthenticated development mode is rejected for non-loopback bind addresses.
+- Filesystem safe roots remain narrow and do not default to Android shared storage.
 
-## Dependency Policy
+## Required Merge Gate
 
-- Avoid adding dependencies for code paths that are not compiled or used.
-- Remove unused dependency surfaces rather than carrying advisory risk.
-- Use the Security workflow as the minimum dependency-audit gate.
-- Re-check GitHub Security after dependency changes merge.
+Every production-readiness pull request must satisfy all of the following before merge:
 
-## Transport Restoration Policy
+1. Exact-head CI succeeds.
+2. Exact-head Security succeeds.
+3. The diff remains narrow and directly related to the stated remediation.
+4. Dependency changes are absent, or dependency alerts are reviewed after the exact PR head is pushed.
+5. Runtime claims in README, operations, validation, and security documentation match the compiled behavior.
+6. No PR combines broad dependency restoration, transport exposure, and high-impact tool exposure in one change.
 
-MCP transport restoration must be staged. A broad feature PR should not restore transport and all tool classes at once without a complete threat model. See [MCP Transport Threat Model](TRANSPORT_THREAT_MODEL.md) before restoring any transport route.
+## Current Runtime Release Checklist
 
-Minimum staged path:
+Before treating a build as releasable:
 
-1. Restore a patched transport dependency.
-2. Add Host and Origin or equivalent anti-rebinding protections.
-3. Add MCP tool-discovery smoke coverage.
-4. Add one low-risk read-only tool with smoke coverage.
-5. Add higher-impact tools only after explicit authorization policy is documented.
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+cargo build --release
+```
 
-## Runtime Exposure Policy
+Then verify the runtime locally:
 
-- Prefer localhost binding by default.
-- Require a non-empty bearer token for non-local or shared access paths.
-- Keep filesystem scope restricted to dedicated project directories.
-- Treat broad Android shared storage as an exception requiring review.
-- Do not claim production MCP readiness until transport and tool behavior are validated on the exact release candidate.
-- See [MCP Tool Authorization Policy](TOOL_AUTHORIZATION_POLICY.md) before exposing MCP tool discovery or invocation.
+```bash
+curl -fsS http://127.0.0.1:8000/health
+```
 
-## Release Checklist
+Expected response:
 
-Before tagging a release, confirm format, lint, tests, dependency audit, release build, Android cross-compile, and supervised Termux startup validation.
+```text
+ok
+```
+
+For Android deployment, also confirm:
+
+- the runit service reads a token file created with restrictive permissions;
+- the token file is present, non-empty, and not whitespace-only;
+- the configured host is loopback unless an authenticated deployment path has been reviewed;
+- the service is not exposed directly to the public internet;
+- Android battery and process restrictions are configured for the intended service lifetime.
+
+## MCP Restoration Readiness Gate
+
+A future PR that restores MCP transport must not merge until it proves all of the following on the exact PR head:
+
+- CI success.
+- Security success.
+- Dependency alerts are clear or documented as accepted exceptions.
+- Authentication is enforced before MCP session or message handling.
+- Unexpected `Host` headers are rejected.
+- Unexpected browser `Origin` headers are rejected on browser-reachable routes.
+- Unauthenticated development mode remains loopback-only.
+- Unauthorized clients cannot discover tools.
+- Unauthorized clients cannot invoke tools.
+- MCP tool discovery has a smoke test.
+- At least one permitted MCP tool call has a smoke test.
+- Denied tool discovery or invocation paths have a smoke test or documented negative validation.
+
+## High-Impact Tool Exposure Gate
+
+High-impact tools include any tool that can:
+
+- read or write files;
+- list directories;
+- execute commands or command-like platform actions;
+- call package managers;
+- access Android shared storage;
+- use rish or Shizuku-backed privileges;
+- make network requests;
+- automate a browser;
+- expose local device metadata beyond basic health information.
+
+These tools must be disabled by default and protected by explicit feature gates, authorization scope, or an equivalent documented control before production exposure.
+
+A PR that exposes high-impact tools must document:
+
+1. which tools are exposed;
+2. which clients can discover them;
+3. which clients can invoke them;
+4. what filesystem, command, network, or browser boundaries apply;
+5. how denied access is tested;
+6. how logs avoid leaking secrets, private paths, command arguments, tokens, cookies, and personal data.
+
+## Stop Conditions
+
+Do not merge when any of the following are true:
+
+- CI or Security is missing, pending, cancelled, skipped, or failing for the exact PR head.
+- The PR head changed after validation and has not been revalidated.
+- The diff is broader than the stated production-readiness remediation.
+- Documentation claims MCP readiness before MCP transport and tool validation exist.
+- Dependency restoration reopens unresolved advisories.
+- Browser-reachable routes lack documented Host and Origin protections.
+- Command-capable or filesystem-capable tools are exposed without an explicit gate.
