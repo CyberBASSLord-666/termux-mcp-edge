@@ -199,7 +199,8 @@ mod tests {
     fn empty_static_token_is_rejected() {
         let config = app_config("127.0.0.1", Some("   "), true);
 
-        let err = validate_runtime_auth_posture(&config).expect_err("empty token must fail closed");
+        let err = validate_runtime_auth_posture(&config)
+            .expect_err("empty token must fail closed");
 
         assert!(err.to_string().contains("configured but empty"));
     }
