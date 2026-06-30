@@ -124,7 +124,11 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn app_config(host: &str, static_token: Option<&str>, allow_localhost_only: bool) -> AppConfig {
+    fn app_config(
+        host: &str,
+        static_token: Option<&str>,
+        allow_localhost_only: bool,
+    ) -> AppConfig {
         AppConfig {
             server: ServerConfig {
                 host: host.to_owned(),
@@ -195,8 +199,7 @@ mod tests {
     fn empty_static_token_is_rejected() {
         let config = app_config("127.0.0.1", Some("   "), true);
 
-        let err = validate_runtime_auth_posture(&config)
-            .expect_err("empty token must fail closed");
+        let err = validate_runtime_auth_posture(&config).expect_err("empty token must fail closed");
 
         assert!(err.to_string().contains("configured but empty"));
     }
