@@ -17,6 +17,7 @@ jobs:
   rust:
     name: Rust validation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26
