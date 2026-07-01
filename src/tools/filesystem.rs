@@ -65,31 +65,23 @@ impl FileSystemTools {
         }
 
         let resolved = if candidate.exists() {
-            candidate
-                .canonicalize()
-                .map_err(|_| AppError::PathTraversal {
-                    attempted: input.to_string(),
-                })?
+            candidate.canonicalize().map_err(|_| AppError::PathTraversal {
+                attempted: input.to_string(),
+            })?
         } else {
             let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
-            let file_name = candidate
-                .file_name()
-                .ok_or_else(|| AppError::PathTraversal {
-                    attempted: input.to_string(),
-                })?;
+            let file_name = candidate.file_name().ok_or_else(|| AppError::PathTraversal {
+                attempted: input.to_string(),
+            })?;
             let canonical_parent = parent.canonicalize().map_err(|_| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
             canonical_parent.join(file_name)
         };
 
-        if self
-            .safe_roots
-            .iter()
-            .any(|root| resolved.starts_with(root))
-        {
+        if self.safe_roots.iter().any(|root| resolved.starts_with(root)) {
             Ok(resolved)
         } else {
             Err(AppError::PathTraversal {
@@ -170,9 +162,7 @@ impl FileSystemTools {
     ) -> Result<ListDirResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
-        let depth = max_depth
-            .unwrap_or(DEFAULT_LIST_DEPTH)
-            .clamp(1, MAX_LIST_DEPTH);
+        let depth = max_depth.unwrap_or(DEFAULT_LIST_DEPTH).clamp(1, MAX_LIST_DEPTH);
 
         let mut entries = Vec::new();
         self.collect_entries_iterative(&safe_path, &mut entries, depth)
