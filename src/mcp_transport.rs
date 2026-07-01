@@ -58,7 +58,11 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
-async fn handle_mcp_request(State(state): State<McpTransportState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn handle_mcp_request(
+    State(state): State<McpTransportState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let host = header_value(&headers, header::HOST);
     let origin = header_value(&headers, header::ORIGIN);
 
@@ -232,7 +236,11 @@ fn runtime_status_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-async fn handle_list_directory_call(id: Option<Value>, arguments: Option<Value>, file_tools: &FileSystemTools) -> Response {
+async fn handle_list_directory_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => {
@@ -264,7 +272,7 @@ async fn handle_list_directory_call(id: Option<Value>, arguments: Option<Value>,
                         },
                     ],
                     "structuredContent": result,
-                    "isError": false,
+                    "isError": false
                 },
             })),
         )
