@@ -492,6 +492,7 @@ mod tests {
     async fn list_directory_tool_call_returns_safe_rooted_directory_entries() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
+        let safe_root = root.path().to_string_lossy().to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": 4,
@@ -499,7 +500,7 @@ mod tests {
             "params": {
                 "name": LIST_DIRECTORY_TOOL,
                 "arguments": {
-                    "path": root.path(),
+                    "path": safe_root,
                     "max_depth": 1,
                 }
             }
