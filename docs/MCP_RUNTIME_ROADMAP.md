@@ -10,7 +10,7 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Stage 1: Transport Request Validation
 
-Add reusable Host and Origin validation primitives with unit coverage. No routes are exposed in this stage.
+Add reusable `Host` and `Origin` validation primitives with unit coverage. No routes are exposed in this stage.
 
 Required gates:
 
