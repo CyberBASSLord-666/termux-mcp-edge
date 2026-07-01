@@ -35,6 +35,8 @@ type SessionId = Arc<str>;
 type ClientMessageSender = tokio::sync::mpsc::Sender<ClientJsonRpcMessage>;
 type SessionStore = Arc<tokio::sync::RwLock<HashMap<SessionId, ClientMessageSender>>>;
 
+const MAX_CONCURRENT_MCP_SESSIONS: usize = 128;
+
 #[derive(Clone)]
 enum AuthMode {
     BearerToken(Arc<str>),
@@ -253,11 +255,17 @@ async fn sse_handler(
     let (from_client_tx, from_client_rx) = tokio::sync::mpsc::channel(64);
     let (to_client_tx, to_client_rx) = tokio::sync::mpsc::channel(64);
 
-    state
-        .sessions
-        .write()
-        .await
-        .insert(session_id.clone(), from_client_tx);
+    {
+        let mut sessions = state.sessions.write().await;
+        if sessions.len() >= MAX_CONCURRENT_MCP_SESSIONS {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too many active MCP sessions",
+            )
+                .into_response());
+        }
+        sessions.insert(session_id.clone(), from_client_tx);
+    }
 
     let transport = AuthenticatedSseTransport {
         stream: ReceiverStream::new(from_client_rx),
@@ -384,12 +392,12 @@ fn unauthorized_response() -> Response {
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut diff = (left.len() ^ right.len()) as u8;
+    let mut diff = left.len() ^ right.len();
     let max_len = left.len().max(right.len());
     for index in 0..max_len {
         let left_byte = left.get(index).copied().unwrap_or(0);
         let right_byte = right.get(index).copied().unwrap_or(0);
-        diff |= left_byte ^ right_byte;
+        diff |= usize::from(left_byte ^ right_byte);
     }
     diff == 0
 }
@@ -497,5 +505,6 @@ mod tests {
         assert!(constant_time_eq(b"same", b"same"));
         assert!(!constant_time_eq(b"same", b"diff"));
         assert!(!constant_time_eq(b"same", b"same-longer"));
+        assert!(!constant_time_eq(&[], &vec![0; 256]));
     }
 }

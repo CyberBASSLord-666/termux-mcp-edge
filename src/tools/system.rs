@@ -10,7 +10,7 @@ use tokio::{process::Command as TokioCommand, time::timeout};
 
 use crate::error::AppError;
 
-const UI_DUMP_PATH: &str = "/sdcard/window_dump.xml";
+const UI_DUMP_DIR: &str = "/sdcard";
 const ANDROID_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_LOGCAT_LINES: u32 = 100;
 const MAX_LOGCAT_LINES: u32 = 1_000;
@@ -119,7 +119,11 @@ impl SystemTools {
     }
     pub async fn dump_ui_hierarchy(&self) -> Result<UiDumpResult, AppError> {
         let start = Instant::now();
-        let dump_command = format!("uiautomator dump {UI_DUMP_PATH}");
+        let dump_path = format!(
+            "{UI_DUMP_DIR}/window_dump_{}.xml",
+            uuid::Uuid::new_v4().simple()
+        );
+        let dump_command = format!("uiautomator dump {dump_path}");
         let mut dump_process = TokioCommand::new("rish");
         dump_process.kill_on_drop(true).arg("-c").arg(&dump_command);
         let dump_output = run_with_timeout("uiautomator dump", dump_process).await?;
@@ -128,12 +132,17 @@ impl SystemTools {
             return Err(command_failure("uiautomator dump", &dump_output));
         }
 
-        let read_command = format!("cat {UI_DUMP_PATH}");
+        let read_command = format!("cat {dump_path}");
         let mut read_process = TokioCommand::new("rish");
         read_process.kill_on_drop(true).arg("-c").arg(&read_command);
-        let output = run_with_timeout("cat UI hierarchy dump", read_process).await?;
+        let output = run_with_timeout("cat UI hierarchy dump", read_process).await;
+        let cleanup_result = tokio::fs::remove_file(&dump_path).await;
+        let output = output?;
         ensure_success("cat UI hierarchy dump", &output)?;
-        let _ = tokio::fs::remove_file(UI_DUMP_PATH).await;
+        if let Err(error) = cleanup_result {
+            counter!("mcp.ui.cleanup_errors_total").increment(1);
+            tracing::warn!(%error, %dump_path, "failed to remove UI hierarchy dump");
+        }
         let xml = String::from_utf8_lossy(&output.stdout).to_string();
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.ui.latency_seconds").record(duration);
