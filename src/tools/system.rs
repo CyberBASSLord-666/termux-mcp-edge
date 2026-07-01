@@ -1,16 +1,19 @@
 //! High-value system tools with robust UI finding and metrics.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use metrics::{counter, histogram};
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command as TokioCommand;
+use tokio::{process::Command as TokioCommand, time::timeout};
 
 use crate::error::AppError;
 
 const UI_DUMP_PATH: &str = "/sdcard/window_dump.xml";
+const ANDROID_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_LOGCAT_LINES: u32 = 100;
+const MAX_LOGCAT_LINES: u32 = 1_000;
 
 #[derive(Clone, Default)]
 pub struct SystemTools;
@@ -59,10 +62,9 @@ pub struct UiQueryResult {
 impl SystemTools {
     pub async fn read_sensor(&self, sensor: String) -> Result<SensorReading, AppError> {
         let start = Instant::now();
-        let output = TokioCommand::new("termux-sensor")
-            .args(["-s", &sensor, "-n", "1"])
-            .output()
-            .await?;
+        let mut command = TokioCommand::new("termux-sensor");
+        command.kill_on_drop(true).args(["-s", &sensor, "-n", "1"]);
+        let output = run_with_timeout("termux-sensor", command).await?;
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.sensor.latency_seconds").record(duration);
@@ -80,11 +82,14 @@ impl SystemTools {
     }
     pub async fn get_logcat(&self, lines: Option<u32>) -> Result<LogcatResult, AppError> {
         let start = Instant::now();
-        let count = lines.unwrap_or(100);
-        let output = TokioCommand::new("logcat")
-            .args(["-d", "-t", &count.to_string()])
-            .output()
-            .await?;
+        let count = lines
+            .unwrap_or(DEFAULT_LOGCAT_LINES)
+            .clamp(1, MAX_LOGCAT_LINES);
+        let mut command = TokioCommand::new("logcat");
+        command
+            .kill_on_drop(true)
+            .args(["-d", "-t", &count.to_string()]);
+        let output = run_with_timeout("logcat", command).await?;
         ensure_success("logcat", &output)?;
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.logcat.latency_seconds").record(duration);
@@ -96,11 +101,9 @@ impl SystemTools {
     }
     pub async fn rish_exec(&self, command: String) -> Result<CommandResult, AppError> {
         let start = Instant::now();
-        let output = TokioCommand::new("rish")
-            .arg("-c")
-            .arg(&command)
-            .output()
-            .await?;
+        let mut process = TokioCommand::new("rish");
+        process.kill_on_drop(true).arg("-c").arg(&command);
+        let output = run_with_timeout("rish", process).await?;
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.rish.latency_seconds").record(duration);
         counter!("mcp.rish.calls_total").increment(1);
@@ -117,22 +120,18 @@ impl SystemTools {
     pub async fn dump_ui_hierarchy(&self) -> Result<UiDumpResult, AppError> {
         let start = Instant::now();
         let dump_command = format!("uiautomator dump {UI_DUMP_PATH}");
-        let dump_output = TokioCommand::new("rish")
-            .arg("-c")
-            .arg(&dump_command)
-            .output()
-            .await?;
+        let mut dump_process = TokioCommand::new("rish");
+        dump_process.kill_on_drop(true).arg("-c").arg(&dump_command);
+        let dump_output = run_with_timeout("uiautomator dump", dump_process).await?;
         if !dump_output.status.success() {
             counter!("mcp.ui.dump_errors_total").increment(1);
             return Err(command_failure("uiautomator dump", &dump_output));
         }
 
         let read_command = format!("cat {UI_DUMP_PATH}");
-        let output = TokioCommand::new("rish")
-            .arg("-c")
-            .arg(&read_command)
-            .output()
-            .await?;
+        let mut read_process = TokioCommand::new("rish");
+        read_process.kill_on_drop(true).arg("-c").arg(&read_command);
+        let output = run_with_timeout("cat UI hierarchy dump", read_process).await?;
         ensure_success("cat UI hierarchy dump", &output)?;
         let _ = tokio::fs::remove_file(UI_DUMP_PATH).await;
         let xml = String::from_utf8_lossy(&output.stdout).to_string();
@@ -294,4 +293,17 @@ fn command_failure(command: &str, output: &std::process::Output) -> AppError {
         exit_code: output.status.code().unwrap_or(-1),
         stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
     }
+}
+
+async fn run_with_timeout(
+    command_name: &str,
+    mut command: TokioCommand,
+) -> Result<std::process::Output, AppError> {
+    timeout(ANDROID_COMMAND_TIMEOUT, command.output())
+        .await
+        .map_err(|_| AppError::CommandTimeout {
+            command: command_name.to_string(),
+            timeout_seconds: ANDROID_COMMAND_TIMEOUT.as_secs(),
+        })?
+        .map_err(AppError::Io)
 }

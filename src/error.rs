@@ -26,6 +26,12 @@ pub enum AppError {
         stderr: String,
     },
 
+    #[error("Command `{command}` timed out after {timeout_seconds} seconds")]
+    CommandTimeout {
+        command: String,
+        timeout_seconds: u64,
+    },
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

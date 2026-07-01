@@ -266,10 +266,10 @@ async fn sse_handler(
         sessions: state.sessions.clone(),
     };
 
-    state
-        .transport_tx
-        .send(transport)
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "MCP server is closed").into_response())?;
+    if state.transport_tx.send(transport).is_err() {
+        state.sessions.write().await.remove(&session_id);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "MCP server is closed").into_response());
+    }
 
     let endpoint_event = Event::default()
         .event("endpoint")
@@ -282,7 +282,7 @@ async fn sse_handler(
         }),
     );
 
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 
 struct AuthenticatedSseTransport {
@@ -384,13 +384,12 @@ fn unauthorized_response() -> Response {
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-
-    let mut diff = 0_u8;
-    for (&left, &right) in left.iter().zip(right.iter()) {
-        diff |= left ^ right;
+    let mut diff = (left.len() ^ right.len()) as u8;
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= left_byte ^ right_byte;
     }
     diff == 0
 }
@@ -459,4 +458,44 @@ async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bearer_auth_accepts_only_exact_valid_token() {
+        let auth = AuthMode::BearerToken(Arc::from("secret-token"));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer secret-token".parse().unwrap(),
+        );
+        assert!(authorize(&headers, &auth).is_ok());
+
+        headers.insert(header::AUTHORIZATION, "Bearer wrong-token".parse().unwrap());
+        assert!(authorize(&headers, &auth).is_err());
+
+        headers.insert(header::AUTHORIZATION, "Basic secret-token".parse().unwrap());
+        assert!(authorize(&headers, &auth).is_err());
+    }
+
+    #[test]
+    fn bearer_auth_rejects_missing_authorization_header() {
+        let auth = AuthMode::BearerToken(Arc::from("secret-token"));
+        assert!(authorize(&HeaderMap::new(), &auth).is_err());
+    }
+
+    #[test]
+    fn localhost_unauthenticated_mode_skips_header_validation() {
+        assert!(authorize(&HeaderMap::new(), &AuthMode::LocalhostUnauthenticated).is_ok());
+    }
+
+    #[test]
+    fn constant_time_eq_requires_identical_bytes() {
+        assert!(constant_time_eq(b"same", b"same"));
+        assert!(!constant_time_eq(b"same", b"diff"));
+        assert!(!constant_time_eq(b"same", b"same-longer"));
+    }
 }
