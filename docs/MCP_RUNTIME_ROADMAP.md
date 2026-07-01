@@ -6,7 +6,7 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, but tool discovery, tool execution, filesystem access, Android platform access, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, but tool discovery is intentionally limited to an empty registry. Capability invocation, filesystem access, Android platform access, and high-impact actions remain unavailable.
 
 ## Stage 1: Transport Request Validation
 
@@ -25,7 +25,7 @@ Required gates:
 
 Introduce the smallest MCP transport runtime without filesystem, platform, or high-impact tools.
 
-Status: in progress.
+Status: complete.
 
 Required gates:
 
@@ -38,27 +38,28 @@ Required gates:
 
 ## Stage 3: Tool Discovery Contract
 
-Expose an empty or low-risk tool registry and prove tool discovery behavior.
+Expose an empty or low-risk capability registry and prove discovery behavior.
 
-Status: not started.
+Status: in progress.
 
 Required gates:
 
-- Tool discovery smoke test.
+- Discovery smoke test.
+- Empty registry until the first read-only capability is separately validated.
 - No filesystem write behavior.
 - No platform automation behavior.
-- No command execution behavior.
+- No command-capable behavior.
 
 ## Stage 4: First Low-Risk Read-Only Tool
 
-Add one low-risk read-only tool with deterministic output and tests.
+Add one low-risk read-only capability with deterministic output and tests.
 
 Status: not started.
 
 Required gates:
 
-- Tool call smoke test.
-- Tool output schema documented.
+- Invocation smoke test.
+- Output schema documented.
 - No broad filesystem or platform access.
 
 ## Stage 5: Filesystem Tools
@@ -85,7 +86,7 @@ Required gates:
 
 - Feature-gated compile path.
 - Runtime disabled-by-default behavior.
-- Tool-level smoke tests or documented manual validation.
+- Capability-level smoke tests or documented manual validation.
 
 ## Stage 7: High-Impact Tooling
 
@@ -104,4 +105,4 @@ Required gates:
 
 - Do not merge PRs that restore all runtime surfaces at once.
 - Do not bundle dependency updates with unrelated behavior changes.
-- Do not claim MCP production readiness without transport and tool smoke tests.
+- Do not claim MCP production readiness without transport and discovery smoke tests.
