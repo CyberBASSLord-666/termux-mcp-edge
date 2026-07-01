@@ -13,6 +13,8 @@ use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
     tools::FileSystemTools,
 };
+#[cfg(feature = "mcp-runtime")]
+use termux_mcp_server::transport_security::TransportSecurityPolicy;
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -43,13 +45,21 @@ async fn main() -> anyhow::Result<()> {
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
     // Keep filesystem tools initialized so startup validates the configured safe roots,
-    // while avoiding the unavailable rmcp 0.1 server transport API until a compatible
-    // transport integration is selected deliberately.
+    // while avoiding tool exposure until later independently validated runtime stages.
     let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
 
     let app = Router::new()
         .route("/health", get(health_check))
         .layer(tower_http::trace::TraceLayer::new_for_http());
+
+    #[cfg(feature = "mcp-runtime")]
+    let app = app.merge(termux_mcp_server::mcp_transport::router(
+        TransportSecurityPolicy::new(
+            config.transport.allowed_hosts.clone(),
+            config.transport.allowed_origins.clone(),
+            config.transport.allow_missing_origin,
+        ),
+    ));
 
     info!("Listening on http://{}", display_addr);
 
