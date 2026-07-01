@@ -9,12 +9,12 @@
 //! - Single-binary deployment optimized for runit supervision
 
 use axum::{routing::get, Router};
+#[cfg(feature = "mcp-runtime")]
+use termux_mcp_server::transport_security::TransportSecurityPolicy;
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
     tools::FileSystemTools,
 };
-#[cfg(feature = "mcp-runtime")]
-use termux_mcp_server::transport_security::TransportSecurityPolicy;
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
