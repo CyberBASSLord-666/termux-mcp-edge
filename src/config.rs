@@ -330,8 +330,7 @@ mod tests {
             ..transport_config()
         };
 
-        let err =
-            validate_transport_security(&transport).expect_err("wildcard transport host allowlist must fail closed");
+        let err = validate_transport_security(&transport).expect_err("wildcard transport host allowlist must fail closed");
 
         assert!(err.to_string().contains("invalid host"));
     }
@@ -343,8 +342,7 @@ mod tests {
             ..transport_config()
         };
 
-        let err =
-            validate_transport_security(&transport).expect_err("empty transport origin allowlist must fail closed");
+        let err = validate_transport_security(&transport).expect_err("empty transport origin allowlist must fail closed");
 
         assert!(err.to_string().contains("ALLOWED_ORIGINS"));
     }
