@@ -478,14 +478,8 @@ mod tests {
             payload["result"]["structuredContent"]["availableTools"][1],
             LIST_DIRECTORY_TOOL
         );
-        assert_eq!(
-            payload["result"]["structuredContent"]["androidPlatformTools"],
-            false
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["commandExecution"],
-            false
-        );
+        assert_eq!(payload["result"]["structuredContent"]["androidPlatformTools"], false);
+        assert_eq!(payload["result"]["structuredContent"]["commandExecution"], false);
     }
 
     #[tokio::test]
@@ -526,10 +520,7 @@ mod tests {
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["result"]["isError"], false);
-        assert_eq!(
-            payload["result"]["structuredContent"]["entries"][0]["is_dir"],
-            false
-        );
+        assert_eq!(payload["result"]["structuredContent"]["entries"][0]["is_dir"], false);
         assert!(payload["result"]["structuredContent"]["entries"][0]["path"]
             .as_str()
             .unwrap()
