@@ -24,9 +24,10 @@ This project is designed to run a small, secure MCP server on Android through Te
 
 ```bash
 curl -fsS http://127.0.0.1:8000/health
+curl -fsS -H "Authorization: Bearer $(cat "$HOME/.termux_mcp_token")" http://127.0.0.1:8000/mcp/sse
 ```
 
-For MCP-level validation, use the MCP Inspector from a trusted desktop environment and authenticate with the configured bearer token or OAuth flow.
+The SSE request should return an MCP endpoint event for `/mcp/message?sessionId=...`. For full MCP-level validation, use the MCP Inspector from a trusted desktop environment and authenticate with the configured bearer token or OAuth flow.
 
 For repository-level validation, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat CI as the authority before merging automated improvement branches.
 
@@ -38,7 +39,12 @@ Install Termux services:
 pkg install termux-services
 ```
 
-Create or install the runit service script from `scripts/runit/mcp-server/run`, then start it:
+Create the token file, install the runit service script from `scripts/runit/mcp-server/run`, then start it:
+
+```bash
+umask 077
+head -c 32 /dev/urandom | base64 > "$HOME/.termux_mcp_token"
+```
 
 ```bash
 sv-enable mcp-server
@@ -56,7 +62,7 @@ sv status mcp-server
 
 ## Release process
 
-1. Validate with `cargo fmt`, `cargo clippy`, and `cargo test`.
+1. Validate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
 2. Cross-compile with `scripts/cross_compile.sh`.
 3. Copy the release binary to `$HOME/bin/termux-mcp-server` on Android.
 4. Restart the runit service.

@@ -20,7 +20,7 @@ Startup now fails closed when no bearer token is configured. Empty or whitespace
 
 - **Language**: Rust edition 2021
 - **MCP Framework**: `rmcp` + Axum
-- **Transport**: Streamable HTTP (`stateless_http` equivalent)
+- **Transport**: Authenticated HTTP/SSE (`GET /mcp/sse` plus `POST /mcp/message?sessionId=...`)
 - **Supervision**: `termux-services` + runit
 - **Networking**: Named Cloudflare Tunnel or VPN-bound endpoint recommended
 
@@ -87,7 +87,9 @@ Create runit service at `$PREFIX/var/service/mcp-server/run`:
 ```bash
 #!/data/data/com.termux/files/usr/bin/sh
 exec 2>&1
-export MCP__AUTH__STATIC_TOKEN="your-secure-token-here"
+TOKEN_FILE="$HOME/.termux_mcp_token"
+[ -r "$TOKEN_FILE" ] || exit 111
+export MCP__AUTH__STATIC_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
 export MCP__FILE__SAFE_ROOTS='["/storage/emulated/0/Documents"]'
 exec /data/data/com.termux/files/home/termux-mcp-server
 ```
@@ -132,6 +134,20 @@ export MCP__SERVER__HOST=localhost
 ```
 
 This opt-in is rejected for non-loopback bind addresses and must not be used with remote transports, tunnels, shared networks, or rish-capable tool exposure.
+
+## MCP HTTP/SSE Endpoints
+
+The server exposes the following HTTP routes on `MCP__SERVER__HOST:MCP__SERVER__PORT`:
+
+```http
+GET  /health
+GET  /mcp/sse
+POST /mcp/message?sessionId=<session-id>
+```
+
+`GET /health` is intentionally unauthenticated for local supervisor and tunnel health checks. The MCP routes require `Authorization: Bearer <your-token>` unless explicit localhost-only unauthenticated development mode is enabled.
+
+SSE clients first connect to `/mcp/sse`. The server emits an `endpoint` event containing the session-specific `/mcp/message?sessionId=...` URL used for client JSON-RPC messages. Clients must include the same bearer token on both the SSE request and message POST requests.
 
 ## Health Check
 
