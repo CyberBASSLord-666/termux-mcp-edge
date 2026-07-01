@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 
 use crate::transport_security::TransportSecurityPolicy;
 
+const RUNTIME_STATUS_TOOL: &str = "runtime_status";
+
 #[derive(Clone)]
 struct McpTransportState {
     security_policy: TransportSecurityPolicy,
@@ -22,16 +24,22 @@ struct JsonRpcRequest {
     jsonrpc: Option<String>,
     id: Option<Value>,
     method: String,
-    #[allow(dead_code)]
     params: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolCallParams {
+    name: String,
+    #[allow(dead_code)]
+    arguments: Option<Value>,
 }
 
 /// Build the staged MCP transport shell.
 ///
-/// This route intentionally exposes only transport liveness and a minimal MCP
-/// discovery contract. Tool execution, filesystem access, Android platform
-/// access, and high-impact actions remain unavailable until later independently
-/// validated stages.
+/// This route intentionally exposes only transport liveness, MCP discovery, and
+/// one deterministic read-only status tool. Filesystem access, Android platform
+/// access, command execution, and high-impact actions remain unavailable until
+/// later independently validated stages.
 pub fn router(security_policy: TransportSecurityPolicy) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
@@ -62,7 +70,7 @@ async fn handle_mcp_request(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "status": "mcp_transport_shell",
-                "message": "MCP transport is reachable. Tool discovery is available with an intentionally empty registry; tool execution is not enabled in this stage.",
+                "message": "MCP transport is reachable. Tool discovery and the read-only runtime_status tool are available; filesystem, platform, command, and high-impact tools are not enabled in this stage.",
             })),
         )
             .into_response();
@@ -87,12 +95,16 @@ async fn handle_mcp_request(
         }
     };
 
-    match request.method.as_str() {
+    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
+
+    match method.as_str() {
         "initialize" => (
             StatusCode::OK,
             Json(json!({
                 "jsonrpc": "2.0",
-                "id": request.id.unwrap_or(Value::Null),
+                "id": id.unwrap_or(Value::Null),
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
@@ -112,22 +124,96 @@ async fn handle_mcp_request(
             StatusCode::OK,
             Json(json!({
                 "jsonrpc": "2.0",
-                "id": request.id.unwrap_or(Value::Null),
+                "id": id.unwrap_or(Value::Null),
                 "result": {
-                    "tools": [],
+                    "tools": [
+                        {
+                            "name": RUNTIME_STATUS_TOOL,
+                            "description": "Return deterministic read-only runtime metadata for the staged Termux MCP Edge server.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": false,
+                            },
+                        },
+                    ],
                 },
             })),
         )
             .into_response(),
-        "tools/call" => method_not_available(
-            request.id,
-            "Tool execution is intentionally disabled in this staged runtime.",
-        ),
+        "tools/call" => handle_tool_call(id, params),
         _ => method_not_available(
-            request.id,
-            "Only initialize and tools/list are available in this staged runtime.",
+            id,
+            "Only initialize, tools/list, and the runtime_status tools/call path are available in this staged runtime.",
         ),
     }
+}
+
+fn handle_tool_call(id: Option<Value>, params: Option<Value>) -> Response {
+    let params = match params {
+        Some(params) => params,
+        None => {
+            return invalid_params(id, "tools/call requires params with a tool name.");
+        }
+    };
+
+    let call = match serde_json::from_value::<ToolCallParams>(params) {
+        Ok(call) => call,
+        Err(error) => {
+            return invalid_params(id, &format!("Invalid tools/call params: {error}"));
+        }
+    };
+
+    if call.name != RUNTIME_STATUS_TOOL {
+        return method_not_available(
+            id,
+            "Only the read-only runtime_status tool is available in this staged runtime.",
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=read-only-runtime-status, filesystem=disabled, android_platform=disabled, command_execution=disabled",
+                    },
+                ],
+                "structuredContent": {
+                    "server": "termux-mcp-edge",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "transport": "staged_mcp_runtime",
+                    "availableTools": [RUNTIME_STATUS_TOOL],
+                    "filesystemTools": false,
+                    "androidPlatformTools": false,
+                    "commandExecution": false,
+                    "highImpactTools": false,
+                },
+                "isError": false,
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn invalid_params(id: Option<Value>, message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32602,
+                "message": "Invalid params",
+                "data": message,
+            },
+        })),
+    )
+        .into_response()
 }
 
 fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
@@ -212,7 +298,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_discovery_returns_empty_registry() {
+    async fn tool_discovery_returns_runtime_status_tool_only() {
         let app = router(TransportSecurityPolicy::localhost(8000, false));
 
         let response = app
@@ -238,11 +324,12 @@ mod tests {
 
         assert_eq!(payload["jsonrpc"], "2.0");
         assert_eq!(payload["id"], 1);
-        assert_eq!(payload["result"]["tools"], json!([]));
+        assert_eq!(payload["result"]["tools"][0]["name"], RUNTIME_STATUS_TOOL);
+        assert_eq!(payload["result"]["tools"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn tool_call_remains_unavailable() {
+    async fn runtime_status_tool_call_returns_deterministic_read_only_metadata() {
         let app = router(TransportSecurityPolicy::localhost(8000, false));
 
         let response = app
@@ -252,7 +339,53 @@ mod tests {
                     .header(header::ORIGIN, "http://localhost:8000")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"anything"}}"#,
+                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"runtime_status","arguments":{}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["id"], 2);
+        assert_eq!(payload["result"]["isError"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["availableTools"][0],
+            RUNTIME_STATUS_TOOL
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["filesystemTools"],
+            false
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["androidPlatformTools"],
+            false
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["commandExecution"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_call_remains_unavailable() {
+        let app = router(TransportSecurityPolicy::localhost(8000, false));
+
+        let response = app
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"anything"}}"#,
                     ))
                     .unwrap(),
             )
@@ -267,7 +400,7 @@ mod tests {
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 2);
+        assert_eq!(payload["id"], 3);
         assert_eq!(payload["error"]["code"], -32601);
     }
 }

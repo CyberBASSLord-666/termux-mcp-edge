@@ -6,7 +6,7 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, and exposes `tools/list` with an intentionally empty registry. Tool execution, filesystem access, Android platform access, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds one deterministic read-only `runtime_status` tool. Filesystem access, Android platform access, command execution, and high-impact actions remain unavailable.
 
 ## Stage 1: Transport Request Validation
 
@@ -40,7 +40,7 @@ Required gates:
 
 Expose an empty or low-risk tool registry and prove tool discovery behavior.
 
-Status: in progress.
+Status: complete.
 
 Required gates:
 
@@ -53,7 +53,7 @@ Required gates:
 
 Add one low-risk read-only tool with deterministic output and tests.
 
-Status: not started.
+Status: in progress.
 
 Required gates:
 
