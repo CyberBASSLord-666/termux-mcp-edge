@@ -163,16 +163,30 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
 
     for origin in &transport.allowed_origins {
         let origin = origin.trim();
-        if origin.is_empty()
-            || origin == "*"
-            || origin.contains(' ')
-            || !(origin.starts_with("http://") || origin.starts_with("https://"))
-        {
+        if !is_exact_http_origin(origin) {
             bail!("MCP__TRANSPORT__ALLOWED_ORIGINS contains an invalid origin: {origin}");
         }
     }
 
     Ok(())
+}
+
+fn is_exact_http_origin(origin: &str) -> bool {
+    let authority = if let Some(authority) = origin.strip_prefix("http://") {
+        authority
+    } else if let Some(authority) = origin.strip_prefix("https://") {
+        authority
+    } else {
+        return false;
+    };
+
+    !authority.is_empty()
+        && !authority.contains('*')
+        && !authority.contains(' ')
+        && !authority.contains('/')
+        && !authority.contains('?')
+        && !authority.contains('#')
+        && !authority.contains('@')
 }
 
 #[cfg(test)]
@@ -356,5 +370,26 @@ mod tests {
             .expect_err("non-http transport origins must fail closed");
 
         assert!(err.to_string().contains("invalid origin"));
+    }
+
+    #[test]
+    fn transport_security_config_rejects_url_components_beyond_origin() {
+        for origin in [
+            "http://localhost:8000/",
+            "http://localhost:8000/path",
+            "http://localhost:8000?debug=true",
+            "http://localhost:8000#fragment",
+            "https://user@example.com",
+        ] {
+            let transport = TransportConfig {
+                allowed_origins: vec![origin.to_owned()],
+                ..transport_config()
+            };
+
+            let err = validate_transport_security(&transport)
+                .expect_err("transport origin allowlist values must be exact origins only");
+
+            assert!(err.to_string().contains("invalid origin"));
+        }
     }
 }
