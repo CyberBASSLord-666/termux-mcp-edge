@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub auth: AuthConfig,
     pub file: FileConfig,
+    pub transport: TransportConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -43,20 +44,44 @@ pub struct FileConfig {
     pub safe_roots: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransportConfig {
+    /// Allowed HTTP Host header values for future MCP transport routes.
+    pub allowed_hosts: Vec<String>,
+    /// Allowed browser Origin header values for future MCP transport routes.
+    pub allowed_origins: Vec<String>,
+    /// Explicit compatibility switch for non-browser clients that omit Origin.
+    pub allow_missing_origin: bool,
+}
+
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
         let default_safe_roots = vec![String::from(DEFAULT_FILE_SAFE_ROOT)];
+        let default_allowed_hosts = vec![
+            String::from("localhost:8000"),
+            String::from("127.0.0.1:8000"),
+            String::from("[::1]:8000"),
+        ];
+        let default_allowed_origins = vec![
+            String::from("http://localhost:8000"),
+            String::from("http://127.0.0.1:8000"),
+            String::from("http://[::1]:8000"),
+        ];
         let cfg = config::Config::builder()
             .set_default("server.host", "127.0.0.1")?
             .set_default("server.port", 8000)?
             .set_default("auth.static_token", None::<String>)?
             .set_default("auth.allow_unauthenticated_localhost_only", false)?
             .set_default("file.safe_roots", default_safe_roots)?
+            .set_default("transport.allowed_hosts", default_allowed_hosts)?
+            .set_default("transport.allowed_origins", default_allowed_origins)?
+            .set_default("transport.allow_missing_origin", false)?
             .add_source(config::Environment::with_prefix("MCP").separator("__"))
             .build()?;
 
         let config: Self = cfg.try_deserialize()?;
         validate_file_safe_roots(&config.file)?;
+        validate_transport_security(&config.transport)?;
         Ok(config)
     }
 }
@@ -120,6 +145,36 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()> {
+    if transport.allowed_hosts.is_empty() {
+        bail!("MCP__TRANSPORT__ALLOWED_HOSTS must contain at least one exact host");
+    }
+
+    if transport.allowed_origins.is_empty() {
+        bail!("MCP__TRANSPORT__ALLOWED_ORIGINS must contain at least one exact origin");
+    }
+
+    for host in &transport.allowed_hosts {
+        let host = host.trim();
+        if host.is_empty() || host == "*" || host.contains('/') || host.contains(' ') {
+            bail!("MCP__TRANSPORT__ALLOWED_HOSTS contains an invalid host: {host}");
+        }
+    }
+
+    for origin in &transport.allowed_origins {
+        let origin = origin.trim();
+        if origin.is_empty()
+            || origin == "*"
+            || origin.contains(' ')
+            || !(origin.starts_with("http://") || origin.starts_with("https://"))
+        {
+            bail!("MCP__TRANSPORT__ALLOWED_ORIGINS contains an invalid origin: {origin}");
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +192,15 @@ mod tests {
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             },
+            transport: transport_config(),
+        }
+    }
+
+    fn transport_config() -> TransportConfig {
+        TransportConfig {
+            allowed_hosts: vec!["localhost:8000".to_owned()],
+            allowed_origins: vec!["http://localhost:8000".to_owned()],
+            allow_missing_origin: false,
         }
     }
 
@@ -234,5 +298,63 @@ mod tests {
 
             assert!(err.to_string().contains("only allowed on localhost"));
         }
+    }
+
+    #[test]
+    fn transport_security_config_accepts_exact_hosts_and_origins() {
+        validate_transport_security(&transport_config())
+            .expect("exact transport security allowlists should validate");
+    }
+
+    #[test]
+    fn transport_security_config_rejects_empty_allowed_hosts() {
+        let transport = TransportConfig {
+            allowed_hosts: vec![],
+            ..transport_config()
+        };
+
+        let err = validate_transport_security(&transport)
+            .expect_err("empty transport host allowlist must fail closed");
+
+        assert!(err.to_string().contains("ALLOWED_HOSTS"));
+    }
+
+    #[test]
+    fn transport_security_config_rejects_wildcard_hosts() {
+        let transport = TransportConfig {
+            allowed_hosts: vec!["*".to_owned()],
+            ..transport_config()
+        };
+
+        let err = validate_transport_security(&transport)
+            .expect_err("wildcard transport host allowlist must fail closed");
+
+        assert!(err.to_string().contains("invalid host"));
+    }
+
+    #[test]
+    fn transport_security_config_rejects_empty_allowed_origins() {
+        let transport = TransportConfig {
+            allowed_origins: vec![],
+            ..transport_config()
+        };
+
+        let err = validate_transport_security(&transport)
+            .expect_err("empty transport origin allowlist must fail closed");
+
+        assert!(err.to_string().contains("ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn transport_security_config_rejects_non_http_origins() {
+        let transport = TransportConfig {
+            allowed_origins: vec!["chrome-extension://example".to_owned()],
+            ..transport_config()
+        };
+
+        let err = validate_transport_security(&transport)
+            .expect_err("non-http transport origins must fail closed");
+
+        assert!(err.to_string().contains("invalid origin"));
     }
 }
