@@ -108,11 +108,27 @@ fn normalize_host(host: &str) -> Option<String> {
 }
 
 fn normalize_origin(origin: &str) -> Option<String> {
-    let trimmed = origin.trim().trim_end_matches('/');
-    if trimmed.is_empty() || trimmed.contains(' ') {
+    let trimmed = origin.trim();
+    let (scheme, authority) = if let Some(authority) = trimmed.strip_prefix("http://") {
+        ("http://", authority)
+    } else if let Some(authority) = trimmed.strip_prefix("https://") {
+        ("https://", authority)
+    } else {
+        return None;
+    };
+
+    if authority.is_empty()
+        || authority.contains('*')
+        || authority.contains(' ')
+        || authority.contains('/')
+        || authority.contains('?')
+        || authority.contains('#')
+        || authority.contains('@')
+    {
         return None;
     }
-    Some(trimmed.to_ascii_lowercase())
+
+    Some(format!("{scheme}{authority}").to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -123,7 +139,7 @@ mod tests {
     fn allows_expected_localhost_host_and_origin() {
         let policy = TransportSecurityPolicy::localhost(8000, false);
         policy
-            .validate_request(Some("LOCALHOST:8000"), Some("http://localhost:8000/"))
+            .validate_request(Some("LOCALHOST:8000"), Some("http://localhost:8000"))
             .unwrap();
     }
 
@@ -149,6 +165,42 @@ mod tests {
             error,
             TransportSecurityError::OriginNotAllowed { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_origin_url_components_beyond_exact_origin() {
+        let policy = TransportSecurityPolicy::localhost(8000, false);
+
+        for origin in [
+            "http://localhost:8000/",
+            "http://localhost:8000/path",
+            "http://localhost:8000?debug=true",
+            "http://localhost:8000#fragment",
+            "https://user@localhost:8000",
+            "https://*.localhost:8000",
+        ] {
+            let error = policy
+                .validate_request(Some("localhost:8000"), Some(origin))
+                .unwrap_err();
+            assert_eq!(error, TransportSecurityError::OriginRequired);
+        }
+    }
+
+    #[test]
+    fn requires_http_origin_scheme() {
+        let policy = TransportSecurityPolicy::new(
+            ["localhost:8000"],
+            ["chrome-extension://example", "file://localhost"],
+            false,
+        );
+
+        assert!(policy.allowed_origins().is_empty());
+        assert_eq!(
+            policy
+                .validate_request(Some("localhost:8000"), Some("chrome-extension://example"))
+                .unwrap_err(),
+            TransportSecurityError::OriginRequired
+        );
     }
 
     #[test]
