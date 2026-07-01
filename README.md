@@ -2,13 +2,14 @@
 
 Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The default runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
 
-The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before responding. Tool discovery, tool execution, filesystem tools, Android platform tools, and high-impact actions remain intentionally unavailable until later staged PRs validate each surface independently.
+The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize` and `tools/list`; the registry is intentionally empty and tool execution, filesystem tools, Android platform tools, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
 
 - **Runtime:** Rust single binary using Axum.
 - **Default HTTP endpoint:** `GET /health`.
 - **Optional MCP transport shell:** `POST /mcp` when built with `--features mcp-runtime`.
+- **Current MCP discovery:** `initialize` plus `tools/list` returning an intentionally empty registry.
 - **Current MCP tools:** not exposed.
 - **Current filesystem/tool endpoints:** not exposed.
 - **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
@@ -20,7 +21,7 @@ The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell th
 
 - Memory efficiency and thermal resilience on mobile hardware.
 - Fail-closed startup posture for networked deployments.
-- Clear separation between transport liveness and later MCP tool exposure.
+- Clear separation between transport liveness, tool discovery, and later MCP tool execution.
 - Narrow default filesystem scope for any future file-capable tool restoration.
 - Single-binary deployment optimized for `termux-services` and runit.
 - CI and Security workflows as merge gates for every remediation branch.
@@ -62,7 +63,7 @@ The service no longer defaults to broad Android shared-storage roots such as `/s
 - **Language:** Rust edition 2021.
 - **HTTP framework:** Axum.
 - **Default compiled transport:** health-check HTTP route only.
-- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation and no tools.
+- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation, `initialize`, and empty `tools/list` discovery.
 - **MCP framework dependency:** optional `rmcp` dependency behind `mcp-runtime`.
 - **Supervision:** `termux-services` / runit.
 - **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
@@ -143,7 +144,25 @@ curl -i \
   http://127.0.0.1:8000/mcp
 ```
 
-Expected status for this stage: `501 Not Implemented`, because tool discovery and tool execution are intentionally not enabled yet.
+An empty body returns `501 Not Implemented` to show that the shell is reachable but not a full tool runtime.
+
+The staged tool-discovery contract is available without exposing any executable tools:
+
+```bash
+curl -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected response for this stage:
+
+```json
+{"id":1,"jsonrpc":"2.0","result":{"tools":[]}}
+```
 
 ## MCP Transport Restoration Gate
 
