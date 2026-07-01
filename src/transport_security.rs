@@ -163,11 +163,8 @@ mod tests {
 
     #[test]
     fn allows_case_insensitive_origin_scheme_and_authority() {
-        let policy = TransportSecurityPolicy::new(
-            ["localhost:8000"],
-            ["HTTP://LOCALHOST:8000"],
-            false,
-        );
+        let policy =
+            TransportSecurityPolicy::new(["localhost:8000"], ["HTTP://LOCALHOST:8000"], false);
         assert!(policy.allowed_origins().contains("http://localhost:8000"));
 
         policy
@@ -214,7 +211,10 @@ mod tests {
             let error = policy
                 .validate_request(Some("localhost:8000"), Some(origin))
                 .unwrap_err();
-            assert!(matches!(error, TransportSecurityError::InvalidOrigin { .. }));
+            assert!(matches!(
+                error,
+                TransportSecurityError::InvalidOrigin { .. }
+            ));
         }
     }
 
