@@ -28,7 +28,7 @@ Required gates:
 - Exact-head CI success.
 - Exact-head Security success.
 - Dependency alerts clear after merge.
-- Host and Origin validation enforced on browser-reachable transport routes.
+- `Host` and `Origin` validation enforced on browser-reachable transport routes.
 - Bearer-token behavior preserved for non-local access paths.
 - Smoke test proves transport liveness.
 
