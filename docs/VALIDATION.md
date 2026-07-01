@@ -17,6 +17,18 @@ cargo build --release
 
 The GitHub CI workflow enforces format, Clippy, and tests. The Security workflow generates a lockfile and runs `cargo audit`.
 
+## Dependency Update Validation
+
+Dependency update PRs must remain separate from runtime behavior changes. Before merging a Cargo or GitHub Actions dependency update:
+
+1. Confirm the PR diff is limited to dependency metadata, workflow pin updates, or generated lockfile changes.
+2. Confirm exact-head CI succeeds for the dependency-update head SHA.
+3. Confirm exact-head Security succeeds for the dependency-update head SHA.
+4. Confirm the Security workflow output does not report unresolved advisories.
+5. Avoid bundling dependency updates with MCP transport, browser-exposed routes, filesystem tools, system tools, or command-capable tool exposure.
+
+If a dependency update is required to restore MCP transport or high-impact tools, keep it blocked until the related transport protections, authorization policy, and smoke tests are present in the same focused restoration stage or in already-merged prerequisite PRs.
+
 ## Runtime Smoke Test
 
 After building or installing the binary, verify liveness:
