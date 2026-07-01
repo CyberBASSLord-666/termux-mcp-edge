@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize filesystem tools once so startup validates configured safe roots.
     // The staged MCP runtime exposes only safe-rooted read-only directory listing;
     // file reads and writes remain unavailable until later independently validated PRs.
-    let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
+    let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             config.transport.allowed_origins.clone(),
             config.transport.allow_missing_origin,
         ),
-        file_tools,
+        _file_tools,
     ));
 
     info!("Listening on http://{}", display_addr);
