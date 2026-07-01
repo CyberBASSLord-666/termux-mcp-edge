@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, tools::FileSystemTools, transport_security::TransportSecurityPolicy};
+use crate::{tools::FileSystemTools, transport_security::TransportSecurityPolicy};
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
@@ -108,7 +108,10 @@ async fn handle_mcp_request(
     };
 
     let JsonRpcRequest {
-        id, method, params, ..
+        id,
+        method,
+        params,
+        ..
     } = request;
 
     match method.as_str() {
@@ -229,8 +232,7 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
                     "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL],
-                    "filesystemTools": true,
-                    "filesystemToolMode": "read_only_list_directory",
+                    "filesystemTools": "read_only_list_directory",
                     "fileWrites": false,
                     "androidPlatformTools": false,
                     "commandExecution": false,
@@ -262,12 +264,6 @@ async fn handle_list_directory_call(
         }
     };
 
-    if let Some(max_depth) = args.max_depth {
-        if !(1..=5).contains(&max_depth) {
-            return invalid_params(id, "list_directory max_depth must be between 1 and 5.");
-        }
-    }
-
     match file_tools.list_directory(args.path, args.max_depth).await {
         Ok(result) => (
             StatusCode::OK,
@@ -287,10 +283,7 @@ async fn handle_list_directory_call(
             })),
         )
             .into_response(),
-        Err(AppError::PathTraversal { .. }) => {
-            invalid_params(id, "list_directory path must stay inside a configured safe root.")
-        }
-        Err(error) => internal_error(id, &error.to_string()),
+        Err(error) => invalid_params(id, &format!("Filesystem safe-root validation failed: {error}")),
     }
 }
 
@@ -303,22 +296,6 @@ fn invalid_params(id: Option<Value>, message: &str) -> Response {
             "error": {
                 "code": -32602,
                 "message": "Invalid params",
-                "data": message,
-            },
-        })),
-    )
-        .into_response()
-}
-
-fn internal_error(id: Option<Value>, message: &str) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id.unwrap_or(Value::Null),
-            "error": {
-                "code": -32603,
-                "message": "Internal error",
                 "data": message,
             },
         })),
@@ -504,13 +481,14 @@ mod tests {
             payload["result"]["structuredContent"]["availableTools"][1],
             LIST_DIRECTORY_TOOL
         );
-        assert_eq!(payload["result"]["structuredContent"]["filesystemTools"], true);
         assert_eq!(
-            payload["result"]["structuredContent"]["filesystemToolMode"],
-            "read_only_list_directory"
+            payload["result"]["structuredContent"]["androidPlatformTools"],
+            false
         );
-        assert_eq!(payload["result"]["structuredContent"]["androidPlatformTools"], false);
-        assert_eq!(payload["result"]["structuredContent"]["commandExecution"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["commandExecution"],
+            false
+        );
     }
 
     #[tokio::test]
@@ -599,90 +577,6 @@ mod tests {
         assert_eq!(payload["jsonrpc"], "2.0");
         assert_eq!(payload["id"], 5);
         assert_eq!(payload["error"]["code"], -32602);
-    }
-
-    #[tokio::test]
-    async fn list_directory_tool_call_rejects_out_of_range_max_depth() {
-        let (root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "tools/call",
-            "params": {
-                "name": LIST_DIRECTORY_TOOL,
-                "arguments": {
-                    "path": root.path(),
-                    "max_depth": 0,
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 6);
-        assert_eq!(payload["error"]["code"], -32602);
-        assert_eq!(
-            payload["error"]["data"],
-            "list_directory max_depth must be between 1 and 5."
-        );
-    }
-
-    #[tokio::test]
-    async fn list_directory_tool_call_returns_internal_error_for_io_failures() {
-        let (root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let missing_dir = root.path().join("missing");
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 7,
-            "method": "tools/call",
-            "params": {
-                "name": LIST_DIRECTORY_TOOL,
-                "arguments": {
-                    "path": missing_dir,
-                    "max_depth": 1,
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 7);
-        assert_eq!(payload["error"]["code"], -32603);
-        assert_eq!(payload["error"]["message"], "Internal error");
     }
 
     #[tokio::test]
