@@ -95,7 +95,9 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest { id, method, params, .. } = request;
+    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
 
     match method.as_str() {
         "initialize" => (
@@ -358,7 +360,10 @@ mod tests {
             payload["result"]["structuredContent"]["availableTools"][0],
             RUNTIME_STATUS_TOOL
         );
-        assert_eq!(payload["result"]["structuredContent"]["filesystemTools"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["filesystemTools"],
+            false
+        );
         assert_eq!(
             payload["result"]["structuredContent"]["androidPlatformTools"],
             false
