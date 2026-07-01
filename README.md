@@ -1,16 +1,18 @@
 # Termux MCP Edge (Rust)
 
-Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The current compiled runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
+Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The default runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
 
-MCP transport and MCP tool endpoints are intentionally **not compiled into the current runtime**. Earlier `rmcp`-backed transport and tool code was quarantined or removed while dependency advisories and API compatibility were being addressed. Restoring MCP transport is tracked separately and must be validated with exact-head CI, Security, and an MCP tool-list/tool-call smoke test before release.
+The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before responding. Tool discovery, tool execution, filesystem tools, Android platform tools, and high-impact actions remain intentionally unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
 
 - **Runtime:** Rust single binary using Axum.
-- **Current HTTP endpoint:** `GET /health`.
-- **Current MCP transport:** not exposed.
+- **Default HTTP endpoint:** `GET /health`.
+- **Optional MCP transport shell:** `POST /mcp` when built with `--features mcp-runtime`.
+- **Current MCP tools:** not exposed.
 - **Current filesystem/tool endpoints:** not exposed.
 - **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
+- **Transport posture:** configured exact `Host` and browser `Origin` allow-lists are enforced before the staged MCP transport shell handles requests.
 - **Filesystem safe-root default:** `/data/data/com.termux/files/home/mcp-files`, not broad shared storage.
 - **Deployment target:** Termux on Android, supervised by `termux-services` / runit.
 
@@ -18,7 +20,7 @@ MCP transport and MCP tool endpoints are intentionally **not compiled into the c
 
 - Memory efficiency and thermal resilience on mobile hardware.
 - Fail-closed startup posture for networked deployments.
-- Clear separation between current runtime behavior and future MCP transport work.
+- Clear separation between transport liveness and later MCP tool exposure.
 - Narrow default filesystem scope for any future file-capable tool restoration.
 - Single-binary deployment optimized for `termux-services` and runit.
 - CI and Security workflows as merge gates for every remediation branch.
@@ -36,6 +38,15 @@ export MCP__SERVER__HOST=localhost
 
 This opt-in is rejected for non-loopback bind addresses and must not be used with tunnels, LAN exposure, reverse proxies, or shared network access.
 
+Browser-reachable MCP transport requests are additionally constrained by exact transport allow-lists:
+
+```bash
+export MCP__TRANSPORT__ALLOWED_HOSTS='["localhost:8000"]'
+export MCP__TRANSPORT__ALLOWED_ORIGINS='["http://localhost:8000"]'
+```
+
+`MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only for explicitly reviewed non-browser clients that cannot send an `Origin` header.
+
 ## Filesystem Safe Roots
 
 The built-in filesystem safe-root default is intentionally narrow:
@@ -50,8 +61,9 @@ The service no longer defaults to broad Android shared-storage roots such as `/s
 
 - **Language:** Rust edition 2021.
 - **HTTP framework:** Axum.
-- **Transport currently compiled:** health-check HTTP route only.
-- **MCP framework dependency:** not compiled in the current runtime.
+- **Default compiled transport:** health-check HTTP route only.
+- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation and no tools.
+- **MCP framework dependency:** optional `rmcp` dependency behind `mcp-runtime`.
 - **Supervision:** `termux-services` / runit.
 - **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
 
@@ -66,6 +78,12 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets
 cargo build --release
+```
+
+Build the staged transport shell explicitly:
+
+```bash
+cargo build --features mcp-runtime
 ```
 
 For Android cross-compilation:
@@ -114,6 +132,18 @@ Expected response:
 ```text
 ok
 ```
+
+With `mcp-runtime` enabled, the staged transport shell should be reachable only after exact transport checks pass:
+
+```bash
+curl -i \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected status for this stage: `501 Not Implemented`, because tool discovery and tool execution are intentionally not enabled yet.
 
 ## MCP Transport Restoration Gate
 
