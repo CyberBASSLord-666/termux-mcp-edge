@@ -58,7 +58,11 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
-async fn handle_mcp_request(State(state): State<McpTransportState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn handle_mcp_request(
+    State(state): State<McpTransportState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let host = header_value(&headers, header::HOST);
     let origin = header_value(&headers, header::ORIGIN);
 
@@ -103,7 +107,9 @@ async fn handle_mcp_request(State(state): State<McpTransportState>, headers: Hea
         }
     };
 
-    let JsonRpcRequest { id, method, params, .. } = request;
+    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
 
     match method.as_str() {
         "initialize" => (
@@ -176,7 +182,11 @@ async fn handle_mcp_request(State(state): State<McpTransportState>, headers: Hea
     }
 }
 
-async fn handle_tool_call(id: Option<Value>, params: Option<Value>, file_tools: &FileSystemTools) -> Response {
+async fn handle_tool_call(
+    id: Option<Value>,
+    params: Option<Value>,
+    file_tools: &FileSystemTools,
+) -> Response {
     let params = match params {
         Some(params) => params,
         None => {
@@ -390,6 +400,11 @@ mod tests {
     async fn tool_discovery_returns_runtime_status_and_directory_listing_only() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+        });
 
         let response = app
             .oneshot(
@@ -397,7 +412,7 @@ mod tests {
                     .header(header::HOST, "localhost:8000")
                     .header(header::ORIGIN, "http://localhost:8000")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#))
+                    .body(Body::from(request_body.to_string()))
                     .unwrap(),
             )
             .await
@@ -405,7 +420,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["jsonrpc"], "2.0");
@@ -421,6 +438,15 @@ mod tests {
     async fn runtime_status_tool_call_returns_deterministic_read_only_metadata() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": RUNTIME_STATUS_TOOL,
+                "arguments": {},
+            }
+        });
 
         let response = app
             .oneshot(
@@ -428,9 +454,7 @@ mod tests {
                     .header(header::HOST, "localhost:8000")
                     .header(header::ORIGIN, "http://localhost:8000")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"runtime_status","arguments":{}}}"#,
-                    ))
+                    .body(Body::from(request_body.to_string()))
                     .unwrap(),
             )
             .await
@@ -438,7 +462,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["jsonrpc"], "2.0");
@@ -493,11 +519,16 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["result"]["isError"], false);
-        assert_eq!(payload["result"]["structuredContent"]["entries"][0]["is_dir"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["entries"][0]["is_dir"],
+            false
+        );
         assert!(payload["result"]["structuredContent"]["entries"][0]["path"]
             .as_str()
             .unwrap()
@@ -535,7 +566,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["jsonrpc"], "2.0");
@@ -547,6 +580,14 @@ mod tests {
     async fn unknown_tool_call_remains_unavailable() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "unknown_tool",
+            }
+        });
 
         let response = app
             .oneshot(
@@ -554,9 +595,7 @@ mod tests {
                     .header(header::HOST, "localhost:8000")
                     .header(header::ORIGIN, "http://localhost:8000")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"anything"}}"#,
-                    ))
+                    .body(Body::from(request_body.to_string()))
                     .unwrap(),
             )
             .await
@@ -564,7 +603,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(payload["jsonrpc"], "2.0");
