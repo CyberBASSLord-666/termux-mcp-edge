@@ -58,11 +58,7 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
-async fn handle_mcp_request(
-    State(state): State<McpTransportState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+async fn handle_mcp_request(State(state): State<McpTransportState>, headers: HeaderMap, body: Bytes) -> Response {
     let host = header_value(&headers, header::HOST);
     let origin = header_value(&headers, header::ORIGIN);
 
@@ -107,9 +103,7 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest {
-        id, method, params, ..
-    } = request;
+    let JsonRpcRequest { id, method, params, .. } = request;
 
     match method.as_str() {
         "initialize" => (
@@ -182,11 +176,7 @@ async fn handle_mcp_request(
     }
 }
 
-async fn handle_tool_call(
-    id: Option<Value>,
-    params: Option<Value>,
-    file_tools: &FileSystemTools,
-) -> Response {
+async fn handle_tool_call(id: Option<Value>, params: Option<Value>, file_tools: &FileSystemTools) -> Response {
     let params = match params {
         Some(params) => params,
         None => {
@@ -242,11 +232,7 @@ fn runtime_status_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-async fn handle_list_directory_call(
-    id: Option<Value>,
-    arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-) -> Response {
+async fn handle_list_directory_call(id: Option<Value>, arguments: Option<Value>, file_tools: &FileSystemTools) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => {
