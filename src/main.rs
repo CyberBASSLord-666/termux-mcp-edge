@@ -44,9 +44,10 @@ async fn main() -> anyhow::Result<()> {
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
-    // Keep filesystem tools initialized so startup validates the configured safe roots,
-    // while avoiding tool exposure until later independently validated runtime stages.
-    let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
+    // Initialize filesystem tools once so startup validates configured safe roots.
+    // The staged MCP runtime exposes only safe-rooted read-only directory listing;
+    // file reads and writes remain unavailable until later independently validated PRs.
+    let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -59,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
             config.transport.allowed_origins.clone(),
             config.transport.allow_missing_origin,
         ),
+        file_tools,
     ));
 
     info!("Listening on http://{}", display_addr);
