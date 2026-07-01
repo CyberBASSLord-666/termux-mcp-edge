@@ -7,6 +7,7 @@ pub enum TransportSecurityError {
     HostNotAllowed { received: String },
     OriginNotAllowed { received: String },
     OriginRequired,
+    InvalidOrigin { received: String },
 }
 
 impl fmt::Display for TransportSecurityError {
@@ -20,6 +21,9 @@ impl fmt::Display for TransportSecurityError {
                 write!(formatter, "Origin is not allowed: {received}")
             }
             Self::OriginRequired => write!(formatter, "Origin header is required"),
+            Self::InvalidOrigin { received } => {
+                write!(formatter, "Origin is malformed or unsupported: {received}")
+            }
         }
     }
 }
@@ -82,9 +86,22 @@ impl TransportSecurityPolicy {
             return Err(TransportSecurityError::HostNotAllowed { received: host });
         }
 
-        match origin.and_then(normalize_origin) {
-            Some(origin) if self.allowed_origins.contains(&origin) => Ok(()),
-            Some(origin) => Err(TransportSecurityError::OriginNotAllowed { received: origin }),
+        match origin {
+            Some(raw_origin) => {
+                let normalized_origin = normalize_origin(raw_origin).ok_or_else(|| {
+                    TransportSecurityError::InvalidOrigin {
+                        received: raw_origin.trim().to_string(),
+                    }
+                })?;
+
+                if self.allowed_origins.contains(&normalized_origin) {
+                    Ok(())
+                } else {
+                    Err(TransportSecurityError::OriginNotAllowed {
+                        received: normalized_origin,
+                    })
+                }
+            }
             None if self.allow_missing_origin => Ok(()),
             None => Err(TransportSecurityError::OriginRequired),
         }
@@ -109,9 +126,10 @@ fn normalize_host(host: &str) -> Option<String> {
 
 fn normalize_origin(origin: &str) -> Option<String> {
     let trimmed = origin.trim();
-    let (scheme, authority) = if let Some(authority) = trimmed.strip_prefix("http://") {
+    let lower_trimmed = trimmed.to_ascii_lowercase();
+    let (scheme, authority) = if let Some(authority) = lower_trimmed.strip_prefix("http://") {
         ("http://", authority)
-    } else if let Some(authority) = trimmed.strip_prefix("https://") {
+    } else if let Some(authority) = lower_trimmed.strip_prefix("https://") {
         ("https://", authority)
     } else {
         return None;
@@ -128,7 +146,7 @@ fn normalize_origin(origin: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("{scheme}{authority}").to_ascii_lowercase())
+    Some(format!("{scheme}{authority}"))
 }
 
 #[cfg(test)]
@@ -140,6 +158,18 @@ mod tests {
         let policy = TransportSecurityPolicy::localhost(8000, false);
         policy
             .validate_request(Some("LOCALHOST:8000"), Some("http://localhost:8000"))
+            .unwrap();
+    }
+
+    #[test]
+    fn allows_case_insensitive_origin_scheme_and_authority() {
+        let policy = TransportSecurityPolicy::new(["localhost:8000"], ["HTTP://LOCALHOST:8000"], false);
+        assert!(policy
+            .allowed_origins()
+            .contains("http://localhost:8000"));
+
+        policy
+            .validate_request(Some("localhost:8000"), Some("HTTP://LOCALHOST:8000"))
             .unwrap();
     }
 
@@ -182,7 +212,7 @@ mod tests {
             let error = policy
                 .validate_request(Some("localhost:8000"), Some(origin))
                 .unwrap_err();
-            assert_eq!(error, TransportSecurityError::OriginRequired);
+            assert!(matches!(error, TransportSecurityError::InvalidOrigin { .. }));
         }
     }
 
@@ -195,12 +225,12 @@ mod tests {
         );
 
         assert!(policy.allowed_origins().is_empty());
-        assert_eq!(
+        assert!(matches!(
             policy
                 .validate_request(Some("localhost:8000"), Some("chrome-extension://example"))
                 .unwrap_err(),
-            TransportSecurityError::OriginRequired
-        );
+            TransportSecurityError::InvalidOrigin { .. }
+        ));
     }
 
     #[test]
