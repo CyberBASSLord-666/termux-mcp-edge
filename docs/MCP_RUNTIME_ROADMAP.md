@@ -6,11 +6,13 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Current Baseline
 
-`main` currently exposes the health-check runtime only. MCP transport and MCP tools are not compiled into the release line.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, but tool discovery, tool execution, filesystem access, Android platform access, and high-impact actions remain unavailable.
 
 ## Stage 1: Transport Request Validation
 
 Add reusable `Host` and `Origin` validation primitives with unit coverage. No routes are exposed in this stage.
+
+Status: complete.
 
 Required gates:
 
@@ -22,6 +24,8 @@ Required gates:
 ## Stage 2: Minimal MCP Transport Shell
 
 Introduce the smallest MCP transport runtime without filesystem, platform, or high-impact tools.
+
+Status: in progress.
 
 Required gates:
 
@@ -36,6 +40,8 @@ Required gates:
 
 Expose an empty or low-risk tool registry and prove tool discovery behavior.
 
+Status: not started.
+
 Required gates:
 
 - Tool discovery smoke test.
@@ -47,6 +53,8 @@ Required gates:
 
 Add one low-risk read-only tool with deterministic output and tests.
 
+Status: not started.
+
 Required gates:
 
 - Tool call smoke test.
@@ -56,6 +64,8 @@ Required gates:
 ## Stage 5: Filesystem Tools
 
 Restore filesystem capability with narrow safe roots, read/write separation, and explicit write controls.
+
+Status: not started.
 
 Required gates:
 
@@ -69,6 +79,8 @@ Required gates:
 
 Restore Android platform tools only after explicit feature gates and operational documentation.
 
+Status: not started.
+
 Required gates:
 
 - Feature-gated compile path.
@@ -78,6 +90,8 @@ Required gates:
 ## Stage 7: High-Impact Tooling
 
 Add high-impact tooling only after separate authorization and operator-consent policy is in place.
+
+Status: not started.
 
 Required gates:
 
