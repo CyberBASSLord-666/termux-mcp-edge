@@ -113,11 +113,7 @@ pub enum AuthPosture {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
+    host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
 fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
@@ -282,12 +278,9 @@ mod tests {
     fn missing_token_requires_explicit_localhost_only_opt_in() {
         let config = app_config("127.0.0.1", None, false);
 
-        let err = validate_runtime_auth_posture(&config)
-            .expect_err("missing token must fail closed by default");
+        let err = validate_runtime_auth_posture(&config).expect_err("missing token must fail closed by default");
 
-        assert!(err
-            .to_string()
-            .contains("MCP__AUTH__STATIC_TOKEN is required"));
+        assert!(err.to_string().contains("MCP__AUTH__STATIC_TOKEN is required"));
     }
 
     #[test]
@@ -295,8 +288,7 @@ mod tests {
         for host in ["localhost", "127.0.0.1", "::1"] {
             let config = app_config(host, None, true);
 
-            let posture = validate_runtime_auth_posture(&config)
-                .expect("loopback development mode should validate");
+            let posture = validate_runtime_auth_posture(&config).expect("loopback development mode should validate");
 
             assert_eq!(posture, AuthPosture::UnauthenticatedLocalhostOnly);
         }
@@ -316,8 +308,7 @@ mod tests {
 
     #[test]
     fn transport_security_config_accepts_exact_hosts_and_origins() {
-        validate_transport_security(&transport_config())
-            .expect("exact transport security allowlists should validate");
+        validate_transport_security(&transport_config()).expect("exact transport security allowlists should validate");
     }
 
     #[test]
@@ -327,8 +318,7 @@ mod tests {
             ..transport_config()
         };
 
-        let err = validate_transport_security(&transport)
-            .expect_err("empty transport host allowlist must fail closed");
+        let err = validate_transport_security(&transport).expect_err("empty transport host allowlist must fail closed");
 
         assert!(err.to_string().contains("ALLOWED_HOSTS"));
     }
@@ -340,8 +330,8 @@ mod tests {
             ..transport_config()
         };
 
-        let err = validate_transport_security(&transport)
-            .expect_err("wildcard transport host allowlist must fail closed");
+        let err =
+            validate_transport_security(&transport).expect_err("wildcard transport host allowlist must fail closed");
 
         assert!(err.to_string().contains("invalid host"));
     }
@@ -353,8 +343,8 @@ mod tests {
             ..transport_config()
         };
 
-        let err = validate_transport_security(&transport)
-            .expect_err("empty transport origin allowlist must fail closed");
+        let err =
+            validate_transport_security(&transport).expect_err("empty transport origin allowlist must fail closed");
 
         assert!(err.to_string().contains("ALLOWED_ORIGINS"));
     }
@@ -366,8 +356,7 @@ mod tests {
             ..transport_config()
         };
 
-        let err = validate_transport_security(&transport)
-            .expect_err("non-http transport origins must fail closed");
+        let err = validate_transport_security(&transport).expect_err("non-http transport origins must fail closed");
 
         assert!(err.to_string().contains("invalid origin"));
     }
