@@ -163,8 +163,11 @@ mod tests {
 
     #[test]
     fn allows_case_insensitive_origin_scheme_and_authority() {
-        let policy =
-            TransportSecurityPolicy::new(["localhost:8000"], ["HTTP://LOCALHOST:8000"], false);
+        let policy = TransportSecurityPolicy::new(
+            ["localhost:8000"],
+            ["HTTP://LOCALHOST:8000"],
+            false,
+        );
         assert!(policy.allowed_origins().contains("http://localhost:8000"));
 
         policy
@@ -205,7 +208,7 @@ mod tests {
             "http://localhost:8000/path",
             "http://localhost:8000?debug=true",
             "http://localhost:8000#fragment",
-            "https://user@localhost:8000",
+            "https://identity@localhost:8000",
             "https://*.localhost:8000",
         ] {
             let error = policy
