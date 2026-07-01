@@ -55,6 +55,10 @@ The service no longer defaults to broad Android shared-storage roots such as `/s
 - **Supervision:** `termux-services` / runit.
 - **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
 
+## Runtime Roadmap
+
+MCP runtime restoration is staged in [`docs/MCP_RUNTIME_ROADMAP.md`](docs/MCP_RUNTIME_ROADMAP.md). The roadmap keeps transport restoration, tool discovery, read-only tools, filesystem tools, Android platform tools, and high-impact tools in separate validation tracks.
+
 ## Quick Build
 
 ```bash
