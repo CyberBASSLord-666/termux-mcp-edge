@@ -9,7 +9,12 @@ repository = "https://github.com/CyberBASSLord-666/termux-mcp-edge"
 keywords = ["mcp", "android", "termux", "edge-computing", "ai-agent"]
 categories = ["command-line-utilities", "network-programming"]
 
+[features]
+default = []
+mcp-runtime = ["dep:rmcp"]
+
 [dependencies]
+rmcp = { version = "1.8.0", default-features = false, features = ["server"], optional = true }
 axum = { version = "0.7", features = ["macros"] }
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 tower = { version = "0.4", features = ["util"] }
