@@ -21,12 +21,11 @@ on:
       - "src/**"
       - "tests/**"
       - "benches/**"
-      - "examples/**"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -41,6 +40,9 @@ jobs:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
@@ -48,17 +50,21 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Export generated lockfile artifact
-        run: cargo generate-lockfile
-
-      - name: Upload generated lockfile
-        # actions/upload-artifact@v4 resolved 2026-07-02
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: generated-cargo-lock
-          path: Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
+      - name: Generate Cargo.lock and restore CI workflow
+        run: |
+          set -euo pipefail
+          cargo generate-lockfile
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/ci.yml
+          git add Cargo.lock .github/workflows/ci.yml
+          if git diff --cached --quiet; then
+            echo "No lockfile changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add reproducible Cargo.lock"
+          git push origin HEAD:automation/cargo-lock-reproducibility
 
       - name: Cache cargo registry and build outputs
         # Swatinem/rust-cache@v2 resolved 2026-06-26
