@@ -48,6 +48,18 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Export generated lockfile artifact
+        run: cargo generate-lockfile
+
+      - name: Upload generated lockfile
+        # actions/upload-artifact@v4 resolved 2026-07-02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: generated-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Cache cargo registry and build outputs
         # Swatinem/rust-cache@v2 resolved 2026-06-26
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
