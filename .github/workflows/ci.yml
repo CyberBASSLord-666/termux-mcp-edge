@@ -21,59 +21,42 @@ on:
       - "src/**"
       - "tests/**"
       - "benches/**"
+      - "examples/**"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lockfile:
-    name: Generate Cargo.lock
+  rust:
+    name: Rust validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Generate and commit Cargo.lock
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +e
-          {
-            set -x
-            git clone --branch automation/cargo-lock-reproducibility --single-branch "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
-            cd repo
-            rustup default stable
-            cargo generate-lockfile
-            git status --short --ignored
-            git add -f Cargo.lock
-            git diff --cached --stat
-            if git diff --cached --quiet; then
-              echo "No lockfile changes to commit."
-              echo 0 > ../lockfile-bootstrap.status
-              exit 0
-            fi
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "Add reproducible Cargo.lock"
-            git push origin HEAD:automation/cargo-lock-reproducibility
-            echo $? > ../lockfile-bootstrap.status
-          } > lockfile-bootstrap.log 2>&1
-          status=$?
-          if [ ! -f lockfile-bootstrap.status ]; then
-            echo "$status" > lockfile-bootstrap.status
-          fi
-          cat lockfile-bootstrap.log
-          exit 0
-      - name: Upload lockfile bootstrap diagnostics
-        if: always()
-        # actions/upload-artifact@v4 resolved 2026-07-02
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Checkout
+        # actions/checkout@v4 resolved 2026-06-26
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Install Rust toolchain
+        # dtolnay/rust-toolchain@stable resolved 2026-06-26
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
-          name: lockfile-bootstrap-diagnostics
-          path: |
-            lockfile-bootstrap.log
-            lockfile-bootstrap.status
-          if-no-files-found: error
-          retention-days: 1
-      - name: Fail on bootstrap error
-        run: test "$(cat lockfile-bootstrap.status)" = "0"
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build outputs
+        # Swatinem/rust-cache@v2 resolved 2026-06-26
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-targets --all-features
