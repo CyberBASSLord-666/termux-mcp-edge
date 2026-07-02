@@ -116,17 +116,29 @@ fn env_bool(name: &str, default: bool) -> anyhow::Result<bool> {
 }
 
 fn parse_bool(name: &str, value: &str) -> anyhow::Result<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Ok(true),
-        "false" | "0" | "no" | "off" => Ok(false),
-        _ => bail!("{name} must be a boolean value: true/false, 1/0, yes/no, or on/off"),
+    let value = value.trim();
+
+    if ["true", "1", "yes", "on"]
+        .iter()
+        .any(|accepted| value.eq_ignore_ascii_case(accepted))
+    {
+        return Ok(true);
     }
+
+    if ["false", "0", "no", "off"]
+        .iter()
+        .any(|accepted| value.eq_ignore_ascii_case(accepted))
+    {
+        return Ok(false);
+    }
+
+    bail!("{name} must be a boolean value: true/false, 1/0, yes/no, or on/off")
 }
 
 fn env_string_list(name: &str, defaults: &[&str]) -> Vec<String> {
     match env::var(name) {
         Ok(value) => split_env_list(&value),
-        Err(_) => defaults.iter().map(|value| (*value).to_owned()).collect(),
+        Err(_) => defaults.iter().copied().map(str::to_owned).collect(),
     }
 }
 
