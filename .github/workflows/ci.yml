@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -41,29 +41,12 @@ jobs:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           components: rustfmt, clippy
-
-      - name: Apply rustfmt to Rust sources
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          git add -A src tests
-          if git diff --cached --quiet; then
-            echo "No rustfmt changes to commit."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit -m "Apply rustfmt"
-            git push origin HEAD:automation/safe-rooted-read-file
-          fi
 
       - name: Cache cargo registry and build outputs
         # Swatinem/rust-cache@v2 resolved 2026-06-26
