@@ -13,6 +13,7 @@ use crate::{error::AppError, tools::FileSystemTools, transport_security::Transpo
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
+const READ_FILE_TOOL: &str = "read_file";
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
@@ -44,13 +45,18 @@ struct ListDirectoryArguments {
     max_depth: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReadFileArguments {
+    path: String,
+}
+
 /// Build the staged MCP transport shell.
 ///
-/// This route intentionally exposes only transport liveness, MCP discovery, one
-/// deterministic read-only status tool, and a safe-rooted read-only directory
-/// listing tool. File writes, Android platform access, command execution, and
-/// high-impact actions remain unavailable until later independently validated
-/// stages.
+/// This route intentionally exposes only transport liveness, MCP discovery,
+/// deterministic read-only status, safe-rooted read-only directory listing, and
+/// bounded safe-rooted file reads. File writes, Android platform access,
+/// command execution, and high-impact actions remain unavailable until later
+/// independently validated stages.
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
@@ -84,7 +90,7 @@ async fn handle_mcp_request(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "status": "mcp_transport_shell",
-                "message": "MCP transport is reachable. Tool discovery, runtime_status, and safe-rooted read-only directory listing are available; file writes, platform, command, and high-impact tools are not enabled in this stage.",
+                "message": "MCP transport is reachable. Tool discovery, runtime_status, safe-rooted read-only directory listing, and bounded safe-rooted file reads are available; file writes, platform, command, and high-impact tools are not enabled in this stage.",
             })),
         )
             .into_response();
@@ -173,6 +179,21 @@ async fn handle_mcp_request(
                                 "additionalProperties": false,
                             },
                         },
+                        {
+                            "name": READ_FILE_TOOL,
+                            "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Absolute path to a UTF-8 text file inside one configured safe root.",
+                                    },
+                                },
+                                "required": ["path"],
+                                "additionalProperties": false,
+                            },
+                        },
                     ],
                 },
             })),
@@ -181,7 +202,7 @@ async fn handle_mcp_request(
         "tools/call" => handle_tool_call(id, params, &state.file_tools).await,
         _ => method_not_available(
             id,
-            "Only initialize, tools/list, runtime_status, and safe-rooted list_directory are available in this staged runtime.",
+            "Only initialize, tools/list, runtime_status, safe-rooted list_directory, and bounded safe-rooted read_file are available in this staged runtime.",
         ),
     }
 }
@@ -208,9 +229,10 @@ async fn handle_tool_call(
     match call.name.as_str() {
         RUNTIME_STATUS_TOOL => runtime_status_response(id),
         LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, file_tools).await,
+        READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,
         _ => method_not_available(
             id,
-            "Only runtime_status and safe-rooted read-only list_directory are available in this staged runtime.",
+            "Only runtime_status, safe-rooted read-only list_directory, and bounded safe-rooted read_file are available in this staged runtime.",
         ),
     }
 }
@@ -225,16 +247,16 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                 "content": [
                     {
                         "type": "text",
-                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=read-only-runtime-status-and-directory-listing, filesystem=list-directory-read-only, android_platform=disabled, command_execution=disabled",
+                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=read-only-runtime-status-directory-listing-and-bounded-file-read, filesystem=read-only-list-and-read-file, android_platform=disabled, command_execution=disabled",
                     },
                 ],
                 "structuredContent": {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
-                    "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL],
+                    "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL],
                     "filesystemTools": true,
-                    "filesystemToolMode": "read_only_list_directory",
+                    "filesystemToolMode": "read_only_list_directory_and_read_file",
                     "fileWrites": false,
                     "androidPlatformTools": false,
                     "commandExecution": false,
@@ -304,6 +326,55 @@ async fn handle_list_directory_call(
             "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
         ),
         Err(_error) => internal_error(id, "Filesystem operation failed."),
+    }
+}
+
+async fn handle_read_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            return invalid_params(id, "read_file requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<ReadFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(error) => {
+            return invalid_params(id, &format!("Invalid read_file arguments: {error}"));
+        }
+    };
+
+    match file_tools.read_file(args.path).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": id.unwrap_or(Value::Null),
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": result.content,
+                        },
+                    ],
+                    "structuredContent": result,
+                    "isError": false
+                },
+            })),
+        )
+            .into_response(),
+        Err(AppError::PathTraversal { .. }) => invalid_params(
+            id,
+            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+        ),
+        Err(AppError::FileTooLarge { .. }) => {
+            invalid_params(id, "File content exceeds the staged read_file byte limit.")
+        }
+        Err(_error) => internal_error(id, "Filesystem read failed."),
     }
 }
 
@@ -436,7 +507,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_discovery_returns_runtime_status_and_directory_listing_only() {
+    async fn tool_discovery_returns_runtime_status_directory_listing_and_read_file_only() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -467,10 +538,12 @@ mod tests {
         assert_eq!(payload["jsonrpc"], "2.0");
         assert_eq!(payload["id"], 1);
         let tools = payload["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 3);
         assert_eq!(tools[0]["name"], RUNTIME_STATUS_TOOL);
         assert_eq!(tools[1]["name"], LIST_DIRECTORY_TOOL);
+        assert_eq!(tools[2]["name"], READ_FILE_TOOL);
         assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tools[2]["inputSchema"]["additionalProperties"], false);
         assert_eq!(
             tools[1]["inputSchema"]["properties"]["max_depth"]["maximum"],
             MAX_LIST_DIRECTORY_DEPTH
@@ -522,12 +595,16 @@ mod tests {
             LIST_DIRECTORY_TOOL
         );
         assert_eq!(
+            payload["result"]["structuredContent"]["availableTools"][2],
+            READ_FILE_TOOL
+        );
+        assert_eq!(
             payload["result"]["structuredContent"]["filesystemTools"],
             true
         );
         assert_eq!(
             payload["result"]["structuredContent"]["filesystemToolMode"],
-            "read_only_list_directory"
+            "read_only_list_directory_and_read_file"
         );
         assert_eq!(
             payload["result"]["structuredContent"]["androidPlatformTools"],
@@ -537,6 +614,7 @@ mod tests {
             payload["result"]["structuredContent"]["commandExecution"],
             false
         );
+        assert_eq!(payload["result"]["structuredContent"]["fileWrites"], false);
     }
 
     #[tokio::test]
@@ -585,6 +663,94 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("visible.txt"));
+    }
+
+    #[tokio::test]
+    async fn read_file_tool_call_returns_safe_rooted_file_content() {
+        let (root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let safe_file = root.path().join("visible.txt").to_string_lossy().to_string();
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": READ_FILE_TOOL,
+                "arguments": {
+                    "path": safe_file,
+                }
+            }
+        });
+
+        let response = app
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["result"]["isError"], false);
+        assert_eq!(payload["result"]["content"][0]["text"], "safe content");
+        assert_eq!(
+            payload["result"]["structuredContent"]["content"],
+            "safe content"
+        );
+        assert!(payload["result"]["structuredContent"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("visible.txt"));
+    }
+
+    #[tokio::test]
+    async fn read_file_tool_call_rejects_paths_outside_safe_roots() {
+        let (_root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": READ_FILE_TOOL,
+                "arguments": {
+                    "path": "/etc/passwd",
+                }
+            }
+        });
+
+        let response = app
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["id"], 8);
+        assert_eq!(payload["error"]["code"], -32602);
     }
 
     #[tokio::test]

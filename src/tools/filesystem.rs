@@ -13,6 +13,7 @@ use crate::error::AppError;
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
 const MAX_LIST_ENTRIES: usize = 4_096;
+const MAX_READ_BYTES: u64 = 1_048_576;
 
 #[derive(Clone)]
 pub struct FileSystemTools {
@@ -191,17 +192,36 @@ impl FileSystemTools {
     pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
+        let metadata = fs::metadata(&safe_path).await?;
+        let size = metadata.len();
+
+        if size > MAX_READ_BYTES {
+            counter!("mcp.fs.read.rejected_too_large_total").increment(1);
+            return Err(AppError::FileTooLarge {
+                size,
+                max_size: MAX_READ_BYTES,
+            });
+        }
+
         let content = fs::read_to_string(&safe_path).await?;
-        let size = content.len();
+        let content_size = content.len();
+
+        if content_size as u64 > MAX_READ_BYTES {
+            counter!("mcp.fs.read.rejected_too_large_total").increment(1);
+            return Err(AppError::FileTooLarge {
+                size: content_size as u64,
+                max_size: MAX_READ_BYTES,
+            });
+        }
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.read.latency_seconds").record(duration);
-        counter!("mcp.fs.read.bytes_total").increment(size as u64);
+        counter!("mcp.fs.read.bytes_total").increment(content_size as u64);
 
         Ok(ReadFileResult {
             path: safe_path.to_string_lossy().to_string(),
             content,
-            size,
+            size: content_size,
         })
     }
 

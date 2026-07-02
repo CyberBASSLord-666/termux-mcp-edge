@@ -6,7 +6,7 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status` plus safe-rooted read-only directory listing. File content reads, file writes, Android platform access, command execution, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, safe-rooted read-only directory listing, and bounded safe-rooted UTF-8 file reads. File writes, Android platform access, command execution, and high-impact actions remain unavailable.
 
 ## Stage 1: Transport Request Validation
 
@@ -65,14 +65,15 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, and explicit write controls.
 
-Status: in progress. Current substage exposes safe-rooted read-only directory listing only; file content reads and writes remain disabled.
+Status: in progress. Current substage exposes safe-rooted read-only directory listing and bounded safe-rooted UTF-8 file reads. File writes remain disabled.
 
 Required gates:
 
 - Safe-root traversal tests.
 - Symlink escape tests.
-- Read-only mode test.
-- Dry-run write test.
+- Read-only directory listing test.
+- Bounded read-file test.
+- Dry-run write test before any write-capable tool is exposed.
 - Documentation of operator assumptions.
 
 ## Stage 6: Android Platform Tools
