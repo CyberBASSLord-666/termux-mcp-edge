@@ -38,11 +38,11 @@ jobs:
         uses: actions/cache@638ed79f9dc94c1de1baef91bcab5edaa19451f4
         with:
           path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-0.21.2-debug
+          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-rustsec-eee63cf3c3916a9b8305678dfb91206acd9e67eb-debug
       - name: Install cargo-audit
         if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
         timeout-minutes: 8
-        run: cargo install --quiet --debug cargo-audit --version 0.21.2 --locked
+        run: cargo install --quiet --debug --git https://github.com/RustSec/rustsec --rev eee63cf3c3916a9b8305678dfb91206acd9e67eb cargo-audit --locked
       - name: Prepare audit lockfile
         run: |
           if [ -f Cargo.lock ]; then
