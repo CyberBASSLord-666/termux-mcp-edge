@@ -1,9 +1,8 @@
 //! Configuration management with strong validation.
 
-use std::{net::IpAddr, path::PathBuf};
+use std::{env, net::IpAddr, path::PathBuf};
 
-use anyhow::bail;
-use serde::Deserialize;
+use anyhow::{bail, Context};
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
 const EMPTY_STATIC_TOKEN_ERROR: &str =
@@ -13,7 +12,7 @@ const MISSING_STATIC_TOKEN_ERROR: &str =
 const REMOTE_UNAUTHENTICATED_ERROR: &str =
     "Unauthenticated mode is only allowed on localhost; set MCP__AUTH__STATIC_TOKEN or bind MCP__SERVER__HOST to localhost, 127.0.0.1, or ::1";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub auth: AuthConfig,
@@ -21,13 +20,13 @@ pub struct AppConfig {
     pub transport: TransportConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AuthConfig {
     /// Static bearer token for simple deployments.
     /// For production, consider integrating with external IdP.
@@ -37,14 +36,14 @@ pub struct AuthConfig {
     pub allow_unauthenticated_localhost_only: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct FileConfig {
     /// Whitelisted root directories for file operations.
     /// All paths are resolved absolutely and checked against these roots.
     pub safe_roots: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TransportConfig {
     /// Allowed HTTP Host header values for future MCP transport routes.
     pub allowed_hosts: Vec<String>,
@@ -56,34 +55,95 @@ pub struct TransportConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
-        let default_safe_roots = vec![String::from(DEFAULT_FILE_SAFE_ROOT)];
-        let default_allowed_hosts = vec![
-            String::from("localhost:8000"),
-            String::from("127.0.0.1:8000"),
-            String::from("[::1]:8000"),
-        ];
-        let default_allowed_origins = vec![
-            String::from("http://localhost:8000"),
-            String::from("http://127.0.0.1:8000"),
-            String::from("http://[::1]:8000"),
-        ];
-        let cfg = config::Config::builder()
-            .set_default("server.host", "127.0.0.1")?
-            .set_default("server.port", 8000)?
-            .set_default("auth.static_token", None::<String>)?
-            .set_default("auth.allow_unauthenticated_localhost_only", false)?
-            .set_default("file.safe_roots", default_safe_roots)?
-            .set_default("transport.allowed_hosts", default_allowed_hosts)?
-            .set_default("transport.allowed_origins", default_allowed_origins)?
-            .set_default("transport.allow_missing_origin", false)?
-            .add_source(config::Environment::with_prefix("MCP").separator("__"))
-            .build()?;
+        let config = Self {
+            server: ServerConfig {
+                host: env_string("MCP__SERVER__HOST", "127.0.0.1"),
+                port: env_u16("MCP__SERVER__PORT", 8000)?,
+            },
+            auth: AuthConfig {
+                static_token: env::var("MCP__AUTH__STATIC_TOKEN").ok(),
+                allow_unauthenticated_localhost_only: env_bool(
+                    "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+                    false,
+                )?,
+            },
+            file: FileConfig {
+                safe_roots: env_path_list("MCP__FILE__SAFE_ROOTS", &[DEFAULT_FILE_SAFE_ROOT]),
+            },
+            transport: TransportConfig {
+                allowed_hosts: env_string_list(
+                    "MCP__TRANSPORT__ALLOWED_HOSTS",
+                    &["localhost:8000", "127.0.0.1:8000", "[::1]:8000"],
+                ),
+                allowed_origins: env_string_list(
+                    "MCP__TRANSPORT__ALLOWED_ORIGINS",
+                    &[
+                        "http://localhost:8000",
+                        "http://127.0.0.1:8000",
+                        "http://[::1]:8000",
+                    ],
+                ),
+                allow_missing_origin: env_bool("MCP__TRANSPORT__ALLOW_MISSING_ORIGIN", false)?,
+            },
+        };
 
-        let config: Self = cfg.try_deserialize()?;
         validate_file_safe_roots(&config.file)?;
         validate_transport_security(&config.transport)?;
         Ok(config)
     }
+}
+
+fn env_string(name: &str, default: &str) -> String {
+    env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+fn env_u16(name: &str, default: u16) -> anyhow::Result<u16> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<u16>()
+            .with_context(|| format!("{name} must be an integer between 0 and 65535")),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(err) => Err(err).with_context(|| format!("{name} could not be read")),
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> anyhow::Result<bool> {
+    match env::var(name) {
+        Ok(value) => parse_bool(name, &value),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(err) => Err(err).with_context(|| format!("{name} could not be read")),
+    }
+}
+
+fn parse_bool(name: &str, value: &str) -> anyhow::Result<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => bail!("{name} must be a boolean value: true/false, 1/0, yes/no, or on/off"),
+    }
+}
+
+fn env_string_list(name: &str, defaults: &[&str]) -> Vec<String> {
+    match env::var(name) {
+        Ok(value) => split_env_list(&value),
+        Err(_) => defaults.iter().map(|value| (*value).to_owned()).collect(),
+    }
+}
+
+fn env_path_list(name: &str, defaults: &[&str]) -> Vec<PathBuf> {
+    env_string_list(name, defaults)
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn split_env_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
