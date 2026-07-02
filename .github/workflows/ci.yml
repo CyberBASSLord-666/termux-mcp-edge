@@ -44,8 +44,8 @@ jobs:
             cd repo
             rustup default stable
             cargo generate-lockfile
-            git status --short
-            git add Cargo.lock
+            git status --short --ignored
+            git add -f Cargo.lock
             git diff --cached --stat
             if git diff --cached --quiet; then
               echo "No lockfile changes to commit."
