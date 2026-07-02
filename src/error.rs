@@ -11,7 +11,7 @@ pub enum AppError {
     Io(#[from] std::io::Error),
 
     #[error("Configuration error: {0}")]
-    Config(String),
+    Config(#[from] config::ConfigError),
 
     #[error("Authentication failed")]
     Unauthorized,
