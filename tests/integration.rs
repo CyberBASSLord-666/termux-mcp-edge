@@ -85,6 +85,28 @@ async fn filesystem_write_rejects_exact_safe_root_target() {
     );
 }
 
+#[tokio::test]
+async fn filesystem_write_rejects_oversized_payloads() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let root = temp_dir
+        .path()
+        .canonicalize()
+        .expect("canonicalize temp root");
+    let tools = FileSystemTools::new(vec![root.clone()]);
+    let target = root.join("too-large.txt");
+    let payload = "x".repeat((4 * 1024 * 1024) + 1);
+
+    let result = tools
+        .write_file(target.to_string_lossy().into_owned(), payload, Some(false))
+        .await;
+
+    assert!(result.is_err(), "oversized writes must be rejected");
+    assert!(
+        !target.exists(),
+        "oversized rejected writes must not create a target file"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn filesystem_listing_skips_broken_symlinks() {
