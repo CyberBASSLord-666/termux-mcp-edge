@@ -1,18 +1,19 @@
 //! High-value system tools with robust UI finding and metrics.
 
-use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use metrics::{counter, histogram};
-use rmcp::tool;
 use roxmltree::Document;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command as TokioCommand;
+use tokio::{process::Command as TokioCommand, time::timeout};
 
 use crate::error::AppError;
 
-const UI_DUMP_PATH: &str = "/sdcard/window_dump.xml";
+const UI_DUMP_DIR: &str = "/sdcard";
+const ANDROID_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_LOGCAT_LINES: u32 = 100;
+const MAX_LOGCAT_LINES: u32 = 1_000;
 
 #[derive(Clone, Default)]
 pub struct SystemTools;
@@ -58,20 +59,18 @@ pub struct UiQueryResult {
     pub count: usize,
 }
 
-#[tool]
 impl SystemTools {
-    #[tool(description = "Read sensor with rich structured data")]
     pub async fn read_sensor(&self, sensor: String) -> Result<SensorReading, AppError> {
         let start = Instant::now();
-        let output = TokioCommand::new("termux-sensor")
-            .args(["-s", &sensor, "-n", "1"])
-            .output()
-            .await?;
+        let mut command = TokioCommand::new("termux-sensor");
+        command.kill_on_drop(true).args(["-s", &sensor, "-n", "1"]);
+        let output = run_with_timeout("termux-sensor", command).await?;
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.sensor.latency_seconds").record(duration);
         counter!("mcp.sensor.calls_total").increment(1);
 
+        ensure_success("termux-sensor", &output)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (values, accuracy) = parse_sensor_json(&stdout, &sensor);
 
@@ -81,14 +80,17 @@ impl SystemTools {
             accuracy,
         })
     }
-
-    #[tool(description = "Get recent logcat")]
     pub async fn get_logcat(&self, lines: Option<u32>) -> Result<LogcatResult, AppError> {
         let start = Instant::now();
-        let count = lines.unwrap_or(100);
-        let output = Command::new("logcat")
-            .args(["-d", "-t", &count.to_string()])
-            .output()?;
+        let count = lines
+            .unwrap_or(DEFAULT_LOGCAT_LINES)
+            .clamp(1, MAX_LOGCAT_LINES);
+        let mut command = TokioCommand::new("logcat");
+        command
+            .kill_on_drop(true)
+            .args(["-d", "-t", &count.to_string()]);
+        let output = run_with_timeout("logcat", command).await?;
+        ensure_success("logcat", &output)?;
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.logcat.latency_seconds").record(duration);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -97,15 +99,11 @@ impl SystemTools {
             lines: stdout.lines().map(str::to_string).collect(),
         })
     }
-
-    #[tool(description = "Execute via rish with metrics")]
     pub async fn rish_exec(&self, command: String) -> Result<CommandResult, AppError> {
         let start = Instant::now();
-        let output = TokioCommand::new("rish")
-            .arg("-c")
-            .arg(&command)
-            .output()
-            .await?;
+        let mut process = TokioCommand::new("rish");
+        process.kill_on_drop(true).arg("-c").arg(&command);
+        let output = run_with_timeout("rish", process).await?;
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.rish.latency_seconds").record(duration);
         counter!("mcp.rish.calls_total").increment(1);
@@ -119,26 +117,32 @@ impl SystemTools {
             exit_code: output.status.code().unwrap_or(-1),
         })
     }
-
-    #[tool(description = "Dump UI hierarchy (parsed)")]
     pub async fn dump_ui_hierarchy(&self) -> Result<UiDumpResult, AppError> {
         let start = Instant::now();
-        let dump_command = format!("uiautomator dump {UI_DUMP_PATH}");
-        let dump_output = TokioCommand::new("rish")
-            .arg("-c")
-            .arg(&dump_command)
-            .output()
-            .await?;
+        let dump_path = format!(
+            "{UI_DUMP_DIR}/window_dump_{}.xml",
+            uuid::Uuid::new_v4().simple()
+        );
+        let dump_command = format!("uiautomator dump {dump_path}");
+        let mut dump_process = TokioCommand::new("rish");
+        dump_process.kill_on_drop(true).arg("-c").arg(&dump_command);
+        let dump_output = run_with_timeout("uiautomator dump", dump_process).await?;
         if !dump_output.status.success() {
             counter!("mcp.ui.dump_errors_total").increment(1);
+            return Err(command_failure("uiautomator dump", &dump_output));
         }
 
-        let read_command = format!("cat {UI_DUMP_PATH}");
-        let output = TokioCommand::new("rish")
-            .arg("-c")
-            .arg(&read_command)
-            .output()
-            .await?;
+        let read_command = format!("cat {dump_path}");
+        let mut read_process = TokioCommand::new("rish");
+        read_process.kill_on_drop(true).arg("-c").arg(&read_command);
+        let output = run_with_timeout("cat UI hierarchy dump", read_process).await;
+        let cleanup_result = tokio::fs::remove_file(&dump_path).await;
+        let output = output?;
+        ensure_success("cat UI hierarchy dump", &output)?;
+        if let Err(error) = cleanup_result {
+            counter!("mcp.ui.cleanup_errors_total").increment(1);
+            tracing::warn!(%error, %dump_path, "failed to remove UI hierarchy dump");
+        }
         let xml = String::from_utf8_lossy(&output.stdout).to_string();
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.ui.latency_seconds").record(duration);
@@ -146,8 +150,6 @@ impl SystemTools {
 
         Ok(UiDumpResult { elements })
     }
-
-    #[tool(description = "Find elements by resource ID (robust)")]
     pub async fn find_elements_by_resource_id(
         &self,
         resource_id: String,
@@ -170,8 +172,6 @@ impl SystemTools {
             elements,
         })
     }
-
-    #[tool(description = "Find elements by class")]
     pub async fn find_elements_by_class(
         &self,
         class_name: String,
@@ -193,8 +193,6 @@ impl SystemTools {
             elements,
         })
     }
-
-    #[tool(description = "Find element by text (case-insensitive contains)")]
     pub async fn find_element_by_text(&self, text: String) -> Result<Option<UiElement>, AppError> {
         let dump = self.dump_ui_hierarchy().await?;
         let search = text.to_lowercase();
@@ -207,8 +205,6 @@ impl SystemTools {
 
         Ok(found)
     }
-
-    #[tool(description = "Find element by text and return center tap coordinates")]
     pub async fn find_element_and_get_tap_coordinates(
         &self,
         text: String,
@@ -290,4 +286,33 @@ fn parse_bounds(bounds: &str) -> Option<(i32, i32, i32, i32)> {
     }
 
     None
+}
+
+fn ensure_success(command: &str, output: &std::process::Output) -> Result<(), AppError> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(command_failure(command, output))
+    }
+}
+
+fn command_failure(command: &str, output: &std::process::Output) -> AppError {
+    AppError::CommandFailed {
+        command: command.to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    }
+}
+
+async fn run_with_timeout(
+    command_name: &str,
+    mut command: TokioCommand,
+) -> Result<std::process::Output, AppError> {
+    timeout(ANDROID_COMMAND_TIMEOUT, command.output())
+        .await
+        .map_err(|_| AppError::CommandTimeout {
+            command: command_name.to_string(),
+            timeout_seconds: ANDROID_COMMAND_TIMEOUT.as_secs(),
+        })?
+        .map_err(AppError::Io)
 }

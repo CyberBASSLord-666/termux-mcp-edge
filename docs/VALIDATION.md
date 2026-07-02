@@ -2,15 +2,14 @@
 
 ## Current automated pass
 
-This pass was performed through the GitHub connector from the canonical repository state on `main`.
+This pass was performed in a Rust-enabled container on the current feature branch.
 
-### Static checks completed
+### Checks completed
 
-- Confirmed repository existence, visibility, default branch, and write permissions.
-- Confirmed `README.md`, `Cargo.toml`, `CHANGELOG.md`, GitHub Actions CI, Android cross-compile workflow, and Dependabot configuration are present.
-- Inspected filesystem implementation and tests before patching.
-- Verified the Rust language rule behind the primary compile-risk fix: directly recursive `async fn` bodies require boxing or a non-recursive implementation because the future must have a known size.
-- Verified the current MCP specification exposes tools through server capabilities, `tools/list`, and `tools/call`; this pass preserves tool-oriented behavior and improves the safety boundary around filesystem tool execution.
+- Verified the authenticated HTTP/SSE MCP transport compiles.
+- Verified bearer-token helper tests, filesystem integration tests, mock client tests, and path-sanitization property tests pass.
+- Ran clippy with all targets and all features with warnings denied.
+- Performed a focused security review against `main` covering authentication, session lifecycle, filesystem containment, subprocess execution, temporary-file handling, and denial-of-service limits.
 
 ### Validation commands to run locally
 
@@ -32,6 +31,6 @@ ANDROID_NDK_HOME=/path/to/android-ndk ./scripts/cross_compile.sh
 
 ### Validation not completed in this run
 
-The ChatGPT execution context used for this automated pass does not provide a Rust compiler, Cargo dependency resolution, or an Android NDK toolchain. Because of that, `cargo fmt`, `cargo clippy`, `cargo test`, and Android cross-compilation were not executed inside this run.
+Android cross-compilation was not executed because this container does not provide an Android NDK path. Install the Android NDK and run the cross-compilation command above before publishing an Android release artifact.
 
-The patch was therefore validated by source inspection and by aligning the code with stable Rust async recursion constraints and MCP tool-safety expectations. CI should be treated as the compile/test authority after the pull request is opened.
+`cargo-audit` and `cargo-deny` are recommended for release gates, but those Cargo subcommands may need to be installed separately in local or CI environments.

@@ -1,9 +1,24 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # runit service for Termux MCP Server (Rust)
+set -eu
 exec 2>&1
+
+TOKEN_FILE="$HOME/.termux_mcp_token"
+if [ ! -r "$TOKEN_FILE" ]; then
+  echo "fatal: missing bearer-token file: $TOKEN_FILE" >&2
+  echo "create it with: umask 077; head -c 32 /dev/urandom | base64 > $TOKEN_FILE" >&2
+  exit 111
+fi
+
+TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+if [ -z "$(printf '%s' "$TOKEN" | tr -d '[:space:]')" ] || [ "$TOKEN" = "CHANGE_ME" ]; then
+  echo "fatal: bearer-token file is empty or still contains CHANGE_ME" >&2
+  exit 111
+fi
 
 export MCP__SERVER__HOST="127.0.0.1"
 export MCP__SERVER__PORT="8000"
-export MCP__AUTH__STATIC_TOKEN="$(cat $HOME/.termux_mcp_token 2>/dev/null || echo 'CHANGE_ME')"
+export MCP__AUTH__STATIC_TOKEN="$TOKEN"
+export MCP__FILE__SAFE_ROOTS='["/storage/emulated/0/Documents"]'
 
-exec $HOME/bin/termux-mcp-server
+exec "$HOME/bin/termux-mcp-server"

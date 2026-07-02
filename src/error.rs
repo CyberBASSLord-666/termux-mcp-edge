@@ -10,11 +10,33 @@ pub enum AppError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Configuration error: {0}")]
+    InvalidConfiguration(String),
+
     #[error("MCP protocol error: {0}")]
     Mcp(#[from] rmcp::Error),
 
     #[error("Configuration error: {0}")]
     Config(#[from] config::ConfigError),
+
+    #[error("Command `{command}` failed with exit code {exit_code}: {stderr}")]
+    CommandFailed {
+        command: String,
+        exit_code: i32,
+        stderr: String,
+    },
+
+    #[error("Command `{command}` timed out after {timeout_seconds} seconds")]
+    CommandTimeout {
+        command: String,
+        timeout_seconds: u64,
+    },
+
+    #[error("Payload too large: {size} bytes exceeds limit of {limit} bytes")]
+    PayloadTooLarge { size: u64, limit: u64 },
+
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
 
     #[error("Authentication failed")]
     Unauthorized,
@@ -26,6 +48,7 @@ impl axum::response::IntoResponse for AppError {
         let status = match self {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::PathTraversal { .. } => StatusCode::FORBIDDEN,
+            AppError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()

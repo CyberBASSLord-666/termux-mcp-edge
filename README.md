@@ -20,7 +20,7 @@ Startup now fails closed when no bearer token is configured. Empty or whitespace
 
 - **Language**: Rust edition 2021
 - **MCP Framework**: `rmcp` + Axum
-- **Transport**: Streamable HTTP (`stateless_http` equivalent)
+- **Transport**: Authenticated HTTP/SSE (`GET /mcp/sse` plus `POST /mcp/message?sessionId=...`)
 - **Supervision**: `termux-services` + runit
 - **Networking**: Named Cloudflare Tunnel or VPN-bound endpoint recommended
 
@@ -87,7 +87,9 @@ Create runit service at `$PREFIX/var/service/mcp-server/run`:
 ```bash
 #!/data/data/com.termux/files/usr/bin/sh
 exec 2>&1
-export MCP__AUTH__STATIC_TOKEN="your-secure-token-here"
+TOKEN_FILE="$HOME/.termux_mcp_token"
+[ -r "$TOKEN_FILE" ] || exit 111
+export MCP__AUTH__STATIC_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
 export MCP__FILE__SAFE_ROOTS='["/storage/emulated/0/Documents"]'
 exec /data/data/com.termux/files/home/termux-mcp-server
 ```
@@ -103,7 +105,7 @@ sv up mcp-server
 
 Filesystem tools only operate on absolute paths that resolve under configured safe roots. Keep `MCP__FILE__SAFE_ROOTS` narrow, prefer a dedicated project directory, and use dry-run writes before modifying important files.
 
-Directory listing is bounded by depth and entry count to protect latency, memory, and battery on mobile hardware.
+Directory listing is bounded by depth and entry count to protect latency, memory, and battery on mobile hardware. File reads and writes are capped at 4 MiB per tool call.
 
 ## Exposing the server
 
@@ -118,11 +120,13 @@ This removes the need to open inbound ports on your device while still allowing 
 
 ## Authentication
 
-Set the `MCP__AUTH__STATIC_TOKEN` environment variable to a strong random string. Empty or whitespace-only token values are rejected at startup. All requests must include:
+Set the `MCP__AUTH__STATIC_TOKEN` environment variable to a strong random string. Empty or whitespace-only token values are rejected at startup. MCP transport requests (`/mcp/sse` and `/mcp/message`) must include:
 
 ```http
 Authorization: Bearer <your-token>
 ```
+
+`/health` is the only intentionally unauthenticated endpoint and should expose no sensitive state beyond process liveness.
 
 For local development only, an unauthenticated listener can be started by setting:
 
@@ -132,6 +136,28 @@ export MCP__SERVER__HOST=localhost
 ```
 
 This opt-in is rejected for non-loopback bind addresses and must not be used with remote transports, tunnels, shared networks, or rish-capable tool exposure.
+
+## MCP HTTP/SSE Endpoints
+
+The server exposes the following HTTP routes on `MCP__SERVER__HOST:MCP__SERVER__PORT`:
+
+```http
+GET  /health
+GET  /mcp/sse
+POST /mcp/message?sessionId=<session-id>
+```
+
+`GET /health` is intentionally unauthenticated for local supervisor and tunnel health checks. The MCP routes require `Authorization: Bearer <your-token>` unless explicit localhost-only unauthenticated development mode is enabled.
+
+SSE clients first connect to `/mcp/sse`. The server emits an `endpoint` event containing the session-specific `/mcp/message?sessionId=...` URL used for client JSON-RPC messages. Clients must include the same bearer token on both the SSE request and message POST requests. The server bounds active MCP SSE sessions to protect mobile memory and thermal limits.
+
+Exposed MCP tools:
+
+- `list_directory`, `read_file`, and `write_file` for safe-rooted filesystem access.
+- `read_sensor`, `get_logcat`, and `dump_ui_hierarchy` for Android/Termux system inspection.
+- `rish_exec` for Shizuku/rish shell execution.
+
+System and shell commands run asynchronously with timeouts and return structured command-failure errors on non-zero exit.
 
 ## Health Check
 

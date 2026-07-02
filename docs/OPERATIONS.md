@@ -24,9 +24,10 @@ This project is designed to run a small, secure MCP server on Android through Te
 
 ```bash
 curl -fsS http://127.0.0.1:8000/health
+curl -fsS -H "Authorization: Bearer $(cat "$HOME/.termux_mcp_token")" http://127.0.0.1:8000/mcp/sse
 ```
 
-For MCP-level validation, use the MCP Inspector from a trusted desktop environment and authenticate with the configured bearer token or OAuth flow.
+The SSE request should return an MCP endpoint event for `/mcp/message?sessionId=...`. The MCP routes require the bearer token; `/health` intentionally returns liveness only and remains unauthenticated. For full MCP-level validation, use the MCP Inspector from a trusted desktop environment and authenticate with the configured bearer token or OAuth flow.
 
 For repository-level validation, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat CI as the authority before merging automated improvement branches.
 
@@ -38,7 +39,12 @@ Install Termux services:
 pkg install termux-services
 ```
 
-Create or install the runit service script from `scripts/runit/mcp-server/run`, then start it:
+Create the token file, install the runit service script from `scripts/runit/mcp-server/run`, then start it:
+
+```bash
+umask 077
+head -c 32 /dev/urandom | base64 > "$HOME/.termux_mcp_token"
+```
 
 ```bash
 sv-enable mcp-server
@@ -53,11 +59,13 @@ sv status mcp-server
 - Avoid exposing write access unless the caller and network path are trusted.
 - Keep directory listing depth low; the server enforces bounded traversal to protect battery, memory, and latency.
 - Use dry-run mode before destructive or high-impact file writes.
+- Keep individual file reads and writes within the enforced 4 MiB tool-call limit; split larger workflows into smaller chunks outside the MCP tool surface.
 
 ## Release process
 
-1. Validate with `cargo fmt`, `cargo clippy`, and `cargo test`.
+1. Validate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets`.
 2. Cross-compile with `scripts/cross_compile.sh`.
 3. Copy the release binary to `$HOME/bin/termux-mcp-server` on Android.
 4. Restart the runit service.
-5. Verify `/health` and MCP tool listing.
+5. Verify `/health`, authenticated `/mcp/sse`, and MCP tool listing.
+6. Confirm token rotation by replacing `$HOME/.termux_mcp_token`, restarting the service, and verifying the old token fails.

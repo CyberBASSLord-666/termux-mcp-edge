@@ -31,6 +31,8 @@ export MCP__SERVER__HOST=127.0.0.1
 
 This opt-in is rejected for non-loopback bind addresses.  It is unsafe for Cloudflare Tunnel, VPN, LAN, reverse-proxy, port-forwarded, shared-device, or rish-capable deployments.  Treat any unauthenticated listener as local-only and disposable.
 
+The only route intentionally left unauthenticated in normal operation is `GET /health`, which returns a liveness-only response and must not expose configuration, tool output, filesystem metadata, command output, tokens, or session identifiers. MCP transport routes (`GET /mcp/sse` and `POST /mcp/message`) require bearer authentication unless the explicit localhost-only development mode above is active.
+
 ### Reject the Token‑Passthrough Anti‑pattern
 
 Never allow a client to perform the entire OAuth flow and simply forward an access token to the MCP server.  This **breaks the chain of trust**: the server cannot verify that the token belongs to the caller【817876964395207†L378-L392】.  The MCP server itself must manage the token exchange process and validate proofs to guarantee identity integrity.
@@ -51,7 +53,7 @@ Path traversal attacks exploit untrusted input to access files outside the inten
 
 ### Symlink Containment
 
-Symlinks can lead outside the safe root even if the user‑supplied path appears safe.  The server sanitizes every path, including those discovered during directory traversal, to prevent following symlinks outside the allowed roots.
+Symlinks can lead outside the safe root even if the user‑supplied path appears safe.  The server sanitizes every path, including those discovered during directory traversal, to prevent following symlinks outside the allowed roots. Filesystem reads and writes are also size-bounded to reduce memory and battery denial-of-service risk on mobile devices.
 
 ### Restrict Network Access in Tools
 
@@ -84,7 +86,7 @@ Android aggressively terminates background processes to conserve resources.  To 
 
 ## 7. Incident Response
 
-Prepare an incident response plan that includes token revocation, secret rotation, and forced re‑authentication.  If you suspect compromise, invalidate all active sessions, rotate any leaked credentials, and audit logs for unauthorized access.
+Prepare an incident response plan that includes token revocation, secret rotation, and forced re‑authentication.  If you suspect compromise, invalidate all active sessions by restarting the service, rotate any leaked credentials, and audit logs for unauthorized access. For runit deployments, rotate `$HOME/.termux_mcp_token`, restart the service, and verify that old bearer tokens no longer authenticate to `/mcp/sse`.
 
 ## Conclusion
 

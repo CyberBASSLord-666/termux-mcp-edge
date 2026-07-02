@@ -16,6 +16,7 @@ use crate::error::AppError;
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
 const MAX_LIST_ENTRIES: usize = 4_096;
+const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct FileSystemTools {
@@ -23,13 +24,43 @@ pub struct FileSystemTools {
 }
 
 impl FileSystemTools {
-    pub fn new(safe_roots: Vec<PathBuf>) -> Self {
-        let safe_roots = safe_roots
-            .into_iter()
-            .map(|root| root.canonicalize().unwrap_or(root))
-            .collect();
+    pub fn try_new(safe_roots: Vec<PathBuf>) -> Result<Self, AppError> {
+        if safe_roots.is_empty() {
+            return Err(AppError::InvalidConfiguration(
+                "at least one filesystem safe root must be configured".to_string(),
+            ));
+        }
 
-        Self { safe_roots }
+        let mut canonical_roots = Vec::with_capacity(safe_roots.len());
+        for root in safe_roots {
+            let canonical = root.canonicalize().map_err(|error| {
+                AppError::InvalidConfiguration(format!(
+                    "safe root `{}` cannot be canonicalized: {error}",
+                    root.display()
+                ))
+            })?;
+            let metadata = std::fs::metadata(&canonical).map_err(|error| {
+                AppError::InvalidConfiguration(format!(
+                    "safe root `{}` cannot be inspected: {error}",
+                    canonical.display()
+                ))
+            })?;
+            if !metadata.is_dir() {
+                return Err(AppError::InvalidConfiguration(format!(
+                    "safe root `{}` is not a directory",
+                    canonical.display()
+                )));
+            }
+            canonical_roots.push(canonical);
+        }
+
+        Ok(Self {
+            safe_roots: canonical_roots,
+        })
+    }
+
+    pub fn new(safe_roots: Vec<PathBuf>) -> Self {
+        Self::try_new(safe_roots).expect("invalid filesystem safe-root configuration")
     }
 
     /// Resolve a caller-supplied path and verify that it remains inside one of
@@ -190,6 +221,13 @@ impl FileSystemTools {
     pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
+        let metadata = fs::metadata(&safe_path).await?;
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err(AppError::PayloadTooLarge {
+                size: metadata.len(),
+                limit: MAX_FILE_BYTES,
+            });
+        }
         let content = fs::read_to_string(&safe_path).await?;
         let size = content.len();
 
@@ -211,6 +249,13 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<String, AppError> {
         let start = Instant::now();
+        if content.len() as u64 > MAX_FILE_BYTES {
+            return Err(AppError::PayloadTooLarge {
+                size: content.len() as u64,
+                limit: MAX_FILE_BYTES,
+            });
+        }
+
         let safe_path = self.sanitize(&path)?;
         let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
             attempted: path.clone(),
