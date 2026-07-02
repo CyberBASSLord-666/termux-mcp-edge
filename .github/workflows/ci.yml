@@ -3,8 +3,27 @@ name: CI
 on:
   push:
     branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "tests/**"
+      - "benches/**"
+      - "examples/**"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "tests/**"
+      - "benches/**"
+      - "examples/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,8 +35,8 @@ concurrency:
 jobs:
   rust:
     name: Rust validation
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26

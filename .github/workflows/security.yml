@@ -3,10 +3,19 @@ name: Security
 on:
   push:
     branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/security.yml"
   pull_request:
     branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/security.yml"
   schedule:
     - cron: "17 9 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,15 +27,47 @@ concurrency:
 jobs:
   cargo-audit:
     name: Cargo audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
     steps:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Cache cargo-audit binary
+        id: cargo-audit-cache
+        uses: actions/cache@638ed79f9dc94c1de1baef91bcab5edaa19451f4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-rustsec-eee63cf3c3916a9b8305678dfb91206acd9e67eb-debug
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: Generate lockfile
-        run: cargo generate-lockfile
+        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 8
+        run: cargo install --quiet --debug --git https://github.com/RustSec/rustsec --rev eee63cf3c3916a9b8305678dfb91206acd9e67eb cargo-audit --locked
+      - name: Prepare audit lockfile
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo fetch --locked
+          else
+            cargo generate-lockfile
+          fi
       - name: Audit dependencies
-        run: cargo audit
+        run: |
+          set +e
+          cargo audit > cargo-audit.txt 2>&1
+          status=$?
+          cat cargo-audit.txt
+          echo "$status" > cargo-audit.status
+          exit 0
+      - name: Upload cargo-audit output
+        if: always()
+        # actions/upload-artifact@v4 resolved 2026-07-02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cargo-audit-output
+          path: |
+            cargo-audit.txt
+            cargo-audit.status
+          if-no-files-found: error
+          retention-days: 3
+      - name: Fail on audit findings
+        run: test "$(cat cargo-audit.status)" = "0"
