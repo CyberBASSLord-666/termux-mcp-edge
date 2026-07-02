@@ -47,127 +47,41 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           components: rustfmt, clippy
-      - name: Apply review patch
+      - name: Patch read_file transport status mapping
         run: |
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
-          fs = Path('src/tools/filesystem.rs')
-          s = fs.read_text().replace('use tokio::fs;\n', 'use tokio::{fs, io::AsyncReadExt};\n')
-          start = s.index('    pub async fn read_file(')
-          end = s.index('    pub async fn write_file(', start)
-          read_fn = '''    pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
-              let start = Instant::now();
-              let safe_path = self.sanitize(&path)?;
-              let file = fs::File::open(&safe_path).await?;
-              let mut limited_reader = file.take(MAX_READ_BYTES + 1);
-              let mut content = String::new();
-              let bytes_read = limited_reader.read_to_string(&mut content).await?;
-
-              if bytes_read as u64 > MAX_READ_BYTES {
-                  counter!("mcp.fs.read.rejected_too_large_total").increment(1);
-                  return Err(AppError::FileTooLarge {
-                      size: bytes_read as u64,
-                      max_size: MAX_READ_BYTES,
-                  });
-              }
-
-              let duration = start.elapsed().as_secs_f64();
-              histogram!("mcp.fs.read.latency_seconds").record(duration);
-              counter!("mcp.fs.read.bytes_total").increment(bytes_read as u64);
-
-              Ok(ReadFileResult {
-                  path: safe_path.to_string_lossy().to_string(),
-                  content,
-                  size: bytes_read,
-              })
-          }
-
-          '''
-          fs.write_text(s[:start] + read_fn + s[end:])
-          mt = Path('src/mcp_transport.rs')
-          s = mt.read_text()
-          s = s.replace('''        Err(AppError::FileTooLarge { .. }) => {
+          path = Path('src/mcp_transport.rs')
+          source = path.read_text()
+          old = '''        Err(AppError::FileTooLarge { .. }) => {
               invalid_params(id, "File content exceeds the staged read_file byte limit.")
           }
-          ''', '''        Err(AppError::FileTooLarge { .. }) => payload_too_large(
+          '''
+          new = '''        Err(AppError::FileTooLarge { .. }) => payload_too_large(
               id,
               "File content exceeds the staged read_file byte limit.",
           ),
-          ''')
-          internal = '''fn internal_error(id: Option<Value>, message: &str) -> Response {
-              (
-                  StatusCode::INTERNAL_SERVER_ERROR,
-                  Json(json!({
-                      "jsonrpc": "2.0",
-                      "id": id.unwrap_or(Value::Null),
-                      "error": {
-                          "code": -32603,
-                          "message": "Internal error",
-                          "data": message,
-                      },
-                  })),
-              )
-                  .into_response()
-          }
-
           '''
-          payload = internal + '''fn payload_too_large(id: Option<Value>, message: &str) -> Response {
-              (
-                  StatusCode::PAYLOAD_TOO_LARGE,
-                  Json(json!({
-                      "jsonrpc": "2.0",
-                      "id": id.unwrap_or(Value::Null),
-                      "error": {
-                          "code": -32001,
-                          "message": "Payload too large",
-                          "data": message,
-                      },
-                  })),
-              )
-                  .into_response()
-          }
-
-          '''
-          if 'fn payload_too_large(' not in s:
-              s = s.replace(internal, payload)
-          marker = '    #[tokio::test]\n    async fn read_file_tool_call_rejects_paths_outside_safe_roots() {\n'
-          test = '''    #[tokio::test]
-              async fn read_file_tool_call_rejects_files_above_staged_byte_limit() {
-                  let (root, file_tools) = test_file_tools();
-                  let app = test_router(file_tools);
-                  let too_large_file = root.path().join("too_large.txt");
-                  std::fs::write(&too_large_file, vec![b'a'; 1_048_577]).unwrap();
-                  let request_body = json!({
-                      "jsonrpc": "2.0",
-                      "id": 9,
-                      "method": "tools/call",
-                      "params": {
-                          "name": READ_FILE_TOOL,
-                          "arguments": { "path": too_large_file.to_string_lossy().to_string() }
-                      }
-                  });
-                  let response = app.oneshot(Request::post("/mcp")
-                      .header(header::HOST, "localhost:8000")
-                      .header(header::ORIGIN, "http://localhost:8000")
-                      .header(header::CONTENT_TYPE, "application/json")
-                      .body(Body::from(request_body.to_string())).unwrap()).await.unwrap();
-                  assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-                  let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-                  let payload: Value = serde_json::from_slice(&body).unwrap();
-                  assert_eq!(payload["error"]["code"], -32001);
-              }
-
-          '''
-          if 'read_file_tool_call_rejects_files_above_staged_byte_limit' not in s:
-              s = s.replace(marker, test + marker)
-          mt.write_text(s)
+          if old not in source:
+              old = '''        Err(AppError::FileTooLarge { .. }) => {
+            invalid_params(id, "File content exceeds the staged read_file byte limit.")
+        }
+'''
+              new = '''        Err(AppError::FileTooLarge { .. }) => payload_too_large(
+            id,
+            "File content exceeds the staged read_file byte limit.",
+        ),
+'''
+          if old not in source:
+              raise SystemExit('FileTooLarge arm not found')
+          path.write_text(source.replace(old, new))
           PY
           cargo fmt --all
-          git add src
+          git add src/mcp_transport.rs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Address bounded read_file review feedback"
+          git commit -m "Use payload-too-large response for read_file limit"
           git push origin HEAD:automation/safe-rooted-read-file
       - name: Cache cargo registry and build outputs
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
