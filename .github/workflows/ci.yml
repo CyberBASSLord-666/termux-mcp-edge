@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all
-          git add src/**/*.rs tests/**/*.rs 2>/dev/null || true
+          git add -A src tests
           if git diff --cached --quiet; then
             echo "No rustfmt changes to commit."
           else
