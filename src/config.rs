@@ -285,7 +285,9 @@ mod tests {
         let err = validate_runtime_auth_posture(&config)
             .expect_err("missing token must fail closed by default");
 
-        assert!(err.to_string().contains("MCP__AUTH__STATIC_TOKEN is required"));
+        assert!(err
+            .to_string()
+            .contains("MCP__AUTH__STATIC_TOKEN is required"));
     }
 
     #[test]
