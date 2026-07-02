@@ -50,13 +50,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Generate Cargo.lock and restore CI workflow
+      - name: Generate and commit Cargo.lock
         run: |
           set -euo pipefail
           cargo generate-lockfile
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/ci.yml
-          git add Cargo.lock .github/workflows/ci.yml
+          git add Cargo.lock
           if git diff --cached --quiet; then
             echo "No lockfile changes to commit."
             exit 0
