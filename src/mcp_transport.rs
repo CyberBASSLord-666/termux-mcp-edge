@@ -371,9 +371,10 @@ async fn handle_read_file_call(
             id,
             "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
         ),
-        Err(AppError::FileTooLarge { .. }) => {
-            invalid_params(id, "File content exceeds the staged read_file byte limit.")
-        }
+        Err(AppError::FileTooLarge { .. }) => payload_too_large(
+            id,
+            "File content exceeds the staged read_file byte limit.",
+        ),
         Err(_error) => internal_error(id, "Filesystem read failed."),
     }
 }
