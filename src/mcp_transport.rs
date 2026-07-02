@@ -9,9 +9,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{
-    error::AppError, tools::FileSystemTools, transport_security::TransportSecurityPolicy,
-};
+use crate::{error::AppError, tools::FileSystemTools, transport_security::TransportSecurityPolicy};
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
