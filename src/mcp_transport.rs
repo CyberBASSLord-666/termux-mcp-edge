@@ -107,7 +107,9 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest { id, method, params, .. } = request;
+    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
 
     match method.as_str() {
         "initialize" => (
