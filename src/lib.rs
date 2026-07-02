@@ -1,4 +1,5 @@
 //! Library exports for integration tests and downstream embedding.
+//! Temporary trigger for the read_file review patch workflow.
 
 pub mod config;
 pub mod error;
