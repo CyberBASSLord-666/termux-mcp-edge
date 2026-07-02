@@ -164,7 +164,9 @@ async fn handle_mcp_request(
                                         "type": "integer",
                                         "minimum": MIN_LIST_DIRECTORY_DEPTH,
                                         "maximum": MAX_LIST_DIRECTORY_DEPTH,
-                                        "description": "Optional bounded traversal depth; defaults to 1 and must not exceed 5.",
+                                        "description": format!(
+                                            "Optional bounded traversal depth; defaults to {MIN_LIST_DIRECTORY_DEPTH} and must not exceed {MAX_LIST_DIRECTORY_DEPTH}."
+                                        ),
                                     },
                                 },
                                 "required": ["path"],
@@ -469,6 +471,10 @@ mod tests {
         assert_eq!(tools[0]["name"], RUNTIME_STATUS_TOOL);
         assert_eq!(tools[1]["name"], LIST_DIRECTORY_TOOL);
         assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);
+        assert_eq!(
+            tools[1]["inputSchema"]["properties"]["max_depth"]["maximum"],
+            MAX_LIST_DIRECTORY_DEPTH
+        );
     }
 
     #[tokio::test]
@@ -579,6 +585,52 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("visible.txt"));
+    }
+
+    #[tokio::test]
+    async fn list_directory_tool_call_rejects_max_depth_outside_schema_bounds() {
+        let (root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let safe_root = root.path().to_string_lossy().to_string();
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": LIST_DIRECTORY_TOOL,
+                "arguments": {
+                    "path": safe_root,
+                    "max_depth": MAX_LIST_DIRECTORY_DEPTH + 1,
+                }
+            }
+        });
+
+        let response = app
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["id"], 6);
+        assert_eq!(payload["error"]["code"], -32602);
+        assert!(payload["error"]["data"]
+            .as_str()
+            .unwrap()
+            .contains("list_directory.max_depth"));
     }
 
     #[tokio::test]
