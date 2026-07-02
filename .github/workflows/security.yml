@@ -27,15 +27,28 @@ concurrency:
 jobs:
   cargo-audit:
     name: Cargo audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
     steps:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Cache cargo-audit binary
+        id: cargo-audit-cache
+        uses: actions/cache@638ed79f9dc94c1de1baef91bcab5edaa19451f4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-0.21.2
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: Generate lockfile
-        run: cargo generate-lockfile
+        if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 8
+        run: cargo install cargo-audit --version 0.21.2 --locked
+      - name: Prepare audit lockfile
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo fetch --locked
+          else
+            cargo generate-lockfile
+          fi
       - name: Audit dependencies
         run: cargo audit
