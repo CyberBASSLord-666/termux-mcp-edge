@@ -410,6 +410,22 @@ fn internal_error(id: Option<Value>, message: &str) -> Response {
         .into_response()
 }
 
+fn payload_too_large(id: Option<Value>, message: &str) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32001,
+                "message": "Payload too large",
+                "data": message,
+            },
+        })),
+    )
+        .into_response()
+}
+
 fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
@@ -715,6 +731,40 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with("visible.txt"));
+    }
+
+    #[tokio::test]
+    async fn read_file_tool_call_rejects_files_above_staged_byte_limit() {
+        let (root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let too_large_file = root.path().join("too_large.txt");
+        std::fs::write(&too_large_file, vec![b'a'; 1_048_577]).unwrap();
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": READ_FILE_TOOL,
+                "arguments": { "path": too_large_file.to_string_lossy().to_string() }
+            }
+        });
+        let response = app
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(request_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["error"]["code"], -32001);
     }
 
     #[tokio::test]
