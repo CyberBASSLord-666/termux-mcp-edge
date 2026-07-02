@@ -327,7 +327,7 @@ mod tests {
 
         assert_eq!(result, "Wrote 38 bytes");
         assert_eq!(
-            std::fs::read_to_string(target).unwrap(),
+            tokio::fs::read_to_string(target).await.unwrap(),
             "written only when explicitly requested"
         );
     }
