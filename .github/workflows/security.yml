@@ -44,12 +44,7 @@ jobs:
         timeout-minutes: 8
         run: cargo install --quiet --debug --git https://github.com/RustSec/rustsec --rev eee63cf3c3916a9b8305678dfb91206acd9e67eb cargo-audit --locked
       - name: Prepare audit lockfile
-        run: |
-          if [ -f Cargo.lock ]; then
-            cargo fetch --locked
-          else
-            cargo generate-lockfile
-          fi
+        run: cargo fetch --locked
       - name: Audit dependencies
         run: |
           set +e
