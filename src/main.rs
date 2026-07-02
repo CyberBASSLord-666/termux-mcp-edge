@@ -8,11 +8,12 @@
 //! - Proper ASGI-equivalent lifespan handling via Axum
 //! - Single-binary deployment optimized for runit supervision
 
-use axum::{routing::get, Router};
+use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::transport_security::TransportSecurityPolicy;
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
+    health::{build_readiness_response, ReadinessResponse},
     tools::FileSystemTools,
 };
 use tokio::signal;
@@ -34,12 +35,18 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
 
-    match validate_runtime_auth_posture(&config)? {
-        AuthPosture::StaticTokenConfigured => info!("Static token authentication configured"),
-        AuthPosture::UnauthenticatedLocalhostOnly => warn!(
-            "Unauthenticated local-only development mode enabled; do not expose this listener remotely"
-        ),
-    }
+    let auth_posture = match validate_runtime_auth_posture(&config)? {
+        AuthPosture::StaticTokenConfigured => {
+            info!("Static token authentication configured");
+            "static_token"
+        }
+        AuthPosture::UnauthenticatedLocalhostOnly => {
+            warn!(
+                "Unauthenticated local-only development mode enabled; do not expose this listener remotely"
+            );
+            "unauthenticated_localhost_only"
+        }
+    };
 
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
@@ -48,9 +55,12 @@ async fn main() -> anyhow::Result<()> {
     // The staged MCP runtime exposes only safe-rooted read-only directory listing;
     // file reads and writes remain unavailable until later independently validated PRs.
     let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
+    let readiness = build_readiness_response(config.file.safe_roots.len(), auth_posture);
 
     let app = Router::new()
         .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
+        .with_state(readiness)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     #[cfg(feature = "mcp-runtime")]
@@ -77,6 +87,10 @@ async fn main() -> anyhow::Result<()> {
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+async fn readiness_check(State(readiness): State<ReadinessResponse>) -> Json<ReadinessResponse> {
+    Json(readiness)
 }
 
 async fn shutdown_signal() {
