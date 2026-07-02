@@ -1,6 +1,5 @@
 # Rust / Cargo
 target/
-Cargo.lock
 
 # Local environment and secrets
 .env
