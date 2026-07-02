@@ -9,10 +9,12 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{tools::FileSystemTools, transport_security::TransportSecurityPolicy};
+use crate::{error::AppError, tools::FileSystemTools, transport_security::TransportSecurityPolicy};
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
+const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
+const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
 #[derive(Clone)]
 struct McpTransportState {
@@ -160,9 +162,9 @@ async fn handle_mcp_request(
                                     },
                                     "max_depth": {
                                         "type": "integer",
-                                        "minimum": 1,
-                                        "maximum": 5,
-                                        "description": "Optional bounded traversal depth; defaults to 1 and is clamped to 5.",
+                                        "minimum": MIN_LIST_DIRECTORY_DEPTH,
+                                        "maximum": MAX_LIST_DIRECTORY_DEPTH,
+                                        "description": "Optional bounded traversal depth; defaults to 1 and must not exceed 5.",
                                     },
                                 },
                                 "required": ["path"],
@@ -229,7 +231,8 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
                     "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL],
-                    "filesystemTools": "read_only_list_directory",
+                    "filesystemTools": true,
+                    "filesystemToolMode": "read_only_list_directory",
                     "fileWrites": false,
                     "androidPlatformTools": false,
                     "commandExecution": false,
@@ -261,6 +264,17 @@ async fn handle_list_directory_call(
         }
     };
 
+    if let Some(max_depth) = args.max_depth {
+        if !(MIN_LIST_DIRECTORY_DEPTH..=MAX_LIST_DIRECTORY_DEPTH).contains(&max_depth) {
+            return invalid_params(
+                id,
+                &format!(
+                    "list_directory.max_depth must be between {MIN_LIST_DIRECTORY_DEPTH} and {MAX_LIST_DIRECTORY_DEPTH}."
+                ),
+            );
+        }
+    }
+
     match file_tools.list_directory(args.path, args.max_depth).await {
         Ok(result) => (
             StatusCode::OK,
@@ -283,10 +297,11 @@ async fn handle_list_directory_call(
             })),
         )
             .into_response(),
-        Err(error) => invalid_params(
+        Err(AppError::PathTraversal { .. }) => invalid_params(
             id,
-            &format!("Filesystem safe-root validation failed: {error}"),
+            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
         ),
+        Err(_error) => internal_error(id, "Filesystem operation failed."),
     }
 }
 
@@ -299,6 +314,22 @@ fn invalid_params(id: Option<Value>, message: &str) -> Response {
             "error": {
                 "code": -32602,
                 "message": "Invalid params",
+                "data": message,
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn internal_error(id: Option<Value>, message: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32603,
+                "message": "Internal error",
                 "data": message,
             },
         })),
@@ -483,6 +514,14 @@ mod tests {
         assert_eq!(
             payload["result"]["structuredContent"]["availableTools"][1],
             LIST_DIRECTORY_TOOL
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["filesystemTools"],
+            true
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["filesystemToolMode"],
+            "read_only_list_directory"
         );
         assert_eq!(
             payload["result"]["structuredContent"]["androidPlatformTools"],
