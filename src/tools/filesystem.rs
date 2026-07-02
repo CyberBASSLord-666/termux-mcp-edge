@@ -5,9 +5,6 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Instant;
 
 use metrics::{counter, histogram};
-use rmcp::handler::server::tool::Parameters;
-use rmcp::tool;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -30,6 +27,10 @@ impl FileSystemTools {
             .collect();
 
         Self { safe_roots }
+    }
+
+    pub fn safe_roots(&self) -> &[PathBuf] {
+        &self.safe_roots
     }
 
     /// Resolve a caller-supplied path and verify that it remains inside one of
@@ -273,69 +274,4 @@ pub struct ReadFileResult {
     pub path: String,
     pub content: String,
     pub size: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ListDirectoryParams {
-    pub path: String,
-    pub max_depth: Option<u32>,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ReadFileParams {
-    pub path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct WriteFileParams {
-    pub path: String,
-    pub content: String,
-    pub dry_run: Option<bool>,
-}
-
-fn json_tool_result<T: Serialize>(result: T) -> Result<String, String> {
-    serde_json::to_string(&result).map_err(|error| error.to_string())
-}
-
-#[tool]
-impl FileSystemTools {
-    #[tool(
-        description = "List a safe-rooted directory with bounded breadth-first traversal and metrics"
-    )]
-    pub async fn mcp_list_directory(
-        &self,
-        Parameters(params): Parameters<ListDirectoryParams>,
-    ) -> Result<String, String> {
-        let result = self
-            .list_directory(params.path, params.max_depth)
-            .await
-            .map_err(|error| error.to_string())?;
-        json_tool_result(result)
-    }
-
-    #[tool(
-        description = "Read a UTF-8 file from a configured safe root with byte and latency metrics"
-    )]
-    pub async fn mcp_read_file(
-        &self,
-        Parameters(params): Parameters<ReadFileParams>,
-    ) -> Result<String, String> {
-        let result = self
-            .read_file(params.path)
-            .await
-            .map_err(|error| error.to_string())?;
-        json_tool_result(result)
-    }
-
-    #[tool(
-        description = "Atomically write a UTF-8 file under a configured safe root; supports dry-run mode"
-    )]
-    pub async fn mcp_write_file(
-        &self,
-        Parameters(params): Parameters<WriteFileParams>,
-    ) -> Result<String, String> {
-        self.write_file(params.path, params.content, params.dry_run)
-            .await
-            .map_err(|error| error.to_string())
-    }
 }

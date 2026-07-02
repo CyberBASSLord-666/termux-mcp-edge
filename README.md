@@ -2,16 +2,16 @@
 
 Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The default runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
 
-The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize`, `tools/list`, and one deterministic read-only `runtime_status` tool. Filesystem tools, Android platform tools, command execution, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
+The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize`, `tools/list`, deterministic read-only `runtime_status`, and a safe-rooted read-only `list_directory` tool. File reads, file writes, Android platform tools, command execution, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
 
 - **Runtime:** Rust single binary using Axum.
 - **Default HTTP endpoint:** `GET /health`.
 - **Optional MCP transport shell:** `POST /mcp` when built with `--features mcp-runtime`.
-- **Current MCP discovery:** `initialize` plus `tools/list` returning only `runtime_status`.
-- **Current MCP tools:** deterministic read-only `runtime_status` metadata only.
-- **Current filesystem/tool endpoints:** not exposed.
+- **Current MCP discovery:** `initialize` plus `tools/list` returning `runtime_status` and safe-rooted `list_directory`.
+- **Current MCP tools:** deterministic read-only `runtime_status` metadata plus bounded safe-rooted directory listing.
+- **Current filesystem/tool endpoints:** read-only directory listing only; file content reads and writes are not exposed.
 - **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
 - **Transport posture:** configured exact `Host` and browser `Origin` allow-lists are enforced before the staged MCP transport shell handles requests.
 - **Filesystem safe-root default:** `/data/data/com.termux/files/home/mcp-files`, not broad shared storage.
@@ -21,7 +21,7 @@ The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell th
 
 - Memory efficiency and thermal resilience on mobile hardware.
 - Fail-closed startup posture for networked deployments.
-- Clear separation between transport liveness, tool discovery, low-risk read-only tools, and later higher-impact tool execution.
+- Clear separation between transport liveness, tool discovery, low-risk read-only tools, filesystem listing, and later higher-impact tool execution.
 - Narrow default filesystem scope for any future file-capable tool restoration.
 - Single-binary deployment optimized for `termux-services` and runit.
 - CI and Security workflows as merge gates for every remediation branch.
@@ -56,14 +56,14 @@ The built-in filesystem safe-root default is intentionally narrow:
 /data/data/com.termux/files/home/mcp-files
 ```
 
-The service no longer defaults to broad Android shared-storage roots such as `/storage/emulated/0` or `/sdcard`. If future filesystem tools are restored, operators should keep `MCP__FILE__SAFE_ROOTS` limited to a dedicated project directory and avoid granting all shared storage unless there is a specific reviewed need.
+The service no longer defaults to broad Android shared-storage roots such as `/storage/emulated/0` or `/sdcard`. The current staged filesystem MCP surface exposes only bounded directory listing beneath configured safe roots. File content reads and writes remain disabled in the MCP transport until later PRs add separate controls, tests, and documentation. Operators should keep `MCP__FILE__SAFE_ROOTS` limited to a dedicated project directory and avoid granting all shared storage unless there is a specific reviewed need.
 
 ## Architecture
 
 - **Language:** Rust edition 2021.
 - **HTTP framework:** Axum.
 - **Default compiled transport:** health-check HTTP route only.
-- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation, `initialize`, `tools/list`, and `runtime_status`.
+- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation, `initialize`, `tools/list`, `runtime_status`, and safe-rooted read-only `list_directory`.
 - **MCP framework dependency:** optional `rmcp` dependency behind `mcp-runtime`.
 - **Supervision:** `termux-services` / runit.
 - **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
@@ -146,7 +146,7 @@ curl -i \
 
 An empty body returns `501 Not Implemented` to show that the shell is reachable but not a full unrestricted tool runtime.
 
-The staged tool-discovery contract exposes only the low-risk read-only `runtime_status` tool:
+The staged tool-discovery contract exposes only `runtime_status` and the safe-rooted read-only `list_directory` tool:
 
 ```bash
 curl -sS \
@@ -158,11 +158,7 @@ curl -sS \
   http://127.0.0.1:8000/mcp
 ```
 
-Expected discovery shape for this stage:
-
-```json
-{"id":1,"jsonrpc":"2.0","result":{"tools":[{"description":"Return deterministic read-only runtime metadata for the staged Termux MCP Edge server.","inputSchema":{"additionalProperties":false,"properties":{},"type":"object"},"name":"runtime_status"}]}}
-```
+Expected discovery shape for this stage: two tools named `runtime_status` and `list_directory`; no write-capable, Android/platform, command-capable, or high-impact tools.
 
 Call the read-only status tool:
 
@@ -176,7 +172,19 @@ curl -sS \
   http://127.0.0.1:8000/mcp
 ```
 
-Expected behavior: the response returns deterministic runtime metadata and confirms filesystem tools, Android platform tools, command execution, and high-impact tools are disabled.
+List a safe-rooted directory without reading file contents:
+
+```bash
+curl -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_directory","arguments":{"path":"/data/data/com.termux/files/home/mcp-files","max_depth":1}}}' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected behavior: the response returns metadata for entries beneath the configured safe root and rejects traversal or paths outside the safe-root boundary.
 
 ## MCP Transport Restoration Gate
 

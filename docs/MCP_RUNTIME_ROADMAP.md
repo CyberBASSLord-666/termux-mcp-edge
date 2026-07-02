@@ -6,7 +6,7 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds one deterministic read-only `runtime_status` tool. Filesystem access, Android platform access, command execution, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status` plus safe-rooted read-only directory listing. File content reads, file writes, Android platform access, command execution, and high-impact actions remain unavailable.
 
 ## Stage 1: Transport Request Validation
 
@@ -53,7 +53,7 @@ Required gates:
 
 Add one low-risk read-only tool with deterministic output and tests.
 
-Status: in progress.
+Status: complete.
 
 Required gates:
 
@@ -65,7 +65,7 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, and explicit write controls.
 
-Status: not started.
+Status: in progress. Current substage exposes safe-rooted read-only directory listing only; file content reads and writes remain disabled.
 
 Required gates:
 

@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_security_config_rejects_url_components_beyond_origin() {
+    fn transport_security_config_rejects_origin_paths_queries_fragments_and_userinfo() {
         for origin in [
             "http://localhost:8000/",
             "http://localhost:8000/path",
