@@ -325,7 +325,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, "Wrote 36 bytes");
+        assert_eq!(result, "Wrote 38 bytes");
         assert_eq!(
             std::fs::read_to_string(target).unwrap(),
             "written only when explicitly requested"
