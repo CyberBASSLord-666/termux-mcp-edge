@@ -2,7 +2,7 @@
 
 use std::{env, net::IpAddr, path::PathBuf};
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail};
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
 const EMPTY_STATIC_TOKEN_ERROR: &str =
@@ -101,9 +101,9 @@ fn env_u16(name: &str, default: u16) -> anyhow::Result<u16> {
     match env::var(name) {
         Ok(value) => value
             .parse::<u16>()
-            .with_context(|| format!("{name} must be an integer between 0 and 65535")),
+            .map_err(|source| anyhow!("{name} must be an integer between 0 and 65535: {source}")),
         Err(env::VarError::NotPresent) => Ok(default),
-        Err(err) => Err(err).with_context(|| format!("{name} could not be read")),
+        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
     }
 }
 
@@ -111,7 +111,7 @@ fn env_bool(name: &str, default: bool) -> anyhow::Result<bool> {
     match env::var(name) {
         Ok(value) => parse_bool(name, &value),
         Err(env::VarError::NotPresent) => Ok(default),
-        Err(err) => Err(err).with_context(|| format!("{name} could not be read")),
+        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
     }
 }
 
