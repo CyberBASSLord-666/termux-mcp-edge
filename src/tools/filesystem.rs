@@ -241,7 +241,7 @@ impl FileSystemTools {
             })?
             .to_string_lossy();
 
-        if dry_run.unwrap_or(false) {
+        if dry_run.unwrap_or(true) {
             counter!("mcp.fs.write.dry_runs_total").increment(1);
             return Ok("DRY-RUN".to_string());
         }
@@ -285,4 +285,50 @@ pub struct ReadFileResult {
     pub path: String,
     pub content: String,
     pub size: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn write_file_defaults_to_dry_run_without_creating_file() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("default_dry_run.txt");
+
+        let result = tools
+            .write_file(
+                target.to_string_lossy().to_string(),
+                "should not be written".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "DRY-RUN");
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_requires_explicit_false_to_mutate_safe_rooted_file() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("explicit_write.txt");
+
+        let result = tools
+            .write_file(
+                target.to_string_lossy().to_string(),
+                "written only when explicitly requested".to_string(),
+                Some(false),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, "Wrote 36 bytes");
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "written only when explicitly requested"
+        );
+    }
 }
