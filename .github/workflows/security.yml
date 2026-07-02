@@ -3,10 +3,19 @@ name: Security
 on:
   push:
     branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/security.yml"
   pull_request:
     branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/security.yml"
   schedule:
     - cron: "17 9 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
