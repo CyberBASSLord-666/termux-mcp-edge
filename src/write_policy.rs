@@ -3,6 +3,8 @@
 //! The MCP transport must remain dry-run-first. These helpers keep that intent
 //! centralized before the write-capable transport surface is exposed.
 
+use std::fmt;
+
 pub const DEFAULT_MAX_WRITE_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +60,19 @@ pub enum WritePolicyError {
     PayloadTooLarge { bytes: usize, max_bytes: usize },
 }
 
+impl fmt::Display for WritePolicyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PayloadTooLarge { bytes, max_bytes } => write!(
+                formatter,
+                "write payload is {bytes} bytes, which exceeds the {max_bytes}-byte limit"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WritePolicyError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +109,39 @@ mod tests {
                 bytes: 17,
                 max_bytes: 16,
             })
+        );
+    }
+
+    #[test]
+    fn write_payload_size_zero_limit_accepts_zero_bytes() {
+        let policy = WritePolicy::new(0);
+
+        assert_eq!(policy.validate_payload_size(0), Ok(()));
+    }
+
+    #[test]
+    fn write_payload_size_zero_limit_rejects_nonzero_bytes() {
+        let policy = WritePolicy::new(0);
+
+        assert_eq!(
+            policy.validate_payload_size(1),
+            Err(WritePolicyError::PayloadTooLarge {
+                bytes: 1,
+                max_bytes: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn write_policy_error_formats_payload_limit() {
+        let error = WritePolicyError::PayloadTooLarge {
+            bytes: 17,
+            max_bytes: 16,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "write payload is 17 bytes, which exceeds the 16-byte limit"
         );
     }
 }
