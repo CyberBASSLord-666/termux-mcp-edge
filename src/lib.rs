@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod error;
+pub mod health;
 #[cfg(feature = "mcp-runtime")]
 pub mod mcp_transport;
 pub mod tools;
