@@ -51,4 +51,23 @@ jobs:
             cargo generate-lockfile
           fi
       - name: Audit dependencies
-        run: cargo audit
+        run: |
+          set +e
+          cargo audit > cargo-audit.txt 2>&1
+          status=$?
+          cat cargo-audit.txt
+          echo "$status" > cargo-audit.status
+          exit 0
+      - name: Upload cargo-audit output
+        if: always()
+        # actions/upload-artifact@v4 resolved 2026-07-02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cargo-audit-output
+          path: |
+            cargo-audit.txt
+            cargo-audit.status
+          if-no-files-found: error
+          retention-days: 3
+      - name: Fail on audit findings
+        run: test "$(cat cargo-audit.status)" = "0"
