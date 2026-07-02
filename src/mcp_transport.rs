@@ -107,12 +107,7 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest {
-        id,
-        method,
-        params,
-        ..
-    } = request;
+    let JsonRpcRequest { id, method, params, .. } = request;
 
     match method.as_str() {
         "initialize" => (
@@ -238,7 +233,7 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                     "commandExecution": false,
                     "highImpactTools": false,
                 },
-                "isError": false,
+                "isError": false
             },
         })),
     )
