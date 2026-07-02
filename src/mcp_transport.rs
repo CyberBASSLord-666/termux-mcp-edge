@@ -669,7 +669,11 @@ mod tests {
     async fn read_file_tool_call_returns_safe_rooted_file_content() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
-        let safe_file = root.path().join("visible.txt").to_string_lossy().to_string();
+        let safe_file = root
+            .path()
+            .join("visible.txt")
+            .to_string_lossy()
+            .to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": 7,
