@@ -107,7 +107,12 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest { id, method, params, .. } = request;
+    let JsonRpcRequest {
+        id,
+        method,
+        params,
+        ..
+    } = request;
 
     match method.as_str() {
         "initialize" => (
@@ -180,7 +185,11 @@ async fn handle_mcp_request(
     }
 }
 
-async fn handle_tool_call(id: Option<Value>, params: Option<Value>, file_tools: &FileSystemTools) -> Response {
+async fn handle_tool_call(
+    id: Option<Value>,
+    params: Option<Value>,
+    file_tools: &FileSystemTools,
+) -> Response {
     let params = match params {
         Some(params) => params,
         None => {
