@@ -42,7 +42,7 @@ jobs:
       - name: Install cargo-audit
         if: steps.cargo-audit-cache.outputs.cache-hit != 'true'
         timeout-minutes: 8
-        run: cargo install cargo-audit --version 0.21.2 --locked
+        run: cargo install --quiet cargo-audit --version 0.21.2 --locked
       - name: Prepare audit lockfile
         run: |
           if [ -f Cargo.lock ]; then
