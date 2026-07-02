@@ -6,13 +6,14 @@ use std::time::Instant;
 
 use metrics::{counter, histogram};
 use serde::{Deserialize, Serialize};
-use tokio::fs;
+use tokio::{fs, io::AsyncReadExt};
 
 use crate::error::AppError;
 
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
 const MAX_LIST_ENTRIES: usize = 4_096;
+const MAX_READ_BYTES: u64 = 1_048_576;
 
 #[derive(Clone)]
 pub struct FileSystemTools {
@@ -191,17 +192,27 @@ impl FileSystemTools {
     pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
-        let content = fs::read_to_string(&safe_path).await?;
-        let size = content.len();
+        let file = fs::File::open(&safe_path).await?;
+        let mut limited_reader = file.take(MAX_READ_BYTES + 1);
+        let mut content = String::new();
+        let bytes_read = limited_reader.read_to_string(&mut content).await?;
+
+        if bytes_read as u64 > MAX_READ_BYTES {
+            counter!("mcp.fs.read.rejected_too_large_total").increment(1);
+            return Err(AppError::FileTooLarge {
+                size: bytes_read as u64,
+                max_size: MAX_READ_BYTES,
+            });
+        }
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.read.latency_seconds").record(duration);
-        counter!("mcp.fs.read.bytes_total").increment(size as u64);
+        counter!("mcp.fs.read.bytes_total").increment(bytes_read as u64);
 
         Ok(ReadFileResult {
             path: safe_path.to_string_lossy().to_string(),
             content,
-            size,
+            size: bytes_read,
         })
     }
 
