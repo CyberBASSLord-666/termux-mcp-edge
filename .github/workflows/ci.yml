@@ -37,17 +37,43 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          git clone --branch automation/cargo-lock-reproducibility --single-branch "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
-          cd repo
-          rustup default stable
-          cargo generate-lockfile
-          git add Cargo.lock
-          if git diff --cached --quiet; then
-            echo "No lockfile changes to commit."
-            exit 0
+          set +e
+          {
+            set -x
+            git clone --branch automation/cargo-lock-reproducibility --single-branch "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+            cd repo
+            rustup default stable
+            cargo generate-lockfile
+            git status --short
+            git add Cargo.lock
+            git diff --cached --stat
+            if git diff --cached --quiet; then
+              echo "No lockfile changes to commit."
+              echo 0 > ../lockfile-bootstrap.status
+              exit 0
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Add reproducible Cargo.lock"
+            git push origin HEAD:automation/cargo-lock-reproducibility
+            echo $? > ../lockfile-bootstrap.status
+          } > lockfile-bootstrap.log 2>&1
+          status=$?
+          if [ ! -f lockfile-bootstrap.status ]; then
+            echo "$status" > lockfile-bootstrap.status
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Add reproducible Cargo.lock"
-          git push origin HEAD:automation/cargo-lock-reproducibility
+          cat lockfile-bootstrap.log
+          exit 0
+      - name: Upload lockfile bootstrap diagnostics
+        if: always()
+        # actions/upload-artifact@v4 resolved 2026-07-02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lockfile-bootstrap-diagnostics
+          path: |
+            lockfile-bootstrap.log
+            lockfile-bootstrap.status
+          if-no-files-found: error
+          retention-days: 1
+      - name: Fail on bootstrap error
+        run: test "$(cat lockfile-bootstrap.status)" = "0"
