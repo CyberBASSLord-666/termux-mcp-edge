@@ -63,10 +63,14 @@ pub enum WritePolicyError {
 impl fmt::Display for WritePolicyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PayloadTooLarge { bytes, max_bytes } => write!(
-                formatter,
-                "write payload is {bytes} bytes, which exceeds the {max_bytes}-byte limit"
-            ),
+            Self::PayloadTooLarge { bytes, max_bytes } => {
+                let unit = if *bytes == 1 { "byte" } else { "bytes" };
+
+                write!(
+                    formatter,
+                    "write payload is {bytes} {unit}, which exceeds the {max_bytes}-byte limit"
+                )
+            }
         }
     }
 }
@@ -142,6 +146,19 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "write payload is 17 bytes, which exceeds the 16-byte limit"
+        );
+    }
+
+    #[test]
+    fn write_policy_error_formats_singular_payload_size() {
+        let error = WritePolicyError::PayloadTooLarge {
+            bytes: 1,
+            max_bytes: 0,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "write payload is 1 byte, which exceeds the 0-byte limit"
         );
     }
 }
