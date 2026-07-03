@@ -1,18 +1,19 @@
 # Staged MCP write-tool transport gate
 
-This note records the required gate for the next filesystem stage before any write-capable MCP runtime surface is exposed.
+This note records the gate that was required before the first write-capable MCP runtime surface was exposed, and the current post-gate operational constraints for that staged surface.
 
 ## Current baseline
 
 - `list_directory` is exposed through MCP with safe-root enforcement and bounded traversal depth.
 - `read_file` is exposed through MCP with safe-root enforcement and a staged byte limit.
-- `FileSystemTools::write_file` exists as an internal primitive, but omitted `dry_run` defaults to `true`.
-- No MCP runtime `write_file` tool is exposed yet.
+- `write_file` is exposed through MCP with safe-root enforcement, a staged byte limit, and dry-run-by-default behavior.
+- Omitted `dry_run` defaults to `true` at the transport boundary.
+- Mutating writes require explicit `dry_run: false` in the tool arguments.
 - Android/platform tools, command execution, and high-impact tools remain unavailable.
 
-## Required transport constraints for the first write-capable runtime PR
+## Required transport constraints for the staged write-capable runtime surface
 
-The first transport PR that exposes `write_file` must remain default-deny and dry-run-first:
+The write-capable transport stage must remain default-deny and dry-run-first:
 
 1. `tools/list` may advertise `write_file` only with an input schema that makes write intent explicit.
 2. `dry_run` must default to `true` if omitted at the transport boundary.
@@ -22,7 +23,7 @@ The first transport PR that exposes `write_file` must remain default-deny and dr
 6. Runtime status must continue to show Android/platform tools, command execution, and high-impact tools as disabled.
 7. Tests must cover default dry-run, explicit opt-in mutation, path traversal rejection, discovery schema shape, and unknown-tool behavior.
 
-## Non-goals for the next transport stage
+## Non-goals for this transport stage
 
 - No Android/platform tools.
 - No shell or command execution.
