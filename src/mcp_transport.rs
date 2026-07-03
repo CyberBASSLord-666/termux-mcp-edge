@@ -327,8 +327,10 @@ fn runtime_status_response(id: Option<Value>) -> Response {
 }
 
 fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Response {
-    if matches!(arguments, Some(Value::Object(ref map)) if !map.is_empty()) {
-        return invalid_params(id, "platform_info does not accept arguments.");
+    match arguments {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(ref map)) if map.is_empty() => {}
+        _ => return invalid_params(id, "platform_info does not accept arguments."),
     }
 
     ok_result(
@@ -752,20 +754,27 @@ mod tests {
 
     #[tokio::test]
     async fn platform_info_tool_call_rejects_arguments() {
-        let (_root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": PLATFORM_INFO_TOOL,
-                "arguments": {"unexpected": true},
-            }
-        });
+        for arguments in [
+            json!({"unexpected": true}),
+            json!(["unexpected"]),
+            json!("unexpected"),
+            json!(true),
+        ] {
+            let (_root, file_tools) = test_file_tools();
+            let app = test_router(file_tools);
+            let request_body = json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": PLATFORM_INFO_TOOL,
+                    "arguments": arguments,
+                }
+            });
 
-        let response = post_json(app, request_body).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response = post_json(app, request_body).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 
     #[tokio::test]
