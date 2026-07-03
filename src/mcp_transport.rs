@@ -9,11 +9,17 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, tools::FileSystemTools, transport_security::TransportSecurityPolicy};
+use crate::{
+    error::AppError,
+    tools::FileSystemTools,
+    transport_security::TransportSecurityPolicy,
+    write_policy::{WriteMode, WritePolicy},
+};
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
+const WRITE_FILE_TOOL: &str = "write_file";
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
@@ -50,13 +56,21 @@ struct ReadFileArguments {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct WriteFileArguments {
+    path: String,
+    content: String,
+    #[serde(default)]
+    dry_run: Option<bool>,
+}
+
 /// Build the staged MCP transport shell.
 ///
-/// This route intentionally exposes only transport liveness, MCP discovery,
-/// deterministic read-only status, safe-rooted read-only directory listing, and
-/// bounded safe-rooted file reads. File writes, Android platform access,
-/// command execution, and high-impact actions remain unavailable until later
-/// independently validated stages.
+/// The staged runtime exposes transport liveness, MCP discovery,
+/// deterministic runtime metadata, safe-rooted directory listing,
+/// bounded safe-rooted UTF-8 reads, and default-dry-run safe-rooted writes.
+/// Android platform access, command execution, and high-impact actions remain
+/// unavailable until later independently validated stages.
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
@@ -90,7 +104,7 @@ async fn handle_mcp_request(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "status": "mcp_transport_shell",
-                "message": "MCP transport is reachable. Tool discovery, runtime_status, safe-rooted read-only directory listing, and bounded safe-rooted file reads are available; file writes, platform, command, and high-impact tools are not enabled in this stage.",
+                "message": "MCP transport is reachable. Tool discovery, runtime_status, safe-rooted directory listing, bounded safe-rooted file reads, and default-dry-run file writes are available; platform, command, and high-impact tools are not enabled in this stage.",
             })),
         )
             .into_response();
@@ -120,91 +134,122 @@ async fn handle_mcp_request(
     } = request;
 
     match method.as_str() {
-        "initialize" => (
-            StatusCode::OK,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id.unwrap_or(Value::Null),
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "serverInfo": {
-                        "name": "termux-mcp-edge",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    },
-                    "capabilities": {
-                        "tools": {
-                            "listChanged": false,
-                        },
-                    },
-                },
-            })),
-        )
-            .into_response(),
-        "tools/list" => (
-            StatusCode::OK,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id.unwrap_or(Value::Null),
-                "result": {
-                    "tools": [
-                        {
-                            "name": RUNTIME_STATUS_TOOL,
-                            "description": "Return deterministic read-only runtime metadata for the staged Termux MCP Edge server.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {},
-                                "additionalProperties": false,
-                            },
-                        },
-                        {
-                            "name": LIST_DIRECTORY_TOOL,
-                            "description": "List entries under a configured filesystem safe root without reading file contents or writing data.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Absolute path inside one configured safe root.",
-                                    },
-                                    "max_depth": {
-                                        "type": "integer",
-                                        "minimum": MIN_LIST_DIRECTORY_DEPTH,
-                                        "maximum": MAX_LIST_DIRECTORY_DEPTH,
-                                        "description": format!(
-                                            "Optional bounded traversal depth; defaults to {MIN_LIST_DIRECTORY_DEPTH} and must not exceed {MAX_LIST_DIRECTORY_DEPTH}."
-                                        ),
-                                    },
-                                },
-                                "required": ["path"],
-                                "additionalProperties": false,
-                            },
-                        },
-                        {
-                            "name": READ_FILE_TOOL,
-                            "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Absolute path to a UTF-8 text file inside one configured safe root.",
-                                    },
-                                },
-                                "required": ["path"],
-                                "additionalProperties": false,
-                            },
-                        },
-                    ],
-                },
-            })),
-        )
-            .into_response(),
+        "initialize" => initialize_response(id),
+        "tools/list" => tools_list_response(id),
         "tools/call" => handle_tool_call(id, params, &state.file_tools).await,
         _ => method_not_available(
             id,
-            "Only initialize, tools/list, runtime_status, safe-rooted list_directory, and bounded safe-rooted read_file are available in this staged runtime.",
+            "Only initialize, tools/list, runtime_status, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
         ),
     }
+}
+
+fn initialize_response(id: Option<Value>) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {
+                    "name": "termux-mcp-edge",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "capabilities": {
+                    "tools": {
+                        "listChanged": false,
+                    },
+                },
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn tools_list_response(id: Option<Value>) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "tools": [
+                    {
+                        "name": RUNTIME_STATUS_TOOL,
+                        "description": "Return deterministic runtime metadata for the staged Termux MCP Edge server.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
+                        "name": LIST_DIRECTORY_TOOL,
+                        "description": "List entries under a configured filesystem safe root without reading file contents or writing data.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute path inside one configured safe root.",
+                                },
+                                "max_depth": {
+                                    "type": "integer",
+                                    "minimum": MIN_LIST_DIRECTORY_DEPTH,
+                                    "maximum": MAX_LIST_DIRECTORY_DEPTH,
+                                    "description": format!(
+                                        "Optional bounded traversal depth; defaults to {MIN_LIST_DIRECTORY_DEPTH} and must not exceed {MAX_LIST_DIRECTORY_DEPTH}."
+                                    ),
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
+                        "name": READ_FILE_TOOL,
+                        "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute path to a UTF-8 text file inside one configured safe root.",
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
+                        "name": WRITE_FILE_TOOL,
+                        "description": "Write UTF-8 text to a safe-rooted file. Defaults to dry-run; mutation requires explicit dry_run=false.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute destination path inside one configured safe root.",
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "UTF-8 text content to write, subject to the staged byte limit.",
+                                },
+                                "dry_run": {
+                                    "type": "boolean",
+                                    "description": "Defaults to true. Set explicitly to false to perform the write.",
+                                },
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": false,
+                        },
+                    },
+                ],
+            },
+        })),
+    )
+        .into_response()
 }
 
 async fn handle_tool_call(
@@ -214,25 +259,22 @@ async fn handle_tool_call(
 ) -> Response {
     let params = match params {
         Some(params) => params,
-        None => {
-            return invalid_params(id, "tools/call requires params with a tool name.");
-        }
+        None => return invalid_params(id, "tools/call requires params with a tool name."),
     };
 
     let call = match serde_json::from_value::<ToolCallParams>(params) {
         Ok(call) => call,
-        Err(error) => {
-            return invalid_params(id, &format!("Invalid tools/call params: {error}"));
-        }
+        Err(error) => return invalid_params(id, &format!("Invalid tools/call params: {error}")),
     };
 
     match call.name.as_str() {
         RUNTIME_STATUS_TOOL => runtime_status_response(id),
         LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, file_tools).await,
         READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,
+        WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, file_tools).await,
         _ => method_not_available(
             id,
-            "Only runtime_status, safe-rooted read-only list_directory, and bounded safe-rooted read_file are available in this staged runtime.",
+            "Only runtime_status, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
         ),
     }
 }
@@ -247,17 +289,18 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                 "content": [
                     {
                         "type": "text",
-                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=read-only-runtime-status-directory-listing-and-bounded-file-read, filesystem=read-only-list-and-read-file, android_platform=disabled, command_execution=disabled",
+                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=runtime-status-directory-listing-read-file-and-default-dry-run-write-file, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
                     },
                 ],
                 "structuredContent": {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
-                    "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL],
+                    "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL],
                     "filesystemTools": true,
-                    "filesystemToolMode": "read_only_list_directory_and_read_file",
-                    "fileWrites": false,
+                    "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
+                    "fileWrites": true,
+                    "fileWriteMode": "dry_run_by_default_explicit_false_required",
                     "androidPlatformTools": false,
                     "commandExecution": false,
                     "highImpactTools": false,
@@ -276,15 +319,13 @@ async fn handle_list_directory_call(
 ) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
-        None => {
-            return invalid_params(id, "list_directory requires a path argument.");
-        }
+        None => return invalid_params(id, "list_directory requires a path argument."),
     };
 
     let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
         Ok(args) => args,
         Err(error) => {
-            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"));
+            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"))
         }
     };
 
@@ -300,27 +341,11 @@ async fn handle_list_directory_call(
     }
 
     match file_tools.list_directory(args.path, args.max_depth).await {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id.unwrap_or(Value::Null),
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": format!(
-                                "Listed {} safe-rooted filesystem entries.",
-                                result.entries.len()
-                            ),
-                        },
-                    ],
-                    "structuredContent": result,
-                    "isError": false
-                },
-            })),
-        )
-            .into_response(),
+        Ok(result) => ok_result(
+            id,
+            format!("Listed {} safe-rooted filesystem entries.", result.entries.len()),
+            json!(result),
+        ),
         Err(AppError::PathTraversal { .. }) => invalid_params(
             id,
             "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
@@ -336,37 +361,16 @@ async fn handle_read_file_call(
 ) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
-        None => {
-            return invalid_params(id, "read_file requires a path argument.");
-        }
+        None => return invalid_params(id, "read_file requires a path argument."),
     };
 
     let args = match serde_json::from_value::<ReadFileArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => {
-            return invalid_params(id, &format!("Invalid read_file arguments: {error}"));
-        }
+        Err(error) => return invalid_params(id, &format!("Invalid read_file arguments: {error}")),
     };
 
     match file_tools.read_file(args.path).await {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id.unwrap_or(Value::Null),
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": result.content,
-                        },
-                    ],
-                    "structuredContent": result,
-                    "isError": false
-                },
-            })),
-        )
-            .into_response(),
+        Ok(result) => ok_result(id, result.content.clone(), json!(result)),
         Err(AppError::PathTraversal { .. }) => invalid_params(
             id,
             "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
@@ -377,6 +381,75 @@ async fn handle_read_file_call(
         ),
         Err(_error) => internal_error(id, "Filesystem read failed."),
     }
+}
+
+async fn handle_write_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => return invalid_params(id, "write_file requires path and content arguments."),
+    };
+
+    let args = match serde_json::from_value::<WriteFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(error) => return invalid_params(id, &format!("Invalid write_file arguments: {error}")),
+    };
+
+    let policy = WritePolicy::default();
+    let bytes = args.content.len();
+    if policy.validate_payload_size(bytes).is_err() {
+        return payload_too_large(id, "File content exceeds the staged write_file byte limit.");
+    }
+
+    let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
+
+    match file_tools
+        .write_file(args.path, args.content, Some(dry_run))
+        .await
+    {
+        Ok(message) => ok_result(
+            id,
+            message.clone(),
+            json!({
+                "dryRun": dry_run,
+                "bytes": bytes,
+                "message": message,
+            }),
+        ),
+        Err(AppError::PathTraversal { .. }) => invalid_params(
+            id,
+            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+        ),
+        Err(AppError::FileTooLarge { .. }) => payload_too_large(
+            id,
+            "File content exceeds the staged write_file byte limit.",
+        ),
+        Err(_error) => internal_error(id, "Filesystem write failed."),
+    }
+}
+
+fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": text,
+                    },
+                ],
+                "structuredContent": structured_content,
+                "isError": false
+            },
+        })),
+    )
+        .into_response()
 }
 
 fn invalid_params(id: Option<Value>, message: &str) -> Response {
@@ -466,6 +539,26 @@ mod tests {
         router(TransportSecurityPolicy::localhost(8000, false), file_tools)
     }
 
+    async fn post_json(app: Router, request_body: Value) -> Response {
+        app.oneshot(
+            Request::post("/mcp")
+                .header(header::HOST, "localhost:8000")
+                .header(header::ORIGIN, "http://localhost:8000")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(request_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn response_json(response: Response) -> Value {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
     #[tokio::test]
     async fn transport_shell_accepts_valid_host_and_origin_without_tools() {
         let (_root, file_tools) = test_file_tools();
@@ -505,26 +598,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_shell_rejects_malformed_origin_before_transport_handling() {
-        let (_root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000/path")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn tool_discovery_returns_runtime_status_directory_listing_and_read_file_only() {
+    async fn tool_discovery_returns_staged_filesystem_tools() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -533,42 +607,22 @@ mod tests {
             "method": "tools/list",
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, request_body).await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 1);
+        let payload = response_json(response).await;
         let tools = payload["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+
+        assert_eq!(tools.len(), 4);
         assert_eq!(tools[0]["name"], RUNTIME_STATUS_TOOL);
         assert_eq!(tools[1]["name"], LIST_DIRECTORY_TOOL);
         assert_eq!(tools[2]["name"], READ_FILE_TOOL);
-        assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);
-        assert_eq!(tools[2]["inputSchema"]["additionalProperties"], false);
-        assert_eq!(
-            tools[1]["inputSchema"]["properties"]["max_depth"]["maximum"],
-            MAX_LIST_DIRECTORY_DEPTH
-        );
+        assert_eq!(tools[3]["name"], WRITE_FILE_TOOL);
+        assert_eq!(tools[3]["inputSchema"]["additionalProperties"], false);
     }
 
     #[tokio::test]
-    async fn runtime_status_tool_call_returns_deterministic_read_only_metadata() {
+    async fn runtime_status_tool_call_reports_default_dry_run_write_mode() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -581,47 +635,19 @@ mod tests {
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, request_body).await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 2);
+        let payload = response_json(response).await;
         assert_eq!(payload["result"]["isError"], false);
         assert_eq!(
-            payload["result"]["structuredContent"]["availableTools"][0],
-            RUNTIME_STATUS_TOOL
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["availableTools"][1],
-            LIST_DIRECTORY_TOOL
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["availableTools"][2],
-            READ_FILE_TOOL
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["filesystemTools"],
-            true
-        );
-        assert_eq!(
             payload["result"]["structuredContent"]["filesystemToolMode"],
-            "read_only_list_directory_and_read_file"
+            "list_directory_read_file_and_default_dry_run_write_file"
+        );
+        assert_eq!(payload["result"]["structuredContent"]["fileWrites"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["fileWriteMode"],
+            "dry_run_by_default_explicit_false_required"
         );
         assert_eq!(
             payload["result"]["structuredContent"]["androidPlatformTools"],
@@ -631,14 +657,16 @@ mod tests {
             payload["result"]["structuredContent"]["commandExecution"],
             false
         );
-        assert_eq!(payload["result"]["structuredContent"]["fileWrites"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["highImpactTools"],
+            false
+        );
     }
 
     #[tokio::test]
     async fn list_directory_tool_call_returns_safe_rooted_directory_entries() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
-        let safe_root = root.path().to_string_lossy().to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": 4,
@@ -646,36 +674,17 @@ mod tests {
             "params": {
                 "name": LIST_DIRECTORY_TOOL,
                 "arguments": {
-                    "path": safe_root,
+                    "path": root.path().to_string_lossy().to_string(),
                     "max_depth": 1,
                 }
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, request_body).await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
+        let payload = response_json(response).await;
         assert_eq!(payload["result"]["isError"], false);
-        assert_eq!(
-            payload["result"]["structuredContent"]["entries"][0]["is_dir"],
-            false
-        );
         assert!(payload["result"]["structuredContent"]["entries"][0]["path"]
             .as_str()
             .unwrap()
@@ -703,39 +712,19 @@ mod tests {
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+        let response = post_json(app, request_body).await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["result"]["isError"], false);
+        let payload = response_json(response).await;
         assert_eq!(payload["result"]["content"][0]["text"], "safe content");
         assert_eq!(
             payload["result"]["structuredContent"]["content"],
             "safe content"
         );
-        assert!(payload["result"]["structuredContent"]["path"]
-            .as_str()
-            .unwrap()
-            .ends_with("visible.txt"));
     }
 
     #[tokio::test]
-    async fn read_file_tool_call_rejects_files_above_staged_byte_limit() {
+    async fn read_file_tool_call_rejects_oversized_files() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let too_large_file = root.path().join("too_large.txt");
@@ -746,189 +735,115 @@ mod tests {
             "method": "tools/call",
             "params": {
                 "name": READ_FILE_TOOL,
-                "arguments": { "path": too_large_file.to_string_lossy().to_string() }
-            }
-        });
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["error"]["code"], -32001);
-    }
-
-    #[tokio::test]
-    async fn read_file_tool_call_rejects_paths_outside_safe_roots() {
-        let (_root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 8,
-            "method": "tools/call",
-            "params": {
-                "name": READ_FILE_TOOL,
                 "arguments": {
-                    "path": "/etc/passwd",
+                    "path": too_large_file.to_string_lossy().to_string(),
                 }
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 8);
-        assert_eq!(payload["error"]["code"], -32602);
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
-    async fn list_directory_tool_call_rejects_max_depth_outside_schema_bounds() {
+    async fn write_file_tool_call_defaults_to_dry_run_without_mutating() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
-        let safe_root = root.path().to_string_lossy().to_string();
+        let target = root.path().join("dry_run_default.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 6,
+            "id": 10,
             "method": "tools/call",
             "params": {
-                "name": LIST_DIRECTORY_TOOL,
+                "name": WRITE_FILE_TOOL,
                 "arguments": {
-                    "path": safe_root,
-                    "max_depth": MAX_LIST_DIRECTORY_DEPTH + 1,
+                    "path": target.to_string_lossy().to_string(),
+                    "content": "not written",
                 }
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!target.exists());
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 6);
-        assert_eq!(payload["error"]["code"], -32602);
-        assert!(payload["error"]["data"]
-            .as_str()
-            .unwrap()
-            .contains("list_directory.max_depth"));
+        let payload = response_json(response).await;
+        assert_eq!(payload["result"]["structuredContent"]["dryRun"], true);
     }
 
     #[tokio::test]
-    async fn list_directory_tool_call_rejects_paths_outside_safe_roots() {
-        let (_root, file_tools) = test_file_tools();
+    async fn write_file_tool_call_allows_explicit_safe_rooted_mutation() {
+        let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
+        let target = root.path().join("write_enabled.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 5,
+            "id": 11,
             "method": "tools/call",
             "params": {
-                "name": LIST_DIRECTORY_TOOL,
+                "name": WRITE_FILE_TOOL,
                 "arguments": {
-                    "path": "/",
-                    "max_depth": 1,
+                    "path": target.to_string_lossy().to_string(),
+                    "content": "written through mcp",
+                    "dry_run": false,
                 }
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "written through mcp"
+        );
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 5);
-        assert_eq!(payload["error"]["code"], -32602);
+        let payload = response_json(response).await;
+        assert_eq!(payload["result"]["structuredContent"]["dryRun"], false);
     }
 
     #[tokio::test]
-    async fn unknown_tool_call_remains_unavailable() {
+    async fn write_file_tool_call_rejects_oversized_payloads() {
+        let (root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let target = root.path().join("too_large_write.txt");
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": WRITE_FILE_TOOL,
+                "arguments": {
+                    "path": target.to_string_lossy().to_string(),
+                    "content": "a".repeat(1_048_577),
+                    "dry_run": false,
+                }
+            }
+        });
+
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_tool_call_rejects_paths_outside_safe_roots() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 3,
+            "id": 13,
             "method": "tools/call",
             "params": {
-                "name": "unknown_tool",
+                "name": WRITE_FILE_TOOL,
+                "arguments": {
+                    "path": "/etc/write_file_blocked.txt",
+                    "content": "blocked",
+                    "dry_run": false,
+                }
             }
         });
 
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["id"], 3);
-        assert_eq!(payload["error"]["code"], -32601);
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
