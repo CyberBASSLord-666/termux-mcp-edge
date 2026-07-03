@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -34,322 +34,29 @@ concurrency:
 
 jobs:
   rust:
-    name: Patch write_file transport
+    name: Rust validation
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
+        # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
+
       - name: Install Rust toolchain
+        # dtolnay/rust-toolchain@stable resolved 2026-06-26
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
-          components: rustfmt
-      - name: Apply write_file transport patch
-        run: |
-          set -euo pipefail
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('src/mcp_transport.rs')
-          s = p.read_text()
-          s = s.replace('use crate::{error::AppError, tools::FileSystemTools, transport_security::TransportSecurityPolicy};', 'use crate::{\n    error::AppError,\n    tools::FileSystemTools,\n    transport_security::TransportSecurityPolicy,\n    write_policy::{WriteMode, WritePolicy},\n};')
-          s = s.replace('const READ_FILE_TOOL: &str = "read_file";\n', 'const READ_FILE_TOOL: &str = "read_file";\nconst WRITE_FILE_TOOL: &str = "write_file";\n')
-          s = s.replace('struct ReadFileArguments {\n    path: String,\n}\n', 'struct ReadFileArguments {\n    path: String,\n}\n\n#[derive(Debug, Deserialize)]\nstruct WriteFileArguments {\n    path: String,\n    content: String,\n    #[serde(default)]\n    dry_run: Option<bool>,\n}\n')
-          s = s.replace('bounded safe-rooted file reads are available; file writes, platform, command, and high-impact tools are not enabled in this stage.', 'bounded safe-rooted file reads and default-dry-run file writes are available; platform, command, and high-impact tools are not enabled in this stage.')
-          s = s.replace('and bounded safe-rooted read_file are available in this staged runtime.', 'bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.')
-          s = s.replace('and bounded safe-rooted read_file are available in this staged runtime.', 'bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.')
-          read_tool = '''                        {
-                            "name": READ_FILE_TOOL,
-                            "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Absolute path to a UTF-8 text file inside one configured safe root.",
-                                    },
-                                },
-                                "required": ["path"],
-                                "additionalProperties": false,
-                            },
-                        },
-'''
-          write_tool = read_tool + '''                        {
-                            "name": WRITE_FILE_TOOL,
-                            "description": "Write UTF-8 text to a safe-rooted file. Defaults to dry-run; mutation requires explicit dry_run=false.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Absolute destination path inside one configured safe root.",
-                                    },
-                                    "content": {
-                                        "type": "string",
-                                        "description": "UTF-8 text content to write, subject to the staged byte limit.",
-                                    },
-                                    "dry_run": {
-                                        "type": "boolean",
-                                        "description": "Defaults to true. Set explicitly to false to perform the write.",
-                                    },
-                                },
-                                "required": ["path", "content"],
-                                "additionalProperties": false,
-                            },
-                        },
-'''
-          if read_tool not in s:
-              raise SystemExit('read tool block not found')
-          s = s.replace(read_tool, write_tool)
-          s = s.replace('READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,', 'READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,\n        WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, file_tools).await,')
-          s = s.replace('safe-rooted read-only list_directory, and bounded safe-rooted read_file are available', 'safe-rooted read-only list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available')
-          s = s.replace('tools=read-only-runtime-status-directory-listing-and-bounded-file-read, filesystem=read-only-list-and-read-file, android_platform=disabled, command_execution=disabled', 'tools=runtime-status-directory-listing-read-file-and-default-dry-run-write-file, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled')
-          s = s.replace('"availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL],', '"availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL],')
-          s = s.replace('"filesystemToolMode": "read_only_list_directory_and_read_file",\n                    "fileWrites": false,', '"filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",\n                    "fileWrites": true,\n                    "fileWriteMode": "dry_run_by_default_explicit_false_required",')
-          insert_after = '''async fn handle_read_file_call(
-    id: Option<Value>,
-    arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-) -> Response {
-'''
-          start = s.index(insert_after)
-          end = s.index('\nfn invalid_params(', start)
-          read_handler = s[start:end]
-          write_handler = '''
-async fn handle_write_file_call(
-    id: Option<Value>,
-    arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-) -> Response {
-    let arguments = match arguments {
-        Some(arguments) => arguments,
-        None => {
-            return invalid_params(id, "write_file requires path and content arguments.");
-        }
-    };
+          components: rustfmt, clippy
 
-    let args = match serde_json::from_value::<WriteFileArguments>(arguments) {
-        Ok(args) => args,
-        Err(error) => {
-            return invalid_params(id, &format!("Invalid write_file arguments: {error}"));
-        }
-    };
-
-    let policy = WritePolicy::default();
-    let bytes = args.content.len();
-    if policy.validate_payload_size(bytes).is_err() {
-        return payload_too_large(id, "File content exceeds the staged write_file byte limit.");
-    }
-
-    let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
-    match file_tools
-        .write_file(args.path, args.content, Some(dry_run))
-        .await
-    {
-        Ok(message) => (
-            StatusCode::OK,
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id.unwrap_or(Value::Null),
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": message,
-                        },
-                    ],
-                    "structuredContent": {
-                        "dryRun": dry_run,
-                        "bytes": bytes,
-                        "message": message,
-                    },
-                    "isError": false
-                },
-            })),
-        )
-            .into_response(),
-        Err(AppError::PathTraversal { .. }) => invalid_params(
-            id,
-            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
-        ),
-        Err(AppError::FileTooLarge { .. }) => payload_too_large(
-            id,
-            "File content exceeds the staged write_file byte limit.",
-        ),
-        Err(_error) => internal_error(id, "Filesystem write failed."),
-    }
-}
-'''
-          s = s[:end] + write_handler + s[end:]
-          s = s.replace('assert_eq!(tools.len(), 3);', 'assert_eq!(tools.len(), 4);')
-          s = s.replace('assert_eq!(tools[2]["name"], READ_FILE_TOOL);\n        assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);\n        assert_eq!(tools[2]["inputSchema"]["additionalProperties"], false);', 'assert_eq!(tools[2]["name"], READ_FILE_TOOL);\n        assert_eq!(tools[3]["name"], WRITE_FILE_TOOL);\n        assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);\n        assert_eq!(tools[2]["inputSchema"]["additionalProperties"], false);\n        assert_eq!(tools[3]["inputSchema"]["additionalProperties"], false);')
-          s = s.replace('payload["result"]["structuredContent"]["availableTools"][2],\n            READ_FILE_TOOL\n        );', 'payload["result"]["structuredContent"]["availableTools"][2],\n            READ_FILE_TOOL\n        );\n        assert_eq!(\n            payload["result"]["structuredContent"]["availableTools"][3],\n            WRITE_FILE_TOOL\n        );')
-          s = s.replace('"read_only_list_directory_and_read_file"', '"list_directory_read_file_and_default_dry_run_write_file"')
-          s = s.replace('assert_eq!(payload["result"]["structuredContent"]["fileWrites"], false);', 'assert_eq!(payload["result"]["structuredContent"]["fileWrites"], true);\n        assert_eq!(\n            payload["result"]["structuredContent"]["fileWriteMode"],\n            "dry_run_by_default_explicit_false_required"\n        );')
-          marker = '    #[tokio::test]\n    async fn read_file_tool_call_returns_safe_rooted_file_content() {'
-          write_tests = '''    #[tokio::test]
-    async fn write_file_tool_call_defaults_to_dry_run_without_mutating() {
-        let (root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let target = root.path().join("dry_run_default.txt");
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "tools/call",
-            "params": {
-                "name": WRITE_FILE_TOOL,
-                "arguments": {
-                    "path": target.to_string_lossy().to_string(),
-                    "content": "not written",
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!target.exists());
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["result"]["structuredContent"]["dryRun"], true);
-    }
-
-    #[tokio::test]
-    async fn write_file_tool_call_allows_explicit_safe_rooted_mutation() {
-        let (root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let target = root.path().join("write_enabled.txt");
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 11,
-            "method": "tools/call",
-            "params": {
-                "name": WRITE_FILE_TOOL,
-                "arguments": {
-                    "path": target.to_string_lossy().to_string(),
-                    "content": "written through mcp",
-                    "dry_run": false,
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(std::fs::read_to_string(target).unwrap(), "written through mcp");
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let payload: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["result"]["structuredContent"]["dryRun"], false);
-    }
-
-    #[tokio::test]
-    async fn write_file_tool_call_rejects_payloads_above_staged_byte_limit() {
-        let (root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let target = root.path().join("too_large_write.txt");
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 12,
-            "method": "tools/call",
-            "params": {
-                "name": WRITE_FILE_TOOL,
-                "arguments": {
-                    "path": target.to_string_lossy().to_string(),
-                    "content": "a".repeat(1_048_577),
-                    "dry_run": false,
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        assert!(!target.exists());
-    }
-
-    #[tokio::test]
-    async fn write_file_tool_call_rejects_paths_outside_safe_roots() {
-        let (_root, file_tools) = test_file_tools();
-        let app = test_router(file_tools);
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 13,
-            "method": "tools/call",
-            "params": {
-                "name": WRITE_FILE_TOOL,
-                "arguments": {
-                    "path": "/etc/write_file_blocked.txt",
-                    "content": "blocked",
-                    "dry_run": false,
-                }
-            }
-        });
-
-        let response = app
-            .oneshot(
-                Request::post("/mcp")
-                    .header(header::HOST, "localhost:8000")
-                    .header(header::ORIGIN, "http://localhost:8000")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(request_body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-'''
-          if marker not in s:
-              raise SystemExit('read_file test marker not found')
-          s = s.replace(marker, write_tests + marker)
-          p.write_text(s)
-          PY
-          cargo fmt --all
-          git add src/mcp_transport.rs
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Expose default-dry-run write_file MCP tool"
-          git push origin HEAD:automation/write-file-transport-stage
+      - name: Cache cargo registry and build outputs
+        # Swatinem/rust-cache@v2 resolved 2026-06-26
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
       - name: Format check
         run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-targets --all-features
