@@ -32,7 +32,7 @@ jobs:
     steps:
       - name: Checkout
         # actions/checkout@v4 resolved 2026-06-26
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - name: Cache cargo-audit binary
         id: cargo-audit-cache
         uses: actions/cache@638ed79f9dc94c1de1baef91bcab5edaa19451f4
