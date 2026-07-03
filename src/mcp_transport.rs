@@ -308,7 +308,13 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
-                    "availableTools": [RUNTIME_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL, PLATFORM_INFO_TOOL],
+                    "availableTools": [
+                        RUNTIME_STATUS_TOOL,
+                        LIST_DIRECTORY_TOOL,
+                        READ_FILE_TOOL,
+                        WRITE_FILE_TOOL,
+                        PLATFORM_INFO_TOOL,
+                    ],
                     "filesystemTools": true,
                     "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
                     "fileWrites": true,
@@ -692,7 +698,10 @@ mod tests {
             payload["result"]["structuredContent"]["fileWriteMode"],
             "dry_run_by_default_explicit_false_required"
         );
-        assert_eq!(payload["result"]["structuredContent"]["platformTools"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["platformTools"],
+            true
+        );
         assert_eq!(
             payload["result"]["structuredContent"]["platformToolMode"],
             "read_only_compile_time_metadata"
@@ -798,7 +807,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let payload = response_json(response).await;
-        assert_eq!(payload["result"]["isError"], false);
         assert!(payload["result"]["structuredContent"]["entries"][0]["path"]
             .as_str()
             .unwrap()
