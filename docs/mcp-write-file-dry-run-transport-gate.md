@@ -21,11 +21,13 @@ This stage defines the minimum gate for exposing `write_file` through the MCP tr
 - No dependency expansion.
 - No workflow broadening.
 
-## Required validation before merge
+## Validation required for the next transport-wiring PR
 
-- Exact-head CI success.
+Before a follow-up implementation PR may merge, it must satisfy all of the following checks:
+
+- Exact-head CI success for the implementation PR head SHA.
 - Security is not required unless dependency, lockfile, or Security workflow inputs change.
-- Diff remains narrow and current-base.
+- Diff remains narrow and current-base, meaning the PR branch is rebased on current `main` or is otherwise mergeable without bringing stale base changes forward.
 - Tests cover tool discovery, dry-run response behavior, safe-root rejection, payload-limit rejection, and explicit-mutating-write rejection.
 
 ## Next implementation target
