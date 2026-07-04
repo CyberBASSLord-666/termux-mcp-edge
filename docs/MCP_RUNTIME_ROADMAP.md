@@ -2,11 +2,21 @@
 
 ## Goal
 
-Move from the conservative health-check runtime to a broader MCP runtime without regressing security, CI, dependency posture, staged review discipline, or documentation accuracy.
+Move from the health-check runtime to a broader MCP runtime for developers, advanced Termux operators, and power users without regressing security, CI, dependency posture, staged review discipline, or documentation accuracy.
+
+This roadmap assumes informed operators who understand local automation risk. The project therefore uses explicit capability gates, opt-in configuration, allowlists, dry-run or preview behavior where useful, and audit coverage for higher-risk surfaces instead of permanently withholding advanced functionality.
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state. Android platform control, shell fallback, command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state. Android platform control, shell fallback, command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact actions remain unavailable until their own power-user capability gates land.
+
+## Capability-Gate Philosophy
+
+- Advanced capabilities are acceptable project goals when they are explicit, documented, and independently validated.
+- Defaults stay narrow so accidental exposure is unlikely.
+- Power-user expansion happens through opt-in configuration, feature gates, allowlists, bounded inputs/outputs, and audit events.
+- Riskier tools should fail closed with clear structured errors rather than silently degrading into broad shell or platform access.
+- A capability being disabled today means its gate has not landed yet; it does not mean the capability is out of scope forever.
 
 ## Stage 1: Transport Request Validation
 
@@ -77,6 +87,7 @@ Required gates:
 - Bounded read-file test.
 - Dry-run write test.
 - Explicit mutation write test with safe-root and payload constraints.
+- Audit-event wiring for allowed/denied write decisions.
 - Documentation of operator assumptions.
 
 ## Stage 6: Android Platform Tools
@@ -91,6 +102,7 @@ Required gates:
 - Runtime disabled-by-default behavior.
 - Tool-level smoke tests or documented manual validation.
 - No shell fallback unless separately reviewed and authorized.
+- Operator-facing documentation that clearly distinguishes read-only status from device-control actions.
 
 ## Stage 7: Command Execution and High-Impact Tooling
 
@@ -102,6 +114,7 @@ Required gates:
 
 - Feature-gated compile path.
 - Explicit operator opt-in.
+- Fixed allowlisted command shapes; no arbitrary shell string execution.
 - Audit/logging assumptions documented.
 - Separate validation PR.
 - Regression tests proving disabled-by-default behavior.
