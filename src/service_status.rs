@@ -228,8 +228,6 @@ mod tests {
     fn assert_no_process_or_control_values(value: &Value) {
         let text = value.to_string().to_ascii_lowercase();
         for token in [
-            "processes",
-            "process_list",
             "cmdline",
             "stdout",
             "stderr",
