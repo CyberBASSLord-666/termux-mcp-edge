@@ -11,16 +11,17 @@ use serde_json::{json, Value};
 
 use crate::{
     error::AppError,
+    platform_info::collect_platform_info,
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
 };
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
+const PLATFORM_INFO_TOOL: &str = "platform_info";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
 const WRITE_FILE_TOOL: &str = "write_file";
-const PLATFORM_INFO_TOOL: &str = "platform_info";
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
@@ -68,11 +69,11 @@ struct WriteFileArguments {
 /// Build the staged MCP transport shell.
 ///
 /// The staged runtime exposes transport liveness, MCP discovery,
-/// deterministic runtime metadata, safe-rooted directory listing,
-/// bounded safe-rooted UTF-8 reads, default-dry-run safe-rooted writes,
-/// and read-only platform metadata. Android API access, command execution,
-/// and high-impact actions remain unavailable until later independently
-/// validated stages.
+/// deterministic runtime metadata, non-sensitive platform metadata,
+/// safe-rooted directory listing, bounded safe-rooted UTF-8 reads,
+/// and default-dry-run safe-rooted writes. Android platform access,
+/// command execution, and high-impact actions remain unavailable until
+/// later independently validated stages.
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
@@ -106,7 +107,7 @@ async fn handle_mcp_request(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "status": "mcp_transport_shell",
-                "message": "MCP transport is reachable. Tool discovery, runtime_status, safe-rooted directory listing, bounded safe-rooted file reads, default-dry-run file writes, and read-only platform_info are available; Android APIs, command, and high-impact tools are not enabled in this stage.",
+                "message": "MCP transport is reachable. Tool discovery, runtime_status, non-sensitive platform_info, safe-rooted directory listing, bounded safe-rooted file reads, and default-dry-run file writes are available; Android platform control, command execution, and high-impact tools are not enabled in this stage.",
             })),
         )
             .into_response();
@@ -131,9 +132,7 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest {
-        id, method, params, ..
-    } = request;
+    let JsonRpcRequest { id, method, params, .. } = request;
 
     match method.as_str() {
         "initialize" => initialize_response(id),
@@ -141,7 +140,7 @@ async fn handle_mcp_request(
         "tools/call" => handle_tool_call(id, params, &state.file_tools).await,
         _ => method_not_available(
             id,
-            "Only initialize, tools/list, runtime_status, safe-rooted list_directory, bounded safe-rooted read_file, default-dry-run write_file, and read-only platform_info are available in this staged runtime.",
+            "Only initialize, tools/list, runtime_status, platform_info, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
         ),
     }
 }
@@ -180,6 +179,15 @@ fn tools_list_response(id: Option<Value>) -> Response {
                     {
                         "name": RUNTIME_STATUS_TOOL,
                         "description": "Return deterministic runtime metadata for the staged Termux MCP Edge server.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
+                        "name": PLATFORM_INFO_TOOL,
+                        "description": "Return non-sensitive platform metadata only: OS, architecture, platform family, available parallelism, and package version.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {},
@@ -247,15 +255,6 @@ fn tools_list_response(id: Option<Value>) -> Response {
                             "additionalProperties": false,
                         },
                     },
-                    {
-                        "name": PLATFORM_INFO_TOOL,
-                        "description": "Return read-only compile-time platform metadata without Android APIs, filesystem reads, command execution, or device identifiers.",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {},
-                            "additionalProperties": false,
-                        },
-                    },
                 ],
             },
         })),
@@ -280,13 +279,13 @@ async fn handle_tool_call(
 
     match call.name.as_str() {
         RUNTIME_STATUS_TOOL => runtime_status_response(id),
+        PLATFORM_INFO_TOOL => platform_info_response(id, call.arguments),
         LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, file_tools).await,
         READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,
         WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, file_tools).await,
-        PLATFORM_INFO_TOOL => platform_info_response(id, call.arguments),
         _ => method_not_available(
             id,
-            "Only runtime_status, safe-rooted list_directory, bounded safe-rooted read_file, default-dry-run write_file, and read-only platform_info are available in this staged runtime.",
+            "Only runtime_status, platform_info, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
         ),
     }
 }
@@ -301,26 +300,20 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                 "content": [
                     {
                         "type": "text",
-                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=runtime-status-directory-listing-read-file-default-dry-run-write-file-and-platform-info, filesystem=list-read-and-dry-run-write-file, platform_info=read_only_compile_time_metadata, android_platform=disabled, command_execution=disabled",
+                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=runtime-status-platform-info-directory-listing-read-file-and-default-dry-run-write-file, platform_info=read-only-non-sensitive, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
                     },
                 ],
                 "structuredContent": {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
-                    "availableTools": [
-                        RUNTIME_STATUS_TOOL,
-                        LIST_DIRECTORY_TOOL,
-                        READ_FILE_TOOL,
-                        WRITE_FILE_TOOL,
-                        PLATFORM_INFO_TOOL,
-                    ],
+                    "availableTools": [RUNTIME_STATUS_TOOL, PLATFORM_INFO_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL],
+                    "platformInfo": true,
+                    "platformInfoMode": "read_only_non_sensitive_metadata",
                     "filesystemTools": true,
                     "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
-                    "platformTools": true,
-                    "platformToolMode": "read_only_compile_time_metadata",
                     "androidPlatformTools": false,
                     "commandExecution": false,
                     "highImpactTools": false,
@@ -333,30 +326,20 @@ fn runtime_status_response(id: Option<Value>) -> Response {
 }
 
 fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Response {
-    match arguments {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(ref map)) if map.is_empty() => {}
-        _ => return invalid_params(id, "platform_info does not accept arguments."),
+    if let Some(arguments) = arguments {
+        if arguments.as_object().is_some_and(|object| !object.is_empty()) {
+            return invalid_params(id, "platform_info does not accept arguments.");
+        }
     }
 
+    let info = collect_platform_info();
     ok_result(
         id,
         format!(
-            "platform_info: os={}, arch={}, family={}",
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            std::env::consts::FAMILY
+            "platform_info: os={}, arch={}, family={}, parallelism={}, version={}",
+            info.os, info.arch, info.family, info.available_parallelism, info.package_version
         ),
-        json!({
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "family": std::env::consts::FAMILY,
-            "source": "std::env::consts",
-            "androidApiAccess": false,
-            "filesystemAccess": false,
-            "commandExecution": false,
-            "deviceIdentifiers": false,
-        }),
+        json!(info),
     )
 }
 
@@ -372,9 +355,7 @@ async fn handle_list_directory_call(
 
     let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => {
-            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"))
-        }
+        Err(error) => return invalid_params(id, &format!("Invalid list_directory arguments: {error}")),
     };
 
     if let Some(max_depth) = args.max_depth {
@@ -663,15 +644,16 @@ mod tests {
 
         assert_eq!(tools.len(), 5);
         assert_eq!(tools[0]["name"], RUNTIME_STATUS_TOOL);
-        assert_eq!(tools[1]["name"], LIST_DIRECTORY_TOOL);
-        assert_eq!(tools[2]["name"], READ_FILE_TOOL);
-        assert_eq!(tools[3]["name"], WRITE_FILE_TOOL);
-        assert_eq!(tools[4]["name"], PLATFORM_INFO_TOOL);
+        assert_eq!(tools[1]["name"], PLATFORM_INFO_TOOL);
+        assert_eq!(tools[2]["name"], LIST_DIRECTORY_TOOL);
+        assert_eq!(tools[3]["name"], READ_FILE_TOOL);
+        assert_eq!(tools[4]["name"], WRITE_FILE_TOOL);
+        assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);
         assert_eq!(tools[4]["inputSchema"]["additionalProperties"], false);
     }
 
     #[tokio::test]
-    async fn runtime_status_tool_call_reports_default_dry_run_write_mode() {
+    async fn runtime_status_tool_call_reports_platform_info_as_read_only() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -690,38 +672,21 @@ mod tests {
         let payload = response_json(response).await;
         assert_eq!(payload["result"]["isError"], false);
         assert_eq!(
-            payload["result"]["structuredContent"]["filesystemToolMode"],
-            "list_directory_read_file_and_default_dry_run_write_file"
+            payload["result"]["structuredContent"]["availableTools"][1],
+            PLATFORM_INFO_TOOL
         );
-        assert_eq!(payload["result"]["structuredContent"]["fileWrites"], true);
+        assert_eq!(payload["result"]["structuredContent"]["platformInfo"], true);
         assert_eq!(
-            payload["result"]["structuredContent"]["fileWriteMode"],
-            "dry_run_by_default_explicit_false_required"
+            payload["result"]["structuredContent"]["platformInfoMode"],
+            "read_only_non_sensitive_metadata"
         );
-        assert_eq!(
-            payload["result"]["structuredContent"]["platformTools"],
-            true
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["platformToolMode"],
-            "read_only_compile_time_metadata"
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["androidPlatformTools"],
-            false
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["commandExecution"],
-            false
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["highImpactTools"],
-            false
-        );
+        assert_eq!(payload["result"]["structuredContent"]["androidPlatformTools"], false);
+        assert_eq!(payload["result"]["structuredContent"]["commandExecution"], false);
+        assert_eq!(payload["result"]["structuredContent"]["highImpactTools"], false);
     }
 
     #[tokio::test]
-    async fn platform_info_tool_call_returns_read_only_compile_time_metadata() {
+    async fn platform_info_tool_call_returns_only_non_sensitive_metadata() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -738,52 +703,37 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let payload = response_json(response).await;
-        assert_eq!(payload["result"]["isError"], false);
-        assert_eq!(
-            payload["result"]["structuredContent"]["os"],
-            std::env::consts::OS
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["arch"],
-            std::env::consts::ARCH
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["family"],
-            std::env::consts::FAMILY
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["androidApiAccess"],
-            false
-        );
-        assert_eq!(
-            payload["result"]["structuredContent"]["commandExecution"],
-            false
-        );
+        let structured = &payload["result"]["structuredContent"];
+
+        assert_eq!(structured["os"], std::env::consts::OS);
+        assert_eq!(structured["arch"], std::env::consts::ARCH);
+        assert_eq!(structured["family"], std::env::consts::FAMILY);
+        assert!(structured["available_parallelism"].as_u64().unwrap() >= 1);
+        assert_eq!(structured["package_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(structured.get("env"), None);
+        assert_eq!(structured.get("path"), None);
+        assert_eq!(structured.get("processes"), None);
+        assert_eq!(structured.get("shell"), None);
+        assert_eq!(structured.get("hostname"), None);
+        assert_eq!(structured.get("username"), None);
     }
 
     #[tokio::test]
     async fn platform_info_tool_call_rejects_arguments() {
-        for arguments in [
-            json!({"unexpected": true}),
-            json!(["unexpected"]),
-            json!("unexpected"),
-            json!(true),
-        ] {
-            let (_root, file_tools) = test_file_tools();
-            let app = test_router(file_tools);
-            let request_body = json!({
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "name": PLATFORM_INFO_TOOL,
-                    "arguments": arguments,
-                }
-            });
+        let (_root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": PLATFORM_INFO_TOOL,
+                "arguments": { "include_env": true },
+            }
+        });
 
-            let response = post_json(app, request_body).await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        }
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -807,6 +757,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let payload = response_json(response).await;
+        assert_eq!(payload["result"]["isError"], false);
         assert!(payload["result"]["structuredContent"]["entries"][0]["path"]
             .as_str()
             .unwrap()
@@ -817,11 +768,7 @@ mod tests {
     async fn read_file_tool_call_returns_safe_rooted_file_content() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
-        let safe_file = root
-            .path()
-            .join("visible.txt")
-            .to_string_lossy()
-            .to_string();
+        let safe_file = root.path().join("visible.txt").to_string_lossy().to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": 7,
@@ -839,10 +786,7 @@ mod tests {
 
         let payload = response_json(response).await;
         assert_eq!(payload["result"]["content"][0]["text"], "safe content");
-        assert_eq!(
-            payload["result"]["structuredContent"]["content"],
-            "safe content"
-        );
+        assert_eq!(payload["result"]["structuredContent"]["content"], "safe content");
     }
 
     #[tokio::test]
@@ -914,10 +858,7 @@ mod tests {
 
         let response = post_json(app, request_body).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            std::fs::read_to_string(target).unwrap(),
-            "written through mcp"
-        );
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "written through mcp");
 
         let payload = response_json(response).await;
         assert_eq!(payload["result"]["structuredContent"]["dryRun"], false);
