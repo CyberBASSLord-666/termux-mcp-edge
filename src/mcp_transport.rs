@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
+    android_status::collect_android_status,
     error::AppError,
     platform_info::collect_platform_info,
     tools::FileSystemTools,
@@ -19,9 +20,18 @@ use crate::{
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const PLATFORM_INFO_TOOL: &str = "platform_info";
+const ANDROID_STATUS_TOOL: &str = "android_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
 const WRITE_FILE_TOOL: &str = "write_file";
+const AVAILABLE_TOOLS: [&str; 6] = [
+    RUNTIME_STATUS_TOOL,
+    PLATFORM_INFO_TOOL,
+    ANDROID_STATUS_TOOL,
+    LIST_DIRECTORY_TOOL,
+    READ_FILE_TOOL,
+    WRITE_FILE_TOOL,
+];
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
@@ -70,10 +80,10 @@ struct WriteFileArguments {
 ///
 /// The staged runtime exposes transport liveness, MCP discovery,
 /// deterministic runtime metadata, non-sensitive platform metadata,
-/// safe-rooted directory listing, bounded safe-rooted UTF-8 reads,
-/// and default-dry-run safe-rooted writes. Android platform access,
-/// command execution, and high-impact actions remain unavailable until
-/// later independently validated stages.
+/// read-only Android/Termux status metadata, safe-rooted directory listing,
+/// bounded safe-rooted UTF-8 reads, and default-dry-run safe-rooted writes.
+/// Android platform control, command execution, and high-impact actions remain
+/// unavailable until later independently validated stages.
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
@@ -83,6 +93,7 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
+#[rustfmt::skip]
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
     headers: HeaderMap,
@@ -107,7 +118,7 @@ async fn handle_mcp_request(
             StatusCode::NOT_IMPLEMENTED,
             Json(json!({
                 "status": "mcp_transport_shell",
-                "message": "MCP transport is reachable. Tool discovery, runtime_status, non-sensitive platform_info, safe-rooted directory listing, bounded safe-rooted file reads, and default-dry-run file writes are available; Android platform control, command execution, and high-impact tools are not enabled in this stage.",
+                "message": "MCP transport is reachable. Tool discovery, runtime_status, non-sensitive platform_info, read-only android_status, safe-rooted directory listing, bounded safe-rooted file reads, and default-dry-run file writes are available; Android platform control, command execution, and high-impact tools are not enabled in this stage.",
             })),
         )
             .into_response();
@@ -142,7 +153,7 @@ async fn handle_mcp_request(
         "tools/call" => handle_tool_call(id, params, &state.file_tools).await,
         _ => method_not_available(
             id,
-            "Only initialize, tools/list, runtime_status, platform_info, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
+            "Only initialize, tools/list, runtime_status, platform_info, read-only android_status, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
         ),
     }
 }
@@ -170,6 +181,7 @@ fn initialize_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 fn tools_list_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -190,6 +202,15 @@ fn tools_list_response(id: Option<Value>) -> Response {
                     {
                         "name": PLATFORM_INFO_TOOL,
                         "description": "Return non-sensitive platform metadata only: OS, architecture, platform family, available parallelism, and package version.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
+                        "name": ANDROID_STATUS_TOOL,
+                        "description": "Return strictly read-only Android/Termux status metadata from the staged allowlist; Android APIs, control actions, shell fallback, command execution, and high-impact controls remain disabled.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {},
@@ -264,6 +285,7 @@ fn tools_list_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
@@ -282,16 +304,18 @@ async fn handle_tool_call(
     match call.name.as_str() {
         RUNTIME_STATUS_TOOL => runtime_status_response(id),
         PLATFORM_INFO_TOOL => platform_info_response(id, call.arguments),
+        ANDROID_STATUS_TOOL => android_status_response(id, call.arguments),
         LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, file_tools).await,
         READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,
         WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, file_tools).await,
         _ => method_not_available(
             id,
-            "Only runtime_status, platform_info, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
+            "Only runtime_status, platform_info, read-only android_status, safe-rooted list_directory, bounded safe-rooted read_file, and default-dry-run write_file are available in this staged runtime.",
         ),
     }
 }
 
+#[rustfmt::skip]
 fn runtime_status_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -302,16 +326,18 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                 "content": [
                     {
                         "type": "text",
-                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=runtime-status-platform-info-directory-listing-read-file-and-default-dry-run-write-file, platform_info=read-only-non-sensitive, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
+                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=runtime-status-platform-info-android-status-directory-listing-read-file-and-default-dry-run-write-file, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
                     },
                 ],
                 "structuredContent": {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
-                    "availableTools": [RUNTIME_STATUS_TOOL, PLATFORM_INFO_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL],
+                    "availableTools": AVAILABLE_TOOLS,
                     "platformInfo": true,
                     "platformInfoMode": "read_only_non_sensitive_metadata",
+                    "androidStatus": true,
+                    "androidStatusMode": "read_only_allowlisted_status_no_api_or_control",
                     "filesystemTools": true,
                     "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
                     "fileWrites": true,
@@ -345,6 +371,39 @@ fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Respon
             info.os, info.arch, info.family, info.available_parallelism, info.package_version
         ),
         json!(info),
+    )
+}
+
+#[rustfmt::skip]
+fn android_status_response(id: Option<Value>, arguments: Option<Value>) -> Response {
+    if let Some(arguments) = arguments {
+        if !arguments.is_object()
+            || arguments
+                .as_object()
+                .is_some_and(|object| !object.is_empty())
+        {
+            return invalid_params(
+                id,
+                "android_status requires no arguments; arguments must be an empty object or omitted.",
+            );
+        }
+    }
+
+    let status = collect_android_status();
+    ok_result(
+        id,
+        format!(
+            "android_status: mode={}, target_os={}, target_arch={}, android_api_access={}, android_control_enabled={}, shell_fallback_enabled={}, command_execution_enabled={}, high_impact_controls_enabled={}",
+            status.status_mode,
+            status.target_os,
+            status.target_arch,
+            status.android_api_access,
+            status.android_control_enabled,
+            status.shell_fallback_enabled,
+            status.command_execution_enabled,
+            status.high_impact_controls_enabled,
+        ),
+        json!(status),
     )
 }
 
@@ -557,12 +616,14 @@ fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
 mod tests {
     use axum::{body::Body, http::Request};
     use tempfile::TempDir;
     use tower::ServiceExt;
 
     use super::*;
+    use crate::android_status::ANDROID_STATUS_DENIED_FIELDS;
 
     fn test_file_tools() -> (TempDir, FileSystemTools) {
         let root = tempfile::tempdir().unwrap();
@@ -634,7 +695,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_discovery_returns_staged_filesystem_and_platform_tools() {
+    async fn tool_discovery_returns_staged_filesystem_platform_and_android_status_tools() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -649,18 +710,19 @@ mod tests {
         let payload = response_json(response).await;
         let tools = payload["result"]["tools"].as_array().unwrap();
 
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         assert_eq!(tools[0]["name"], RUNTIME_STATUS_TOOL);
         assert_eq!(tools[1]["name"], PLATFORM_INFO_TOOL);
-        assert_eq!(tools[2]["name"], LIST_DIRECTORY_TOOL);
-        assert_eq!(tools[3]["name"], READ_FILE_TOOL);
-        assert_eq!(tools[4]["name"], WRITE_FILE_TOOL);
-        assert_eq!(tools[1]["inputSchema"]["additionalProperties"], false);
-        assert_eq!(tools[4]["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tools[2]["name"], ANDROID_STATUS_TOOL);
+        assert_eq!(tools[3]["name"], LIST_DIRECTORY_TOOL);
+        assert_eq!(tools[4]["name"], READ_FILE_TOOL);
+        assert_eq!(tools[5]["name"], WRITE_FILE_TOOL);
+        assert_eq!(tools[2]["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tools[5]["inputSchema"]["additionalProperties"], false);
     }
 
     #[tokio::test]
-    async fn runtime_status_tool_call_reports_platform_info_as_read_only() {
+    async fn runtime_status_tool_call_reports_android_status_as_read_only() {
         let (_root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
@@ -679,13 +741,14 @@ mod tests {
         let payload = response_json(response).await;
         assert_eq!(payload["result"]["isError"], false);
         assert_eq!(
-            payload["result"]["structuredContent"]["availableTools"][1],
-            PLATFORM_INFO_TOOL
+            payload["result"]["structuredContent"]["availableTools"][2],
+            ANDROID_STATUS_TOOL
         );
         assert_eq!(payload["result"]["structuredContent"]["platformInfo"], true);
+        assert_eq!(payload["result"]["structuredContent"]["androidStatus"], true);
         assert_eq!(
-            payload["result"]["structuredContent"]["platformInfoMode"],
-            "read_only_non_sensitive_metadata"
+            payload["result"]["structuredContent"]["androidStatusMode"],
+            "read_only_allowlisted_status_no_api_or_control"
         );
         assert_eq!(
             payload["result"]["structuredContent"]["androidPlatformTools"],
@@ -753,12 +816,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn android_status_tool_call_returns_strictly_read_only_allowlisted_metadata() {
+        let (_root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": ANDROID_STATUS_TOOL,
+                "arguments": {},
+            }
+        });
+
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let payload = response_json(response).await;
+        let structured = &payload["result"]["structuredContent"];
+
+        assert_eq!(structured["status_mode"], "read_only_allowlisted_status");
+        assert_eq!(structured["target_os"], std::env::consts::OS);
+        assert_eq!(structured["target_arch"], std::env::consts::ARCH);
+        assert_eq!(structured["target_family"], std::env::consts::FAMILY);
+        assert_eq!(structured["package_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(structured["android_api_access"], "not_used");
+        assert_eq!(structured["android_control_enabled"], false);
+        assert_eq!(structured["shell_fallback_enabled"], false);
+        assert_eq!(structured["command_execution_enabled"], false);
+        assert_eq!(structured["high_impact_controls_enabled"], false);
+
+        for denied_field in ANDROID_STATUS_DENIED_FIELDS {
+            assert_eq!(
+                structured.get(*denied_field),
+                None,
+                "unexpected denied Android status field in MCP response: {denied_field}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn android_status_tool_call_rejects_arguments() {
+        let (_root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": ANDROID_STATUS_TOOL,
+                "arguments": { "include_packages": true },
+            }
+        });
+
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn android_status_tool_call_rejects_non_object_arguments() {
+        let (_root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": ANDROID_STATUS_TOOL,
+                "arguments": "include_packages",
+            }
+        });
+
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn list_directory_tool_call_returns_safe_rooted_directory_entries() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 5,
+            "id": 8,
             "method": "tools/call",
             "params": {
                 "name": LIST_DIRECTORY_TOOL,
@@ -791,7 +930,7 @@ mod tests {
             .to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 7,
+            "id": 9,
             "method": "tools/call",
             "params": {
                 "name": READ_FILE_TOOL,
@@ -820,7 +959,7 @@ mod tests {
         std::fs::write(&too_large_file, vec![b'a'; 1_048_577]).unwrap();
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 9,
+            "id": 10,
             "method": "tools/call",
             "params": {
                 "name": READ_FILE_TOOL,
@@ -841,7 +980,7 @@ mod tests {
         let target = root.path().join("dry_run_default.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 10,
+            "id": 11,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
@@ -867,7 +1006,7 @@ mod tests {
         let target = root.path().join("write_enabled.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 11,
+            "id": 12,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
@@ -897,7 +1036,7 @@ mod tests {
         let target = root.path().join("too_large_write.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 12,
+            "id": 13,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
@@ -920,7 +1059,7 @@ mod tests {
         let app = test_router(file_tools);
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 13,
+            "id": 14,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
