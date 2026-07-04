@@ -1,5 +1,3 @@
-#![allow(unused_attributes)]
-#![rustfmt::skip]
 use axum::{
     body::Bytes,
     extract::State,
@@ -689,6 +687,7 @@ fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
 mod tests {
     use axum::{body::Body, http::Request};
     use tempfile::TempDir;
