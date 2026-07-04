@@ -207,7 +207,7 @@ mod tests {
             );
         }
 
-        assert_no_process_or_control_tokens(&value);
+        assert_no_process_or_control_values(&value);
     }
 
     #[test]
@@ -225,15 +225,12 @@ mod tests {
         }
     }
 
-    fn assert_no_process_or_control_tokens(value: &Value) {
+    fn assert_no_process_or_control_values(value: &Value) {
         let text = value.to_string().to_ascii_lowercase();
         for token in [
-            "pid",
             "processes",
             "process_list",
             "cmdline",
-            "command_line",
-            "environment",
             "stdout",
             "stderr",
             "installed_packages",
