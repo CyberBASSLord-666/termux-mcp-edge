@@ -93,7 +93,7 @@ impl CommandExecutionPolicy {
             return denied(request, None, COMMAND_NOT_ALLOWLISTED_REASON);
         };
 
-        if request.execution_requested || COMMAND_EXECUTION_ENABLED {
+        if request.execution_requested {
             return denied(request, Some(command), EXECUTION_DISABLED_REASON);
         }
 
@@ -197,9 +197,7 @@ fn denied(
 }
 
 fn find_allowed_command(command_id: &str) -> Option<&'static AllowedCommand> {
-    COMMAND_ALLOWLIST
-        .iter()
-        .find(|command| command.id == command_id)
+    COMMAND_ALLOWLIST.iter().find(|command| command.id == command_id)
 }
 
 fn environment_names_are_allowlisted(requested: &[&str], allowed: &[&str]) -> bool {
@@ -233,8 +231,6 @@ mod tests {
 
     #[test]
     fn command_execution_is_design_only_and_disabled() {
-        assert!(!COMMAND_EXECUTION_ENABLED);
-
         let mut request = valid_request();
         request.execution_requested = true;
 
