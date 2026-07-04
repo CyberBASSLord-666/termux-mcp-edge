@@ -6,7 +6,7 @@ Move from the current conservative health-check runtime to a full MCP runtime wi
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, safe-rooted read-only directory listing, and bounded safe-rooted UTF-8 file reads. File writes, Android platform access, command execution, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, safe-rooted read-only directory listing, bounded safe-rooted UTF-8 file reads, and safe-rooted `write_file` with dry-run-by-default behavior. Mutating writes require explicit `"dry_run": false`. Internal read-only Android status primitives have landed for later staging, but no Android platform API/control MCP tool is exposed. Command execution and high-impact actions remain unavailable.
 
 ## Stage 1: Transport Request Validation
 
@@ -65,7 +65,7 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, and explicit write controls.
 
-Status: in progress. Current substage exposes safe-rooted read-only directory listing and bounded safe-rooted UTF-8 file reads. File writes remain disabled.
+Status: complete for the current staged filesystem surface. The current substage exposes safe-rooted read-only directory listing, bounded safe-rooted UTF-8 file reads, and safe-rooted `write_file` that defaults to dry-run. Mutating writes require explicit `"dry_run": false`, remain safe-root constrained, and use non-sensitive audit decision primitives for staged write policy decisions.
 
 Required gates:
 
@@ -75,18 +75,20 @@ Required gates:
 - Bounded read-file test.
 - Dry-run write test before any write-capable tool is exposed.
 - Documentation of operator assumptions.
+- Non-sensitive audit decision coverage before later mutating or command-capable stages expand.
 
 ## Stage 6: Android Platform Tools
 
 Restore Android platform tools only after explicit feature gates and operational documentation.
 
-Status: not started.
+Status: primitive baseline in progress. Internal read-only Android/Termux status primitives exist and remain data-only. No Android API access, platform control, shell fallback, command execution, or high-impact control is exposed through MCP.
 
 Required gates:
 
 - Feature-gated compile path.
 - Runtime disabled-by-default behavior.
 - Tool-level smoke tests or documented manual validation.
+- No command execution or high-impact controls bundled into the same PR.
 
 ## Stage 7: High-Impact Tooling
 
