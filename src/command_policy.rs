@@ -206,11 +206,15 @@ fn command_execution_enabled() -> bool {
 }
 
 fn find_allowed_command(command_id: &str) -> Option<&'static AllowedCommand> {
-    COMMAND_ALLOWLIST.iter().find(|command| command.id == command_id)
+    COMMAND_ALLOWLIST
+        .iter()
+        .find(|command| command.id == command_id)
 }
 
 fn environment_names_are_allowlisted(requested: &[&str], allowed: &[&str]) -> bool {
-    requested.iter().all(|requested_name| allowed.contains(requested_name))
+    requested
+        .iter()
+        .all(|requested_name| allowed.contains(requested_name))
 }
 
 fn usize_to_u64(value: usize) -> u64 {
