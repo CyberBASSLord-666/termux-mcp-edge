@@ -2,18 +2,19 @@
 
 ## Purpose
 
-This project currently runs a small Rust/Axum HTTP service on Android through Termux. The compiled runtime exposes a health-check endpoint and validates startup security posture. MCP transport and MCP tool endpoints are not exposed in the current runtime.
+This project runs a small Rust/Axum HTTP service on Android through Termux. The default compiled runtime exposes a health-check endpoint and validates startup security posture. When built with the optional `mcp-runtime` feature, the service exposes a staged `/mcp` transport with exact transport allow-list checks and a limited MCP tool surface.
 
 ## Baseline Operating Model
 
 - Rust single-binary service.
 - Axum HTTP runtime.
 - `GET /health` endpoint for runtime liveness.
+- Optional feature-gated `POST /mcp` staged transport.
 - Termux runtime.
 - `termux-services` / runit supervision.
 - Bearer-token startup posture for constrained deployments.
 - Narrow dedicated filesystem safe-root default.
-- MCP transport restoration tracked separately from the current health-check runtime.
+- MCP restoration remains staged by tool surface.
 
 ## Required Android Hardening
 
@@ -35,7 +36,7 @@ Expected response:
 ok
 ```
 
-MCP-level validation is not applicable until MCP transport is restored. When MCP transport returns, add validation for tool discovery and at least one tool call before claiming MCP readiness.
+When the binary is built with `--features mcp-runtime`, validate exact transport checks, tool discovery, and representative tool calls before claiming MCP readiness for the enabled staged surface.
 
 For repository-level validation, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat CI and Security as merge gates before merging remediation branches.
 
@@ -73,20 +74,31 @@ The default filesystem safe root is the dedicated Termux-home directory:
 /data/data/com.termux/files/home/mcp-files
 ```
 
-This deliberately avoids broad Android shared-storage defaults such as `/storage/emulated/0` and `/sdcard`. If filesystem tools are restored, keep `MCP__FILE__SAFE_ROOTS` constrained to one or more dedicated project directories. Avoid all shared storage unless the deployment has a reviewed operational requirement and matching authorization controls.
+This deliberately avoids broad Android shared-storage defaults such as `/storage/emulated/0` and `/sdcard`. Keep `MCP__FILE__SAFE_ROOTS` constrained to one or more dedicated project directories. Avoid all shared storage unless the deployment has a reviewed operational requirement and matching authorization controls.
 
 Safe-root configuration is validated at startup. Empty safe-root lists, relative paths, and filesystem root `/` are rejected.
 
-## Current Tool Exposure
+## Current MCP Tool Exposure
 
-No MCP tools are exposed by the current compiled runtime. Filesystem and platform tool work must remain gated behind a future transport-restoration PR with explicit tests, documentation, and Security validation.
+When `mcp-runtime` is enabled, current `tools/list` exposes:
+
+1. `runtime_status` — deterministic staged runtime metadata.
+2. `platform_info` — non-sensitive platform metadata only.
+3. `android_status` — read-only allowlisted Android/Termux status metadata with no Android API calls, shell fallback, or control behavior.
+4. `project_service_status` — read-only allowlisted project-owned logical service metadata; the current service name is `mcp_runtime`.
+5. `list_directory` — bounded safe-rooted directory listing.
+6. `read_file` — bounded safe-rooted UTF-8 file reads.
+7. `write_file` — safe-rooted, payload-bounded writes that default to dry-run unless `dry_run:false` is explicitly supplied.
+
+The current runtime does not expose Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, or high-impact controls.
 
 ## Release Process
 
 1. Validate with `cargo fmt`, `cargo clippy`, and `cargo test`.
-2. Confirm the Security workflow passes.
+2. Confirm the Security workflow passes when applicable, or document an accepted path-filtered non-run for docs-only changes.
 3. Cross-compile with `scripts/cross_compile.sh`.
 4. Copy the release binary to `$HOME/bin/termux-mcp-server` on Android.
 5. Restart the runit service.
 6. Verify `/health` returns `ok`.
-7. Do not claim MCP readiness until MCP transport validation is added and passing.
+7. If `mcp-runtime` is enabled, verify `/mcp` transport checks, `tools/list`, and representative calls to `runtime_status`, `project_service_status`, and filesystem tools.
+8. Do not claim readiness for Android control, command execution, or high-impact tools until their separate staged gates are implemented and validated.
