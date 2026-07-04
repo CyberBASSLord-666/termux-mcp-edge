@@ -377,11 +377,15 @@ fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Respon
 #[rustfmt::skip]
 fn android_status_response(id: Option<Value>, arguments: Option<Value>) -> Response {
     if let Some(arguments) = arguments {
-        if arguments
-            .as_object()
-            .is_some_and(|object| !object.is_empty())
+        if !arguments.is_object()
+            || arguments
+                .as_object()
+                .is_some_and(|object| !object.is_empty())
         {
-            return invalid_params(id, "android_status does not accept arguments.");
+            return invalid_params(
+                id,
+                "android_status requires no arguments; arguments must be an empty object or omitted.",
+            );
         }
     }
 
@@ -870,12 +874,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn android_status_tool_call_rejects_non_object_arguments() {
+        let (_root, file_tools) = test_file_tools();
+        let app = test_router(file_tools);
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": ANDROID_STATUS_TOOL,
+                "arguments": "include_packages",
+            }
+        });
+
+        let response = post_json(app, request_body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn list_directory_tool_call_returns_safe_rooted_directory_entries() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 7,
+            "id": 8,
             "method": "tools/call",
             "params": {
                 "name": LIST_DIRECTORY_TOOL,
@@ -908,7 +930,7 @@ mod tests {
             .to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 8,
+            "id": 9,
             "method": "tools/call",
             "params": {
                 "name": READ_FILE_TOOL,
@@ -937,7 +959,7 @@ mod tests {
         std::fs::write(&too_large_file, vec![b'a'; 1_048_577]).unwrap();
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 9,
+            "id": 10,
             "method": "tools/call",
             "params": {
                 "name": READ_FILE_TOOL,
@@ -958,7 +980,7 @@ mod tests {
         let target = root.path().join("dry_run_default.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 10,
+            "id": 11,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
@@ -984,7 +1006,7 @@ mod tests {
         let target = root.path().join("write_enabled.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 11,
+            "id": 12,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
@@ -1014,7 +1036,7 @@ mod tests {
         let target = root.path().join("too_large_write.txt");
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 12,
+            "id": 13,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
@@ -1037,7 +1059,7 @@ mod tests {
         let app = test_router(file_tools);
         let request_body = json!({
             "jsonrpc": "2.0",
-            "id": 13,
+            "id": 14,
             "method": "tools/call",
             "params": {
                 "name": WRITE_FILE_TOOL,
