@@ -132,7 +132,9 @@ async fn handle_mcp_request(
         }
     };
 
-    let JsonRpcRequest { id, method, params, .. } = request;
+    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
 
     match method.as_str() {
         "initialize" => initialize_response(id),
@@ -327,7 +329,10 @@ fn runtime_status_response(id: Option<Value>) -> Response {
 
 fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Response {
     if let Some(arguments) = arguments {
-        if arguments.as_object().is_some_and(|object| !object.is_empty()) {
+        if arguments
+            .as_object()
+            .is_some_and(|object| !object.is_empty())
+        {
             return invalid_params(id, "platform_info does not accept arguments.");
         }
     }
@@ -355,7 +360,9 @@ async fn handle_list_directory_call(
 
     let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => return invalid_params(id, &format!("Invalid list_directory arguments: {error}")),
+        Err(error) => {
+            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"))
+        }
     };
 
     if let Some(max_depth) = args.max_depth {
@@ -680,9 +687,18 @@ mod tests {
             payload["result"]["structuredContent"]["platformInfoMode"],
             "read_only_non_sensitive_metadata"
         );
-        assert_eq!(payload["result"]["structuredContent"]["androidPlatformTools"], false);
-        assert_eq!(payload["result"]["structuredContent"]["commandExecution"], false);
-        assert_eq!(payload["result"]["structuredContent"]["highImpactTools"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["androidPlatformTools"],
+            false
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["commandExecution"],
+            false
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["highImpactTools"],
+            false
+        );
     }
 
     #[tokio::test]
@@ -768,7 +784,11 @@ mod tests {
     async fn read_file_tool_call_returns_safe_rooted_file_content() {
         let (root, file_tools) = test_file_tools();
         let app = test_router(file_tools);
-        let safe_file = root.path().join("visible.txt").to_string_lossy().to_string();
+        let safe_file = root
+            .path()
+            .join("visible.txt")
+            .to_string_lossy()
+            .to_string();
         let request_body = json!({
             "jsonrpc": "2.0",
             "id": 7,
@@ -786,7 +806,10 @@ mod tests {
 
         let payload = response_json(response).await;
         assert_eq!(payload["result"]["content"][0]["text"], "safe content");
-        assert_eq!(payload["result"]["structuredContent"]["content"], "safe content");
+        assert_eq!(
+            payload["result"]["structuredContent"]["content"],
+            "safe content"
+        );
     }
 
     #[tokio::test]
@@ -858,7 +881,10 @@ mod tests {
 
         let response = post_json(app, request_body).await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(std::fs::read_to_string(target).unwrap(), "written through mcp");
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "written through mcp"
+        );
 
         let payload = response_json(response).await;
         assert_eq!(payload["result"]["structuredContent"]["dryRun"], false);
