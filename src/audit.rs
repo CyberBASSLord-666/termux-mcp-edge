@@ -153,7 +153,10 @@ mod tests {
     fn assert_no_sensitive_tokens(value: &Value) {
         let serialized = value.to_string().to_ascii_lowercase();
         for token in ["password", "secret", "token", "/data/", "/home/", "bearer"] {
-            assert!(!serialized.contains(token), "unexpected sensitive token: {token}");
+            assert!(
+                !serialized.contains(token),
+                "unexpected sensitive token: {token}"
+            );
         }
     }
 }
