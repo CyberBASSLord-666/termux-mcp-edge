@@ -2,11 +2,21 @@
 
 ## Goal
 
-Move from the current conservative health-check runtime to a full MCP runtime without regressing security, CI, dependency posture, or documentation accuracy.
+Move from the health-check runtime to a broader MCP runtime for developers, advanced Termux operators, and power users without regressing security, CI, dependency posture, staged review discipline, or documentation accuracy.
+
+This roadmap assumes informed operators who understand local automation risk. The project therefore uses explicit capability gates, opt-in configuration, allowlists, dry-run or preview behavior where useful, and audit coverage for higher-risk surfaces instead of permanently withholding advanced functionality.
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport shell validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, safe-rooted read-only directory listing, and bounded safe-rooted UTF-8 file reads. File writes, Android platform access, command execution, and high-impact actions remain unavailable.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature is being restored in narrow stages. The current staged transport validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state. Android platform control, shell fallback, command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact actions remain unavailable until their own power-user capability gates land.
+
+## Capability-Gate Philosophy
+
+- Advanced capabilities are acceptable project goals when they are explicit, documented, and independently validated.
+- Defaults stay narrow so accidental exposure is unlikely.
+- Power-user expansion happens through opt-in configuration, feature gates, allowlists, bounded inputs/outputs, and audit events.
+- Riskier tools should fail closed with clear structured errors rather than silently degrading into broad shell or platform access.
+- A capability being disabled today means its gate has not landed yet; it does not mean the capability is out of scope forever.
 
 ## Stage 1: Transport Request Validation
 
@@ -23,7 +33,7 @@ Required gates:
 
 ## Stage 2: Minimal MCP Transport Shell
 
-Introduce the smallest MCP transport runtime without filesystem, platform, or high-impact tools.
+Introduce the smallest MCP transport runtime without filesystem, platform, command, or high-impact tools.
 
 Status: complete.
 
@@ -38,34 +48,36 @@ Required gates:
 
 ## Stage 3: Tool Discovery Contract
 
-Expose an empty or low-risk tool registry and prove tool discovery behavior.
+Expose a low-risk staged tool registry and prove tool discovery behavior.
 
 Status: complete.
 
 Required gates:
 
 - Tool discovery smoke test.
-- No filesystem write behavior.
+- No filesystem write behavior in this stage.
 - No platform automation behavior.
 - No command execution behavior.
 
-## Stage 4: First Low-Risk Read-Only Tool
+## Stage 4: Low-Risk Read-Only Tools
 
-Add one low-risk read-only tool with deterministic output and tests.
+Add low-risk read-only tools with deterministic or tightly allowlisted output and tests.
 
-Status: complete.
+Status: complete for `runtime_status`, `platform_info`, `android_status`, and `project_service_status`.
 
 Required gates:
 
-- Tool call smoke test.
-- Tool output schema documented.
-- No broad filesystem or platform access.
+- Tool call smoke tests.
+- Tool output schemas documented.
+- No broad filesystem access from read-only metadata tools.
+- No Android API calls, identifiers, shell fallback, or control behavior from Android status metadata.
+- No arbitrary service inspection, process inventory, or service mutation/control from project service status metadata.
 
 ## Stage 5: Filesystem Tools
 
-Restore filesystem capability with narrow safe roots, read/write separation, and explicit write controls.
+Restore filesystem capability with narrow safe roots, read/write separation, payload limits, and explicit write controls.
 
-Status: in progress. Current substage exposes safe-rooted read-only directory listing and bounded safe-rooted UTF-8 file reads. File writes remain disabled.
+Status: in progress. Current substages expose safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, and default-dry-run safe-rooted file writes. The write surface remains constrained by safe-root and payload-size validation and requires explicit `dry_run:false` for mutation.
 
 Required gates:
 
@@ -73,24 +85,28 @@ Required gates:
 - Symlink escape tests.
 - Read-only directory listing test.
 - Bounded read-file test.
-- Dry-run write test before any write-capable tool is exposed.
+- Dry-run write test.
+- Explicit mutation write test with safe-root and payload constraints.
+- Audit-event wiring for allowed/denied write decisions.
 - Documentation of operator assumptions.
 
 ## Stage 6: Android Platform Tools
 
-Restore Android platform tools only after explicit feature gates and operational documentation.
+Restore Android platform tools only after explicit feature gates and operational documentation. Read-only `android_status` metadata is already complete and does not authorize this stage.
 
-Status: not started.
+Status: not started for control-oriented Android/platform tools.
 
 Required gates:
 
 - Feature-gated compile path.
 - Runtime disabled-by-default behavior.
 - Tool-level smoke tests or documented manual validation.
+- No shell fallback unless separately reviewed and authorized.
+- Operator-facing documentation that clearly distinguishes read-only status from device-control actions.
 
-## Stage 7: High-Impact Tooling
+## Stage 7: Command Execution and High-Impact Tooling
 
-Add high-impact tooling only after separate authorization and operator-consent policy is in place.
+Add command execution or high-impact tooling only after separate authorization, audit/logging, and operator-consent policy is in place.
 
 Status: not started.
 
@@ -98,11 +114,15 @@ Required gates:
 
 - Feature-gated compile path.
 - Explicit operator opt-in.
+- Fixed allowlisted command shapes; no arbitrary shell string execution.
 - Audit/logging assumptions documented.
 - Separate validation PR.
+- Regression tests proving disabled-by-default behavior.
 
 ## Non-Goals
 
 - Do not merge PRs that restore all runtime surfaces at once.
 - Do not bundle dependency updates with unrelated behavior changes.
-- Do not claim MCP production readiness without transport and tool smoke tests.
+- Do not treat `project_service_status` as arbitrary service discovery or process inspection.
+- Do not treat read-only Android/Termux status metadata as Android platform control.
+- Do not claim broad MCP production readiness without transport and tool smoke tests for each enabled surface.
