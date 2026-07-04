@@ -87,10 +87,13 @@ mod tests {
         assert_eq!(value["mode"], "dry_run");
         assert_eq!(value["decision"], "allowed");
         assert_eq!(value["reason_code"], "dry_run_preview");
-        assert_eq!(value["metadata"], json!({
-            "content_bytes": 42,
-            "max_bytes": 1_048_576,
-        }));
+        assert_eq!(
+            value["metadata"],
+            json!({
+                "content_bytes": 42,
+                "max_bytes": 1_048_576,
+            })
+        );
     }
 
     #[test]
@@ -137,7 +140,11 @@ mod tests {
             "username",
             "android_id",
         ] {
-            assert_eq!(object.get(forbidden_key), None, "unexpected sensitive key: {forbidden_key}");
+            assert_eq!(
+                object.get(forbidden_key),
+                None,
+                "unexpected sensitive key: {forbidden_key}"
+            );
         }
 
         assert_no_sensitive_tokens(&value);
