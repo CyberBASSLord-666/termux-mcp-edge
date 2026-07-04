@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    android_status::{collect_android_status, ANDROID_STATUS_DENIED_FIELDS},
+    android_status::collect_android_status,
     error::AppError,
     platform_info::collect_platform_info,
     tools::FileSystemTools,
@@ -605,6 +605,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+    use crate::android_status::ANDROID_STATUS_DENIED_FIELDS;
 
     fn test_file_tools() -> (TempDir, FileSystemTools) {
         let root = tempfile::tempdir().unwrap();
