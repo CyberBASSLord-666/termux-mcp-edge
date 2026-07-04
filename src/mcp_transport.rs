@@ -1,3 +1,4 @@
+#![allow(unused_attributes)]
 #![rustfmt::skip]
 use axum::{
     body::Bytes,
