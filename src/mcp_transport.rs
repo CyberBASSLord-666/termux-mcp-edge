@@ -24,6 +24,14 @@ const ANDROID_STATUS_TOOL: &str = "android_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
 const WRITE_FILE_TOOL: &str = "write_file";
+const AVAILABLE_TOOLS: [&str; 6] = [
+    RUNTIME_STATUS_TOOL,
+    PLATFORM_INFO_TOOL,
+    ANDROID_STATUS_TOOL,
+    LIST_DIRECTORY_TOOL,
+    READ_FILE_TOOL,
+    WRITE_FILE_TOOL,
+];
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
@@ -321,7 +329,7 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "staged_mcp_runtime",
-                    "availableTools": [RUNTIME_STATUS_TOOL, PLATFORM_INFO_TOOL, ANDROID_STATUS_TOOL, LIST_DIRECTORY_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL],
+                    "availableTools": AVAILABLE_TOOLS,
                     "platformInfo": true,
                     "platformInfoMode": "read_only_non_sensitive_metadata",
                     "androidStatus": true,
