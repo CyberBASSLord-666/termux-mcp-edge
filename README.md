@@ -2,7 +2,7 @@
 
 Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The default runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
 
-The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize`, `tools/list`, deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, safe-rooted read-only `list_directory`, bounded safe-rooted UTF-8 `read_file`, and safe-rooted `write_file` with dry-run-by-default behavior. Android platform tools, command execution, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
+The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize`, `tools/list`, deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, safe-rooted read-only `list_directory`, bounded safe-rooted UTF-8 `read_file`, and safe-rooted `write_file` with dry-run-by-default behavior. Android platform APIs, command execution, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
 
@@ -158,7 +158,7 @@ curl -sS \
   http://127.0.0.1:8000/mcp
 ```
 
-Expected discovery shape for this stage: five tools named `runtime_status`, `platform_info`, `list_directory`, `read_file`, and `write_file`; no Android/platform, command-capable, or high-impact tools.
+Expected discovery shape for this stage: five tools named `runtime_status`, `platform_info`, `list_directory`, `read_file`, and `write_file`; no Android platform API/control, command-capable, or high-impact tools.
 
 Call the read-only status tool:
 
