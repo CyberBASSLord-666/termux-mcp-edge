@@ -165,10 +165,7 @@ impl CommandExecutionPolicy {
         .with_metadata(TIMEOUT_SECONDS_METADATA, decision.timeout_seconds)
         .with_metadata(MAX_STDOUT_BYTES_METADATA, decision.max_stdout_bytes)
         .with_metadata(MAX_STDERR_BYTES_METADATA, decision.max_stderr_bytes)
-        .with_metadata(
-            ENV_NAME_COUNT_METADATA,
-            usize_to_u64(decision.environment_name_count),
-        );
+        .with_metadata(ENV_NAME_COUNT_METADATA, usize_to_u64(decision.environment_name_count));
 
         if let Some(command_ordinal) = decision.command_ordinal {
             event = event.with_metadata(COMMAND_ORDINAL_METADATA, command_ordinal);
