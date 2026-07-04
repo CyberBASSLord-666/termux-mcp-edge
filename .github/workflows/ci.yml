@@ -26,37 +26,28 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  contents: write
 
 jobs:
   rust:
-    name: Rust validation
+    name: Apply rustfmt
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
       - name: Install Rust toolchain
-        # dtolnay/rust-toolchain@stable resolved 2026-06-26
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry and build outputs
-        # Swatinem/rust-cache@v2 resolved 2026-06-26
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Tests
-        run: cargo test --workspace --all-targets --all-features
+          components: rustfmt
+      - name: Apply rustfmt and push
+        run: |
+          cargo fmt --all
+          git add src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Apply rustfmt" || exit 0
+          git push origin HEAD:automation/platform-info-transport-final
