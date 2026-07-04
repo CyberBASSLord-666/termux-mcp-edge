@@ -1,4 +1,5 @@
 //! Library exports for integration tests and downstream embedding.
+//! Platform metadata remains non-sensitive and read-only at the transport boundary.
 
 pub mod config;
 pub mod error;
