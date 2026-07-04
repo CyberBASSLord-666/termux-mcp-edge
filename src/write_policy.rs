@@ -5,12 +5,38 @@
 
 use std::fmt;
 
+use crate::audit::{AuditDecision, AuditEvent, AuditMode};
+
 pub const DEFAULT_MAX_WRITE_BYTES: usize = 1_048_576;
+
+const WRITE_FILE_TOOL_NAME: &str = "write_file";
+const FILESYSTEM_WRITE_GATE: &str = "filesystem_write";
+const CONTENT_BYTES_METADATA: &str = "content_bytes";
+const MAX_BYTES_METADATA: &str = "max_bytes";
+const DRY_RUN_REASON: &str = "dry_run_preview";
+const MUTATING_REASON: &str = "explicit_mutation";
+const PAYLOAD_TOO_LARGE_REASON: &str = "payload_too_large";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
     DryRun,
     Mutating,
+}
+
+impl WriteMode {
+    const fn audit_mode(self) -> AuditMode {
+        match self {
+            Self::DryRun => AuditMode::DryRun,
+            Self::Mutating => AuditMode::Mutating,
+        }
+    }
+
+    const fn allowed_reason_code(self) -> &'static str {
+        match self {
+            Self::DryRun => DRY_RUN_REASON,
+            Self::Mutating => MUTATING_REASON,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +79,34 @@ impl WritePolicy {
             Ok(())
         }
     }
+
+    pub fn audit_payload_decision(
+        self,
+        timestamp_unix_seconds: u64,
+        bytes: usize,
+        dry_run: Option<bool>,
+    ) -> AuditEvent {
+        let mode = self.resolve_mode(dry_run);
+
+        match self.validate_payload_size(bytes) {
+            Ok(()) => write_audit_event(
+                timestamp_unix_seconds,
+                mode.audit_mode(),
+                AuditDecision::Allowed,
+                mode.allowed_reason_code(),
+                bytes,
+                self.max_write_bytes,
+            ),
+            Err(WritePolicyError::PayloadTooLarge { bytes, max_bytes }) => write_audit_event(
+                timestamp_unix_seconds,
+                mode.audit_mode(),
+                AuditDecision::Denied,
+                PAYLOAD_TOO_LARGE_REASON,
+                bytes,
+                max_bytes,
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +130,30 @@ impl fmt::Display for WritePolicyError {
 }
 
 impl std::error::Error for WritePolicyError {}
+
+fn write_audit_event(
+    timestamp_unix_seconds: u64,
+    mode: AuditMode,
+    decision: AuditDecision,
+    reason_code: &'static str,
+    bytes: usize,
+    max_bytes: usize,
+) -> AuditEvent {
+    AuditEvent::new(
+        timestamp_unix_seconds,
+        WRITE_FILE_TOOL_NAME,
+        FILESYSTEM_WRITE_GATE,
+        mode,
+        decision,
+        reason_code,
+    )
+    .with_metadata(CONTENT_BYTES_METADATA, usize_to_u64(bytes))
+    .with_metadata(MAX_BYTES_METADATA, usize_to_u64(max_bytes))
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
 
 #[cfg(test)]
 mod tests {
@@ -160,5 +238,46 @@ mod tests {
             error.to_string(),
             "write payload is 1 byte, which exceeds the 0-byte limit"
         );
+    }
+
+    #[test]
+    fn write_policy_audits_default_dry_run_preview() {
+        let event = WritePolicy::new(16).audit_payload_decision(1_725_000_000, 7, None);
+
+        assert_eq!(event.timestamp_unix_seconds, 1_725_000_000);
+        assert_eq!(event.tool_name, WRITE_FILE_TOOL_NAME);
+        assert_eq!(event.gate_name, FILESYSTEM_WRITE_GATE);
+        assert_eq!(event.mode, AuditMode::DryRun);
+        assert_eq!(event.decision, AuditDecision::Allowed);
+        assert_eq!(event.reason_code, DRY_RUN_REASON);
+        assert_eq!(event.metadata[CONTENT_BYTES_METADATA], 7);
+        assert_eq!(event.metadata[MAX_BYTES_METADATA], 16);
+    }
+
+    #[test]
+    fn write_policy_audits_explicit_mutation() {
+        let event = WritePolicy::new(16).audit_payload_decision(2, 16, Some(false));
+
+        assert_eq!(event.mode, AuditMode::Mutating);
+        assert_eq!(event.decision, AuditDecision::Allowed);
+        assert_eq!(event.reason_code, MUTATING_REASON);
+        assert_eq!(event.metadata[CONTENT_BYTES_METADATA], 16);
+        assert_eq!(event.metadata[MAX_BYTES_METADATA], 16);
+    }
+
+    #[test]
+    fn write_policy_audits_oversized_payload_denial_without_content() {
+        let event = WritePolicy::new(16).audit_payload_decision(3, 17, Some(false));
+
+        assert_eq!(event.mode, AuditMode::Mutating);
+        assert_eq!(event.decision, AuditDecision::Denied);
+        assert_eq!(event.reason_code, PAYLOAD_TOO_LARGE_REASON);
+        assert_eq!(event.metadata[CONTENT_BYTES_METADATA], 17);
+        assert_eq!(event.metadata[MAX_BYTES_METADATA], 16);
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value.get("path"), None);
+        assert_eq!(value.get("content"), None);
+        assert_eq!(value.get("file_content"), None);
     }
 }
