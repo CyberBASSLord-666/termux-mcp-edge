@@ -1,5 +1,6 @@
 //! Library exports for integration tests and downstream embedding.
 
+pub mod android_status;
 pub mod audit;
 pub mod config;
 pub mod error;
