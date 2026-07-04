@@ -12,7 +12,7 @@ pub const COMMAND_EXECUTION_ENABLED: bool = false;
 
 const COMMAND_EXECUTION_TOOL_NAME: &str = "command_execution_policy";
 const COMMAND_EXECUTION_GATE: &str = "command_execution";
-const COMMAND_ID_METADATA: &str = "command_id";
+const COMMAND_ORDINAL_METADATA: &str = "command_ordinal";
 const ARGV_COUNT_METADATA: &str = "argv_count";
 const TIMEOUT_SECONDS_METADATA: &str = "timeout_seconds";
 const MAX_STDOUT_BYTES_METADATA: &str = "max_stdout_bytes";
@@ -93,7 +93,7 @@ impl CommandExecutionPolicy {
             return denied(request, None, COMMAND_NOT_ALLOWLISTED_REASON);
         };
 
-        if request.execution_requested {
+        if request.execution_requested && !COMMAND_EXECUTION_ENABLED {
             return denied(request, Some(command), EXECUTION_DISABLED_REASON);
         }
 
@@ -147,12 +147,17 @@ impl CommandExecutionPolicy {
         } else {
             AuditDecision::Denied
         };
+        let audit_mode = if request.execution_requested {
+            AuditMode::Mutating
+        } else {
+            AuditMode::ReadOnly
+        };
 
         let mut event = AuditEvent::new(
             timestamp_unix_seconds,
             COMMAND_EXECUTION_TOOL_NAME,
             COMMAND_EXECUTION_GATE,
-            AuditMode::ReadOnly,
+            audit_mode,
             audit_decision,
             decision.reason_code,
         )
@@ -166,7 +171,7 @@ impl CommandExecutionPolicy {
         );
 
         if let Some(command_ordinal) = decision.command_ordinal {
-            event = event.with_metadata(COMMAND_ID_METADATA, command_ordinal);
+            event = event.with_metadata(COMMAND_ORDINAL_METADATA, command_ordinal);
         }
 
         event
@@ -343,11 +348,25 @@ mod tests {
         assert_eq!(value["decision"], "denied");
         assert_eq!(value["reason_code"], ARGV_MISMATCH_REASON);
         assert_eq!(value["metadata"][ARGV_COUNT_METADATA], 5);
+        assert_eq!(value["metadata"][COMMAND_ORDINAL_METADATA], 1);
         assert_eq!(value["metadata"][MAX_STDOUT_BYTES_METADATA], 65_536);
         assert_eq!(value["metadata"][MAX_STDERR_BYTES_METADATA], 65_536);
         assert_eq!(value["metadata"][ENV_NAME_COUNT_METADATA], 1);
 
         assert_no_sensitive_command_tokens(&value);
+    }
+
+    #[test]
+    fn audit_event_records_mutating_intent_for_execution_requests() {
+        let mut request = valid_request();
+        request.execution_requested = true;
+
+        let event = CommandExecutionPolicy::new().audit_decision(2, &request);
+        let value = serde_json::to_value(event).unwrap();
+
+        assert_eq!(value["mode"], "mutating");
+        assert_eq!(value["decision"], "denied");
+        assert_eq!(value["reason_code"], EXECUTION_DISABLED_REASON);
     }
 
     fn assert_no_sensitive_command_tokens(value: &Value) {
