@@ -2,26 +2,27 @@
 
 Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The default runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
 
-The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize`, `tools/list`, deterministic read-only `runtime_status`, safe-rooted read-only `list_directory`, and bounded safe-rooted UTF-8 `read_file`. File writes, Android platform tools, command execution, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
+The optional `mcp-runtime` feature now wires a minimal `/mcp` transport shell that validates `Host` and `Origin` headers before handling requests. It supports a staged MCP discovery contract with `initialize`, `tools/list`, deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted read-only `list_directory`, bounded safe-rooted UTF-8 `read_file`, and safe-rooted `write_file` with dry-run-by-default behavior. Android platform APIs/control tools, command execution, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
 
 - **Runtime:** Rust single binary using Axum.
 - **Default HTTP endpoint:** `GET /health`.
 - **Optional MCP transport shell:** `POST /mcp` when built with `--features mcp-runtime`.
-- **Current MCP discovery:** `initialize` plus `tools/list` returning `runtime_status`, safe-rooted `list_directory`, and bounded safe-rooted `read_file`.
-- **Current MCP tools:** deterministic read-only `runtime_status` metadata, bounded safe-rooted directory listing, and bounded safe-rooted UTF-8 file reads.
-- **Current filesystem/tool endpoints:** read-only directory listing plus bounded UTF-8 file content reads; file writes are not exposed.
+- **Current MCP discovery:** `initialize` plus `tools/list` returning `runtime_status`, `platform_info`, `android_status`, safe-rooted `list_directory`, bounded safe-rooted `read_file`, and safe-rooted `write_file`.
+- **Current MCP tools:** deterministic read-only `runtime_status` metadata, non-sensitive read-only platform metadata, read-only allowlisted Android/Termux status metadata, bounded safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, and safe-rooted writes that default to dry-run.
+- **Current filesystem/tool endpoints:** read-only directory listing, bounded UTF-8 file content reads, and write requests that require explicit `"dry_run": false` before mutation.
 - **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
 - **Transport posture:** configured exact `Host` and browser `Origin` allow-lists are enforced before the staged MCP transport shell handles requests.
 - **Filesystem safe-root default:** `/data/data/com.termux/files/home/mcp-files`, not broad shared storage.
+- **Android/platform posture:** `android_status` exposes only allowlisted read-only status metadata. Android APIs, platform control, shell fallback, command execution, and high-impact controls remain disabled.
 - **Deployment target:** Termux on Android, supervised by `termux-services` / runit.
 
 ## Design Goals
 
 - Memory efficiency and thermal resilience on mobile hardware.
 - Fail-closed startup posture for networked deployments.
-- Clear separation between transport liveness, tool discovery, low-risk read-only tools, filesystem listing, file reads, file writes, and later higher-impact tool execution.
+- Clear separation between transport liveness, tool discovery, low-risk read-only tools, filesystem listing, file reads, file writes, Android/platform status, and later higher-impact tool execution.
 - Narrow default filesystem scope for any future file-capable tool restoration.
 - Single-binary deployment optimized for `termux-services` and runit.
 - CI and Security workflows as merge gates for every remediation branch.
@@ -56,14 +57,14 @@ The built-in filesystem safe-root default is intentionally narrow:
 /data/data/com.termux/files/home/mcp-files
 ```
 
-The service no longer defaults to broad Android shared-storage roots such as `/storage/emulated/0` or `/sdcard`. The current staged filesystem MCP surface exposes only bounded directory listing and bounded UTF-8 file content reads beneath configured safe roots. File writes remain disabled in the MCP transport until later PRs add separate controls, tests, and documentation. Operators should keep `MCP__FILE__SAFE_ROOTS` limited to a dedicated project directory and avoid granting all shared storage unless there is a specific reviewed need.
+The service no longer defaults to broad Android shared-storage roots such as `/storage/emulated/0` or `/sdcard`. The current staged filesystem MCP surface exposes bounded directory listing, bounded UTF-8 file content reads, and safe-rooted write requests that default to dry-run. Mutating writes require explicit `"dry_run": false`. Operators should keep `MCP__FILE__SAFE_ROOTS` limited to a dedicated project directory and avoid granting all shared storage unless there is a specific reviewed need.
 
 ## Architecture
 
 - **Language:** Rust edition 2021.
 - **HTTP framework:** Axum.
 - **Default compiled transport:** health-check HTTP route only.
-- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation, `initialize`, `tools/list`, `runtime_status`, safe-rooted read-only `list_directory`, and bounded safe-rooted `read_file`.
+- **Optional MCP transport shell:** feature-gated `/mcp` route with transport security validation, `initialize`, `tools/list`, `runtime_status`, non-sensitive `platform_info`, read-only `android_status`, safe-rooted read-only `list_directory`, bounded safe-rooted `read_file`, and safe-rooted dry-run-by-default `write_file`.
 - **MCP framework dependency:** none; the staged runtime uses a minimal internal JSON-RPC transport shell.
 - **Supervision:** `termux-services` / runit.
 - **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
@@ -146,7 +147,7 @@ curl -i \
 
 An empty body returns `501 Not Implemented` to show that the shell is reachable but not a full unrestricted tool runtime.
 
-The staged tool-discovery contract exposes only `runtime_status`, safe-rooted read-only `list_directory`, and bounded safe-rooted `read_file`:
+The staged tool-discovery contract exposes only `runtime_status`, `platform_info`, `android_status`, safe-rooted read-only `list_directory`, bounded safe-rooted `read_file`, and safe-rooted dry-run-by-default `write_file`:
 
 ```bash
 curl -sS \
@@ -158,7 +159,7 @@ curl -sS \
   http://127.0.0.1:8000/mcp
 ```
 
-Expected discovery shape for this stage: three tools named `runtime_status`, `list_directory`, and `read_file`; no write-capable, Android/platform, command-capable, or high-impact tools.
+Expected discovery shape for this stage: six tools named `runtime_status`, `platform_info`, `android_status`, `list_directory`, `read_file`, and `write_file`; no Android platform API/control, command-capable, or high-impact tools.
 
 Call the read-only status tool:
 
@@ -172,6 +173,34 @@ curl -sS \
   http://127.0.0.1:8000/mcp
 ```
 
+Call the non-sensitive platform metadata tool:
+
+```bash
+curl -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"platform_info","arguments":{}}}' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected behavior: the response returns only OS, architecture, platform family, available parallelism, and package-version metadata. It must not expose environment variables, process listings, hostnames, usernames, Android identifiers, or secrets.
+
+Call the read-only Android/Termux status metadata tool:
+
+```bash
+curl -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"android_status","arguments":{}}}' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected behavior: the response returns only allowlisted status metadata and confirms that Android API access, Android control, shell fallback, command execution, and high-impact controls are disabled.
+
 List a safe-rooted directory without reading file contents:
 
 ```bash
@@ -180,7 +209,7 @@ curl -sS \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_directory","arguments":{"path":"/data/data/com.termux/files/home/mcp-files","max_depth":1}}}' \
+  --data '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_directory","arguments":{"path":"/data/data/com.termux/files/home/mcp-files","max_depth":1}}}' \
   http://127.0.0.1:8000/mcp
 ```
 
@@ -194,11 +223,25 @@ curl -sS \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/data/data/com.termux/files/home/mcp-files/example.txt"}}}' \
+  --data '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/data/data/com.termux/files/home/mcp-files/example.txt"}}}' \
   http://127.0.0.1:8000/mcp
 ```
 
 Expected behavior: the response returns UTF-8 text content only for files inside configured safe roots and rejects traversal, outside-root paths, oversized files, and non-readable files.
+
+Dry-run a safe-rooted write without mutating the filesystem:
+
+```bash
+curl -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"/data/data/com.termux/files/home/mcp-files/example.txt","content":"example content"}}}' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected behavior: omitted `dry_run` defaults to `true`. Mutating writes require explicit `"dry_run": false`, remain limited to configured safe roots, and reject traversal, outside-root paths, and oversized payloads.
 
 ## MCP Transport Restoration Gate
 
