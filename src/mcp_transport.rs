@@ -1,3 +1,4 @@
+#![rustfmt::skip]
 use axum::{
     body::Bytes,
     extract::State,
@@ -97,7 +98,6 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
-#[rustfmt::skip]
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
     headers: HeaderMap,
@@ -185,7 +185,6 @@ fn initialize_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-#[rustfmt::skip]
 fn tools_list_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -305,7 +304,6 @@ fn tools_list_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-#[rustfmt::skip]
 async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
@@ -336,7 +334,6 @@ async fn handle_tool_call(
     }
 }
 
-#[rustfmt::skip]
 fn runtime_status_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -397,7 +394,6 @@ fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Respon
     )
 }
 
-#[rustfmt::skip]
 fn android_status_response(id: Option<Value>, arguments: Option<Value>) -> Response {
     if let Some(arguments) = arguments {
         if !arguments.is_object()
@@ -692,7 +688,6 @@ fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
 }
 
 #[cfg(test)]
-#[rustfmt::skip]
 mod tests {
     use axum::{body::Body, http::Request};
     use tempfile::TempDir;
