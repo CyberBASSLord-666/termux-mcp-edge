@@ -2,6 +2,8 @@
 
 Termux MCP Edge is currently a hardened Rust/Axum HTTP service for Android Termux deployments. The default runtime exposes a health-check endpoint and enforces fail-closed authentication posture at startup.
 
+The project is designed for developers, advanced Termux operators, and power users who understand that MCP tools can affect local device state. The staged security model is not intended to remove powerful capabilities permanently; it is intended to make each capability explicit, opt-in, reviewable, testable, and auditable before it is exposed.
+
 The optional `mcp-runtime` feature wires a staged `/mcp` transport that validates `Host` and browser `Origin` headers before handling requests. It currently supports `initialize`, `tools/list`, deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted `list_directory`, bounded safe-rooted UTF-8 `read_file`, default-dry-run safe-rooted `write_file`, and read-only allowlisted `project_service_status`. Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
@@ -20,10 +22,12 @@ The optional `mcp-runtime` feature wires a staged `/mcp` transport that validate
 
 ## Design Goals
 
+- Serve advanced local development and power-user automation workflows without pretending high-impact MCP capabilities are risk-free.
 - Memory efficiency and thermal resilience on mobile hardware.
 - Fail-closed startup posture for networked deployments.
 - Clear separation between transport liveness, tool discovery, low-risk read-only tools, filesystem listing, file reads, file writes, project-owned service status, and later higher-impact tool execution.
 - Narrow default filesystem scope for file-capable tools.
+- Explicit opt-in, allowlist, dry-run, and audit boundaries for riskier tools rather than broad always-on exposure.
 - Single-binary deployment optimized for `termux-services` and runit.
 - CI and Security workflows as merge gates for every remediation branch.
 
@@ -78,165 +82,3 @@ MCP runtime restoration is staged in [`docs/MCP_RUNTIME_ROADMAP.md`](docs/MCP_RU
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
-cargo build --release
-```
-
-Build the staged transport shell explicitly:
-
-```bash
-cargo build --features mcp-runtime
-```
-
-For Android cross-compilation:
-
-```bash
-rustup target add aarch64-linux-android
-ANDROID_NDK_HOME=/path/to/android-ndk ./scripts/cross_compile.sh
-```
-
-Transfer the resulting binary from `target/aarch64-linux-android/release/termux-mcp-server` to the device.
-
-## Termux Setup
-
-Install the supervisor:
-
-```bash
-pkg install termux-services
-```
-
-Create a local bearer-token file before enabling the runit service:
-
-```bash
-umask 077
-openssl rand -hex 32 > "$HOME/.termux_mcp_token"
-chmod 600 "$HOME/.termux_mcp_token"
-```
-
-The packaged runit script fails before starting the service if the token file is missing, empty, or whitespace-only.
-
-Start the service:
-
-```bash
-sv-enable mcp-server
-sv up mcp-server
-sv status mcp-server
-```
-
-## Runtime Validation
-
-```bash
-curl -fsS http://127.0.0.1:8000/health
-```
-
-Expected response:
-
-```text
-ok
-```
-
-With `mcp-runtime` enabled, the staged transport should be reachable only after exact transport checks pass:
-
-```bash
-curl -i \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  http://127.0.0.1:8000/mcp
-```
-
-An empty body returns `501 Not Implemented` to show that the shell is reachable but not a full unrestricted tool runtime.
-
-The staged tool-discovery contract exposes `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`:
-
-```bash
-curl -sS \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp
-```
-
-Expected discovery shape for this stage: seven tools named `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`; no Android control, shell fallback, command-capable, arbitrary service inspection, service mutation/control, or high-impact tools.
-
-Call the read-only status tool:
-
-```bash
-curl -sS \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' \
-  http://127.0.0.1:8000/mcp
-```
-
-Call the read-only project service status tool for the allowlisted logical runtime service:
-
-```bash
-curl -sS \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project_service_status","arguments":{"service_name":"mcp_runtime"}}}' \
-  http://127.0.0.1:8000/mcp
-```
-
-Expected behavior: the response returns structured read-only status for the allowlisted project-owned logical service and rejects non-allowlisted service names as invalid params.
-
-List a safe-rooted directory without reading file contents:
-
-```bash
-curl -sS \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_directory","arguments":{"path":"/data/data/com.termux/files/home/mcp-files","max_depth":1}}}' \
-  http://127.0.0.1:8000/mcp
-```
-
-Expected behavior: the response returns metadata for entries beneath the configured safe root and rejects traversal or paths outside the safe-root boundary.
-
-Read a bounded UTF-8 file beneath a safe root:
-
-```bash
-curl -sS \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/data/data/com.termux/files/home/mcp-files/example.txt"}}}' \
-  http://127.0.0.1:8000/mcp
-```
-
-Expected behavior: the response returns UTF-8 text content only for files inside configured safe roots and rejects traversal, outside-root paths, oversized files, and non-readable files.
-
-Dry-run a safe-rooted file write:
-
-```bash
-curl -sS \
-  -X POST \
-  -H 'Host: localhost:8000' \
-  -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"/data/data/com.termux/files/home/mcp-files/example.txt","content":"example","dry_run":true}}}' \
-  http://127.0.0.1:8000/mcp
-```
-
-Expected behavior: omitted `dry_run` defaults to dry-run mode. Actual writes require explicit `dry_run:false` and still remain constrained by safe roots and payload-size limits.
-
-## MCP Transport Restoration Gate
-
-Do not claim broad MCP readiness until all of the following are true:
-
-1. Every newly exposed MCP capability is restored intentionally in its own validated stage.
-2. Dependency advisories for the chosen MCP stack are closed or documented with an accepted exception.
-3. CI and Security workflows are green on the exact PR head, or a documented path-filtered non-run is accepted for docs-only changes.
-4. Smoke tests prove MCP tool discovery and representative tool calls.
-5. README, operations, security, and validation docs match the runtime behavior.
-
-See `docs/VALIDATION.md` for repository validation expectations.
