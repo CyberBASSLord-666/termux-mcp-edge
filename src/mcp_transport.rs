@@ -14,7 +14,8 @@ use crate::{
     error::AppError,
     platform_info::collect_platform_info,
     service_status::{
-        collect_project_service_status, unsupported_project_service_error, ProjectServiceStatusError,
+        collect_project_service_status, unsupported_project_service_error,
+        ProjectServiceStatusError,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
@@ -62,6 +63,7 @@ struct ToolCallParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProjectServiceStatusArguments {
     service_name: String,
 }
@@ -435,7 +437,7 @@ fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) 
             return invalid_params(
                 id,
                 "project_service_status requires a service_name argument.",
-            )
+            );
         }
     };
 
@@ -452,7 +454,7 @@ fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) 
             return invalid_params(
                 id,
                 &format!("Invalid project_service_status arguments: {error}"),
-            )
+            );
         }
     };
 
@@ -461,7 +463,11 @@ fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) 
             id,
             format!(
                 "project_service_status: service_name={}, ownership={}, mode={}, lifecycle_state={}, health={}",
-                status.service_name, status.ownership, status.status_mode, status.lifecycle_state, status.health,
+                status.service_name,
+                status.ownership,
+                status.status_mode,
+                status.lifecycle_state,
+                status.health,
             ),
             json!(status),
         ),
@@ -486,7 +492,7 @@ async fn handle_list_directory_call(
     let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
         Ok(args) => args,
         Err(error) => {
-            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"))
+            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"));
         }
     };
 
