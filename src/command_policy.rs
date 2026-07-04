@@ -93,7 +93,7 @@ impl CommandExecutionPolicy {
             return denied(request, None, COMMAND_NOT_ALLOWLISTED_REASON);
         };
 
-        if request.execution_requested && !COMMAND_EXECUTION_ENABLED {
+        if request.execution_requested && !command_execution_enabled() {
             return denied(request, Some(command), EXECUTION_DISABLED_REASON);
         }
 
@@ -199,6 +199,10 @@ fn denied(
         max_stderr_bytes: request.max_stderr_bytes,
         environment_name_count: request.environment_names.len(),
     }
+}
+
+fn command_execution_enabled() -> bool {
+    COMMAND_EXECUTION_ENABLED
 }
 
 fn find_allowed_command(command_id: &str) -> Option<&'static AllowedCommand> {
