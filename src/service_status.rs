@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(
             error,
             ProjectServiceStatusError::UnsupportedService {
-                requested_service: "ssh".to_string()
+                requested_service: "ssh".to_string(),
             }
         );
 
@@ -181,10 +181,8 @@ mod tests {
 
     #[test]
     fn service_status_contains_only_allowlisted_fields() {
-        let value = serde_json::to_value(
-            collect_project_service_status("mcp_runtime").unwrap(),
-        )
-        .unwrap();
+        let value =
+            serde_json::to_value(collect_project_service_status("mcp_runtime").unwrap()).unwrap();
         let object = value.as_object().unwrap();
         let actual_keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
         let allowed_keys = PROJECT_SERVICE_STATUS_ALLOWED_FIELDS
@@ -197,10 +195,8 @@ mod tests {
 
     #[test]
     fn service_status_serialization_excludes_process_and_control_fields() {
-        let value = serde_json::to_value(
-            collect_project_service_status("mcp_runtime").unwrap(),
-        )
-        .unwrap();
+        let value =
+            serde_json::to_value(collect_project_service_status("mcp_runtime").unwrap()).unwrap();
         let object = value.as_object().unwrap();
 
         for denied_field in PROJECT_SERVICE_STATUS_DENIED_FIELDS {
