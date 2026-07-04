@@ -347,6 +347,8 @@ mod tests {
         assert_eq!(value["decision"], "denied");
         assert_eq!(value["reason_code"], ARGV_MISMATCH_REASON);
         assert_eq!(value["metadata"][ARGV_COUNT_METADATA], 5);
+        assert_eq!(value["metadata"][MAX_STDOUT_BYTES_METADATA], 65_536);
+        assert_eq!(value["metadata"][MAX_STDERR_BYTES_METADATA], 65_536);
         assert_eq!(value["metadata"][ENV_NAME_COUNT_METADATA], 1);
 
         assert_no_sensitive_command_tokens(&value);
@@ -359,8 +361,6 @@ mod tests {
             "secret",
             "password",
             "bearer",
-            "stdout",
-            "stderr",
             "command_output",
             "cmdline",
             "/data/",
