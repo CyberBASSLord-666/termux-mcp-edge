@@ -75,9 +75,11 @@ impl FileSystemTools {
             let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
-            let file_name = candidate.file_name().ok_or_else(|| AppError::PathTraversal {
-                attempted: input.to_string(),
-            })?;
+            let file_name = candidate
+                .file_name()
+                .ok_or_else(|| AppError::PathTraversal {
+                    attempted: input.to_string(),
+                })?;
             let canonical_parent = parent.canonicalize().map_err(|_| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
