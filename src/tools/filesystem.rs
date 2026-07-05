@@ -291,6 +291,109 @@ pub struct ReadFileResult {
 mod tests {
     use super::*;
 
+    fn assert_rejected(result: Result<PathBuf, AppError>) {
+        assert!(
+            matches!(result, Err(AppError::PathTraversal { .. })),
+            "expected safe-root rejection"
+        );
+    }
+
+    #[test]
+    fn sanitize_rejects_empty_relative_nul_and_parent_components() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        assert_rejected(tools.sanitize(""));
+        assert_rejected(tools.sanitize("   "));
+        assert_rejected(tools.sanitize("relative.txt"));
+        assert_rejected(tools.sanitize("relative/child.txt"));
+        assert_rejected(tools.sanitize("/tmp/bad\0name"));
+
+        let parent_reference = root.path().join("..").join("outside.txt");
+        assert_rejected(tools.sanitize(parent_reference.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn sanitize_rejects_new_file_when_existing_parent_is_outside_safe_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = other.path().join("outside.txt");
+
+        assert_rejected(tools.sanitize(target.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn sanitize_rejects_new_file_when_parent_does_not_exist() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("missing-parent").join("file.txt");
+
+        assert_rejected(tools.sanitize(target.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn sanitize_allows_new_file_under_existing_safe_root_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("new-file.txt");
+
+        let sanitized = tools.sanitize(target.to_string_lossy().as_ref()).unwrap();
+
+        assert_eq!(sanitized, target);
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn read_file_rejects_existing_file_outside_safe_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let other_file = other.path().join("outside.txt");
+        tokio::fs::write(&other_file, "outside").await.unwrap();
+
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let result = tools.read_file(other_file.to_string_lossy().to_string()).await;
+
+        assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_outside_root_even_with_explicit_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("outside.txt");
+
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let result = tools
+            .write_file(
+                target.to_string_lossy().to_string(),
+                "should not write".to_string(),
+                Some(false),
+            )
+            .await;
+
+        assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_missing_parent_even_with_explicit_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("missing-parent").join("file.txt");
+
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let result = tools
+            .write_file(
+                target.to_string_lossy().to_string(),
+                "should not write".to_string(),
+                Some(false),
+            )
+            .await;
+
+        assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+        assert!(!target.exists());
+    }
+
     #[tokio::test]
     async fn write_file_defaults_to_dry_run_without_creating_file() {
         let root = tempfile::tempdir().unwrap();
