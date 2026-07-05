@@ -61,7 +61,7 @@ async fn invalid_json_returns_immediate_parse_error_without_tool_dispatch() {
 }
 
 #[tokio::test]
-async fn valid_json_with_missing_method_returns_current_safe_parse_error() {
+async fn valid_json_with_missing_method_returns_invalid_request_and_preserves_id() {
     let response = post_json(json!({
         "jsonrpc": "2.0",
         "id": 42,
@@ -71,9 +71,9 @@ async fn valid_json_with_missing_method_returns_current_safe_parse_error() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let payload = response_json(response).await;
-    assert_eq!(payload["id"], Value::Null);
-    assert_eq!(payload["error"]["code"], -32700);
-    assert_eq!(payload["error"]["message"], "Parse error");
+    assert_eq!(payload["id"], 42);
+    assert_eq!(payload["error"]["code"], -32600);
+    assert_eq!(payload["error"]["message"], "Invalid Request");
 }
 
 #[tokio::test]
