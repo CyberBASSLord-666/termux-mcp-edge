@@ -310,9 +310,7 @@ mod tests {
         assert_rejected(tools.sanitize("/tmp/bad\0name"));
 
         let parent_reference = root.path().join("..").join("outside.txt");
-        assert_rejected(tools.sanitize(
-            parent_reference.to_string_lossy().as_ref(),
-        ));
+        assert_rejected(tools.sanitize(parent_reference.to_string_lossy().as_ref()));
     }
 
     #[test]
@@ -341,8 +339,9 @@ mod tests {
         let target = root.path().join("new-file.txt");
 
         let sanitized = tools.sanitize(target.to_string_lossy().as_ref()).unwrap();
+        let expected = root.path().canonicalize().unwrap().join("new-file.txt");
 
-        assert_eq!(sanitized, target);
+        assert_eq!(sanitized, expected);
         assert!(!target.exists());
     }
 
@@ -354,9 +353,7 @@ mod tests {
         tokio::fs::write(&other_file, "outside").await.unwrap();
 
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let result = tools
-            .read_file(other_file.to_string_lossy().to_string())
-            .await;
+        let result = tools.read_file(other_file.to_string_lossy().to_string()).await;
 
         assert!(matches!(result, Err(AppError::PathTraversal { .. })));
     }
