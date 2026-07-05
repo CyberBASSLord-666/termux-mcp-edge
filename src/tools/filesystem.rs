@@ -75,11 +75,9 @@ impl FileSystemTools {
             let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
-            let file_name = candidate
-                .file_name()
-                .ok_or_else(|| AppError::PathTraversal {
-                    attempted: input.to_string(),
-                })?;
+            let file_name = candidate.file_name().ok_or_else(|| AppError::PathTraversal {
+                attempted: input.to_string(),
+            })?;
             let canonical_parent = parent.canonicalize().map_err(|_| AppError::PathTraversal {
                 attempted: input.to_string(),
             })?;
@@ -353,7 +351,9 @@ mod tests {
         tokio::fs::write(&other_file, "outside").await.unwrap();
 
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let result = tools.read_file(other_file.to_string_lossy().to_string()).await;
+        let result = tools
+            .read_file(other_file.to_string_lossy().to_string())
+            .await;
 
         assert!(matches!(result, Err(AppError::PathTraversal { .. })));
     }
