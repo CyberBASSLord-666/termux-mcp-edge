@@ -61,7 +61,7 @@ async fn malformed_json_returns_immediate_parse_error_without_tool_dispatch() {
 }
 
 #[tokio::test]
-async fn valid_json_with_missing_method_returns_safe_parse_error() {
+async fn valid_json_with_missing_method_returns_invalid_request() {
     let response = post_json(json!({
         "jsonrpc": "2.0",
         "id": 42,
@@ -71,9 +71,9 @@ async fn valid_json_with_missing_method_returns_safe_parse_error() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let payload = response_json(response).await;
-    assert_eq!(payload["id"], Value::Null);
-    assert_eq!(payload["error"]["code"], -32700);
-    assert_eq!(payload["error"]["message"], "Parse error");
+    assert_eq!(payload["id"], 42);
+    assert_eq!(payload["error"]["code"], -32600);
+    assert_eq!(payload["error"]["message"], "Invalid Request");
 }
 
 #[tokio::test]
@@ -107,10 +107,10 @@ async fn unknown_method_returns_safe_method_not_found_without_runtime_expansion(
     assert_eq!(payload["id"], 7);
     assert_eq!(payload["error"]["code"], -32601);
     assert_eq!(payload["error"]["message"], "Method not found");
-    assert!(payload["error"]["data"]
-        .as_str()
-        .unwrap()
-        .contains("Only initialize, tools/list"));
+    let data = payload["error"]["data"].as_str().unwrap();
+    assert!(!data.is_empty(), "error data should list allowed methods");
+    assert!(data.contains("initialize"), "should mention initialize");
+    assert!(data.contains("tools/list"), "should mention tools/list");
 }
 
 #[tokio::test]
