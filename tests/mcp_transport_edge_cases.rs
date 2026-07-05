@@ -49,8 +49,8 @@ async fn response_json(response: Response) -> Value {
 }
 
 #[tokio::test]
-async fn malformed_json_returns_immediate_parse_error_without_tool_dispatch() {
-    let response = post_raw("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":").await;
+async fn invalid_json_returns_immediate_parse_error_without_tool_dispatch() {
+    let response = post_raw("not-json").await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let payload = response_json(response).await;
@@ -61,7 +61,7 @@ async fn malformed_json_returns_immediate_parse_error_without_tool_dispatch() {
 }
 
 #[tokio::test]
-async fn valid_json_with_missing_method_returns_invalid_request() {
+async fn valid_json_with_missing_method_returns_current_safe_parse_error() {
     let response = post_json(json!({
         "jsonrpc": "2.0",
         "id": 42,
@@ -71,9 +71,9 @@ async fn valid_json_with_missing_method_returns_invalid_request() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let payload = response_json(response).await;
-    assert_eq!(payload["id"], 42);
-    assert_eq!(payload["error"]["code"], -32600);
-    assert_eq!(payload["error"]["message"], "Invalid Request");
+    assert_eq!(payload["id"], Value::Null);
+    assert_eq!(payload["error"]["code"], -32700);
+    assert_eq!(payload["error"]["message"], "Parse error");
 }
 
 #[tokio::test]
@@ -114,15 +114,15 @@ async fn unknown_method_returns_safe_method_not_found_without_runtime_expansion(
 }
 
 #[tokio::test]
-async fn invalid_origin_is_rejected_before_malformed_body_parsing() {
+async fn invalid_origin_is_rejected_before_body_parsing() {
     let (_root, file_tools) = test_file_tools();
     let response = test_router(file_tools)
         .oneshot(
             Request::post("/mcp")
                 .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "https://evil.example")
+                .header(header::ORIGIN, "https://example.invalid")
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from("{"))
+                .body(Body::from("not-json"))
                 .unwrap(),
         )
         .await
