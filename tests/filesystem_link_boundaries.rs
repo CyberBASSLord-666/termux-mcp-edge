@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(all(unix, feature = "mcp-runtime"))]
 
 use termux_mcp_server::{error::AppError, tools::FileSystemTools};
 
