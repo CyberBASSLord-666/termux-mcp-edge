@@ -36,17 +36,13 @@ impl FileSystemTools {
         &self.safe_roots
     }
 
-    pub fn audit_write_decision(
+    fn audit_write_decision(
         &self,
         timestamp_unix_seconds: u64,
         content_bytes: usize,
         dry_run: Option<bool>,
     ) -> AuditEvent {
-        WritePolicy::default().audit_payload_decision(
-            timestamp_unix_seconds,
-            content_bytes,
-            dry_run,
-        )
+        WritePolicy::default().audit_payload_decision(timestamp_unix_seconds, content_bytes, dry_run)
     }
 
     /// Resolve a caller-supplied path and verify that it remains inside one of
@@ -238,11 +234,7 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<String, AppError> {
         let start = Instant::now();
-        let _audit_event = self.audit_write_decision(
-            unix_timestamp_seconds(),
-            content.len(),
-            dry_run,
-        );
+        let _audit_event = self.audit_write_decision(unix_timestamp_seconds(), content.len(), dry_run);
         let safe_path = self.sanitize(&path)?;
         let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
             attempted: path.clone(),
@@ -289,7 +281,7 @@ impl FileSystemTools {
 fn unix_timestamp_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
+        .map_or(u64::MAX, |duration| duration.as_secs())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -315,8 +307,8 @@ pub struct ReadFileResult {
 
 #[cfg(test)]
 mod tests {
-    use crate::audit::{AuditDecision, AuditMode};
     use super::*;
+    use crate::audit::{AuditDecision, AuditMode};
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
         assert!(
@@ -385,7 +377,10 @@ mod tests {
         assert_eq!(event.decision, AuditDecision::Allowed);
         assert_eq!(event.reason_code, "dry_run_preview");
         assert_eq!(event.metadata["content_bytes"], 14);
-        assert_eq!(event.metadata["max_bytes"], 1_048_576);
+        assert_eq!(
+            event.metadata["max_bytes"],
+            WritePolicy::default().max_write_bytes() as u64
+        );
 
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value.get("path"), None);
