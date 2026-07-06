@@ -315,8 +315,8 @@ pub struct ReadFileResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::audit::{AuditDecision, AuditMode};
+    use super::*;
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
         assert!(
