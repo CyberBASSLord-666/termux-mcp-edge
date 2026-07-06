@@ -42,11 +42,7 @@ impl FileSystemTools {
         content_bytes: usize,
         dry_run: Option<bool>,
     ) -> AuditEvent {
-        WritePolicy::default().audit_payload_decision(
-            timestamp_unix_seconds,
-            content_bytes,
-            dry_run,
-        )
+        WritePolicy::default().audit_payload_decision(timestamp_unix_seconds, content_bytes, dry_run)
     }
 
     /// Resolve a caller-supplied path and verify that it remains inside one of
@@ -238,11 +234,7 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<String, AppError> {
         let start = Instant::now();
-        let _audit_event = self.audit_write_decision(
-            unix_timestamp_seconds(),
-            content.len(),
-            dry_run,
-        );
+        let _audit_event = self.audit_write_decision(unix_timestamp_seconds(), content.len(), dry_run);
         let safe_path = self.sanitize(&path)?;
         let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
             attempted: path.clone(),
@@ -388,7 +380,7 @@ mod tests {
         assert_eq!(event.metadata["content_bytes"], 14);
         assert_eq!(
             event.metadata["max_bytes"],
-            WritePolicy::default().max_write_bytes() as u64,
+            WritePolicy::default().max_write_bytes() as u64
         );
 
         let value = serde_json::to_value(event).unwrap();
