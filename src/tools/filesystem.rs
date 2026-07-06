@@ -2,13 +2,15 @@
 
 use std::collections::VecDeque;
 use std::path::{Component, Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use metrics::{counter, histogram};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncReadExt};
 
+use crate::audit::AuditEvent;
 use crate::error::AppError;
+use crate::write_policy::WritePolicy;
 
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
@@ -32,6 +34,19 @@ impl FileSystemTools {
 
     pub fn safe_roots(&self) -> &[PathBuf] {
         &self.safe_roots
+    }
+
+    fn audit_write_decision(
+        &self,
+        timestamp_unix_seconds: u64,
+        content_bytes: usize,
+        dry_run: Option<bool>,
+    ) -> AuditEvent {
+        WritePolicy::default().audit_payload_decision(
+            timestamp_unix_seconds,
+            content_bytes,
+            dry_run,
+        )
     }
 
     /// Resolve a caller-supplied path and verify that it remains inside one of
@@ -223,6 +238,8 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<String, AppError> {
         let start = Instant::now();
+        let _audit_event =
+            self.audit_write_decision(unix_timestamp_seconds(), content.len(), dry_run);
         let safe_path = self.sanitize(&path)?;
         let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
             attempted: path.clone(),
@@ -266,6 +283,12 @@ impl FileSystemTools {
     }
 }
 
+fn unix_timestamp_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(u64::MAX, |duration| duration.as_secs())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileInfo {
     pub path: String,
@@ -290,6 +313,8 @@ pub struct ReadFileResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::audit::{AuditDecision, AuditMode};
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
         assert!(
@@ -343,6 +368,42 @@ mod tests {
 
         assert_eq!(sanitized, expected);
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn write_file_audit_defaults_to_dry_run_without_sensitive_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let event = tools.audit_write_decision(1_725_000_000, 14, None);
+
+        assert_eq!(event.timestamp_unix_seconds, 1_725_000_000);
+        assert_eq!(event.tool_name, "write_file");
+        assert_eq!(event.gate_name, "filesystem_write");
+        assert_eq!(event.mode, AuditMode::DryRun);
+        assert_eq!(event.decision, AuditDecision::Allowed);
+        assert_eq!(event.reason_code, "dry_run_preview");
+        assert_eq!(event.metadata["content_bytes"], 14);
+        assert_eq!(
+            event.metadata["max_bytes"],
+            WritePolicy::default().max_write_bytes() as u64
+        );
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value.get("path"), None);
+        assert_eq!(value.get("content"), None);
+        assert_eq!(value.get("file_content"), None);
+    }
+
+    #[test]
+    fn write_file_audit_tracks_explicit_mutation_without_runtime_surface_change() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let event = tools.audit_write_decision(2, 38, Some(false));
+
+        assert_eq!(event.mode, AuditMode::Mutating);
+        assert_eq!(event.decision, AuditDecision::Allowed);
+        assert_eq!(event.reason_code, "explicit_mutation");
+        assert_eq!(event.metadata["content_bytes"], 38);
     }
 
     #[tokio::test]
