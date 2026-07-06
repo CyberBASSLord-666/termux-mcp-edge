@@ -1,13 +1,13 @@
 #![cfg(feature = "mcp-runtime")]
 
-mod mcp_test_harness;
+mod support;
 
 use axum::{
     body::Body,
     http::{header, Request, StatusCode},
 };
-use mcp_test_harness::{post_json, post_raw, response_json, test_file_tools, test_router};
 use serde_json::{json, Value};
+use support::{post_json, post_raw, response_json, test_file_tools, test_router};
 use tower::ServiceExt;
 
 #[tokio::test]
