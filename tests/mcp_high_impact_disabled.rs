@@ -1,17 +1,10 @@
 #![cfg(feature = "mcp-runtime")]
 
-use axum::{
-    body::{to_bytes, Body},
-    http::{header, Request, StatusCode},
-    response::Response,
-    Router,
-};
-use serde_json::{json, Value};
-use tempfile::TempDir;
-use termux_mcp_server::{
-    mcp_transport::router, tools::FileSystemTools, transport_security::TransportSecurityPolicy,
-};
-use tower::ServiceExt;
+mod mcp_test_harness;
+
+use axum::http::StatusCode;
+use mcp_test_harness::{post_json_with_empty_root, response_json};
+use serde_json::json;
 
 const EXPECTED_STAGED_TOOLS: [&str; 7] = [
     "runtime_status",
@@ -23,39 +16,9 @@ const EXPECTED_STAGED_TOOLS: [&str; 7] = [
     "write_file",
 ];
 
-fn test_file_tools() -> (TempDir, FileSystemTools) {
-    let root = tempfile::tempdir().unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-    (root, tools)
-}
-
-fn test_router(file_tools: FileSystemTools) -> Router {
-    router(TransportSecurityPolicy::localhost(8000, false), file_tools)
-}
-
-async fn post_json(request_body: Value) -> Response {
-    let (_root, file_tools) = test_file_tools();
-    test_router(file_tools)
-        .oneshot(
-            Request::post("/mcp")
-                .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "http://localhost:8000")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(request_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-}
-
-async fn response_json(response: Response) -> Value {
-    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
-}
-
 #[tokio::test]
 async fn tool_discovery_exposes_only_the_staged_allowlist() {
-    let response = post_json(json!({
+    let response = post_json_with_empty_root(json!({
         "jsonrpc": "2.0",
         "id": "list-tools",
         "method": "tools/list"
@@ -90,7 +53,7 @@ async fn tool_discovery_exposes_only_the_staged_allowlist() {
 
 #[tokio::test]
 async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
-    let response = post_json(json!({
+    let response = post_json_with_empty_root(json!({
         "jsonrpc": "2.0",
         "id": "runtime-status",
         "method": "tools/call",
@@ -128,7 +91,7 @@ async fn command_capable_tool_calls_remain_method_not_found() {
         "high_impact",
         "service_control",
     ] {
-        let response = post_json(json!({
+        let response = post_json_with_empty_root(json!({
             "jsonrpc": "2.0",
             "id": forbidden_tool,
             "method": "tools/call",
