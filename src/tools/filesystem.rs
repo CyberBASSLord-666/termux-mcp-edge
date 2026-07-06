@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(event.metadata["content_bytes"], 14);
         assert_eq!(
             event.metadata["max_bytes"],
-            WritePolicy::default().max_write_bytes() as u64
+            WritePolicy::default().max_write_bytes() as u64,
         );
 
         let value = serde_json::to_value(event).unwrap();
