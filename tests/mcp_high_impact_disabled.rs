@@ -1,10 +1,10 @@
 #![cfg(feature = "mcp-runtime")]
 
-mod mcp_test_harness;
+mod support;
 
 use axum::http::StatusCode;
-use mcp_test_harness::{post_json_with_empty_root, response_json};
 use serde_json::json;
+use support::{post_json_with_empty_root, response_json};
 
 const EXPECTED_STAGED_TOOLS: [&str; 7] = [
     "runtime_status",
