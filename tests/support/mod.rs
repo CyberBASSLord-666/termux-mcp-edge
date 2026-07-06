@@ -1,4 +1,5 @@
 #![cfg(feature = "mcp-runtime")]
+#![allow(dead_code)]
 
 use axum::{
     body::{to_bytes, Body},
@@ -13,24 +14,24 @@ use termux_mcp_server::{
 };
 use tower::ServiceExt;
 
-pub fn test_file_tools() -> (TempDir, FileSystemTools) {
+pub(super) fn test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("visible.txt"), "safe content").unwrap();
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     (root, tools)
 }
 
-pub fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
+pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     (root, tools)
 }
 
-pub fn test_router(file_tools: FileSystemTools) -> Router {
+pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
     router(TransportSecurityPolicy::localhost(8000, false), file_tools)
 }
 
-pub async fn post_raw(body: impl Into<Body>) -> Response {
+pub(super) async fn post_raw(body: impl Into<Body>) -> Response {
     let (_root, file_tools) = test_file_tools();
     test_router(file_tools)
         .oneshot(
@@ -45,11 +46,11 @@ pub async fn post_raw(body: impl Into<Body>) -> Response {
         .unwrap()
 }
 
-pub async fn post_json(request_body: Value) -> Response {
+pub(super) async fn post_json(request_body: Value) -> Response {
     post_raw(request_body.to_string()).await
 }
 
-pub async fn post_json_with_empty_root(request_body: Value) -> Response {
+pub(super) async fn post_json_with_empty_root(request_body: Value) -> Response {
     let (_root, file_tools) = empty_test_file_tools();
     test_router(file_tools)
         .oneshot(
@@ -64,7 +65,7 @@ pub async fn post_json_with_empty_root(request_body: Value) -> Response {
         .unwrap()
 }
 
-pub async fn response_json(response: Response) -> Value {
+pub(super) async fn response_json(response: Response) -> Value {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&body).unwrap()
 }
