@@ -33,7 +33,9 @@ async fn read_file_rejects_link_resolving_beyond_safe_root() {
     std::os::unix::fs::symlink(&peer_file, &link_path).unwrap();
 
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-    let result = tools.read_file(link_path.to_string_lossy().to_string()).await;
+    let result = tools
+        .read_file(link_path.to_string_lossy().to_string())
+        .await;
 
     assert!(matches!(result, Err(AppError::PathTraversal { .. })));
 }
