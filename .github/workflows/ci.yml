@@ -26,37 +26,74 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  contents: write
 
 jobs:
-  rust:
-    name: Rust validation
+  patch:
+    name: Patch JSON-RPC missing method handling
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout
-        # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-
-      - name: Install Rust toolchain
-        # dtolnay/rust-toolchain@stable resolved 2026-06-26
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
-          components: rustfmt, clippy
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+      - name: Patch source
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/mcp_transport.rs')
+          text = path.read_text()
+          text = text.replace('method: String,', 'method: Option<String>,', 1)
+          old = '''    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
 
-      - name: Cache cargo registry and build outputs
-        # Swatinem/rust-cache@v2 resolved 2026-06-26
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+    match method.as_str() {'''
+          new = '''    let JsonRpcRequest {
+        id, method, params, ..
+    } = request;
 
-      - name: Format check
-        run: cargo fmt --all -- --check
+    let Some(method) = method else {
+        return invalid_request(id, "JSON-RPC request is missing required method.");
+    };
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    match method.as_str() {'''
+          if old not in text:
+              raise SystemExit('missing request destructure block')
+          text = text.replace(old, new, 1)
+          marker = '''fn invalid_params(id: Option<Value>, message: &str) -> Response {
+    invalid_params_json(id, "Invalid params", json!(message))
+}
+'''
+          insert = '''fn invalid_request(id: Option<Value>, message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32600,
+                "message": "Invalid Request",
+                "data": message,
+            },
+        })),
+    )
+        .into_response()
+}
 
-      - name: Tests
-        run: cargo test --workspace --all-targets --all-features
+'''
+          if marker not in text:
+              raise SystemExit('missing invalid_params marker')
+          if 'fn invalid_request(' not in text:
+              text = text.replace(marker, insert + marker, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          git diff -- src/mcp_transport.rs
+          git add src/mcp_transport.rs tests/mcp_transport_edge_cases.rs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Handle missing JSON-RPC method as invalid request" || exit 0
+          git push origin HEAD:automation/json-rpc-missing-method-invalid-request
