@@ -13,6 +13,16 @@ use termux_mcp_server::{
 };
 use tower::ServiceExt;
 
+const EXPECTED_STAGED_TOOLS: [&str; 7] = [
+    "runtime_status",
+    "platform_info",
+    "android_status",
+    "project_service_status",
+    "list_directory",
+    "read_file",
+    "write_file",
+];
+
 fn test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
@@ -44,7 +54,7 @@ async fn response_json(response: Response) -> Value {
 }
 
 #[tokio::test]
-async fn tool_discovery_does_not_expose_command_or_high_impact_surfaces() {
+async fn tool_discovery_exposes_only_the_staged_allowlist() {
     let response = post_json(json!({
         "jsonrpc": "2.0",
         "id": "list-tools",
@@ -59,6 +69,8 @@ async fn tool_discovery_does_not_expose_command_or_high_impact_surfaces() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
+
+    assert_eq!(tool_names, EXPECTED_STAGED_TOOLS);
 
     for forbidden_tool in [
         "command_execute",
