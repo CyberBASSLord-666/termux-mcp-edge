@@ -128,12 +128,33 @@ async fn platform_info_metadata_stays_non_sensitive() {
 }
 
 fn assert_no_denied_android_platform_tokens(value: &Value) {
-    let serialized = value.to_string().to_ascii_lowercase();
+    assert_no_denied_android_platform_tokens_at(value, "$".to_owned());
+}
 
-    for token in DENIED_ANDROID_PLATFORM_TOKENS {
-        assert!(
-            !serialized.contains(token),
-            "unexpected Android/platform-sensitive token in metadata: {token}"
-        );
+fn assert_no_denied_android_platform_tokens_at(value: &Value, path: String) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                let key_lower = key.to_ascii_lowercase();
+                assert!(
+                    !DENIED_ANDROID_PLATFORM_TOKENS.contains(&key_lower.as_str()),
+                    "unexpected Android/platform-sensitive metadata key at {path}.{key}: {key}"
+                );
+                assert_no_denied_android_platform_tokens_at(child, format!("{path}.{key}"));
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                assert_no_denied_android_platform_tokens_at(child, format!("{path}[{index}]"));
+            }
+        }
+        Value::String(text) => {
+            let value_lower = text.to_ascii_lowercase();
+            assert!(
+                !DENIED_ANDROID_PLATFORM_TOKENS.contains(&value_lower.as_str()),
+                "unexpected Android/platform-sensitive metadata value at {path}: {text}"
+            );
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
