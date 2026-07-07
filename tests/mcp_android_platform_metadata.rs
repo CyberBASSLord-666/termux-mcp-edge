@@ -99,7 +99,13 @@ async fn platform_info_metadata_stays_non_sensitive() {
         .pointer("/result/structuredContent")
         .expect("platform_info returns structured content");
 
-    for expected_key in ["os", "arch", "family", "available_parallelism", "package_version"] {
+    for expected_key in [
+        "os",
+        "arch",
+        "family",
+        "available_parallelism",
+        "package_version",
+    ] {
         assert!(
             structured.get(expected_key).is_some(),
             "missing expected platform metadata key: {expected_key}"
