@@ -103,6 +103,52 @@ pub fn read_only_denied_event(
     )
 }
 
+/// Build a backend-neutral audit event for an allowed staged filesystem decision.
+///
+/// The filesystem surface includes read-only directory listing, bounded read-only
+/// file reads, dry-run write previews, and explicitly requested writes. Callers
+/// must pass only stable labels and a coarse mode; this helper never captures raw
+/// paths, file contents, command output, environment values, or host metadata.
+pub fn filesystem_allowed_event(
+    timestamp_unix_seconds: u64,
+    tool_name: impl Into<String>,
+    gate_name: impl Into<String>,
+    mode: AuditMode,
+    reason_code: impl Into<String>,
+) -> AuditEvent {
+    AuditEvent::new(
+        timestamp_unix_seconds,
+        tool_name,
+        gate_name,
+        mode,
+        AuditDecision::Allowed,
+        reason_code,
+    )
+}
+
+/// Build a backend-neutral audit event for a denied staged filesystem decision.
+///
+/// Denied filesystem decisions must remain low-cardinality and non-sensitive.
+/// Reason codes should describe policy outcomes such as safe-root rejection,
+/// invalid arguments, or byte-limit enforcement without storing caller paths,
+/// file content, arbitrary strings, or private host details.
+pub fn filesystem_denied_event(
+    timestamp_unix_seconds: u64,
+    tool_name: impl Into<String>,
+    gate_name: impl Into<String>,
+    mode: AuditMode,
+    reason_code: impl Into<String>,
+) -> AuditEvent {
+    AuditEvent::new(
+        timestamp_unix_seconds,
+        tool_name,
+        gate_name,
+        mode,
+        AuditDecision::Denied,
+        reason_code,
+    )
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AuditCounters {
     pub allowed_total: u64,
@@ -260,6 +306,94 @@ mod tests {
         assert_eq!(value["mode"], "read_only");
         assert_eq!(value["decision"], "denied");
         assert_eq!(value["metadata"], json!({ "provided_argument_count": 1 }));
+        assert_no_sensitive_tokens(&value);
+    }
+
+    #[test]
+    fn filesystem_helpers_cover_staged_modes_without_sensitive_values() {
+        let list_allowed = filesystem_allowed_event(
+            1_725_000_300,
+            "list_directory",
+            "filesystem_safe_root",
+            AuditMode::ReadOnly,
+            "safe_root_listing",
+        );
+        let read_denied = filesystem_denied_event(
+            1_725_000_301,
+            "read_file",
+            "filesystem_safe_root",
+            AuditMode::ReadOnly,
+            "path_outside_safe_root",
+        );
+        let dry_run_allowed = filesystem_allowed_event(
+            1_725_000_302,
+            "write_file",
+            "filesystem_write",
+            AuditMode::DryRun,
+            "dry_run_preview",
+        );
+        let write_allowed = filesystem_allowed_event(
+            1_725_000_303,
+            "write_file",
+            "filesystem_write",
+            AuditMode::Mutating,
+            "explicit_write_allowed",
+        );
+
+        assert_eq!(list_allowed.mode, AuditMode::ReadOnly);
+        assert_eq!(list_allowed.decision, AuditDecision::Allowed);
+        assert_eq!(read_denied.mode, AuditMode::ReadOnly);
+        assert_eq!(read_denied.decision, AuditDecision::Denied);
+        assert_eq!(dry_run_allowed.mode, AuditMode::DryRun);
+        assert_eq!(dry_run_allowed.decision, AuditDecision::Allowed);
+        assert_eq!(write_allowed.mode, AuditMode::Mutating);
+        assert_eq!(write_allowed.decision, AuditDecision::Allowed);
+
+        for event in [list_allowed, read_denied, dry_run_allowed, write_allowed] {
+            let value = serde_json::to_value(event).unwrap();
+            assert_eq!(value.get("metadata"), None);
+            assert_no_sensitive_tokens(&value);
+        }
+    }
+
+    #[test]
+    fn filesystem_helper_events_feed_counters_by_stable_labels_only() {
+        let mut counters = AuditCounters::default();
+
+        counters.record_event(&filesystem_allowed_event(
+            1,
+            "list_directory",
+            "filesystem_safe_root",
+            AuditMode::ReadOnly,
+            "safe_root_listing",
+        ));
+        counters.record_event(&filesystem_denied_event(
+            2,
+            "read_file",
+            "filesystem_safe_root",
+            AuditMode::ReadOnly,
+            "path_outside_safe_root",
+        ));
+        counters.record_event(&filesystem_allowed_event(
+            3,
+            "write_file",
+            "filesystem_write",
+            AuditMode::DryRun,
+            "dry_run_preview",
+        ));
+
+        assert_eq!(counters.allowed_total, 2);
+        assert_eq!(counters.denied_total, 1);
+        assert_eq!(counters.by_tool["list_directory"].allowed, 1);
+        assert_eq!(counters.by_tool["read_file"].denied, 1);
+        assert_eq!(counters.by_tool["write_file"].allowed, 1);
+        assert_eq!(counters.by_reason_code["path_outside_safe_root"].denied, 1);
+
+        let value = serde_json::to_value(counters).unwrap();
+        assert!(
+            !value.to_string().contains("filesystem_safe_root"),
+            "counter output must not include gate names until a backend explicitly models them"
+        );
         assert_no_sensitive_tokens(&value);
     }
 
