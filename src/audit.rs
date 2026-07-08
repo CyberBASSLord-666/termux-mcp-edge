@@ -103,6 +103,67 @@ pub fn read_only_denied_event(
     )
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AuditCounters {
+    pub allowed_total: u64,
+    pub denied_total: u64,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_tool: BTreeMap<String, AuditDecisionCounters>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_reason_code: BTreeMap<String, AuditDecisionCounters>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct AuditDecisionCounters {
+    pub allowed: u64,
+    pub denied: u64,
+}
+
+impl AuditCounters {
+    /// Record a non-sensitive audit event into deterministic in-memory counters.
+    ///
+    /// The counter stores only stable tool names, reason codes, and aggregate
+    /// totals. It deliberately ignores metadata to avoid accidentally turning
+    /// caller-supplied values, paths, command output, environment values, or
+    /// private host details into an observability backend.
+    pub fn record_event(&mut self, event: &AuditEvent) {
+        match event.decision {
+            AuditDecision::Allowed => self.allowed_total += 1,
+            AuditDecision::Denied => self.denied_total += 1,
+        }
+
+        self.by_tool
+            .entry(event.tool_name.clone())
+            .or_default()
+            .record(event.decision);
+        self.by_reason_code
+            .entry(event.reason_code.clone())
+            .or_default()
+            .record(event.decision);
+    }
+
+    pub fn total(&self) -> u64 {
+        self.allowed_total + self.denied_total
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
+impl AuditDecisionCounters {
+    fn record(&mut self, decision: AuditDecision) {
+        match decision {
+            AuditDecision::Allowed => self.allowed += 1,
+            AuditDecision::Denied => self.denied += 1,
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.allowed + self.denied
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +261,102 @@ mod tests {
         assert_eq!(value["decision"], "denied");
         assert_eq!(value["metadata"], json!({ "provided_argument_count": 1 }));
         assert_no_sensitive_tokens(&value);
+    }
+
+    #[test]
+    fn audit_counters_record_allowed_and_denied_totals_by_stable_labels() {
+        let mut counters = AuditCounters::default();
+
+        counters.record_event(&read_only_allowed_event(
+            1,
+            "android_status",
+            "android_read_only_status",
+            "allowlisted_status_metadata",
+        ));
+        counters.record_event(&read_only_allowed_event(
+            2,
+            "project_service_status",
+            "project_service_state",
+            "allowlisted_project_service",
+        ));
+        counters.record_event(&read_only_denied_event(
+            3,
+            "project_service_status",
+            "project_service_state",
+            "unsupported_service",
+        ));
+
+        assert_eq!(counters.allowed_total, 2);
+        assert_eq!(counters.denied_total, 1);
+        assert_eq!(counters.total(), 3);
+        assert!(!counters.is_empty());
+
+        assert_eq!(counters.by_tool["android_status"].allowed, 1);
+        assert_eq!(counters.by_tool["android_status"].denied, 0);
+        assert_eq!(counters.by_tool["project_service_status"].allowed, 1);
+        assert_eq!(counters.by_tool["project_service_status"].denied, 1);
+        assert_eq!(
+            counters.by_reason_code["unsupported_service"],
+            AuditDecisionCounters {
+                allowed: 0,
+                denied: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn audit_counters_serialize_deterministically_without_event_metadata() {
+        let mut counters = AuditCounters::default();
+
+        let event = read_only_denied_event(
+            1,
+            "project_service_status",
+            "project_service_state",
+            "unsupported_service",
+        )
+        .with_metadata("provided_argument_count", 1);
+
+        counters.record_event(&event);
+
+        let value = serde_json::to_value(counters).unwrap();
+        assert_eq!(value["allowed_total"], 0);
+        assert_eq!(value["denied_total"], 1);
+        assert_eq!(
+            value["by_tool"],
+            json!({
+                "project_service_status": {
+                    "allowed": 0,
+                    "denied": 1,
+                },
+            })
+        );
+        assert_eq!(
+            value["by_reason_code"],
+            json!({
+                "unsupported_service": {
+                    "allowed": 0,
+                    "denied": 1,
+                },
+            })
+        );
+        assert!(
+            !value.to_string().contains("provided_argument_count"),
+            "counter output must not copy event metadata"
+        );
+        assert_no_sensitive_tokens(&value);
+    }
+
+    #[test]
+    fn empty_audit_counters_omit_sparse_maps() {
+        let counters = AuditCounters::default();
+
+        assert!(counters.is_empty());
+        let value = serde_json::to_value(counters).unwrap();
+
+        assert_eq!(value["allowed_total"], 0);
+        assert_eq!(value["denied_total"], 0);
+        assert_eq!(value.get("by_tool"), None);
+        assert_eq!(value.get("by_reason_code"), None);
     }
 
     #[test]
