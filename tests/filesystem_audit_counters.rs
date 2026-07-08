@@ -46,7 +46,9 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
         .expect("filesystem audit counters should serialize deterministically")
         .to_ascii_lowercase();
 
-    for forbidden in ["/data/", "/home/", "content", "password", "secret", "token", "bearer"] {
+    for forbidden in [
+        "/data/", "bearer", "content", "password", "secret", "token", "/home/",
+    ] {
         assert!(
             !serialized.contains(forbidden),
             "filesystem audit counters must not expose sensitive token: {forbidden}"
