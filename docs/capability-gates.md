@@ -121,6 +121,8 @@ Examples:
 - Network or device configuration changes
 - Any Android device-control action
 
+The detailed threat model is maintained in [`high-impact-controls-threat-model.md`](high-impact-controls-threat-model.md).
+
 Required before implementation:
 
 - Dedicated threat model
