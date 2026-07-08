@@ -834,7 +834,12 @@ fn record_read_only_allowed(
     gate_name: &'static str,
     reason_code: &'static str,
 ) {
-    let event = read_only_allowed_event(current_unix_seconds(), tool_name, gate_name, reason_code);
+    let event = read_only_allowed_event(
+        current_unix_seconds(),
+        tool_name,
+        gate_name,
+        reason_code,
+    );
     record_audit_event(counters, &event);
 }
 
@@ -844,7 +849,12 @@ fn record_read_only_denied(
     gate_name: &'static str,
     reason_code: &'static str,
 ) {
-    let event = read_only_denied_event(current_unix_seconds(), tool_name, gate_name, reason_code);
+    let event = read_only_denied_event(
+        current_unix_seconds(),
+        tool_name,
+        gate_name,
+        reason_code,
+    );
     record_audit_event(counters, &event);
 }
 
@@ -858,10 +868,12 @@ fn audit_counters_snapshot(counters: &SharedAuditCounters) -> Value {
     counters
         .lock()
         .map(|counters| json!(counters.clone()))
-        .unwrap_or_else(|_| json!({
-            "unavailable": true,
-            "reason": "audit_counter_lock_poisoned",
-        }))
+        .unwrap_or_else(|_| {
+            json!({
+                "unavailable": true,
+                "reason": "audit_counter_lock_poisoned",
+            })
+        })
 }
 
 fn current_unix_seconds() -> u64 {
