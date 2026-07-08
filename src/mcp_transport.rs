@@ -16,7 +16,10 @@ use serde_json::{json, Value};
 
 use crate::{
     android_status::collect_android_status,
-    audit::{read_only_allowed_event, read_only_denied_event, AuditCounters},
+    audit::{
+        filesystem_allowed_event, filesystem_denied_event, read_only_allowed_event,
+        read_only_denied_event, AuditCounters, AuditMode,
+    },
     error::AppError,
     platform_info::collect_platform_info,
     service_status::{
@@ -51,6 +54,8 @@ const RUNTIME_STATUS_GATE: &str = "runtime_metadata";
 const PLATFORM_INFO_GATE: &str = "platform_metadata";
 const ANDROID_STATUS_GATE: &str = "android_read_only_status";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
+const FILESYSTEM_READ_GATE: &str = "filesystem_read";
+const FILESYSTEM_WRITE_GATE: &str = "filesystem_write";
 
 const RUNTIME_STATUS_ALLOWED: &str = "staged_runtime_metadata";
 const PLATFORM_INFO_ALLOWED: &str = "read_only_platform_metadata";
@@ -61,6 +66,19 @@ const PROJECT_SERVICE_STATUS_ALLOWED: &str = "allowlisted_project_service";
 const PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS: &str = "missing_service_name";
 const PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS: &str = "invalid_service_arguments";
 const PROJECT_SERVICE_STATUS_UNSUPPORTED: &str = "unsupported_service";
+const FILESYSTEM_MISSING_ARGUMENTS: &str = "missing_arguments";
+const FILESYSTEM_INVALID_ARGUMENTS: &str = "invalid_arguments";
+const FILESYSTEM_INVALID_DEPTH: &str = "invalid_max_depth";
+const FILESYSTEM_SAFE_ROOT_REJECTED: &str = "safe_root_rejected";
+const FILESYSTEM_LIST_ALLOWED: &str = "safe_root_listed";
+const FILESYSTEM_READ_ALLOWED: &str = "safe_root_read";
+const FILESYSTEM_READ_TOO_LARGE: &str = "read_size_limit_exceeded";
+const FILESYSTEM_READ_FAILED: &str = "filesystem_read_failed";
+const FILESYSTEM_DRY_RUN_ALLOWED: &str = "dry_run_preview";
+const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
+const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
+const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
+
 
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
 
@@ -376,9 +394,15 @@ async fn handle_tool_call(
         PROJECT_SERVICE_STATUS_TOOL => {
             project_service_status_response(id, call.arguments, &state.audit_counters)
         }
-        LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, &state.file_tools).await,
-        READ_FILE_TOOL => handle_read_file_call(id, call.arguments, &state.file_tools).await,
-        WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, &state.file_tools).await,
+        LIST_DIRECTORY_TOOL => {
+            handle_list_directory_call(id, call.arguments, &state.file_tools, &state.audit_counters).await
+        }
+        READ_FILE_TOOL => {
+            handle_read_file_call(id, call.arguments, &state.file_tools, &state.audit_counters).await
+        }
+        WRITE_FILE_TOOL => {
+            handle_write_file_call(id, call.arguments, &state.file_tools, &state.audit_counters).await
+        }
         _ => method_not_available(
             id,
             "Only runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
@@ -609,21 +633,45 @@ async fn handle_list_directory_call(
     id: Option<Value>,
     arguments: Option<Value>,
     file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
 ) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
-        None => return invalid_params(id, "list_directory requires a path argument."),
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "list_directory requires a path argument.");
+        }
     };
 
     let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
         Ok(args) => args,
         Err(error) => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
             return invalid_params(id, &format!("Invalid list_directory arguments: {error}"));
         }
     };
 
     if let Some(max_depth) = args.max_depth {
         if !(MIN_LIST_DIRECTORY_DEPTH..=MAX_LIST_DIRECTORY_DEPTH).contains(&max_depth) {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_DEPTH,
+            );
             return invalid_params(
                 id,
                 &format!(
@@ -634,16 +682,43 @@ async fn handle_list_directory_call(
     }
 
     match file_tools.list_directory(args.path, args.max_depth).await {
-        Ok(result) => ok_result(
-            id,
-            format!("Listed {} safe-rooted filesystem entries.", result.entries.len()),
-            json!(result),
-        ),
-        Err(AppError::PathTraversal { .. }) => invalid_params(
-            id,
-            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
-        ),
-        Err(_error) => internal_error(id, "Filesystem operation failed."),
+        Ok(result) => {
+            record_filesystem_allowed(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_LIST_ALLOWED,
+            );
+            ok_result(
+                id,
+                format!("Listed {} safe-rooted filesystem entries.", result.entries.len()),
+                json!(result),
+            )
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_FAILED,
+            );
+            internal_error(id, "Filesystem operation failed.")
+        }
     }
 }
 
@@ -652,28 +727,83 @@ async fn handle_read_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
     file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
 ) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
-        None => return invalid_params(id, "read_file requires a path argument."),
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "read_file requires a path argument.");
+        }
     };
 
     let args = match serde_json::from_value::<ReadFileArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => return invalid_params(id, &format!("Invalid read_file arguments: {error}")),
+        Err(error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, &format!("Invalid read_file arguments: {error}"));
+        }
     };
 
     match file_tools.read_file(args.path).await {
-        Ok(result) => ok_result(id, result.content.clone(), json!(result)),
-        Err(AppError::PathTraversal { .. }) => invalid_params(
-            id,
-            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
-        ),
-        Err(AppError::FileTooLarge { .. }) => payload_too_large(
-            id,
-            "File content exceeds the staged read_file byte limit.",
-        ),
-        Err(_error) => internal_error(id, "Filesystem read failed."),
+        Ok(result) => {
+            record_filesystem_allowed(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_ALLOWED,
+            );
+            ok_result(id, result.content.clone(), json!(result))
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_TOO_LARGE,
+            );
+            payload_too_large(
+                id,
+                "File content exceeds the staged read_file byte limit.",
+            )
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_FAILED,
+            );
+            internal_error(id, "Filesystem read failed.")
+        }
     }
 }
 
@@ -682,47 +812,110 @@ async fn handle_write_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
     file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
 ) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
-        None => return invalid_params(id, "write_file requires path and content arguments."),
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "write_file requires path and content arguments.");
+        }
     };
 
     let args = match serde_json::from_value::<WriteFileArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => return invalid_params(id, &format!("Invalid write_file arguments: {error}")),
+        Err(error) => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, &format!("Invalid write_file arguments: {error}"));
+        }
     };
 
     let policy = WritePolicy::default();
     let bytes = args.content.len();
+    let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
+    let mode = filesystem_write_mode(dry_run);
+
     if policy.validate_payload_size(bytes).is_err() {
+        record_filesystem_denied(
+            audit_counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_WRITE_TOO_LARGE,
+        );
         return payload_too_large(id, "File content exceeds the staged write_file byte limit.");
     }
-
-    let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
 
     match file_tools
         .write_file(args.path, args.content, Some(dry_run))
         .await
     {
-        Ok(message) => ok_result(
-            id,
-            message.clone(),
-            json!({
-                "dryRun": dry_run,
-                "bytes": bytes,
-                "message": message,
-            }),
-        ),
-        Err(AppError::PathTraversal { .. }) => invalid_params(
-            id,
-            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
-        ),
-        Err(AppError::FileTooLarge { .. }) => payload_too_large(
-            id,
-            "File content exceeds the staged write_file byte limit.",
-        ),
-        Err(_error) => internal_error(id, "Filesystem write failed."),
+        Ok(message) => {
+            record_filesystem_allowed(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                filesystem_write_allowed_reason(dry_run),
+            );
+            ok_result(
+                id,
+                message.clone(),
+                json!({
+                    "dryRun": dry_run,
+                    "bytes": bytes,
+                    "message": message,
+                }),
+            )
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_WRITE_TOO_LARGE,
+            );
+            payload_too_large(
+                id,
+                "File content exceeds the staged write_file byte limit.",
+            )
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_WRITE_FAILED,
+            );
+            internal_error(id, "Filesystem write failed.")
+        }
     }
 }
 
@@ -873,6 +1066,42 @@ fn record_read_only_denied(
     record_audit_event(counters, &event);
 }
 
+#[rustfmt::skip]
+fn record_filesystem_allowed(
+    counters: &SharedAuditCounters,
+    tool_name: &'static str,
+    gate_name: &'static str,
+    mode: AuditMode,
+    reason_code: &'static str,
+) {
+    let event = filesystem_allowed_event(
+        current_unix_seconds(),
+        tool_name,
+        gate_name,
+        mode,
+        reason_code,
+    );
+    record_audit_event(counters, &event);
+}
+
+#[rustfmt::skip]
+fn record_filesystem_denied(
+    counters: &SharedAuditCounters,
+    tool_name: &'static str,
+    gate_name: &'static str,
+    mode: AuditMode,
+    reason_code: &'static str,
+) {
+    let event = filesystem_denied_event(
+        current_unix_seconds(),
+        tool_name,
+        gate_name,
+        mode,
+        reason_code,
+    );
+    record_audit_event(counters, &event);
+}
+
 fn record_audit_event(counters: &SharedAuditCounters, event: &crate::audit::AuditEvent) {
     if let Ok(mut counters) = counters.lock() {
         counters.record_event(event);
@@ -890,6 +1119,22 @@ fn audit_counters_snapshot(counters: &SharedAuditCounters) -> Value {
                 "reason": "audit_counter_lock_poisoned",
             })
         })
+}
+
+fn filesystem_write_mode(dry_run: bool) -> AuditMode {
+    if dry_run {
+        AuditMode::DryRun
+    } else {
+        AuditMode::Mutating
+    }
+}
+
+fn filesystem_write_allowed_reason(dry_run: bool) -> &'static str {
+    if dry_run {
+        FILESYSTEM_DRY_RUN_ALLOWED
+    } else {
+        FILESYSTEM_WRITE_ALLOWED
+    }
 }
 
 fn current_unix_seconds() -> u64 {
@@ -949,5 +1194,78 @@ mod tests {
                 "unexpected sensitive token: {token}"
             );
         }
+    }
+
+    #[test]
+    fn filesystem_audit_recorder_counts_allowed_and_denied_decisions() {
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+
+        record_filesystem_allowed(
+            &counters,
+            LIST_DIRECTORY_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_LIST_ALLOWED,
+        );
+        record_filesystem_allowed(
+            &counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            AuditMode::DryRun,
+            FILESYSTEM_DRY_RUN_ALLOWED,
+        );
+        record_filesystem_denied(
+            &counters,
+            READ_FILE_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_SAFE_ROOT_REJECTED,
+        );
+
+        let snapshot = counters.lock().unwrap().clone();
+        assert_eq!(snapshot.allowed_total, 2);
+        assert_eq!(snapshot.denied_total, 1);
+        assert_eq!(snapshot.by_tool[LIST_DIRECTORY_TOOL].allowed, 1);
+        assert_eq!(snapshot.by_tool[WRITE_FILE_TOOL].allowed, 1);
+        assert_eq!(snapshot.by_tool[READ_FILE_TOOL].denied, 1);
+        assert_eq!(snapshot.by_reason_code[FILESYSTEM_LIST_ALLOWED].allowed, 1);
+        assert_eq!(snapshot.by_reason_code[FILESYSTEM_DRY_RUN_ALLOWED].allowed, 1);
+        assert_eq!(snapshot.by_reason_code[FILESYSTEM_SAFE_ROOT_REJECTED].denied, 1);
+    }
+
+    #[test]
+    fn filesystem_audit_snapshot_uses_stable_low_cardinality_values_only() {
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+
+        record_filesystem_denied(
+            &counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            AuditMode::Mutating,
+            FILESYSTEM_WRITE_TOO_LARGE,
+        );
+
+        let value = audit_counters_snapshot(&counters);
+        assert_eq!(value["denied_total"], 1);
+        assert_eq!(value["by_tool"][WRITE_FILE_TOOL]["denied"], 1);
+        assert_eq!(value["by_reason_code"][FILESYSTEM_WRITE_TOO_LARGE]["denied"], 1);
+
+        let serialized = value.to_string().to_ascii_lowercase();
+        for token in [
+            "password", "secret", "token", "/data/", "/home/", "bearer", "content",
+        ] {
+            assert!(
+                !serialized.contains(token),
+                "unexpected sensitive token: {token}"
+            );
+        }
+    }
+
+    #[test]
+    fn filesystem_write_audit_mode_and_reason_follow_dry_run_state() {
+        assert_eq!(filesystem_write_mode(true), AuditMode::DryRun);
+        assert_eq!(filesystem_write_mode(false), AuditMode::Mutating);
+        assert_eq!(filesystem_write_allowed_reason(true), FILESYSTEM_DRY_RUN_ALLOWED);
+        assert_eq!(filesystem_write_allowed_reason(false), FILESYSTEM_WRITE_ALLOWED);
     }
 }
