@@ -98,6 +98,8 @@ Required before merge:
 
 Highest-risk runtime capability. Keep disabled until earlier gates are stable and audit logging exists.
 
+The detailed gate design is maintained in [`command-execution-gate.md`](command-execution-gate.md).
+
 Required before implementation:
 
 - Explicit command allowlist
