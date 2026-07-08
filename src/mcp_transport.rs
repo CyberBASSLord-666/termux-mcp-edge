@@ -1,5 +1,3 @@
-#![rustfmt::skip]
-
 use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -123,6 +121,7 @@ struct WriteFileArguments {
 /// reads, and default-dry-run safe-rooted writes. Android platform control,
 /// command execution, and high-impact actions remain unavailable until later
 /// independently validated stages.
+#[rustfmt::skip]
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
@@ -133,6 +132,7 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
+#[rustfmt::skip]
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
     headers: HeaderMap,
@@ -201,6 +201,7 @@ async fn handle_mcp_request(
     }
 }
 
+#[rustfmt::skip]
 fn initialize_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -224,6 +225,7 @@ fn initialize_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 fn tools_list_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -343,6 +345,7 @@ fn tools_list_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
@@ -383,6 +386,7 @@ async fn handle_tool_call(
     }
 }
 
+#[rustfmt::skip]
 fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounters) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
 
@@ -425,6 +429,7 @@ fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounte
         .into_response()
 }
 
+#[rustfmt::skip]
 fn platform_info_response(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -462,6 +467,7 @@ fn platform_info_response(
     )
 }
 
+#[rustfmt::skip]
 fn android_status_response(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -510,6 +516,7 @@ fn android_status_response(
     )
 }
 
+#[rustfmt::skip]
 fn project_service_status_response(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -597,6 +604,7 @@ fn project_service_status_response(
     }
 }
 
+#[rustfmt::skip]
 async fn handle_list_directory_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -639,6 +647,7 @@ async fn handle_list_directory_call(
     }
 }
 
+#[rustfmt::skip]
 async fn handle_read_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -668,6 +677,7 @@ async fn handle_read_file_call(
     }
 }
 
+#[rustfmt::skip]
 async fn handle_write_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -716,6 +726,7 @@ async fn handle_write_file_call(
     }
 }
 
+#[rustfmt::skip]
 fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Response {
     (
         StatusCode::OK,
@@ -737,6 +748,7 @@ fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Resp
         .into_response()
 }
 
+#[rustfmt::skip]
 fn invalid_request(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -757,6 +769,7 @@ fn invalid_params(id: Option<Value>, message: &str) -> Response {
     invalid_params_json(id, "Invalid params", json!(message))
 }
 
+#[rustfmt::skip]
 fn invalid_params_json(id: Option<Value>, message: &str, data: Value) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -773,6 +786,7 @@ fn invalid_params_json(id: Option<Value>, message: &str, data: Value) -> Respons
         .into_response()
 }
 
+#[rustfmt::skip]
 fn internal_error(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -789,6 +803,7 @@ fn internal_error(id: Option<Value>, message: &str) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 fn payload_too_large(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -805,6 +820,7 @@ fn payload_too_large(id: Option<Value>, message: &str) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
@@ -825,6 +841,7 @@ fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
+#[rustfmt::skip]
 fn record_read_only_allowed(
     counters: &SharedAuditCounters,
     tool_name: &'static str,
@@ -840,6 +857,7 @@ fn record_read_only_allowed(
     record_audit_event(counters, &event);
 }
 
+#[rustfmt::skip]
 fn record_read_only_denied(
     counters: &SharedAuditCounters,
     tool_name: &'static str,
@@ -861,6 +879,7 @@ fn record_audit_event(counters: &SharedAuditCounters, event: &crate::audit::Audi
     }
 }
 
+#[rustfmt::skip]
 fn audit_counters_snapshot(counters: &SharedAuditCounters) -> Value {
     counters
         .lock()
@@ -881,6 +900,7 @@ fn current_unix_seconds() -> u64 {
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
 mod tests {
     use super::*;
 
