@@ -61,6 +61,48 @@ impl AuditEvent {
     }
 }
 
+/// Build a backend-neutral audit event for an allowed read-only staged tool call.
+///
+/// Callers supply the stable tool name, gate name, and non-sensitive reason code.
+/// The event intentionally does not capture caller arguments, raw result values,
+/// filesystem paths, environment values, command output, or host identifiers.
+pub fn read_only_allowed_event(
+    timestamp_unix_seconds: u64,
+    tool_name: impl Into<String>,
+    gate_name: impl Into<String>,
+    reason_code: impl Into<String>,
+) -> AuditEvent {
+    AuditEvent::new(
+        timestamp_unix_seconds,
+        tool_name,
+        gate_name,
+        AuditMode::ReadOnly,
+        AuditDecision::Allowed,
+        reason_code,
+    )
+}
+
+/// Build a backend-neutral audit event for a denied read-only staged tool call.
+///
+/// This helper standardizes denial shape while keeping the record non-sensitive.
+/// Use metadata only for bounded counts or limit values, never for caller-supplied
+/// raw strings, paths, command output, environment values, or secrets.
+pub fn read_only_denied_event(
+    timestamp_unix_seconds: u64,
+    tool_name: impl Into<String>,
+    gate_name: impl Into<String>,
+    reason_code: impl Into<String>,
+) -> AuditEvent {
+    AuditEvent::new(
+        timestamp_unix_seconds,
+        tool_name,
+        gate_name,
+        AuditMode::ReadOnly,
+        AuditDecision::Denied,
+        reason_code,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +151,55 @@ mod tests {
 
         let value = serde_json::to_value(event).unwrap();
         assert_eq!(value.get("metadata"), None);
+    }
+
+    #[test]
+    fn read_only_allowed_helper_uses_standard_shape_without_metadata() {
+        let event = read_only_allowed_event(
+            1_725_000_100,
+            "android_status",
+            "android_read_only_status",
+            "allowlisted_status_metadata",
+        );
+
+        assert_eq!(event.timestamp_unix_seconds, 1_725_000_100);
+        assert_eq!(event.tool_name, "android_status");
+        assert_eq!(event.gate_name, "android_read_only_status");
+        assert_eq!(event.mode, AuditMode::ReadOnly);
+        assert_eq!(event.decision, AuditDecision::Allowed);
+        assert_eq!(event.reason_code, "allowlisted_status_metadata");
+        assert!(event.metadata.is_empty());
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["mode"], "read_only");
+        assert_eq!(value["decision"], "allowed");
+        assert_eq!(value.get("metadata"), None);
+        assert_no_sensitive_tokens(&value);
+    }
+
+    #[test]
+    fn read_only_denied_helper_uses_standard_shape_without_sensitive_argument_capture() {
+        let event = read_only_denied_event(
+            1_725_000_200,
+            "project_service_status",
+            "project_service_state",
+            "unsupported_service",
+        )
+        .with_metadata("provided_argument_count", 1);
+
+        assert_eq!(event.timestamp_unix_seconds, 1_725_000_200);
+        assert_eq!(event.tool_name, "project_service_status");
+        assert_eq!(event.gate_name, "project_service_state");
+        assert_eq!(event.mode, AuditMode::ReadOnly);
+        assert_eq!(event.decision, AuditDecision::Denied);
+        assert_eq!(event.reason_code, "unsupported_service");
+        assert_eq!(event.metadata.get("provided_argument_count"), Some(&1));
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["mode"], "read_only");
+        assert_eq!(value["decision"], "denied");
+        assert_eq!(value["metadata"], json!({ "provided_argument_count": 1 }));
+        assert_no_sensitive_tokens(&value);
     }
 
     #[test]
