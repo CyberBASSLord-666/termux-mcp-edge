@@ -108,57 +108,34 @@ impl CapabilityGrant {
     }
 }
 
+#[rustfmt::skip]
 pub fn evaluate_capability_grant(
     requirement: &CapabilityRequirement,
     grant: Option<&CapabilityGrant>,
     now_unix_seconds: u64,
 ) -> CapabilityEvaluation {
     let Some(grant) = grant else {
-        return denied(
-            requirement,
-            None,
-            CapabilityReasonCode::CapabilityGrantMissing,
-        );
+        return denied(requirement, None, CapabilityReasonCode::CapabilityGrantMissing);
     };
 
     if !grant.active {
-        return denied(
-            requirement,
-            Some(grant),
-            CapabilityReasonCode::CapabilityGrantInactive,
-        );
+        return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityGrantInactive);
     }
 
     if now_unix_seconds >= grant.expires_unix_seconds {
-        return denied(
-            requirement,
-            Some(grant),
-            CapabilityReasonCode::CapabilityGrantExpired,
-        );
+        return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityGrantExpired);
     }
 
     if grant.capability_class != requirement.capability_class {
-        return denied(
-            requirement,
-            Some(grant),
-            CapabilityReasonCode::CapabilityClassMismatch,
-        );
+        return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityClassMismatch);
     }
 
     if grant.scope != requirement.scope {
-        return denied(
-            requirement,
-            Some(grant),
-            CapabilityReasonCode::CapabilityScopeMismatch,
-        );
+        return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityScopeMismatch);
     }
 
     if requirement.confirmation_required && !grant.confirmation_satisfied {
-        return denied(
-            requirement,
-            Some(grant),
-            CapabilityReasonCode::CapabilityConfirmationRequired,
-        );
+        return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityConfirmationRequired);
     }
 
     CapabilityEvaluation {
@@ -185,6 +162,7 @@ fn denied(
 }
 
 #[cfg(test)]
+#[rustfmt::skip]
 mod tests {
     use super::*;
     use serde_json::{json, Value};
@@ -193,191 +171,95 @@ mod tests {
 
     #[test]
     fn allows_matching_active_unexpired_confirmed_grant() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::ProjectServiceMutation,
-            "project-service:restart",
-            true,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-status-restart-001",
-            CapabilityClass::ProjectServiceMutation,
-            "project-service:restart",
-            NOW + 60,
-        )
-        .with_confirmation_satisfied(true);
+        let requirement = CapabilityRequirement::new(CapabilityClass::ProjectServiceMutation, "project-service:restart", true);
+        let grant = CapabilityGrant::new("grant-status-restart-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW + 60)
+            .with_confirmation_satisfied(true);
 
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Allowed);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityGrantAllowed
-        );
-        assert_eq!(
-            evaluation.grant_id.as_deref(),
-            Some("grant-status-restart-001")
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantAllowed);
+        assert_eq!(evaluation.grant_id.as_deref(), Some("grant-status-restart-001"));
         assert_non_sensitive_json(&serde_json::to_value(evaluation).unwrap());
     }
 
     #[test]
     fn denies_missing_grant() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::AndroidPlatformControl,
-            "android:read-settings-preview",
-            false,
-        );
+        let requirement = CapabilityRequirement::new(CapabilityClass::AndroidPlatformControl, "android:read-settings-preview", false);
 
         let evaluation = evaluate_capability_grant(&requirement, None, NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityGrantMissing
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantMissing);
         assert_eq!(evaluation.grant_id, None);
     }
 
     #[test]
     fn denies_inactive_grant() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::NetworkMutation,
-            "network:tunnel-reload",
-            true,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-network-001",
-            CapabilityClass::NetworkMutation,
-            "network:tunnel-reload",
-            NOW + 60,
-        )
-        .inactive()
-        .with_confirmation_satisfied(true);
+        let requirement = CapabilityRequirement::new(CapabilityClass::NetworkMutation, "network:tunnel-reload", true);
+        let grant = CapabilityGrant::new("grant-network-001", CapabilityClass::NetworkMutation, "network:tunnel-reload", NOW + 60)
+            .inactive()
+            .with_confirmation_satisfied(true);
 
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityGrantInactive
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantInactive);
     }
 
     #[test]
     fn denies_expired_grant_at_boundary() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::CommandExecution,
-            "command-profile:status-only",
-            true,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-command-001",
-            CapabilityClass::CommandExecution,
-            "command-profile:status-only",
-            NOW,
-        )
-        .with_confirmation_satisfied(true);
+        let requirement = CapabilityRequirement::new(CapabilityClass::CommandExecution, "command-profile:status-only", true);
+        let grant = CapabilityGrant::new("grant-command-001", CapabilityClass::CommandExecution, "command-profile:status-only", NOW)
+            .with_confirmation_satisfied(true);
 
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityGrantExpired
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantExpired);
     }
 
     #[test]
     fn denies_capability_class_mismatch() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::PackageManagement,
-            "package:install-preview",
-            true,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-wrong-class-001",
-            CapabilityClass::NetworkMutation,
-            "package:install-preview",
-            NOW + 60,
-        )
-        .with_confirmation_satisfied(true);
+        let requirement = CapabilityRequirement::new(CapabilityClass::PackageManagement, "package:install-preview", true);
+        let grant = CapabilityGrant::new("grant-wrong-class-001", CapabilityClass::NetworkMutation, "package:install-preview", NOW + 60)
+            .with_confirmation_satisfied(true);
 
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityClassMismatch
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityClassMismatch);
     }
 
     #[test]
     fn denies_scope_mismatch() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::DeviceControl,
-            "device:wake-lock-preview",
-            true,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-wrong-scope-001",
-            CapabilityClass::DeviceControl,
-            "device:notification-preview",
-            NOW + 60,
-        )
-        .with_confirmation_satisfied(true);
+        let requirement = CapabilityRequirement::new(CapabilityClass::DeviceControl, "device:wake-lock-preview", true);
+        let grant = CapabilityGrant::new("grant-wrong-scope-001", CapabilityClass::DeviceControl, "device:notification-preview", NOW + 60)
+            .with_confirmation_satisfied(true);
 
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityScopeMismatch
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityScopeMismatch);
     }
 
     #[test]
     fn denies_missing_required_confirmation() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::ProjectServiceMutation,
-            "project-service:restart",
-            true,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-needs-confirmation-001",
-            CapabilityClass::ProjectServiceMutation,
-            "project-service:restart",
-            NOW + 60,
-        );
+        let requirement = CapabilityRequirement::new(CapabilityClass::ProjectServiceMutation, "project-service:restart", true);
+        let grant = CapabilityGrant::new("grant-needs-confirmation-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW + 60);
 
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
 
         assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(
-            evaluation.reason_code,
-            CapabilityReasonCode::CapabilityConfirmationRequired
-        );
+        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityConfirmationRequired);
     }
 
     #[test]
     fn serialized_evaluation_has_stable_non_secret_shape() {
-        let requirement = CapabilityRequirement::new(
-            CapabilityClass::CommandExecution,
-            "command-profile:diagnostics",
-            false,
-        );
-        let grant = CapabilityGrant::new(
-            "grant-diagnostics-001",
-            CapabilityClass::CommandExecution,
-            "command-profile:diagnostics",
-            NOW + 60,
-        );
+        let requirement = CapabilityRequirement::new(CapabilityClass::CommandExecution, "command-profile:diagnostics", false);
+        let grant = CapabilityGrant::new("grant-diagnostics-001", CapabilityClass::CommandExecution, "command-profile:diagnostics", NOW + 60);
 
-        let value = serde_json::to_value(evaluate_capability_grant(
-            &requirement,
-            Some(&grant),
-            NOW,
-        ))
-        .unwrap();
+        let value = serde_json::to_value(evaluate_capability_grant(&requirement, Some(&grant), NOW)).unwrap();
 
         assert_eq!(
             value,
