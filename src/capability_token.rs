@@ -213,7 +213,10 @@ mod tests {
             evaluation.reason_code,
             CapabilityReasonCode::CapabilityGrantAllowed
         );
-        assert_eq!(evaluation.grant_id.as_deref(), Some("grant-status-restart-001"));
+        assert_eq!(
+            evaluation.grant_id.as_deref(),
+            Some("grant-status-restart-001")
+        );
         assert_non_sensitive_json(&serde_json::to_value(evaluation).unwrap());
     }
 
