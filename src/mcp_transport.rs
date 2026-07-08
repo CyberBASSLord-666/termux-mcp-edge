@@ -79,7 +79,6 @@ const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
 const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
-
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
 
 #[derive(Clone)]
