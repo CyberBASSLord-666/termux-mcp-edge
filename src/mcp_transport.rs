@@ -1,3 +1,8 @@
+use std::{
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use axum::{
     body::Bytes,
     extract::State,
@@ -11,6 +16,7 @@ use serde_json::{json, Value};
 
 use crate::{
     android_status::collect_android_status,
+    audit::{read_only_allowed_event, read_only_denied_event, AuditCounters},
     error::AppError,
     platform_info::collect_platform_info,
     service_status::{
@@ -41,10 +47,28 @@ const AVAILABLE_TOOLS: [&str; 7] = [
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 
+const RUNTIME_STATUS_GATE: &str = "runtime_metadata";
+const PLATFORM_INFO_GATE: &str = "platform_metadata";
+const ANDROID_STATUS_GATE: &str = "android_read_only_status";
+const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
+
+const RUNTIME_STATUS_ALLOWED: &str = "staged_runtime_metadata";
+const PLATFORM_INFO_ALLOWED: &str = "read_only_platform_metadata";
+const PLATFORM_INFO_ARGUMENTS_DENIED: &str = "arguments_not_supported";
+const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
+const ANDROID_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
+const PROJECT_SERVICE_STATUS_ALLOWED: &str = "allowlisted_project_service";
+const PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS: &str = "missing_service_name";
+const PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS: &str = "invalid_service_arguments";
+const PROJECT_SERVICE_STATUS_UNSUPPORTED: &str = "unsupported_service";
+
+type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
+
 #[derive(Clone)]
 struct McpTransportState {
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
+    audit_counters: SharedAuditCounters,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,12 +121,14 @@ struct WriteFileArguments {
 /// reads, and default-dry-run safe-rooted writes. Android platform control,
 /// command execution, and high-impact actions remain unavailable until later
 /// independently validated stages.
+#[rustfmt::skip]
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
         .route("/mcp", post(handle_mcp_request))
         .with_state(McpTransportState {
             security_policy,
             file_tools,
+            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
         })
 }
 
@@ -167,7 +193,7 @@ async fn handle_mcp_request(
     match method.as_str() {
         "initialize" => initialize_response(id),
         "tools/list" => tools_list_response(id),
-        "tools/call" => handle_tool_call(id, params, &state.file_tools).await,
+        "tools/call" => handle_tool_call(id, params, &state).await,
         _ => method_not_available(
             id,
             "Only initialize, tools/list, runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
@@ -175,6 +201,7 @@ async fn handle_mcp_request(
     }
 }
 
+#[rustfmt::skip]
 fn initialize_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -322,7 +349,7 @@ fn tools_list_response(id: Option<Value>) -> Response {
 async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
-    file_tools: &FileSystemTools,
+    state: &McpTransportState,
 ) -> Response {
     let params = match params {
         Some(params) => params,
@@ -335,13 +362,23 @@ async fn handle_tool_call(
     };
 
     match call.name.as_str() {
-        RUNTIME_STATUS_TOOL => runtime_status_response(id),
-        PLATFORM_INFO_TOOL => platform_info_response(id, call.arguments),
-        ANDROID_STATUS_TOOL => android_status_response(id, call.arguments),
-        PROJECT_SERVICE_STATUS_TOOL => project_service_status_response(id, call.arguments),
-        LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, file_tools).await,
-        READ_FILE_TOOL => handle_read_file_call(id, call.arguments, file_tools).await,
-        WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, file_tools).await,
+        RUNTIME_STATUS_TOOL => {
+            record_read_only_allowed(
+                &state.audit_counters,
+                RUNTIME_STATUS_TOOL,
+                RUNTIME_STATUS_GATE,
+                RUNTIME_STATUS_ALLOWED,
+            );
+            runtime_status_response(id, &state.audit_counters)
+        }
+        PLATFORM_INFO_TOOL => platform_info_response(id, call.arguments, &state.audit_counters),
+        ANDROID_STATUS_TOOL => android_status_response(id, call.arguments, &state.audit_counters),
+        PROJECT_SERVICE_STATUS_TOOL => {
+            project_service_status_response(id, call.arguments, &state.audit_counters)
+        }
+        LIST_DIRECTORY_TOOL => handle_list_directory_call(id, call.arguments, &state.file_tools).await,
+        READ_FILE_TOOL => handle_read_file_call(id, call.arguments, &state.file_tools).await,
+        WRITE_FILE_TOOL => handle_write_file_call(id, call.arguments, &state.file_tools).await,
         _ => method_not_available(
             id,
             "Only runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
@@ -350,7 +387,9 @@ async fn handle_tool_call(
 }
 
 #[rustfmt::skip]
-fn runtime_status_response(id: Option<Value>) -> Response {
+fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounters) -> Response {
+    let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
+
     (
         StatusCode::OK,
         Json(json!({
@@ -381,6 +420,7 @@ fn runtime_status_response(id: Option<Value>) -> Response {
                     "androidPlatformTools": false,
                     "commandExecution": false,
                     "highImpactTools": false,
+                    "auditCounters": audit_counters_snapshot,
                 },
                 "isError": false
             },
@@ -389,16 +429,33 @@ fn runtime_status_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Response {
+#[rustfmt::skip]
+fn platform_info_response(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
     if let Some(arguments) = arguments {
         if arguments
             .as_object()
             .is_some_and(|object| !object.is_empty())
         {
+            record_read_only_denied(
+                audit_counters,
+                PLATFORM_INFO_TOOL,
+                PLATFORM_INFO_GATE,
+                PLATFORM_INFO_ARGUMENTS_DENIED,
+            );
             return invalid_params(id, "platform_info does not accept arguments.");
         }
     }
 
+    record_read_only_allowed(
+        audit_counters,
+        PLATFORM_INFO_TOOL,
+        PLATFORM_INFO_GATE,
+        PLATFORM_INFO_ALLOWED,
+    );
     let info = collect_platform_info();
     ok_result(
         id,
@@ -411,13 +468,23 @@ fn platform_info_response(id: Option<Value>, arguments: Option<Value>) -> Respon
 }
 
 #[rustfmt::skip]
-fn android_status_response(id: Option<Value>, arguments: Option<Value>) -> Response {
+fn android_status_response(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
     if let Some(arguments) = arguments {
         if !arguments.is_object()
             || arguments
                 .as_object()
                 .is_some_and(|object| !object.is_empty())
         {
+            record_read_only_denied(
+                audit_counters,
+                ANDROID_STATUS_TOOL,
+                ANDROID_STATUS_GATE,
+                ANDROID_STATUS_ARGUMENTS_DENIED,
+            );
             return invalid_params(
                 id,
                 "android_status requires no arguments; arguments must be an empty object or omitted.",
@@ -425,6 +492,12 @@ fn android_status_response(id: Option<Value>, arguments: Option<Value>) -> Respo
         }
     }
 
+    record_read_only_allowed(
+        audit_counters,
+        ANDROID_STATUS_TOOL,
+        ANDROID_STATUS_GATE,
+        ANDROID_STATUS_ALLOWED,
+    );
     let status = collect_android_status();
     ok_result(
         id,
@@ -443,10 +516,21 @@ fn android_status_response(id: Option<Value>, arguments: Option<Value>) -> Respo
     )
 }
 
-fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) -> Response {
+#[rustfmt::skip]
+fn project_service_status_response(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => {
+            record_read_only_denied(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS,
+            );
             return invalid_params(
                 id,
                 "project_service_status requires a service_name argument.",
@@ -455,6 +539,12 @@ fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) 
     };
 
     if !arguments.is_object() {
+        record_read_only_denied(
+            audit_counters,
+            PROJECT_SERVICE_STATUS_TOOL,
+            PROJECT_SERVICE_STATUS_GATE,
+            PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS,
+        );
         return invalid_params(
             id,
             "project_service_status arguments must be an object with service_name.",
@@ -464,6 +554,12 @@ fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) 
     let args = match serde_json::from_value::<ProjectServiceStatusArguments>(arguments) {
         Ok(args) => args,
         Err(error) => {
+            record_read_only_denied(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS,
+            );
             return invalid_params(
                 id,
                 &format!("Invalid project_service_status arguments: {error}"),
@@ -472,26 +568,43 @@ fn project_service_status_response(id: Option<Value>, arguments: Option<Value>) 
     };
 
     match collect_project_service_status(&args.service_name) {
-        Ok(status) => ok_result(
-            id,
-            format!(
-                "project_service_status: service_name={}, ownership={}, mode={}, lifecycle_state={}, health={}",
-                status.service_name,
-                status.ownership,
-                status.status_mode,
-                status.lifecycle_state,
-                status.health,
-            ),
-            json!(status),
-        ),
-        Err(ProjectServiceStatusError::UnsupportedService { .. }) => invalid_params_json(
-            id,
-            "Invalid params",
-            json!(unsupported_project_service_error(&args.service_name)),
-        ),
+        Ok(status) => {
+            record_read_only_allowed(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_ALLOWED,
+            );
+            ok_result(
+                id,
+                format!(
+                    "project_service_status: service_name={}, ownership={}, mode={}, lifecycle_state={}, health={}",
+                    status.service_name,
+                    status.ownership,
+                    status.status_mode,
+                    status.lifecycle_state,
+                    status.health,
+                ),
+                json!(status),
+            )
+        }
+        Err(ProjectServiceStatusError::UnsupportedService { .. }) => {
+            record_read_only_denied(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_UNSUPPORTED,
+            );
+            invalid_params_json(
+                id,
+                "Invalid params",
+                json!(unsupported_project_service_error(&args.service_name)),
+            )
+        }
     }
 }
 
+#[rustfmt::skip]
 async fn handle_list_directory_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -534,6 +647,7 @@ async fn handle_list_directory_call(
     }
 }
 
+#[rustfmt::skip]
 async fn handle_read_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -563,6 +677,7 @@ async fn handle_read_file_call(
     }
 }
 
+#[rustfmt::skip]
 async fn handle_write_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -611,6 +726,7 @@ async fn handle_write_file_call(
     }
 }
 
+#[rustfmt::skip]
 fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Response {
     (
         StatusCode::OK,
@@ -632,6 +748,7 @@ fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Resp
         .into_response()
 }
 
+#[rustfmt::skip]
 fn invalid_request(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -652,6 +769,7 @@ fn invalid_params(id: Option<Value>, message: &str) -> Response {
     invalid_params_json(id, "Invalid params", json!(message))
 }
 
+#[rustfmt::skip]
 fn invalid_params_json(id: Option<Value>, message: &str, data: Value) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -668,6 +786,7 @@ fn invalid_params_json(id: Option<Value>, message: &str, data: Value) -> Respons
         .into_response()
 }
 
+#[rustfmt::skip]
 fn internal_error(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -684,6 +803,7 @@ fn internal_error(id: Option<Value>, message: &str) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 fn payload_too_large(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -700,6 +820,7 @@ fn payload_too_large(id: Option<Value>, message: &str) -> Response {
         .into_response()
 }
 
+#[rustfmt::skip]
 fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
@@ -718,4 +839,115 @@ fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
 
 fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+#[rustfmt::skip]
+fn record_read_only_allowed(
+    counters: &SharedAuditCounters,
+    tool_name: &'static str,
+    gate_name: &'static str,
+    reason_code: &'static str,
+) {
+    let event = read_only_allowed_event(
+        current_unix_seconds(),
+        tool_name,
+        gate_name,
+        reason_code,
+    );
+    record_audit_event(counters, &event);
+}
+
+#[rustfmt::skip]
+fn record_read_only_denied(
+    counters: &SharedAuditCounters,
+    tool_name: &'static str,
+    gate_name: &'static str,
+    reason_code: &'static str,
+) {
+    let event = read_only_denied_event(
+        current_unix_seconds(),
+        tool_name,
+        gate_name,
+        reason_code,
+    );
+    record_audit_event(counters, &event);
+}
+
+fn record_audit_event(counters: &SharedAuditCounters, event: &crate::audit::AuditEvent) {
+    if let Ok(mut counters) = counters.lock() {
+        counters.record_event(event);
+    }
+}
+
+#[rustfmt::skip]
+fn audit_counters_snapshot(counters: &SharedAuditCounters) -> Value {
+    counters
+        .lock()
+        .map(|counters| json!(counters.clone()))
+        .unwrap_or_else(|_| {
+            json!({
+                "unavailable": true,
+                "reason": "audit_counter_lock_poisoned",
+            })
+        })
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+#[rustfmt::skip]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_audit_recorder_counts_allowed_status_call() {
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+
+        record_read_only_allowed(
+            &counters,
+            ANDROID_STATUS_TOOL,
+            ANDROID_STATUS_GATE,
+            ANDROID_STATUS_ALLOWED,
+        );
+
+        let snapshot = counters.lock().unwrap().clone();
+        assert_eq!(snapshot.allowed_total, 1);
+        assert_eq!(snapshot.denied_total, 0);
+        assert_eq!(snapshot.by_tool[ANDROID_STATUS_TOOL].allowed, 1);
+        assert_eq!(snapshot.by_reason_code[ANDROID_STATUS_ALLOWED].allowed, 1);
+    }
+
+    #[test]
+    fn read_only_audit_recorder_counts_denied_status_call_without_sensitive_values() {
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+
+        record_read_only_denied(
+            &counters,
+            PROJECT_SERVICE_STATUS_TOOL,
+            PROJECT_SERVICE_STATUS_GATE,
+            PROJECT_SERVICE_STATUS_UNSUPPORTED,
+        );
+
+        let value = audit_counters_snapshot(&counters);
+        assert_eq!(value["allowed_total"], 0);
+        assert_eq!(value["denied_total"], 1);
+        assert_eq!(value["by_tool"][PROJECT_SERVICE_STATUS_TOOL]["denied"], 1);
+        assert_eq!(
+            value["by_reason_code"][PROJECT_SERVICE_STATUS_UNSUPPORTED]["denied"],
+            1
+        );
+
+        let serialized = value.to_string().to_ascii_lowercase();
+        for token in ["password", "secret", "token", "/data/", "/home/", "bearer"] {
+            assert!(
+                !serialized.contains(token),
+                "unexpected sensitive token: {token}"
+            );
+        }
+    }
 }
