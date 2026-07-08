@@ -1,3 +1,5 @@
+#![rustfmt::skip]
+
 use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -131,7 +133,6 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
-#[rustfmt::skip]
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
     headers: HeaderMap,
@@ -223,7 +224,6 @@ fn initialize_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-#[rustfmt::skip]
 fn tools_list_response(id: Option<Value>) -> Response {
     (
         StatusCode::OK,
@@ -343,7 +343,6 @@ fn tools_list_response(id: Option<Value>) -> Response {
         .into_response()
 }
 
-#[rustfmt::skip]
 async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
@@ -384,7 +383,6 @@ async fn handle_tool_call(
     }
 }
 
-#[rustfmt::skip]
 fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounters) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
 
@@ -464,7 +462,6 @@ fn platform_info_response(
     )
 }
 
-#[rustfmt::skip]
 fn android_status_response(
     id: Option<Value>,
     arguments: Option<Value>,
