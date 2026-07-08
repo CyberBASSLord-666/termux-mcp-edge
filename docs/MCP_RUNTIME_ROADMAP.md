@@ -75,9 +75,9 @@ Required gates:
 
 ## Stage 5: Filesystem Tools
 
-Restore filesystem capability with narrow safe roots, read/write separation, payload limits, and explicit write controls.
+Restore filesystem capability with narrow safe roots, read/write separation, payload limits, explicit write controls, and non-sensitive audit counter coverage.
 
-Status: in progress. Current substages expose safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, and default-dry-run safe-rooted file writes. The write surface remains constrained by safe-root and payload-size validation and requires explicit `dry_run:false` for mutation.
+Status: complete for the currently exposed staged filesystem surface: safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, explicit safe-rooted writes, and runtime audit counters for allowed and denied filesystem decisions. The filesystem surface remains constrained by safe-root validation, symlink boundary checks, payload-size validation, and explicit `dry_run:false` for mutation.
 
 Required gates:
 
@@ -87,7 +87,9 @@ Required gates:
 - Bounded read-file test.
 - Dry-run write test.
 - Explicit mutation write test with safe-root and payload constraints.
-- Audit-event wiring for allowed/denied write decisions.
+- Audit counter coverage for allowed and denied filesystem decisions.
+- Documentation of the filesystem audit counter contract in [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md).
+- Runtime audit counter documentation in [`runtime-audit-counters.md`](runtime-audit-counters.md).
 - Documentation of operator assumptions.
 
 ## Stage 6: Android Platform Tools
@@ -126,3 +128,5 @@ Required gates:
 - Do not treat `project_service_status` as arbitrary service discovery or process inspection.
 - Do not treat read-only Android/Termux status metadata as Android platform control.
 - Do not claim broad MCP production readiness without transport and tool smoke tests for each enabled surface.
+
+Closes #137
