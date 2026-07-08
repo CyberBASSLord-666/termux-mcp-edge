@@ -1,4 +1,4 @@
-use termux_mcp_edge::audit::{
+use termux_mcp_server::audit::{
     filesystem_allowed_event, filesystem_denied_event, AuditCounters, AuditMode,
 };
 
