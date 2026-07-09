@@ -24,7 +24,10 @@ fn capability_evaluation_can_feed_non_sensitive_audit_counters() {
 
     let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
     assert_eq!(evaluation.decision, CapabilityDecision::Allowed);
-    assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantAllowed);
+    assert_eq!(
+        evaluation.reason_code,
+        CapabilityReasonCode::CapabilityGrantAllowed
+    );
 
     let event = capability_audit_event(
         "command_diagnostics_preview",
@@ -106,7 +109,7 @@ fn denied_capability_evaluations_remain_low_cardinality_counter_labels() {
 }
 
 fn capability_audit_event(
-    tool_name: &'static str,
+    tool_name: &str,
     mode: AuditMode,
     decision: CapabilityDecision,
     reason_code: CapabilityReasonCode,
@@ -120,12 +123,20 @@ fn capability_audit_event(
             CapabilityDecision::Allowed => AuditDecision::Allowed,
             CapabilityDecision::Denied => AuditDecision::Denied,
         },
-        serde_json::to_value(reason_code)
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_owned(),
+        capability_reason_code_label(reason_code),
     )
+}
+
+fn capability_reason_code_label(reason_code: CapabilityReasonCode) -> &'static str {
+    match reason_code {
+        CapabilityReasonCode::CapabilityGrantAllowed => "capability_grant_allowed",
+        CapabilityReasonCode::CapabilityGrantMissing => "capability_grant_missing",
+        CapabilityReasonCode::CapabilityGrantInactive => "capability_grant_inactive",
+        CapabilityReasonCode::CapabilityGrantExpired => "capability_grant_expired",
+        CapabilityReasonCode::CapabilityClassMismatch => "capability_class_mismatch",
+        CapabilityReasonCode::CapabilityScopeMismatch => "capability_scope_mismatch",
+        CapabilityReasonCode::CapabilityConfirmationRequired => "capability_confirmation_required",
+    }
 }
 
 fn assert_non_sensitive_counter_output(value: &serde_json::Value) {
