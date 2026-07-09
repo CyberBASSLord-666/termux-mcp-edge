@@ -14,6 +14,8 @@ Enabled staged tools:
 - `read_file`
 - `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`
 
+Current audit visibility is aggregate and in-memory. The staged runtime exposes backend-neutral `auditCounters` through `runtime_status` for the currently wired status and filesystem surfaces. These counters are intentionally not retained request logs and store only stable tool names, gate names, modes, reason codes, and allowed or denied counts.
+
 Still disabled:
 
 - Android platform control beyond read-only allowlisted status metadata
@@ -87,6 +89,7 @@ Current scope:
 - No global process listing
 - No arbitrary PID or service inspection
 - No service mutation or control
+- Aggregate audit counter coverage for allowed and denied service-status decisions
 
 Denied:
 
@@ -101,7 +104,7 @@ Required before any future expansion:
 - Service allowlist update
 - Tests proving unrelated services/processes are not exposed
 - Structured unsupported-service errors
-- Audit event for each service-status query if audit logging has landed
+- Updated audit-counter or audit-log documentation matching the chosen visibility model
 
 ## Gate 4: command execution
 
@@ -133,27 +136,30 @@ Examples:
 - Network or device configuration changes
 - Any Android device-control action
 
-The detailed threat model is maintained in [`high-impact-controls-threat-model.md`](high-impact-controls-threat-model.md).
+The detailed threat model is maintained in [`high-impact-controls-threat-model.md`](high-impact-controls-threat-model.md). Future capability-token evaluation must also satisfy [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) before any high-impact runtime gate is wired.
 
 Required before implementation:
 
 - Dedicated threat model
 - Explicit capability token or confirmation design
 - Dry-run or preview mode where possible
-- Full audit trail
+- Full audit trail or explicitly bounded aggregate audit-counter model, with sensitive-data exclusions documented before runtime wiring
 - Rollback plan where feasible
 - Security review before merge
 
 ## Cross-cutting audit coverage
 
-Before any mutating or command-capable gate expands further, add or wire audit coverage that records:
+Current staged audit visibility is documented in [`runtime-audit-counters.md`](runtime-audit-counters.md). Filesystem-specific counter expectations are documented in [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md). The current counter model is deliberately aggregate, in-memory, backend-neutral, and non-retained.
 
-- Timestamp
+Before any mutating or command-capable gate expands further, add or update audit coverage that records or counts only stable, non-sensitive decision metadata:
+
 - Tool name
 - Gate name
-- Dry-run versus mutating mode
+- Dry-run, preview, or mutating mode
 - Allowed or denied decision
 - Non-sensitive reason code
-- Size/limit metadata where relevant
+- Size or limit metadata where relevant
 
-Audit logs must not include secrets, raw file contents, environment values, command output, or private filesystem paths beyond already-safe rooted paths.
+Audit counters and any future retained audit logs must not include credential material, raw file contents, raw filesystem paths, environment values, runtime output, unfixed command text, Android identifiers, hostnames, usernames, global process inventories, bearer material, or arbitrary caller-supplied strings.
+
+Closes #138
