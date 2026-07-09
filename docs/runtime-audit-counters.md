@@ -119,7 +119,7 @@ The `AuditCounters` implementation deliberately ignores event metadata so bounde
 
 Reason codes are stable, low-cardinality labels. They are suitable for assertions and coarse operational monitoring, but they are not a substitute for full request logging.
 
-Current examples include:
+Current runtime/status/filesystem examples include:
 
 - `staged_runtime_metadata`
 - `read_only_platform_metadata`
@@ -142,6 +142,16 @@ Current examples include:
 - `write_byte_limit_exceeded`
 - `filesystem_operation_failed`
 
+Capability-token evaluation examples include:
+
+- `capability_grant_allowed`
+- `capability_grant_missing`
+- `capability_grant_inactive`
+- `capability_grant_expired`
+- `capability_class_mismatch`
+- `capability_scope_mismatch`
+- `capability_confirmation_required`
+
 New reason codes should be short, snake_case, and tied to a policy decision rather than a caller value.
 
 ## Expansion rules
@@ -159,4 +169,4 @@ Future audit expansion must remain staged and explicit:
 
 Audit counters are not an authorization mechanism. They provide visibility into decisions made by staged gates. Command execution, Android platform control, package or service mutation, network mutation, and other high-impact controls remain unavailable until separately implemented behind explicit opt-in policy and capability gates.
 
-Closes #135
+Originally added for #135; updated by #142.
