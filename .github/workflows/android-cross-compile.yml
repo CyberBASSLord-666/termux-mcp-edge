@@ -12,18 +12,22 @@ permissions:
 jobs:
   android-aarch64:
     name: Build aarch64-linux-android
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout@v4 resolved 2026-06-26
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # dtolnay/rust-toolchain@stable resolved 2026-06-26
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           targets: aarch64-linux-android
 
       - name: Install Android NDK
-        uses: nttld/setup-ndk@v1
+        # nttld/setup-ndk@v1 resolved 2026-07-09
+        uses: nttld/setup-ndk@1b1581dec54d118a36802c007e3f38dff507d74b
         with:
           ndk-version: r26d
           add-to-path: false
@@ -34,7 +38,8 @@ jobs:
         run: ./scripts/cross_compile.sh
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        # actions/upload-artifact@v4 resolved 2026-07-02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: termux-mcp-server-aarch64-linux-android
           path: target/aarch64-linux-android/release/termux-mcp-server
