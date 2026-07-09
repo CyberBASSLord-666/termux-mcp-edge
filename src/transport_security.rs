@@ -10,6 +10,18 @@ pub enum TransportSecurityError {
     InvalidOrigin { received: String },
 }
 
+impl TransportSecurityError {
+    pub fn client_message(&self) -> &'static str {
+        match self {
+            Self::MissingHost => "missing_host",
+            Self::HostNotAllowed { .. } => "host_not_allowed",
+            Self::OriginNotAllowed { .. } => "origin_not_allowed",
+            Self::OriginRequired => "origin_required",
+            Self::InvalidOrigin { .. } => "invalid_origin",
+        }
+    }
+}
+
 impl fmt::Display for TransportSecurityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -194,6 +206,31 @@ mod tests {
             error,
             TransportSecurityError::OriginNotAllowed { .. }
         ));
+    }
+
+    #[test]
+    fn exposes_stable_client_messages_without_received_values() {
+        assert_eq!(
+            TransportSecurityError::HostNotAllowed {
+                received: "attacker.example".to_string(),
+            }
+            .client_message(),
+            "host_not_allowed"
+        );
+        assert_eq!(
+            TransportSecurityError::OriginNotAllowed {
+                received: "https://attacker.example".to_string(),
+            }
+            .client_message(),
+            "origin_not_allowed"
+        );
+        assert_eq!(
+            TransportSecurityError::InvalidOrigin {
+                received: "javascript:alert(1)".to_string(),
+            }
+            .client_message(),
+            "invalid_origin"
+        );
     }
 
     #[test]
