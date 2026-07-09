@@ -63,6 +63,10 @@ The built-in filesystem safe-root default is intentionally narrow:
 
 The service does not default to broad Android shared-storage roots such as `/storage/emulated/0` or `/sdcard`. The staged filesystem MCP surface exposes bounded directory listing, bounded UTF-8 file reads, and default-dry-run writes beneath configured safe roots. Operators should keep `MCP__FILE__SAFE_ROOTS` limited to a dedicated project directory and avoid granting all shared storage unless there is a specific reviewed need.
 
+## Operator Validation
+
+Use [`docs/operator-validation.md`](docs/operator-validation.md) when validating a local build, configuration change, release candidate, manual dispatch build, or tag-triggered artifact. The checklist cross-links runtime discovery, `runtime_status` audit counters, filesystem safe-root behavior, read-only Android status, project service status, and future capability-token boundaries without enabling any new runtime surface.
+
 ## Architecture
 
 - **Language:** Rust edition 2021.
@@ -82,3 +86,4 @@ MCP runtime restoration is staged in [`docs/MCP_RUNTIME_ROADMAP.md`](docs/MCP_RU
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
