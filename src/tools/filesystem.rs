@@ -240,7 +240,8 @@ impl FileSystemTools {
         let start = Instant::now();
         let policy = WritePolicy::default();
         let content_bytes = content.len();
-        let _audit_event = self.audit_write_decision(unix_timestamp_seconds(), content_bytes, dry_run);
+        let _audit_event =
+            self.audit_write_decision(unix_timestamp_seconds(), content_bytes, dry_run);
         policy
             .validate_payload_size(content_bytes)
             .map_err(write_policy_error_to_app_error)?;
@@ -502,11 +503,7 @@ mod tests {
 
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let result = tools
-            .write_file(
-                target.to_string_lossy().to_string(),
-                oversized_content,
-                None,
-            )
+            .write_file(target.to_string_lossy().to_string(), oversized_content, None)
             .await;
 
         assert!(matches!(
