@@ -15,6 +15,7 @@ async fn missing_host_response_uses_stable_reason_code() {
     let response = test_router(file_tools)
         .oneshot(
             Request::post("/mcp")
+                .header(header::HOST, "")
                 .header(header::ORIGIN, "http://localhost:8000")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
