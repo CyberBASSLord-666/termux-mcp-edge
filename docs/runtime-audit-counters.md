@@ -169,4 +169,4 @@ Future audit expansion must remain staged and explicit:
 
 Audit counters are not an authorization mechanism. They provide visibility into decisions made by staged gates. Command execution, Android platform control, package or service mutation, network mutation, and other high-impact controls remain unavailable until separately implemented behind explicit opt-in policy and capability gates.
 
-Closes #135
+Originally added for #135; updated by #142.
