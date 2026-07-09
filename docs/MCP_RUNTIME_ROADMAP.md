@@ -90,7 +90,7 @@ Required gates:
 - Audit counter coverage for allowed and denied filesystem decisions.
 - Documentation of the filesystem audit counter contract in [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md).
 - Runtime audit counter documentation in [`runtime-audit-counters.md`](runtime-audit-counters.md).
-- Documentation of operator assumptions.
+- Documentation of operator assumptions through the staged [`operator-validation.md`](operator-validation.md) checklist.
 
 ## Stage 6: Android Platform Tools
 
