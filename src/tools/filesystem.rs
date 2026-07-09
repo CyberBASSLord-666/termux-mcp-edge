@@ -503,7 +503,11 @@ mod tests {
 
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let result = tools
-            .write_file(target.to_string_lossy().to_string(), oversized_content, None)
+            .write_file(
+                target.to_string_lossy().to_string(),
+                oversized_content,
+                None,
+            )
             .await;
 
         assert!(matches!(
