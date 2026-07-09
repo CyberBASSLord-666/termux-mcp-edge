@@ -10,7 +10,7 @@ use tokio::{fs, io::AsyncReadExt};
 
 use crate::audit::AuditEvent;
 use crate::error::AppError;
-use crate::write_policy::WritePolicy;
+use crate::write_policy::{WritePolicy, WritePolicyError};
 
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
@@ -238,8 +238,14 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<String, AppError> {
         let start = Instant::now();
+        let policy = WritePolicy::default();
+        let content_bytes = content.len();
         let _audit_event =
-            self.audit_write_decision(unix_timestamp_seconds(), content.len(), dry_run);
+            policy.audit_payload_decision(unix_timestamp_seconds(), content_bytes, dry_run);
+        policy
+            .validate_payload_size(content_bytes)
+            .map_err(write_policy_error_to_app_error)?;
+
         let safe_path = self.sanitize(&path)?;
         let parent = safe_path.parent().ok_or_else(|| AppError::PathTraversal {
             attempted: path.clone(),
@@ -283,6 +289,19 @@ impl FileSystemTools {
     }
 }
 
+fn write_policy_error_to_app_error(error: WritePolicyError) -> AppError {
+    match error {
+        WritePolicyError::PayloadTooLarge { bytes, max_bytes } => AppError::WritePayloadTooLarge {
+            size: usize_to_u64(bytes),
+            max_size: usize_to_u64(max_bytes),
+        },
+    }
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 fn unix_timestamp_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -315,6 +334,7 @@ mod tests {
     use super::*;
 
     use crate::audit::{AuditDecision, AuditMode};
+    use crate::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
         assert!(
@@ -406,6 +426,22 @@ mod tests {
         assert_eq!(event.metadata["content_bytes"], 38);
     }
 
+    #[test]
+    fn write_policy_error_maps_to_payload_too_large_app_error() {
+        let error = write_policy_error_to_app_error(WritePolicyError::PayloadTooLarge {
+            bytes: 17,
+            max_bytes: 16,
+        });
+
+        assert!(matches!(
+            error,
+            AppError::WritePayloadTooLarge {
+                size: 17,
+                max_size: 16
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn read_file_rejects_existing_file_outside_safe_root() {
         let root = tempfile::tempdir().unwrap();
@@ -455,6 +491,55 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_oversized_dry_run_payload_before_path_resolution() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("outside.txt");
+        let oversized_content = "x".repeat(DEFAULT_MAX_WRITE_BYTES + 1);
+
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let result = tools
+            .write_file(target.to_string_lossy().to_string(), oversized_content, None)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::WritePayloadTooLarge {
+                size,
+                max_size
+            }) if size == (DEFAULT_MAX_WRITE_BYTES + 1) as u64
+                && max_size == DEFAULT_MAX_WRITE_BYTES as u64
+        ));
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_oversized_explicit_mutation_without_creating_file() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("oversized.txt");
+        let oversized_content = "x".repeat(DEFAULT_MAX_WRITE_BYTES + 1);
+
+        let result = tools
+            .write_file(
+                target.to_string_lossy().to_string(),
+                oversized_content,
+                Some(false),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::WritePayloadTooLarge {
+                size,
+                max_size
+            }) if size == (DEFAULT_MAX_WRITE_BYTES + 1) as u64
+                && max_size == DEFAULT_MAX_WRITE_BYTES as u64
+        ));
         assert!(!target.exists());
     }
 
