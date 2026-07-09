@@ -240,8 +240,7 @@ impl FileSystemTools {
         let start = Instant::now();
         let policy = WritePolicy::default();
         let content_bytes = content.len();
-        let _audit_event =
-            policy.audit_payload_decision(unix_timestamp_seconds(), content_bytes, dry_run);
+        let _audit_event = self.audit_write_decision(unix_timestamp_seconds(), content_bytes, dry_run);
         policy
             .validate_payload_size(content_bytes)
             .map_err(write_policy_error_to_app_error)?;
@@ -299,7 +298,7 @@ fn write_policy_error_to_app_error(error: WritePolicyError) -> AppError {
 }
 
 fn usize_to_u64(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
+    value as u64
 }
 
 fn unix_timestamp_seconds() -> u64 {
