@@ -3,6 +3,8 @@
 use termux_mcp_server::tools::FileSystemTools;
 use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
+const EXPECTED_DRY_RUN_RESPONSE: &str = "DRY-RUN";
+
 #[tokio::test]
 async fn write_file_allows_exact_default_payload_limit_with_explicit_mutation() {
     let root = tempfile::tempdir().unwrap();
@@ -34,6 +36,6 @@ async fn write_file_allows_exact_default_payload_limit_with_dry_run() {
         .await
         .unwrap();
 
-    assert_eq!(result, "DRY-RUN");
+    assert_eq!(result, EXPECTED_DRY_RUN_RESPONSE);
     assert!(!target.exists());
 }
