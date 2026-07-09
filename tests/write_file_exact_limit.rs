@@ -11,11 +11,7 @@ async fn write_file_allows_exact_default_payload_limit_with_explicit_mutation() 
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
 
     let result = tools
-        .write_file(
-            target.to_string_lossy().to_string(),
-            content,
-            Some(false),
-        )
+        .write_file(target.to_string_lossy().to_string(), content, Some(false))
         .await
         .unwrap();
 
