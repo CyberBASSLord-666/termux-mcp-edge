@@ -20,5 +20,8 @@ async fn write_file_allows_exact_default_payload_limit_with_explicit_mutation() 
         .unwrap();
 
     assert_eq!(result, format!("Wrote {DEFAULT_MAX_WRITE_BYTES} bytes"));
-    assert_eq!(tokio::fs::metadata(&target).await.unwrap().len(), DEFAULT_MAX_WRITE_BYTES as u64);
+    assert_eq!(
+        tokio::fs::metadata(&target).await.unwrap().len(),
+        DEFAULT_MAX_WRITE_BYTES as u64
+    );
 }
