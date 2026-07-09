@@ -21,3 +21,19 @@ async fn write_file_allows_exact_default_payload_limit_with_explicit_mutation() 
         DEFAULT_MAX_WRITE_BYTES as u64
     );
 }
+
+#[tokio::test]
+async fn write_file_allows_exact_default_payload_limit_with_dry_run() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("exact-limit-dry-run.txt");
+    let content = "x".repeat(DEFAULT_MAX_WRITE_BYTES);
+    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+    let result = tools
+        .write_file(target.to_string_lossy().to_string(), content, None)
+        .await
+        .unwrap();
+
+    assert_eq!(result, "DRY-RUN");
+    assert!(!target.exists());
+}
