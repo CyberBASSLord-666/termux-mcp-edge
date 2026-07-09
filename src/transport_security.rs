@@ -10,21 +10,21 @@ pub enum TransportSecurityError {
     InvalidOrigin { received: String },
 }
 
+impl TransportSecurityError {
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::MissingHost => "missing_host",
+            Self::HostNotAllowed { .. } => "host_not_allowed",
+            Self::OriginNotAllowed { .. } => "origin_not_allowed",
+            Self::OriginRequired => "origin_required",
+            Self::InvalidOrigin { .. } => "invalid_origin",
+        }
+    }
+}
+
 impl fmt::Display for TransportSecurityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingHost => write!(formatter, "missing Host header"),
-            Self::HostNotAllowed { received } => {
-                write!(formatter, "Host is not allowed: {received}")
-            }
-            Self::OriginNotAllowed { received } => {
-                write!(formatter, "Origin is not allowed: {received}")
-            }
-            Self::OriginRequired => write!(formatter, "Origin header is required"),
-            Self::InvalidOrigin { received } => {
-                write!(formatter, "Origin is malformed or unsupported: {received}")
-            }
-        }
+        formatter.write_str(self.reason_code())
     }
 }
 
@@ -261,5 +261,67 @@ mod tests {
             policy.validate_request(None, None).unwrap_err(),
             TransportSecurityError::MissingHost
         );
+    }
+
+    #[test]
+    fn transport_security_errors_render_stable_reason_codes() {
+        let cases = [
+            (TransportSecurityError::MissingHost, "missing_host"),
+            (
+                TransportSecurityError::HostNotAllowed {
+                    received: "attacker.example:8000".to_string(),
+                },
+                "host_not_allowed",
+            ),
+            (
+                TransportSecurityError::OriginNotAllowed {
+                    received: "https://attacker.example".to_string(),
+                },
+                "origin_not_allowed",
+            ),
+            (TransportSecurityError::OriginRequired, "origin_required"),
+            (
+                TransportSecurityError::InvalidOrigin {
+                    received: "https://identity@localhost:8000".to_string(),
+                },
+                "invalid_origin",
+            ),
+        ];
+
+        for (error, reason_code) in cases {
+            assert_eq!(error.reason_code(), reason_code);
+            assert_eq!(error.to_string(), reason_code);
+        }
+    }
+
+    #[test]
+    fn transport_security_display_does_not_reflect_received_header_values() {
+        let attacker_values = [
+            (
+                TransportSecurityError::HostNotAllowed {
+                    received: "attacker.example:8000".to_string(),
+                },
+                "attacker.example",
+            ),
+            (
+                TransportSecurityError::OriginNotAllowed {
+                    received: "https://attacker.example".to_string(),
+                },
+                "attacker.example",
+            ),
+            (
+                TransportSecurityError::InvalidOrigin {
+                    received: "https://identity@localhost:8000".to_string(),
+                },
+                "identity@localhost",
+            ),
+        ];
+
+        for (error, attacker_value) in attacker_values {
+            assert!(
+                !error.to_string().contains(attacker_value),
+                "transport rejection Display reflected attacker-controlled input"
+            );
+        }
     }
 }
