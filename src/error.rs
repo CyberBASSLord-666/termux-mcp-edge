@@ -10,6 +10,9 @@ pub enum AppError {
     #[error("File is too large to read: {size} bytes exceeds {max_size} byte limit")]
     FileTooLarge { size: u64, max_size: u64 },
 
+    #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
+    WritePayloadTooLarge { size: u64, max_size: u64 },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -23,7 +26,9 @@ impl axum::response::IntoResponse for AppError {
         let status = match self {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::PathTraversal { .. } => StatusCode::FORBIDDEN,
-            AppError::FileTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            AppError::FileTooLarge { .. } | AppError::WritePayloadTooLarge { .. } => {
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
