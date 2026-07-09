@@ -24,19 +24,7 @@ impl TransportSecurityError {
 
 impl fmt::Display for TransportSecurityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingHost => write!(formatter, "missing Host header"),
-            Self::HostNotAllowed { received } => {
-                write!(formatter, "Host is not allowed: {received}")
-            }
-            Self::OriginNotAllowed { received } => {
-                write!(formatter, "Origin is not allowed: {received}")
-            }
-            Self::OriginRequired => write!(formatter, "Origin header is required"),
-            Self::InvalidOrigin { received } => {
-                write!(formatter, "Origin is malformed or unsupported: {received}")
-            }
-        }
+        formatter.write_str(self.client_message())
     }
 }
 
@@ -210,27 +198,35 @@ mod tests {
 
     #[test]
     fn exposes_stable_client_messages_without_received_values() {
-        assert_eq!(
-            TransportSecurityError::HostNotAllowed {
-                received: "attacker.example".to_string(),
-            }
-            .client_message(),
-            "host_not_allowed"
-        );
-        assert_eq!(
-            TransportSecurityError::OriginNotAllowed {
-                received: "https://attacker.example".to_string(),
-            }
-            .client_message(),
-            "origin_not_allowed"
-        );
-        assert_eq!(
-            TransportSecurityError::InvalidOrigin {
-                received: "javascript:alert(1)".to_string(),
-            }
-            .client_message(),
-            "invalid_origin"
-        );
+        let errors = [
+            (
+                TransportSecurityError::HostNotAllowed {
+                    received: "attacker.example".to_string(),
+                },
+                "host_not_allowed",
+                "attacker.example",
+            ),
+            (
+                TransportSecurityError::OriginNotAllowed {
+                    received: "https://attacker.example".to_string(),
+                },
+                "origin_not_allowed",
+                "https://attacker.example",
+            ),
+            (
+                TransportSecurityError::InvalidOrigin {
+                    received: "javascript:alert(1)".to_string(),
+                },
+                "invalid_origin",
+                "javascript:alert(1)",
+            ),
+        ];
+
+        for (error, expected_message, caller_value) in errors {
+            assert_eq!(error.client_message(), expected_message);
+            assert_eq!(error.to_string(), expected_message);
+            assert!(!error.to_string().contains(caller_value));
+        }
     }
 
     #[test]
