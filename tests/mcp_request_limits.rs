@@ -23,19 +23,16 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
     let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
 
-    mcp_transport::router(
-        TransportSecurityPolicy::localhost(8000, false),
-        file_tools,
-    )
-    .layer(DefaultBodyLimit::max(max_body_bytes))
-    .route_layer(middleware::from_fn_with_state(
-        limits,
-        enforce_mcp_request_limits,
-    ))
-    .route_layer(middleware::from_fn_with_state(
-        McpAuthPolicy::static_bearer("expected-token").unwrap(),
-        require_mcp_auth,
-    ))
+    mcp_transport::router(TransportSecurityPolicy::localhost(8000, false), file_tools)
+        .layer(DefaultBodyLimit::max(max_body_bytes))
+        .route_layer(middleware::from_fn_with_state(
+            limits,
+            enforce_mcp_request_limits,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            McpAuthPolicy::static_bearer("expected-token").unwrap(),
+            require_mcp_auth,
+        ))
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {
@@ -59,10 +56,7 @@ async fn response_json(response: Response) -> Value {
 #[tokio::test]
 async fn unauthenticated_oversized_request_is_rejected_before_body_limit() {
     let app = protected_limited_router(128);
-    let response = app
-        .oneshot(request("x".repeat(256), None))
-        .await
-        .unwrap();
+    let response = app.oneshot(request("x".repeat(256), None)).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let payload = response_json(response).await;
@@ -74,10 +68,7 @@ async fn unauthenticated_oversized_request_is_rejected_before_body_limit() {
 async fn authenticated_oversized_request_is_rejected_with_body_limit() {
     let app = protected_limited_router(128);
     let response = app
-        .oneshot(request(
-            "x".repeat(256),
-            Some("Bearer expected-token"),
-        ))
+        .oneshot(request("x".repeat(256), Some("Bearer expected-token")))
         .await
         .unwrap();
 

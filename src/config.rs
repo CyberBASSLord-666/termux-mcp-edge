@@ -311,24 +311,19 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
         }
     }
 
-    if !(1..=MAX_CONFIGURED_CONCURRENT_REQUESTS)
-        .contains(&transport.max_concurrent_requests)
-    {
+    if !(1..=MAX_CONFIGURED_CONCURRENT_REQUESTS).contains(&transport.max_concurrent_requests) {
         bail!(
             "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS must be between 1 and {MAX_CONFIGURED_CONCURRENT_REQUESTS}"
         );
     }
 
-    if !(1..=MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS)
-        .contains(&transport.request_timeout_seconds)
-    {
+    if !(1..=MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS).contains(&transport.request_timeout_seconds) {
         bail!(
             "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS must be between 1 and {MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS}"
         );
     }
 
-    if !(MIN_CONFIGURED_BODY_BYTES..=MAX_CONFIGURED_BODY_BYTES)
-        .contains(&transport.max_body_bytes)
+    if !(MIN_CONFIGURED_BODY_BYTES..=MAX_CONFIGURED_BODY_BYTES).contains(&transport.max_body_bytes)
     {
         bail!(
             "MCP__TRANSPORT__MAX_BODY_BYTES must be between {MIN_CONFIGURED_BODY_BYTES} and {MAX_CONFIGURED_BODY_BYTES}"

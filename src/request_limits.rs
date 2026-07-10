@@ -329,12 +329,8 @@ mod tests {
             ));
 
         let first_app = app.clone();
-        let first = tokio::spawn(async move {
-            first_app
-                .oneshot(request(Body::empty()))
-                .await
-                .unwrap()
-        });
+        let first =
+            tokio::spawn(async move { first_app.oneshot(request(Body::empty())).await.unwrap() });
         gate.entered.notified().await;
 
         let second = app.oneshot(request(Body::empty())).await.unwrap();
