@@ -1,16 +1,21 @@
-//! Termux MCP Server v5.0 - Enterprise Rust Implementation
-//! Highest industry standards for mobile edge MCP deployment on high-end Android devices.
+//! Termux MCP Edge server entrypoint.
 //!
-//! Key Design Principles:
-//! - Zero-trust authentication from the first request
+//! Key design principles:
+//! - Fail-closed startup authentication posture
+//! - Request authentication before staged MCP discovery or tool dispatch
 //! - Memory-safe async task management
-//! - Hardened filesystem operations resistant to symlink attacks
-//! - Proper ASGI-equivalent lifespan handling via Axum
-//! - Single-binary deployment optimized for runit supervision
+//! - Hardened filesystem operations resistant to traversal and symlink attacks
+//! - Graceful shutdown under runit supervision
+//! - Single-binary deployment optimized for Android Termux
 
 use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
-use termux_mcp_server::transport_security::TransportSecurityPolicy;
+use axum::middleware;
+#[cfg(feature = "mcp-runtime")]
+use termux_mcp_server::{
+    auth::{require_mcp_auth, McpAuthPolicy},
+    transport_security::TransportSecurityPolicy,
+};
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
     health::{build_readiness_response, ReadinessResponse},
@@ -25,17 +30,18 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "termux_mcp_server=info,rmcp=info".into()),
+                .unwrap_or_else(|_| "termux_mcp_server=info".into()),
         )
         .with(tracing_subscriber::fmt::layer().json())
         .init();
 
-    info!("Starting Termux MCP Server v5.0 (Rust)");
+    info!(version = env!("CARGO_PKG_VERSION"), "Starting Termux MCP Edge");
 
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
 
-    let auth_posture = match validate_runtime_auth_posture(&config)? {
+    let auth_posture = validate_runtime_auth_posture(&config)?;
+    let auth_posture_label = match auth_posture {
         AuthPosture::StaticTokenConfigured => {
             info!("Static token authentication configured");
             "static_token"
@@ -48,14 +54,17 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    #[cfg(feature = "mcp-runtime")]
+    let mcp_auth_policy = McpAuthPolicy::from_config(&config.auth, auth_posture)?;
+
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
     // Initialize filesystem tools once so startup validates configured safe roots.
-    // The staged MCP runtime exposes only safe-rooted read-only directory listing;
-    // file reads and writes remain unavailable until later independently validated PRs.
-    let _file_tools = FileSystemTools::new(config.file.safe_roots.clone());
-    let readiness = build_readiness_response(config.file.safe_roots.len(), auth_posture);
+    // The optional staged MCP runtime reuses this instance for bounded safe-rooted
+    // listing, reads, dry-run previews, and explicitly requested writes.
+    let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
+    let readiness = build_readiness_response(config.file.safe_roots.len(), auth_posture_label);
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -64,14 +73,25 @@ async fn main() -> anyhow::Result<()> {
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     #[cfg(feature = "mcp-runtime")]
-    let app = app.merge(termux_mcp_server::mcp_transport::router(
-        TransportSecurityPolicy::new(
-            config.transport.allowed_hosts.clone(),
-            config.transport.allowed_origins.clone(),
-            config.transport.allow_missing_origin,
-        ),
-        _file_tools,
-    ));
+    let app = {
+        let mcp_app = termux_mcp_server::mcp_transport::router(
+            TransportSecurityPolicy::new(
+                config.transport.allowed_hosts.clone(),
+                config.transport.allowed_origins.clone(),
+                config.transport.allow_missing_origin,
+            ),
+            file_tools,
+        )
+        .route_layer(middleware::from_fn_with_state(
+            mcp_auth_policy,
+            require_mcp_auth,
+        ));
+
+        app.merge(mcp_app)
+    };
+
+    #[cfg(not(feature = "mcp-runtime"))]
+    let _ = file_tools;
 
     info!("Listening on http://{}", display_addr);
 
