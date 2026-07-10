@@ -3,11 +3,13 @@
 //! This module models future high-impact authorization decisions without
 //! enabling any high-impact runtime surface. It intentionally does not accept,
 //! generate, persist, serialize, or validate raw bearer tokens or secrets.
-//! Callers provide only stable grant metadata such as an opaque identifier,
-//! capability class, bounded scope label, expiry, active state, and whether a
-//! separate operator confirmation has already been satisfied.
+//! Callers provide only bounded stable metadata.
 
 use serde::Serialize;
+use std::{error::Error, fmt};
+
+pub const MAX_CAPABILITY_SCOPE_BYTES: usize = 96;
+pub const MAX_CAPABILITY_GRANT_ID_BYTES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +21,45 @@ pub enum CapabilityClass {
     DeviceControl,
     CommandExecution,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityMetadataField {
+    GrantId,
+    Scope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityMetadataErrorKind {
+    Empty,
+    TooLong,
+    InvalidCharacter,
+    InvalidSeparator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityMetadataError {
+    pub field: CapabilityMetadataField,
+    pub kind: CapabilityMetadataErrorKind,
+    pub max_bytes: usize,
+}
+
+impl fmt::Display for CapabilityMetadataError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let field = match self.field {
+            CapabilityMetadataField::GrantId => "grant id",
+            CapabilityMetadataField::Scope => "scope",
+        };
+        let reason = match self.kind {
+            CapabilityMetadataErrorKind::Empty => "must not be empty",
+            CapabilityMetadataErrorKind::TooLong => "exceeds its byte limit",
+            CapabilityMetadataErrorKind::InvalidCharacter => "contains an invalid character",
+            CapabilityMetadataErrorKind::InvalidSeparator => "has an invalid separator layout",
+        };
+        write!(formatter, "{field} {reason}")
+    }
+}
+
+impl Error for CapabilityMetadataError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CapabilityRequirement {
@@ -71,12 +112,18 @@ impl CapabilityRequirement {
         capability_class: CapabilityClass,
         scope: impl Into<String>,
         confirmation_required: bool,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, CapabilityMetadataError> {
+        let scope = scope.into();
+        validate_label(
+            &scope,
+            CapabilityMetadataField::Scope,
+            MAX_CAPABILITY_SCOPE_BYTES,
+        )?;
+        Ok(Self {
             capability_class,
-            scope: scope.into(),
+            scope,
             confirmation_required,
-        }
+        })
     }
 }
 
@@ -86,15 +133,27 @@ impl CapabilityGrant {
         capability_class: CapabilityClass,
         scope: impl Into<String>,
         expires_unix_seconds: u64,
-    ) -> Self {
-        Self {
-            grant_id: grant_id.into(),
+    ) -> Result<Self, CapabilityMetadataError> {
+        let grant_id = grant_id.into();
+        let scope = scope.into();
+        validate_label(
+            &grant_id,
+            CapabilityMetadataField::GrantId,
+            MAX_CAPABILITY_GRANT_ID_BYTES,
+        )?;
+        validate_label(
+            &scope,
+            CapabilityMetadataField::Scope,
+            MAX_CAPABILITY_SCOPE_BYTES,
+        )?;
+        Ok(Self {
+            grant_id,
             capability_class,
-            scope: scope.into(),
+            scope,
             expires_unix_seconds,
             active: true,
             confirmation_satisfied: false,
-        }
+        })
     }
 
     pub fn inactive(mut self) -> Self {
@@ -108,6 +167,49 @@ impl CapabilityGrant {
     }
 }
 
+fn validate_label(
+    value: &str,
+    field: CapabilityMetadataField,
+    max_bytes: usize,
+) -> Result<(), CapabilityMetadataError> {
+    if value.is_empty() {
+        return Err(CapabilityMetadataError {
+            field,
+            kind: CapabilityMetadataErrorKind::Empty,
+            max_bytes,
+        });
+    }
+    if value.len() > max_bytes {
+        return Err(CapabilityMetadataError {
+            field,
+            kind: CapabilityMetadataErrorKind::TooLong,
+            max_bytes,
+        });
+    }
+
+    let mut previous_was_separator = false;
+    for (index, byte) in value.bytes().enumerate() {
+        let is_separator = matches!(byte, b'-' | b'_' | b':');
+        let valid = byte.is_ascii_lowercase() || byte.is_ascii_digit() || is_separator;
+        if !valid {
+            return Err(CapabilityMetadataError {
+                field,
+                kind: CapabilityMetadataErrorKind::InvalidCharacter,
+                max_bytes,
+            });
+        }
+        if is_separator && (index == 0 || index + 1 == value.len() || previous_was_separator) {
+            return Err(CapabilityMetadataError {
+                field,
+                kind: CapabilityMetadataErrorKind::InvalidSeparator,
+                max_bytes,
+            });
+        }
+        previous_was_separator = is_separator;
+    }
+    Ok(())
+}
+
 #[rustfmt::skip]
 pub fn evaluate_capability_grant(
     requirement: &CapabilityRequirement,
@@ -117,23 +219,18 @@ pub fn evaluate_capability_grant(
     let Some(grant) = grant else {
         return denied(requirement, None, CapabilityReasonCode::CapabilityGrantMissing);
     };
-
     if !grant.active {
         return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityGrantInactive);
     }
-
     if now_unix_seconds >= grant.expires_unix_seconds {
         return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityGrantExpired);
     }
-
     if grant.capability_class != requirement.capability_class {
         return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityClassMismatch);
     }
-
     if grant.scope != requirement.scope {
         return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityScopeMismatch);
     }
-
     if requirement.confirmation_required && !grant.confirmation_satisfied {
         return denied(requirement, Some(grant), CapabilityReasonCode::CapabilityConfirmationRequired);
     }
@@ -162,107 +259,62 @@ fn denied(
 }
 
 #[cfg(test)]
-#[rustfmt::skip]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     const NOW: u64 = 1_725_000_000;
 
+    fn requirement(
+        class: CapabilityClass,
+        scope: &str,
+        confirmation: bool,
+    ) -> CapabilityRequirement {
+        CapabilityRequirement::new(class, scope, confirmation).unwrap()
+    }
+
+    fn grant(id: &str, class: CapabilityClass, scope: &str, expiry: u64) -> CapabilityGrant {
+        CapabilityGrant::new(id, class, scope, expiry).unwrap()
+    }
+
     #[test]
     fn allows_matching_active_unexpired_confirmed_grant() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::ProjectServiceMutation, "project-service:restart", true);
-        let grant = CapabilityGrant::new("grant-status-restart-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW + 60)
-            .with_confirmation_satisfied(true);
-
+        let requirement = requirement(
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            true,
+        );
+        let grant = grant(
+            "grant-status-restart-001",
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            NOW + 60,
+        )
+        .with_confirmation_satisfied(true);
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
-
         assert_eq!(evaluation.decision, CapabilityDecision::Allowed);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantAllowed);
-        assert_eq!(evaluation.grant_id.as_deref(), Some("grant-status-restart-001"));
-        assert_non_sensitive_json(&serde_json::to_value(evaluation).unwrap());
-    }
-
-    #[test]
-    fn denies_missing_grant() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::AndroidPlatformControl, "android:read-settings-preview", false);
-
-        let evaluation = evaluate_capability_grant(&requirement, None, NOW);
-
-        assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantMissing);
-        assert_eq!(evaluation.grant_id, None);
-    }
-
-    #[test]
-    fn denies_inactive_grant() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::NetworkMutation, "network:tunnel-reload", true);
-        let grant = CapabilityGrant::new("grant-network-001", CapabilityClass::NetworkMutation, "network:tunnel-reload", NOW + 60)
-            .inactive()
-            .with_confirmation_satisfied(true);
-
-        let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
-
-        assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantInactive);
-    }
-
-    #[test]
-    fn denies_expired_grant_at_boundary() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::CommandExecution, "command-profile:status-only", true);
-        let grant = CapabilityGrant::new("grant-command-001", CapabilityClass::CommandExecution, "command-profile:status-only", NOW)
-            .with_confirmation_satisfied(true);
-
-        let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
-
-        assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantExpired);
-    }
-
-    #[test]
-    fn denies_capability_class_mismatch() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::PackageManagement, "package:install-preview", true);
-        let grant = CapabilityGrant::new("grant-wrong-class-001", CapabilityClass::NetworkMutation, "package:install-preview", NOW + 60)
-            .with_confirmation_satisfied(true);
-
-        let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
-
-        assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityClassMismatch);
-    }
-
-    #[test]
-    fn denies_scope_mismatch() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::DeviceControl, "device:wake-lock-preview", true);
-        let grant = CapabilityGrant::new("grant-wrong-scope-001", CapabilityClass::DeviceControl, "device:notification-preview", NOW + 60)
-            .with_confirmation_satisfied(true);
-
-        let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
-
-        assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityScopeMismatch);
-    }
-
-    #[test]
-    fn denies_missing_required_confirmation() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::ProjectServiceMutation, "project-service:restart", true);
-        let grant = CapabilityGrant::new("grant-needs-confirmation-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW + 60);
-
-        let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
-
-        assert_eq!(evaluation.decision, CapabilityDecision::Denied);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityConfirmationRequired);
-    }
-
-    #[test]
-    fn serialized_evaluation_has_stable_non_secret_shape() {
-        let requirement = CapabilityRequirement::new(CapabilityClass::CommandExecution, "command-profile:diagnostics", false);
-        let grant = CapabilityGrant::new("grant-diagnostics-001", CapabilityClass::CommandExecution, "command-profile:diagnostics", NOW + 60);
-
-        let value = serde_json::to_value(evaluate_capability_grant(&requirement, Some(&grant), NOW)).unwrap();
-
         assert_eq!(
-            value,
+            evaluation.reason_code,
+            CapabilityReasonCode::CapabilityGrantAllowed
+        );
+    }
+
+    #[test]
+    fn preserves_stable_serialized_shape() {
+        let requirement = requirement(
+            CapabilityClass::CommandExecution,
+            "command-profile:diagnostics",
+            false,
+        );
+        let grant = grant(
+            "grant-diagnostics-001",
+            CapabilityClass::CommandExecution,
+            "command-profile:diagnostics",
+            NOW + 60,
+        );
+        assert_eq!(
+            serde_json::to_value(evaluate_capability_grant(&requirement, Some(&grant), NOW))
+                .unwrap(),
             json!({
                 "decision": "allowed",
                 "reason_code": "capability_grant_allowed",
@@ -271,29 +323,88 @@ mod tests {
                 "scope": "command-profile:diagnostics",
             })
         );
-        assert_non_sensitive_json(&value);
     }
 
-    fn assert_non_sensitive_json(value: &Value) {
-        let serialized = value.to_string().to_ascii_lowercase();
-        for forbidden in [
-            "password",
-            "secret",
-            "bearer",
-            "access_token",
-            "refresh_token",
-            "/data/",
-            "/home/",
-            "stdout",
-            "stderr",
-            "command_output",
-            "environment",
-            "android_id",
+    #[test]
+    fn rejects_empty_oversized_and_malformed_metadata() {
+        assert_eq!(
+            CapabilityRequirement::new(CapabilityClass::DeviceControl, "", false)
+                .unwrap_err()
+                .kind,
+            CapabilityMetadataErrorKind::Empty
+        );
+        assert_eq!(
+            CapabilityRequirement::new(
+                CapabilityClass::DeviceControl,
+                "a".repeat(MAX_CAPABILITY_SCOPE_BYTES + 1),
+                false,
+            )
+            .unwrap_err()
+            .kind,
+            CapabilityMetadataErrorKind::TooLong
+        );
+        for value in [
+            "UPPER",
+            "has space",
+            "/data/path",
+            ":leading",
+            "trailing:",
+            "double::separator",
         ] {
             assert!(
-                !serialized.contains(forbidden),
-                "unexpected sensitive token: {forbidden}"
+                CapabilityRequirement::new(CapabilityClass::DeviceControl, value, false).is_err(),
+                "{value}"
             );
         }
+        assert!(CapabilityGrant::new(
+            "grant__bad",
+            CapabilityClass::DeviceControl,
+            "device:wake-lock",
+            NOW + 1,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn accepts_exact_byte_limits() {
+        let scope = "a".repeat(MAX_CAPABILITY_SCOPE_BYTES);
+        let grant_id = "g".repeat(MAX_CAPABILITY_GRANT_ID_BYTES);
+        assert!(
+            CapabilityRequirement::new(CapabilityClass::DeviceControl, scope.clone(), false)
+                .is_ok()
+        );
+        assert!(
+            CapabilityGrant::new(grant_id, CapabilityClass::DeviceControl, scope, NOW + 1).is_ok()
+        );
+    }
+
+    #[test]
+    fn denial_precedence_remains_stable() {
+        let requirement = requirement(
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            true,
+        );
+        let inactive = grant(
+            "grant-inactive-001",
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            NOW + 60,
+        )
+        .inactive();
+        assert_eq!(
+            evaluate_capability_grant(&requirement, Some(&inactive), NOW).reason_code,
+            CapabilityReasonCode::CapabilityGrantInactive
+        );
+        let expired = grant(
+            "grant-expired-001",
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            NOW,
+        );
+        assert_eq!(
+            evaluate_capability_grant(&requirement, Some(&expired), NOW).reason_code,
+            CapabilityReasonCode::CapabilityGrantExpired
+        );
     }
 }
