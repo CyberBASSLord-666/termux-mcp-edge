@@ -100,18 +100,18 @@ impl AppConfig {
                 safe_roots: env_path_list("MCP__FILE__SAFE_ROOTS", &[DEFAULT_FILE_SAFE_ROOT]),
             },
             transport: TransportConfig {
-                allowed_hosts: env_string_list(
+                allowed_hosts: env_exact_string_list(
                     "MCP__TRANSPORT__ALLOWED_HOSTS",
                     &["localhost:8000", "127.0.0.1:8000", "[::1]:8000"],
-                ),
-                allowed_origins: env_string_list(
+                )?,
+                allowed_origins: env_exact_string_list(
                     "MCP__TRANSPORT__ALLOWED_ORIGINS",
                     &[
                         "http://localhost:8000",
                         "http://127.0.0.1:8000",
                         "http://[::1]:8000",
                     ],
-                ),
+                )?,
                 allow_missing_origin: env_bool("MCP__TRANSPORT__ALLOW_MISSING_ORIGIN", false)?,
                 max_concurrent_requests: env_usize(
                     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
@@ -214,6 +214,18 @@ fn env_string_list(name: &str, defaults: &[&str]) -> Vec<String> {
     }
 }
 
+fn env_exact_string_list(name: &str, defaults: &[&str]) -> anyhow::Result<Vec<String>> {
+    match env::var(name) {
+        Ok(value) => split_exact_env_list(name, &value),
+        Err(env::VarError::NotPresent) => {
+            Ok(defaults.iter().copied().map(str::to_owned).collect())
+        }
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("{name} must contain valid Unicode text")
+        }
+    }
+}
+
 fn env_path_list(name: &str, defaults: &[&str]) -> Vec<PathBuf> {
     env_string_list(name, defaults)
         .into_iter()
@@ -228,6 +240,14 @@ fn split_env_list(value: &str) -> Vec<String> {
         .filter(|item| !item.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn split_exact_env_list(name: &str, value: &str) -> anyhow::Result<Vec<String>> {
+    let items = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    if items.iter().any(String::is_empty) {
+        bail!("{name} must not contain empty list entries");
+    }
+    Ok(items)
 }
 
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
@@ -520,6 +540,33 @@ mod tests {
             };
             validate_transport_security(&transport)
                 .expect_err("malformed configured origin must fail startup");
+        }
+    }
+
+    #[test]
+    fn exact_transport_list_parser_preserves_invalid_whitespace_for_validation() {
+        for value in [
+            " localhost:8000",
+            "localhost:8000 ",
+            "localhost:8000,\t127.0.0.1:8000",
+        ] {
+            let transport = TransportConfig {
+                allowed_hosts: split_exact_env_list("ALLOWED_HOSTS", value).unwrap(),
+                ..transport_config()
+            };
+
+            validate_transport_security(&transport)
+                .expect_err("configured authority whitespace must fail closed");
+        }
+    }
+
+    #[test]
+    fn exact_transport_list_parser_rejects_empty_entries_instead_of_dropping_them() {
+        for value in ["", ",", "localhost:8000,", ",localhost:8000", "a,,b"] {
+            let error = split_exact_env_list("ALLOWED_HOSTS", value)
+                .expect_err("empty configured authority entries must fail closed");
+
+            assert!(error.to_string().contains("empty list entries"));
         }
     }
 
