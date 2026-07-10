@@ -2,114 +2,91 @@
 
 ## Purpose
 
-This project runs a small Rust/Axum HTTP service on Android through Termux. The default compiled runtime exposes operational health/readiness endpoints and validates startup security posture. When built with the optional `mcp-runtime` feature, the service exposes a staged `/mcp` transport protected by bearer authentication, mobile-conscious request resource limits, and exact transport allowlist checks.
+Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The supported production path uses versioned releases, the fixed `mcp_runtime` runit service, fail-closed bearer authentication, mobile-conscious request limits, exact transport allowlists, and safe-rooted filesystem tools.
 
-## Baseline Operating Model
+## Baseline operating model
 
-- Rust single-binary service.
-- Axum HTTP runtime.
+- Rust single binary.
 - `GET /health` and `GET /ready` operational endpoints.
-- Optional feature-gated `POST /mcp` staged transport.
-- Static-token mode authenticates every `/mcp` request before resource-limit accounting, transport validation, or JSON-RPC handling.
-- Explicit unauthenticated mode is loopback-development only and is rejected for non-loopback binds.
+- Optional authenticated `POST /mcp` staged transport.
+- Authentication before concurrency, timeout, body-size, Host, Origin, parsing, discovery, and dispatch.
 - Four concurrent authenticated MCP requests by default.
-- Thirty-second total MCP request timeout by default.
-- Two-MiB MCP request-body ceiling by default.
-- Termux runtime.
-- `termux-services` / runit supervision.
-- Narrow dedicated filesystem safe-root default.
-- MCP expansion remains staged by tool surface.
+- Thirty-second request timeout by default.
+- Two-MiB request-body ceiling by default.
+- Versioned Termux release directories with atomic `current` and `previous` links.
+- Fixed `mcp_runtime` runit service only.
+- Dedicated safe-root defaults and staged capability expansion.
 
-## Required Android Hardening
+## Android hardening
 
 1. Set Termux battery usage to unrestricted.
-2. Remove Termux from sleeping or deep-sleeping app lists.
+2. Remove Termux from sleeping and deep-sleeping app lists.
 3. Use `termux-wake-lock` only when persistent background operation is required.
 4. On Android 14 or later, enable **Developer options → Disable child process restrictions**.
-5. Avoid direct public port exposure. Prefer a named tunnel or VPN-bound endpoint only after authentication is configured and tested.
-6. Keep request-limit defaults unless measured workload demonstrates a need for a reviewed increase.
+5. Avoid direct public port exposure. Use a reviewed VPN or named-tunnel path only after authentication is configured and tested.
+6. Keep the mobile request-limit defaults unless target-device measurements justify a reviewed increase.
 
-## Runtime Validation
+## Install and service supervision
 
-Verify the unauthenticated operational probe:
+Install prerequisites:
+
+```bash
+pkg update
+pkg install bash coreutils curl file termux-services
+```
+
+Use [`TERMUX_DEPLOYMENT.md`](TERMUX_DEPLOYMENT.md) for initial install, upgrade, rollback, recovery, status, and uninstall. New deployments should use `scripts/termux_deploy.sh`; it creates and manages only:
+
+```text
+$PREFIX/var/service/mcp_runtime/run
+```
+
+The legacy static `scripts/runit/mcp-server/run` file is not the canonical versioned deployment path. Do not run both service definitions simultaneously.
+
+Check service state:
+
+```bash
+sv status "$PREFIX/var/service/mcp_runtime"
+```
+
+The generated service reads a private `runtime.env` as literal allowlisted `NAME=value` data. It does not evaluate the configuration as shell program text.
+
+## Runtime probes
 
 ```bash
 curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:8000/ready | jq
 ```
 
-Expected response:
+Expected health response:
 
 ```text
 ok
 ```
 
-Inspect readiness metadata:
+When `mcp-runtime` is enabled, readiness reports coarse package, feature, authentication-posture, safe-root-count, and active request-limit metadata. It must not return tokens, raw configuration, private paths, tool discovery, or tool output.
+
+## Authenticated MCP validation
+
+Load the token without printing it:
 
 ```bash
-curl -fsS http://127.0.0.1:8000/ready | jq
+MCP_TEST_TOKEN="$(sed -n 's/^MCP__AUTH__STATIC_TOKEN=//p' "$HOME/.config/termux-mcp-edge/runtime.env")"
 ```
 
-When `mcp-runtime` is enabled, `mcp_request_limits` should report the active concurrency, timeout, and body-size values. Readiness metadata is non-sensitive and must not expose tokens, raw paths, or tool output.
-
-When the binary is built with `--features mcp-runtime`, validate rejection and success paths:
-
-1. A request without `Authorization` receives HTTP 401 and no discovery result.
-2. A request with `Authorization: Bearer <configured-token>` reaches request-limit and exact Host/Origin validation.
-3. Tool discovery returns only the staged allowlisted tools.
-4. Representative allowed and denied tool calls preserve safe-root, read-only, payload-limit, and dry-run boundaries.
-5. A body over the configured ceiling receives HTTP 413.
-6. Saturated concurrency receives HTTP 503 with `Retry-After: 1`.
-7. A request exceeding the configured duration receives HTTP 504.
-
-For exact commands, follow [`docs/VALIDATION.md`](VALIDATION.md). Treat exact-head CI as a merge gate, and require Security when Cargo, lockfile, or Security workflow inputs change.
-
-## Service Supervision
-
-Install Termux services:
+Verify unauthenticated rejection first, then authenticated discovery:
 
 ```bash
-pkg install termux-services
-```
+curl -i -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":0,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp
 
-Create a bearer-token file before enabling the service:
-
-```bash
-umask 077
-openssl rand -hex 32 > "$HOME/.termux_mcp_token"
-chmod 600 "$HOME/.termux_mcp_token"
-```
-
-The packaged runit script fails before starting the server if the token file is missing, empty, or whitespace-only. It reads the token without printing it and exports `MCP__AUTH__STATIC_TOKEN` for the server process.
-
-Optional request-limit overrides may be exported by the runit service only after measured validation:
-
-```bash
-export MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
-export MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
-export MCP__TRANSPORT__MAX_BODY_BYTES=2097152
-```
-
-Validated ranges are:
-
-- concurrency: `1–64`;
-- timeout: `1–300` seconds;
-- body size: `1024–8388608` bytes.
-
-Values outside those ranges prevent startup. Increasing concurrency and body size together increases possible memory pressure, so evaluate the product of both settings on the target Android device rather than tuning either in isolation.
-
-Create or install the runit service script from `scripts/runit/mcp-server/run`, then start it:
-
-```bash
-sv-enable mcp-server
-sv up mcp-server
-sv status mcp-server
-```
-
-For a local authenticated smoke test, read the protected token into a temporary shell variable and clear it afterward:
-
-```bash
-MCP_TEST_TOKEN="$(cat "$HOME/.termux_mcp_token")"
 curl -sS \
+  -X POST \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
@@ -119,55 +96,74 @@ curl -sS \
 unset MCP_TEST_TOKEN
 ```
 
-Do not use `set -x`, echo the token, paste it into issue text, or include it in screenshots.
+Do not enable shell tracing, echo token variables, or include credential-bearing commands in screenshots or issue text.
 
-## Request-Limit Failure Semantics
+## Request limits
 
-Resource-limit failures are transport responses, not MCP tool results:
+| Setting | Default | Valid range |
+|---|---:|---:|
+| `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS` | `4` | `1–64` |
+| `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS` | `30` | `1–300` |
+| `MCP__TRANSPORT__MAX_BODY_BYTES` | `2097152` | `1024–8388608` |
 
-- HTTP 413 / `mcp_request_body_too_large`: request body exceeds the configured ceiling.
-- HTTP 503 / `mcp_concurrency_limit_reached`: all concurrency permits are occupied; retry only after the advertised delay.
-- HTTP 504 / `mcp_request_timeout`: body extraction or MCP dispatch exceeded the configured duration.
+Values outside these ranges fail startup. Increasing concurrency and body size together increases possible peak memory use; evaluate them together on the target device.
 
-All three responses include `Cache-Control: no-store` and omit request content, tokens, paths, and tool arguments.
+Failure semantics:
 
-Authentication is the outermost gate in static-token mode. Unauthenticated traffic receives HTTP 401 before consuming MCP concurrency permits or body-buffer capacity.
+- HTTP 413 / `mcp_request_body_too_large`.
+- HTTP 503 / `mcp_concurrency_limit_reached`, with `Retry-After: 1`.
+- HTTP 504 / `mcp_request_timeout`.
 
-## Filesystem Safe Roots
+Limit failures contain non-sensitive JSON and `Cache-Control: no-store`.
 
-The default filesystem safe root is the dedicated Termux-home directory:
+## Current MCP tools
+
+Authenticated discovery currently exposes:
+
+1. `runtime_status` — staged runtime metadata and aggregate non-sensitive audit counters.
+2. `platform_info` — non-sensitive platform metadata.
+3. `android_status` — read-only allowlisted Android/Termux status metadata.
+4. `project_service_status` — read-only allowlisted project service metadata for `mcp_runtime`.
+5. `list_directory` — bounded safe-rooted listing.
+6. `read_file` — bounded safe-rooted UTF-8 reads.
+7. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
+
+The runtime does not expose Android platform control, arbitrary shell or command execution, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or high-impact controls.
+
+## Filesystem safe roots
+
+The default filesystem root is:
 
 ```text
 /data/data/com.termux/files/home/mcp-files
 ```
 
-This deliberately avoids broad Android shared-storage defaults such as `/storage/emulated/0` and `/sdcard`. Keep `MCP__FILE__SAFE_ROOTS` constrained to one or more dedicated project directories. Avoid all shared storage unless the deployment has a reviewed operational requirement and matching authorization controls.
+Keep configured roots limited to dedicated project directories. Empty lists, relative roots, filesystem root `/`, traversal, and symlink escapes are rejected. Broad shared Android storage is not a default.
 
-Safe-root configuration is validated at startup. Empty safe-root lists, relative paths, and filesystem root `/` are rejected.
+## Deployment status and recovery
 
-## Current MCP Tool Exposure
+```bash
+scripts/termux_deploy.sh status
+```
 
-After authentication in static-token mode, current `tools/list` exposes:
+The deployment manager validates `current` and `previous` before reporting them. It rejects links that escape the project releases directory or point to incomplete releases.
 
-1. `runtime_status` — deterministic staged runtime metadata and aggregate non-sensitive audit counters.
-2. `platform_info` — non-sensitive platform metadata only.
-3. `android_status` — read-only allowlisted Android/Termux status metadata with no Android API calls, shell fallback, or control behavior.
-4. `project_service_status` — read-only allowlisted project-owned logical service metadata; the current service name is `mcp_runtime`.
-5. `list_directory` — bounded safe-rooted directory listing.
-6. `read_file` — bounded safe-rooted UTF-8 file reads.
-7. `write_file` — safe-rooted, payload-bounded writes that default to dry-run unless `dry_run:false` is explicitly supplied.
+For a failed candidate, the manager restores the exact prior link state, removes the candidate, restarts the prior active release, and probes it. For a failed explicit rollback, it restores and re-probes the original active release. Operations are serialized with a project lock and interruption cleanup.
 
-Unauthorized clients must receive no tool list or tool result. The current runtime does not expose Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, or high-impact controls.
+Do not manually repoint release links outside the project releases directory. Preserve persistent configuration during ordinary recovery.
 
-## Release Process
+## Release process
 
-1. Run the exact CI command set: `cargo fmt`, workspace/all-target/all-feature Clippy, and workspace/all-target/all-feature tests.
-2. Build both the default and `mcp-runtime` release postures.
-3. Confirm the Security workflow passes when Cargo, lockfile, or Security workflow inputs change; otherwise document the path-filtered non-run.
-4. Cross-compile with `scripts/cross_compile.sh` or validate the tag/manual-dispatch Android artifact.
-5. Copy the release binary to `$HOME/bin/termux-mcp-server` on Android.
-6. Confirm the protected token file exists with restrictive permissions.
-7. Restart the runit service.
-8. Verify `/health` returns `ok` and `/ready` reports the intended feature, auth posture, and request limits.
-9. If `mcp-runtime` is enabled, verify unauthenticated rejection, authenticated `tools/list`, request-limit failure responses, and representative authenticated calls to `runtime_status`, `project_service_status`, and filesystem tools.
-10. Do not claim readiness for Android control, command execution, or high-impact tools until their separate staged gates are implemented and validated.
+1. Run format, workspace/all-target/all-feature Clippy, workspace/all-target/all-feature tests, and deployment shell tests.
+2. Build both default and `mcp-runtime` release postures.
+3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
+4. Cross-compile or validate the tag/manual Android artifact.
+5. Record and verify the artifact SHA-256 digest.
+6. Verify `file` and `--version` against the intended release.
+7. Install or upgrade through `scripts/termux_deploy.sh`.
+8. Confirm deployment status, runit state, health, readiness, and authenticated discovery.
+9. Validate representative allowed and denied MCP calls.
+10. Exercise rollback before declaring production readiness.
+11. Preserve the prior known-good release through sustained battery, thermal, and process-restriction validation.
+
+Do not claim readiness for Android control, command execution, or high-impact tools until their independent gates, tests, audit behavior, and recovery semantics are complete.
