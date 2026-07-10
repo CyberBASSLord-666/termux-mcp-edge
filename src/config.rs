@@ -495,8 +495,8 @@ mod tests {
 
     #[test]
     fn malformed_boolean_is_rejected() {
-        let err = parse_bool("TEST_BOOL", "sometimes")
-            .expect_err("malformed boolean must fail closed");
+        let err =
+            parse_bool("TEST_BOOL", "sometimes").expect_err("malformed boolean must fail closed");
         assert!(err.to_string().contains("must be a boolean value"));
     }
 }

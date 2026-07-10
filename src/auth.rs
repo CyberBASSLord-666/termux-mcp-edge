@@ -39,9 +39,7 @@ impl McpAuthPolicy {
                 })?;
                 Self::static_bearer(token)
             }
-            AuthPosture::UnauthenticatedLocalhostOnly => {
-                Ok(Self::UnauthenticatedLocalhostOnly)
-            }
+            AuthPosture::UnauthenticatedLocalhostOnly => Ok(Self::UnauthenticatedLocalhostOnly),
         }
     }
 
@@ -99,9 +97,7 @@ fn validate_bearer_token(token: &str) -> anyhow::Result<()> {
         bail!("configured bearer token must not be empty");
     }
     if token.len() > MAX_BEARER_TOKEN_BYTES {
-        bail!(
-            "configured bearer token exceeds the {MAX_BEARER_TOKEN_BYTES}-byte safety limit"
-        );
+        bail!("configured bearer token exceeds the {MAX_BEARER_TOKEN_BYTES}-byte safety limit");
     }
     if token.chars().any(char::is_whitespace) {
         bail!("configured bearer token must not contain whitespace");
@@ -151,10 +147,9 @@ fn unauthorized_response() -> Response {
     )
         .into_response();
 
-    response.headers_mut().insert(
-        header::WWW_AUTHENTICATE,
-        HeaderValue::from_static("Bearer"),
-    );
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

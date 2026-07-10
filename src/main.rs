@@ -8,9 +8,9 @@
 //! - Graceful shutdown under runit supervision
 //! - Single-binary deployment optimized for Android Termux
 
-use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
 use axum::middleware;
+use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
@@ -35,7 +35,10 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer().json())
         .init();
 
-    info!(version = env!("CARGO_PKG_VERSION"), "Starting Termux MCP Edge");
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "Starting Termux MCP Edge"
+    );
 
     let config = AppConfig::load()?;
     info!(?config.server, "Configuration loaded");
