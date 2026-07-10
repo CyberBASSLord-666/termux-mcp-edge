@@ -2,9 +2,11 @@
 
 ## Current Runtime Validation Scope
 
-The default compiled runtime is an Axum HTTP health-check service. The optional `mcp-runtime` feature compiles the staged `/mcp` transport and its current limited tool surface.
+The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles the staged `/mcp` transport and its current limited tool surface.
 
 Current staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`. Android control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
+
+The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling.
 
 ## Required Repository Gates
 
@@ -51,7 +53,13 @@ Expected response:
 ok
 ```
 
-The `/health` and `/ready` operational probes do not require bearer authentication. They must not return secrets, raw configuration, private paths, or tool output.
+Inspect readiness:
+
+```bash
+curl -fsS http://127.0.0.1:8000/ready | jq
+```
+
+The `/health` and `/ready` operational probes do not require bearer authentication. They must not return secrets, raw configuration, private paths, or tool output. When `mcp-runtime` is enabled, readiness should include only the active non-sensitive `mcp_request_limits` values.
 
 ## Staged MCP Smoke Tests
 
@@ -61,7 +69,7 @@ When built with `--features mcp-runtime`, load the configured token without prin
 MCP_TEST_TOKEN="$(cat "$HOME/.termux_mcp_token")"
 ```
 
-First prove unauthenticated discovery is rejected before JSON-RPC dispatch:
+First prove unauthenticated discovery is rejected before request-limit accounting or JSON-RPC dispatch:
 
 ```bash
 curl -i -sS \
@@ -105,10 +113,72 @@ curl -sS \
 
 Expected behavior: the response is read-only, reports only the allowlisted project-owned logical runtime service, and does not expose process inventory, shell fallback, arbitrary service names, or control actions.
 
-Clear the temporary shell variable after validation:
+## MCP Request-Limit Validation
+
+Default values are intentionally conservative for Termux:
+
+- `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4`
+- `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30`
+- `MCP__TRANSPORT__MAX_BODY_BYTES=2097152`
+
+Validated ranges are concurrency `1–64`, timeout `1–300` seconds, and body size `1024–8388608` bytes. Prove startup fails for zero, negative/non-numeric, or above-range values.
+
+### Oversized authenticated request
+
+Temporarily set a small validated body ceiling, restart the service, and send a larger authenticated body:
+
+```bash
+export MCP__TRANSPORT__MAX_BODY_BYTES=1024
+python - <<'PY' > /tmp/mcp-oversized.json
+import json
+print(json.dumps({
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+        "name": "write_file",
+        "arguments": {
+            "path": "/data/data/com.termux/files/home/mcp-files/oversized.txt",
+            "content": "x" * 2048
+        }
+    }
+}))
+PY
+curl -i -sS \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/mcp-oversized.json \
+  http://127.0.0.1:8000/mcp
+rm -f /tmp/mcp-oversized.json
+```
+
+Expected behavior: HTTP 413, `mcp_request_body_too_large`, `Cache-Control: no-store`, and no reflected request content.
+
+Repeat without the `Authorization` header. Expected behavior: HTTP 401 rather than 413, proving authentication remains the outer resource gate.
+
+### Concurrency saturation
+
+Set `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=1` in a controlled test deployment and issue two overlapping authenticated requests. The second request must fail fast with HTTP 503, `Retry-After: 1`, and `mcp_concurrency_limit_reached`; it must not queue indefinitely.
+
+### Request timeout
+
+Set `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS` to a low validated value in a controlled test build with an intentionally delayed test handler. Expected behavior is HTTP 504 with `mcp_request_timeout` and `Cache-Control: no-store`.
+
+The repository test suite covers timeout behavior without adding a production delay tool.
+
+### Write cancellation cleanup
+
+Explicit mutation continues to use a same-directory temporary file and atomic rename. The temporary path is protected by a drop cleanup guard. Unit coverage must prove an armed guard removes the temp file and a disarmed guard preserves a successfully committed file. After a forced timeout/cancellation test, no `.*.tmp` artifact should remain in the safe root.
+
+Clear the temporary token variable and restore defaults after validation:
 
 ```bash
 unset MCP_TEST_TOKEN
+unset MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS
+unset MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS
+unset MCP__TRANSPORT__MAX_BODY_BYTES
 ```
 
 Use [`operator-validation.md`](operator-validation.md) for representative allowed/denied calls, audit-counter checks, filesystem boundaries, Android status, and capability-token boundary validation.
@@ -128,12 +198,14 @@ Do not mark the project as broadly MCP-runtime-ready until each enabled capabili
 
 1. Exact-head CI success.
 2. Exact-head Security success when triggered, or documented acceptance of a path-filtered non-run when no dependency, lockfile, or Security workflow input changed.
-3. Unauthenticated MCP discovery and invocation are rejected in static-token mode.
+3. Unauthenticated MCP discovery and invocation are rejected in static-token mode before resource-limit accounting.
 4. Authenticated MCP tool discovery works.
-5. Representative authenticated MCP tool calls work for the enabled surface.
-6. Authentication and authorization behavior is documented and tested.
-7. README, operations, security, roadmap, and changelog documentation match the implemented runtime.
-8. Android release artifacts are validated when producing a device build.
+5. Request concurrency, timeout, and body-size boundaries are validated.
+6. Representative authenticated MCP tool calls work for the enabled surface.
+7. Authentication and authorization behavior is documented and tested.
+8. Mutating filesystem cancellation does not strand temporary files.
+9. README, operations, security, roadmap, and changelog documentation match the implemented runtime.
+10. Android release artifacts are validated when producing a device build.
 
 ## Current Known Limitation
 

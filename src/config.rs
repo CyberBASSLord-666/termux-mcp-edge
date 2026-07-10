@@ -4,6 +4,12 @@ use std::{env, fmt, net::IpAddr, path::PathBuf};
 
 use anyhow::{anyhow, bail};
 
+use crate::request_limits::{
+    DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    MAX_CONFIGURED_BODY_BYTES, MAX_CONFIGURED_CONCURRENT_REQUESTS,
+    MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS, MIN_CONFIGURED_BODY_BYTES,
+};
+
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
 const EMPTY_STATIC_TOKEN_ERROR: &str =
     "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode";
@@ -67,6 +73,12 @@ pub struct TransportConfig {
     pub allowed_origins: Vec<String>,
     /// Explicit compatibility switch for non-browser clients that omit Origin.
     pub allow_missing_origin: bool,
+    /// Maximum number of authenticated MCP requests executing concurrently.
+    pub max_concurrent_requests: usize,
+    /// Maximum total duration for one authenticated MCP request.
+    pub request_timeout_seconds: u64,
+    /// Maximum buffered JSON-RPC request-body size.
+    pub max_body_bytes: usize,
 }
 
 impl AppConfig {
@@ -100,6 +112,18 @@ impl AppConfig {
                     ],
                 ),
                 allow_missing_origin: env_bool("MCP__TRANSPORT__ALLOW_MISSING_ORIGIN", false)?,
+                max_concurrent_requests: env_usize(
+                    "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
+                    DEFAULT_MAX_CONCURRENT_REQUESTS,
+                )?,
+                request_timeout_seconds: env_u64(
+                    "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS",
+                    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )?,
+                max_body_bytes: env_usize(
+                    "MCP__TRANSPORT__MAX_BODY_BYTES",
+                    DEFAULT_MAX_BODY_BYTES,
+                )?,
             },
         };
 
@@ -116,11 +140,42 @@ fn env_string(name: &str, default: &str) -> String {
 fn env_u16(name: &str, default: u16) -> anyhow::Result<u16> {
     match env::var(name) {
         Ok(value) => value
+            .trim()
             .parse::<u16>()
             .map_err(|source| anyhow!("{name} must be an integer between 0 and 65535: {source}")),
         Err(env::VarError::NotPresent) => Ok(default),
         Err(source) => Err(anyhow!("{name} could not be read: {source}")),
     }
+}
+
+fn env_usize(name: &str, default: usize) -> anyhow::Result<usize> {
+    match env::var(name) {
+        Ok(value) => parse_usize(name, &value),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
+    }
+}
+
+fn env_u64(name: &str, default: u64) -> anyhow::Result<u64> {
+    match env::var(name) {
+        Ok(value) => parse_u64(name, &value),
+        Err(env::VarError::NotPresent) => Ok(default),
+        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
+    }
+}
+
+fn parse_usize(name: &str, value: &str) -> anyhow::Result<usize> {
+    value
+        .trim()
+        .parse::<usize>()
+        .map_err(|source| anyhow!("{name} must be a non-negative integer: {source}"))
+}
+
+fn parse_u64(name: &str, value: &str) -> anyhow::Result<u64> {
+    value
+        .trim()
+        .parse::<u64>()
+        .map_err(|source| anyhow!("{name} must be a non-negative integer: {source}"))
 }
 
 fn env_bool(name: &str, default: bool) -> anyhow::Result<bool> {
@@ -256,6 +311,25 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
         }
     }
 
+    if !(1..=MAX_CONFIGURED_CONCURRENT_REQUESTS).contains(&transport.max_concurrent_requests) {
+        bail!(
+            "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS must be between 1 and {MAX_CONFIGURED_CONCURRENT_REQUESTS}"
+        );
+    }
+
+    if !(1..=MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS).contains(&transport.request_timeout_seconds) {
+        bail!(
+            "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS must be between 1 and {MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS}"
+        );
+    }
+
+    if !(MIN_CONFIGURED_BODY_BYTES..=MAX_CONFIGURED_BODY_BYTES).contains(&transport.max_body_bytes)
+    {
+        bail!(
+            "MCP__TRANSPORT__MAX_BODY_BYTES must be between {MIN_CONFIGURED_BODY_BYTES} and {MAX_CONFIGURED_BODY_BYTES}"
+        );
+    }
+
     Ok(())
 }
 
@@ -303,6 +377,9 @@ mod tests {
             allowed_hosts: vec!["localhost:8000".to_owned()],
             allowed_origins: vec!["http://localhost:8000".to_owned()],
             allow_missing_origin: false,
+            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
+            request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
         }
     }
 
@@ -415,9 +492,9 @@ mod tests {
     }
 
     #[test]
-    fn transport_security_config_accepts_exact_hosts_and_origins() {
+    fn transport_security_config_accepts_exact_hosts_origins_and_safe_limits() {
         validate_transport_security(&transport_config())
-            .expect("exact transport security allowlists should validate");
+            .expect("exact transport security allowlists and safe limits should validate");
     }
 
     #[test]
@@ -491,6 +568,49 @@ mod tests {
 
             assert!(err.to_string().contains("invalid origin"));
         }
+    }
+
+    #[test]
+    fn transport_request_limits_reject_zero_and_excessive_values() {
+        let cases = [
+            TransportConfig {
+                max_concurrent_requests: 0,
+                ..transport_config()
+            },
+            TransportConfig {
+                max_concurrent_requests: MAX_CONFIGURED_CONCURRENT_REQUESTS + 1,
+                ..transport_config()
+            },
+            TransportConfig {
+                request_timeout_seconds: 0,
+                ..transport_config()
+            },
+            TransportConfig {
+                request_timeout_seconds: MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS + 1,
+                ..transport_config()
+            },
+            TransportConfig {
+                max_body_bytes: MIN_CONFIGURED_BODY_BYTES - 1,
+                ..transport_config()
+            },
+            TransportConfig {
+                max_body_bytes: MAX_CONFIGURED_BODY_BYTES + 1,
+                ..transport_config()
+            },
+        ];
+
+        for transport in cases {
+            validate_transport_security(&transport)
+                .expect_err("unsafe MCP request limits must fail closed");
+        }
+    }
+
+    #[test]
+    fn unsigned_limit_parsers_trim_and_reject_invalid_values() {
+        assert_eq!(parse_usize("LIMIT", " 8 ").unwrap(), 8);
+        assert_eq!(parse_u64("TIMEOUT", " 30 ").unwrap(), 30);
+        assert!(parse_usize("LIMIT", "-1").is_err());
+        assert!(parse_u64("TIMEOUT", "not-a-number").is_err());
     }
 
     #[test]

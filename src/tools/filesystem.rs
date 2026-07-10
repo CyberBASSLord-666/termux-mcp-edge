@@ -6,7 +6,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use metrics::{counter, histogram};
 use serde::{Deserialize, Serialize};
-use tokio::{fs, io::AsyncReadExt};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+};
 
 use crate::audit::AuditEvent;
 use crate::error::AppError;
@@ -16,6 +19,29 @@ const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
 const MAX_LIST_ENTRIES: usize = 4_096;
 const MAX_READ_BYTES: u64 = 1_048_576;
+
+struct TempFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct FileSystemTools {
@@ -270,16 +296,18 @@ impl FileSystemTools {
         }
 
         let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+        let std_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        let mut cleanup = TempFileCleanup::new(tmp.clone());
+        let mut file = fs::File::from_std(std_file);
 
-        if let Err(err) = fs::write(&tmp, content.as_bytes()).await {
-            let _ = fs::remove_file(&tmp).await;
-            return Err(err.into());
-        }
-
-        if let Err(err) = fs::rename(&tmp, &safe_path).await {
-            let _ = fs::remove_file(&tmp).await;
-            return Err(err.into());
-        }
+        file.write_all(content.as_bytes()).await?;
+        file.flush().await?;
+        drop(file);
+        fs::rename(&tmp, &safe_path).await?;
+        cleanup.disarm();
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.write.latency_seconds").record(duration);
@@ -564,6 +592,33 @@ mod tests {
 
         assert_eq!(result, "DRY-RUN");
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn armed_temp_file_cleanup_removes_file_on_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("armed.tmp");
+        std::fs::write(&path, "temporary").unwrap();
+
+        {
+            let _cleanup = TempFileCleanup::new(path.clone());
+        }
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn disarmed_temp_file_cleanup_preserves_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("disarmed.tmp");
+        std::fs::write(&path, "temporary").unwrap();
+
+        {
+            let mut cleanup = TempFileCleanup::new(path.clone());
+            cleanup.disarm();
+        }
+
+        assert!(path.exists());
     }
 
     #[tokio::test]

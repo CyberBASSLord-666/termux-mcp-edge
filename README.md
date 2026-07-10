@@ -4,7 +4,7 @@ Termux MCP Edge is a hardened Rust/Axum HTTP service for Android Termux deployme
 
 The project is designed for developers, advanced Termux operators, and power users who understand that MCP tools can affect local device state. The staged security model is not intended to remove powerful capabilities permanently; it is intended to make each capability explicit, opt-in, reviewable, testable, and auditable before it is exposed.
 
-The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-token mode, bearer authentication is enforced before transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Authenticated requests must then pass exact `Host` and browser `Origin` checks. The staged runtime currently supports `initialize`, `tools/list`, deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted `list_directory`, bounded safe-rooted UTF-8 `read_file`, default-dry-run safe-rooted `write_file`, and read-only allowlisted `project_service_status`. Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
+The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-token mode, bearer authentication is enforced before transport validation, request resource limits, JSON-RPC parsing, tool discovery, or tool invocation. Authenticated requests must then pass mobile-conscious concurrency, timeout, body-size, exact `Host`, and browser `Origin` checks. The staged runtime currently supports `initialize`, `tools/list`, deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted `list_directory`, bounded safe-rooted UTF-8 `read_file`, default-dry-run safe-rooted `write_file`, and read-only allowlisted `project_service_status`. Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact actions remain unavailable until later staged PRs validate each surface independently.
 
 ## Current Runtime Scope
 
@@ -14,9 +14,10 @@ The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-to
 - **Optional MCP transport shell:** authenticated `POST /mcp` when built with `--features mcp-runtime`.
 - **Current MCP discovery:** `initialize` plus `tools/list` returning `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
 - **Current MCP tools:** deterministic read-only runtime metadata, non-sensitive platform metadata, read-only allowlisted Android/Termux status metadata, read-only allowlisted project-owned service status metadata, bounded safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, and default-dry-run safe-rooted file writes.
-- **Current filesystem/tool endpoints:** directory listing and file reads are bounded to configured safe roots; `write_file` is exposed with explicit safe-root, payload-size, and dry-run-by-default controls.
+- **Current filesystem/tool endpoints:** directory listing and file reads are bounded to configured safe roots; `write_file` is exposed with explicit safe-root, payload-size, dry-run-by-default, and cancellation-safe temporary-file controls.
 - **Authentication posture:** startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled. Static-token mode requires `Authorization: Bearer <configured-token>` on every `/mcp` request.
-- **Transport posture:** authentication runs before exact `Host` and browser `Origin` allowlists and before JSON-RPC handling.
+- **Transport posture:** authentication runs before bounded MCP concurrency, timeout, body-size, exact `Host`, browser `Origin`, and JSON-RPC handling.
+- **Mobile request-limit defaults:** four concurrent authenticated MCP requests, 30 seconds per request, and a 2 MiB JSON-RPC request body.
 - **Filesystem safe-root default:** `/data/data/com.termux/files/home/mcp-files`, not broad shared storage.
 - **Project service status scope:** `project_service_status` reports only project-owned logical services from the explicit allowlist; the current public service name is `mcp_runtime`.
 - **Deployment target:** Termux on Android, supervised by `termux-services` / runit.
@@ -26,6 +27,7 @@ The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-to
 - Serve advanced local development and power-user automation workflows without pretending high-impact MCP capabilities are risk-free.
 - Memory efficiency and thermal resilience on mobile hardware.
 - Fail-closed startup and request-authentication posture for networked MCP deployments.
+- Explicit concurrency, timeout, and body-size ceilings for authenticated MCP traffic.
 - Clear separation between operational probes, authenticated transport, tool discovery, low-risk read-only tools, filesystem listing, file reads, file writes, project-owned service status, and later higher-impact tool execution.
 - Narrow default filesystem scope for file-capable tools.
 - Explicit opt-in, allowlist, dry-run, and audit boundaries for riskier tools rather than broad always-on exposure.
@@ -42,7 +44,7 @@ In static-token mode, every request to `/mcp` must include:
 Authorization: Bearer <configured-token>
 ```
 
-Missing, malformed, oversized, or incorrect credentials are rejected with HTTP 401 before JSON-RPC parsing or tool discovery. `/health` and `/ready` remain unauthenticated operational probes and expose only coarse non-secret status.
+Missing, malformed, oversized, or incorrect credentials are rejected with HTTP 401 before request-limit accounting, JSON-RPC parsing, or tool discovery. `/health` and `/ready` remain unauthenticated operational probes and expose only coarse non-secret status.
 
 Local unauthenticated development requires both conditions:
 
@@ -62,6 +64,22 @@ export MCP__TRANSPORT__ALLOWED_ORIGINS='["http://localhost:8000"]'
 
 `MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only for explicitly reviewed non-browser clients that cannot send an `Origin` header.
 
+## MCP Request Resource Limits
+
+The staged runtime uses conservative defaults intended for a foreground or supervised Termux process:
+
+| Setting | Default | Valid range | Purpose |
+|---|---:|---:|---|
+| `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS` | `4` | `1–64` | Fail-fast cap on authenticated requests executing concurrently. |
+| `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS` | `30` | `1–300` | Maximum total duration for body extraction and MCP dispatch. |
+| `MCP__TRANSPORT__MAX_BODY_BYTES` | `2097152` | `1024–8388608` | Maximum JSON-RPC request-body size. |
+
+Unsafe values fail startup validation. Saturated concurrency returns HTTP 503 with `Retry-After: 1`; timed-out requests return HTTP 504; oversized bodies return HTTP 413. Limit responses are non-sensitive JSON with `Cache-Control: no-store`.
+
+Authentication is intentionally the outer request gate, so unauthenticated traffic is rejected before it can consume MCP concurrency permits or body-buffer capacity. Axum's streaming body ceiling is used rather than buffering the body twice, which keeps memory pressure predictable on Android.
+
+`GET /ready` reports the active non-sensitive MCP request-limit values when the runtime feature is enabled.
+
 ## Filesystem Safe Roots
 
 The built-in filesystem safe-root default is intentionally narrow:
@@ -74,14 +92,14 @@ The service does not default to broad Android shared-storage roots such as `/sto
 
 ## Operator Validation
 
-Use [`docs/operator-validation.md`](docs/operator-validation.md) when validating a local build, configuration change, release candidate, manual dispatch build, or tag-triggered artifact. The checklist covers unauthorized rejection, authenticated discovery, `runtime_status` audit counters, filesystem safe-root behavior, read-only Android status, project service status, and future capability-token boundaries without enabling any new runtime surface.
+Use [`docs/operator-validation.md`](docs/operator-validation.md) when validating a local build, configuration change, release candidate, manual dispatch build, or tag-triggered artifact. The checklist covers unauthorized rejection, authenticated discovery, request-limit failures, `runtime_status` audit counters, filesystem safe-root behavior, read-only Android status, project service status, and future capability-token boundaries without enabling any new runtime surface.
 
 ## Architecture
 
 - **Language:** Rust edition 2021.
 - **HTTP framework:** Axum.
 - **Default compiled transport:** operational health/readiness routes only.
-- **Optional MCP transport shell:** feature-gated `/mcp` route with bearer authentication, transport security validation, `initialize`, `tools/list`, `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
+- **Optional MCP transport shell:** feature-gated `/mcp` route with bearer authentication, request resource limits, transport security validation, `initialize`, `tools/list`, `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
 - **MCP framework dependency:** none; the staged runtime uses a minimal internal JSON-RPC transport shell.
 - **Supervision:** `termux-services` / runit.
 - **Networking:** bind to localhost by default; prefer VPN or named tunnel only after authentication is configured.
@@ -112,4 +130,4 @@ Build the staged MCP runtime:
 cargo build --release --features mcp-runtime
 ```
 
-For authenticated MCP smoke tests, Android cross-compilation, and operator validation, follow [`docs/VALIDATION.md`](docs/VALIDATION.md).
+For authenticated MCP smoke tests, resource-limit validation, Android cross-compilation, and operator validation, follow [`docs/VALIDATION.md`](docs/VALIDATION.md).

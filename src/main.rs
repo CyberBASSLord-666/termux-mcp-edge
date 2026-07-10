@@ -3,22 +3,24 @@
 //! Key design principles:
 //! - Fail-closed startup authentication posture
 //! - Request authentication before staged MCP discovery or tool dispatch
+//! - Bounded MCP concurrency, request duration, and request-body size
 //! - Memory-safe async task management
 //! - Hardened filesystem operations resistant to traversal and symlink attacks
 //! - Graceful shutdown under runit supervision
 //! - Single-binary deployment optimized for Android Termux
 
 #[cfg(feature = "mcp-runtime")]
-use axum::middleware;
+use axum::{extract::DefaultBodyLimit, middleware};
 use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
+    request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     transport_security::TransportSecurityPolicy,
 };
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
-    health::{build_readiness_response, ReadinessResponse},
+    health::{build_readiness_response, McpRequestLimitReadiness, ReadinessResponse},
     tools::FileSystemTools,
 };
 use tokio::signal;
@@ -60,6 +62,21 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp-runtime")]
     let mcp_auth_policy = McpAuthPolicy::from_config(&config.auth, auth_posture)?;
 
+    #[cfg(feature = "mcp-runtime")]
+    let mcp_request_limits = McpRequestLimits::from_seconds(
+        config.transport.max_concurrent_requests,
+        config.transport.request_timeout_seconds,
+        config.transport.max_body_bytes,
+    )?;
+
+    #[cfg(feature = "mcp-runtime")]
+    info!(
+        max_concurrent_requests = config.transport.max_concurrent_requests,
+        request_timeout_seconds = config.transport.request_timeout_seconds,
+        max_body_bytes = config.transport.max_body_bytes,
+        "MCP request limits configured"
+    );
+
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
@@ -67,7 +84,22 @@ async fn main() -> anyhow::Result<()> {
     // The optional staged MCP runtime reuses this instance for bounded safe-rooted
     // listing, reads, dry-run previews, and explicitly requested writes.
     let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
-    let readiness = build_readiness_response(config.file.safe_roots.len(), auth_posture_label);
+
+    #[cfg(feature = "mcp-runtime")]
+    let readiness_limits = Some(McpRequestLimitReadiness {
+        max_concurrent_requests: config.transport.max_concurrent_requests,
+        request_timeout_seconds: config.transport.request_timeout_seconds,
+        max_body_bytes: config.transport.max_body_bytes,
+    });
+
+    #[cfg(not(feature = "mcp-runtime"))]
+    let readiness_limits = None;
+
+    let readiness = build_readiness_response(
+        config.file.safe_roots.len(),
+        auth_posture_label,
+        readiness_limits,
+    );
 
     let app = Router::new()
         .route("/health", get(health_check))
@@ -85,6 +117,11 @@ async fn main() -> anyhow::Result<()> {
             ),
             file_tools,
         )
+        .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
+        .route_layer(middleware::from_fn_with_state(
+            mcp_request_limits,
+            enforce_mcp_request_limits,
+        ))
         .route_layer(middleware::from_fn_with_state(
             mcp_auth_policy,
             require_mcp_auth,
