@@ -41,8 +41,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        # actions/checkout@v4 resolved 2026-06-26
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        # actions/checkout@v7.0.0 resolved 2026-07-10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
