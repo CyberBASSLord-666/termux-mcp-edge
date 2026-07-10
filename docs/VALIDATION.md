@@ -51,13 +51,36 @@ Expected response:
 ok
 ```
 
+The `/health` and `/ready` operational probes do not require bearer authentication. They must not return secrets, raw configuration, private paths, or tool output.
+
 ## Staged MCP Smoke Tests
 
-When built with `--features mcp-runtime`, verify the transport using exact allowed `Host` and `Origin` headers:
+When built with `--features mcp-runtime`, load the configured token without printing it:
+
+```bash
+MCP_TEST_TOKEN="$(cat "$HOME/.termux_mcp_token")"
+```
+
+First prove unauthenticated discovery is rejected before JSON-RPC dispatch:
+
+```bash
+curl -i -sS \
+  -X POST \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":0,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp
+```
+
+Expected behavior: HTTP 401, `WWW-Authenticate: Bearer`, a non-sensitive `unauthorized` response, and no tool-discovery result.
+
+Then verify authenticated discovery using the exact allowed `Host` and `Origin` headers:
 
 ```bash
 curl -sS \
   -X POST \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
@@ -72,6 +95,7 @@ Validate the project-owned service status tool with the current allowlisted serv
 ```bash
 curl -sS \
   -X POST \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
@@ -80,6 +104,12 @@ curl -sS \
 ```
 
 Expected behavior: the response is read-only, reports only the allowlisted project-owned logical runtime service, and does not expose process inventory, shell fallback, arbitrary service names, or control actions.
+
+Clear the temporary shell variable after validation:
+
+```bash
+unset MCP_TEST_TOKEN
+```
 
 Use [`operator-validation.md`](operator-validation.md) for representative allowed/denied calls, audit-counter checks, filesystem boundaries, Android status, and capability-token boundary validation.
 
@@ -97,12 +127,13 @@ The `Android Cross Compile` workflow also supports manual dispatch and `v*` tag 
 Do not mark the project as broadly MCP-runtime-ready until each enabled capability has proven:
 
 1. Exact-head CI success.
-2. Exact-head Security success when triggered, or documented acceptance of a docs-only/path-filtered non-run.
-3. MCP tool discovery works.
-4. Representative MCP tool calls work for the enabled surface.
-5. Authentication and authorization behavior is documented and tested.
-6. README, operations, security, roadmap, and changelog documentation match the implemented runtime.
-7. Android release artifacts are validated when producing a device build.
+2. Exact-head Security success when triggered, or documented acceptance of a path-filtered non-run when no dependency, lockfile, or Security workflow input changed.
+3. Unauthenticated MCP discovery and invocation are rejected in static-token mode.
+4. Authenticated MCP tool discovery works.
+5. Representative authenticated MCP tool calls work for the enabled surface.
+6. Authentication and authorization behavior is documented and tested.
+7. README, operations, security, roadmap, and changelog documentation match the implemented runtime.
+8. Android release artifacts are validated when producing a device build.
 
 ## Current Known Limitation
 
