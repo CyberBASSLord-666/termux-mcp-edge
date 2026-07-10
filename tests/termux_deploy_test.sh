@@ -99,6 +99,7 @@ SHA_110="$(artifact_sha "$ARTIFACT_110")"
 SHA_120="$(artifact_sha "$ARTIFACT_120")"
 SHA_130="$(artifact_sha "$ARTIFACT_130")"
 SHA_200="$(artifact_sha "$ARTIFACT_200")"
+BAD_SHA="0000000000000000000000000000000000000000000000000000000000000000"
 
 bash "$SCRIPT" install --artifact "$ARTIFACT_100" --version 1.0.0 --sha256 "$SHA_100"
 [[ -x "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0/termux-mcp-server" ]]
@@ -117,7 +118,7 @@ printf 'RUST_BACKTRACE=$(touch %s)\n' "$PWNED" >>"$TERMUX_MCP_CONFIG_ROOT/runtim
 assert_fails bash "$SCRIPT" install --artifact "$ARTIFACT_100" --version 1.0.0 --sha256 "$SHA_100"
 assert_fails bash "$SCRIPT" install --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"
 assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0
-assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "${SHA_110%?}0"
+assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$BAD_SHA"
 assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 9.9.9 --sha256 "$SHA_110"
 
 bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"
@@ -196,20 +197,6 @@ assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_130" --version '../bad
   [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/3.0.0" ]]
 )
 
-configure_environment "$ROOT/main"
-# Restore the original environment state after the isolated subshell.
-export HOME="$ROOT/main/home"
-export PREFIX="$ROOT/main/prefix"
-export TERMUX_MCP_DEPLOY_ROOT="$HOME/.local/share/termux-mcp-edge"
-export TERMUX_MCP_CONFIG_ROOT="$HOME/.config/termux-mcp-edge"
-export TERMUX_MCP_SERVICE_ROOT="$PREFIX/var/service"
-export TERMUX_MCP_SERVICE_SHELL="$PREFIX/bin/sh"
-export TERMUX_MCP_TEST_MODE=1
-export TERMUX_MCP_TEST_PROBE_SEQUENCE=success
-
-# The second configure call intentionally rebuilt an empty environment, so use a
-# separate final lifecycle to verify configuration-preserving uninstall and purge.
-bash "$SCRIPT" install --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200"
 bash "$SCRIPT" uninstall
 [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT" ]]
 [[ ! -e "$TERMUX_MCP_SERVICE_ROOT/mcp_runtime" ]]
