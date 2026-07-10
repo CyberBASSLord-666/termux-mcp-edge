@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
+
+- Restored the optional `mcp-runtime` transport in independently validated stages while keeping the default build limited to the health endpoint.
+- Added exact `Host` and browser `Origin` validation before MCP request dispatch.
+- Added staged discovery and tool-call coverage for `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
+- Kept Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service inspection, service mutation/control, and high-impact actions disabled.
+- Added bounded safe-rooted directory listing and UTF-8 reads, default-dry-run writes, explicit safe-rooted mutation, atomic temporary-file replacement, and payload-size enforcement.
+- Added traversal, symlink-boundary, oversize, exact-limit, dry-run, explicit-mutation, and MCP-transport filesystem tests.
+- Corrected JSON-RPC handling so syntactically valid requests missing `method` return `-32600 Invalid Request` while malformed JSON remains `-32700 Parse error`.
+- Added backend-neutral audit events and in-memory aggregate counters for staged status and filesystem decisions without retaining paths, contents, secrets, tokens, environment values, or caller strings.
+- Added inert fixed-allowlist command-policy primitives and inert high-impact capability-token policy primitives without process spawning or live authorization exposure.
+- Added command-execution and high-impact-controls gate documentation, capability/audit contracts, and operator validation guidance.
+- Hardened setup and cross-compilation scripts for strict error handling, validation, cleanup, and repeatable operation.
+- Pinned GitHub Actions inputs to immutable commits, standardized deterministic runners, and bounded workflow execution with timeouts.
+- Synchronized README, security, validation, contribution, roadmap, and release documentation with the current staged runtime and CI contract.
+
 ## 2026-06-26 — Authentication Posture Hardening
 
 - Changed startup authentication behavior to fail closed when `MCP__AUTH__STATIC_TOKEN` is missing.
