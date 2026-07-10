@@ -124,11 +124,15 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
     Some(token)
 }
 
+/// Compare two already-bounded bearer-token byte slices using fixed work.
+///
+/// Every accepted input is at most `MAX_BEARER_TOKEN_BYTES`, so iterating the
+/// full bound prevents the comparison loop count from revealing either token
+/// length. Length equality is folded into the accumulated difference.
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let max_len = left.len().max(right.len());
     let mut difference = left.len() ^ right.len();
 
-    for index in 0..max_len {
+    for index in 0..MAX_BEARER_TOKEN_BYTES {
         let left_byte = left.get(index).copied().unwrap_or(0);
         let right_byte = right.get(index).copied().unwrap_or(0);
         difference |= usize::from(left_byte ^ right_byte);
@@ -253,6 +257,14 @@ mod tests {
         let response = call(McpAuthPolicy::unauthenticated_localhost_only(), None).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn fixed_work_comparison_matches_only_equal_tokens() {
+        assert!(constant_time_eq(b"same-value", b"same-value"));
+        assert!(!constant_time_eq(b"same-value", b"different"));
+        assert!(!constant_time_eq(b"short", b"shorter"));
+        assert!(!constant_time_eq(b"shorter", b"short"));
     }
 
     #[test]
