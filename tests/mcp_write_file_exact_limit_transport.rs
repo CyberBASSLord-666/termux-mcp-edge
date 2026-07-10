@@ -52,7 +52,7 @@ async fn transport_write_file_allows_exact_default_limit_as_dry_run_preview() {
     assert_eq!(payload["id"], "exact-limit-dry-run");
     assert_eq!(
         result["content"][0]["text"],
-        EXPECTED_DRY_RUN_RESPONSE
+        EXPECTED_DRY_RUN_RESPONSE,
     );
     assert_eq!(
         result
@@ -62,11 +62,11 @@ async fn transport_write_file_allows_exact_default_limit_as_dry_run_preview() {
             "dryRun": true,
             "bytes": DEFAULT_MAX_WRITE_BYTES,
             "message": EXPECTED_DRY_RUN_RESPONSE
-        })
+        }),
     );
     assert_eq!(
         result.get("isError").and_then(|value| value.as_bool()),
-        Some(false)
+        Some(false),
     );
     assert!(!target.exists());
 }
