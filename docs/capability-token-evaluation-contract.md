@@ -110,4 +110,4 @@ This contract does not introduce:
 
 Any future high-impact runtime surface must be implemented in a separate focused issue and PR with its own tests, audit coverage, and explicit opt-in gate.
 
-Closes #133
+Originally added for #133; synchronized to current project governance by #165.
