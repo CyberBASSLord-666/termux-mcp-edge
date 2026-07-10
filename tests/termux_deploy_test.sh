@@ -28,6 +28,7 @@ bash "$SCRIPT" install --artifact "$ARTIFACT" --version 1.0.0
 [[ -x "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0/termux-mcp-server" ]]
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
 [[ -x "$TERMUX_MCP_SERVICE_ROOT/mcp_runtime/run" ]]
+head -n 1 "$TERMUX_MCP_SERVICE_ROOT/mcp_runtime/run" | grep -Fx "#!$PREFIX/bin/sh"
 [[ -d "$TERMUX_MCP_CONFIG_ROOT" ]]
 [[ "$(stat -c '%a' "$TERMUX_MCP_CONFIG_ROOT")" == "700" ]]
 
@@ -40,6 +41,19 @@ bash "$SCRIPT" upgrade --artifact "$ARTIFACT" --version 1.1.0
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
 
+if TERMUX_MCP_TEST_PROBE_RESULT=failure bash "$SCRIPT" upgrade --artifact "$ARTIFACT" --version 1.2.0 >/dev/null 2>&1; then
+  printf 'unhealthy upgrade unexpectedly succeeded\n' >&2
+  exit 1
+fi
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
+
+bash "$SCRIPT" rollback
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
+
+# Re-establish a distinct rollback target after the failed-candidate recovery check.
+rm -f "$TERMUX_MCP_DEPLOY_ROOT/previous"
+ln -s "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0" "$TERMUX_MCP_DEPLOY_ROOT/previous"
 bash "$SCRIPT" rollback
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
