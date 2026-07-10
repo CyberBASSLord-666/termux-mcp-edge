@@ -11,6 +11,7 @@ pub mod health;
 #[cfg(feature = "mcp-runtime")]
 pub mod mcp_transport;
 pub mod platform_info;
+pub mod request_limits;
 pub mod service_status;
 pub mod tools;
 pub mod transport_security;
