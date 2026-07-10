@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Reproducible Termux Deployment
+
+- Added a dependency-light deployment manager for project-owned, versioned Termux installations.
+- Added atomic install and upgrade activation with retained previous-release state and explicit rollback.
+- Added automatic restoration of the previous release when candidate health or readiness validation fails.
+- Added project-scoped runit service generation, persistent configuration separation, restrictive directory permissions, architecture checks, idempotency guards, dry-run support, and deterministic uninstall behavior.
+- Added isolated shell tests covering install, duplicate refusal, upgrade, rollback, unsafe path/version rejection, secret non-disclosure, configuration preservation, and purge behavior.
+- Added CI execution for deployment shell tests and path triggers for deployment scripts.
+- Added a complete operator guide for install, upgrade, rollback, status, recovery, uninstall, cross-compiled artifacts, and on-device validation.
+
 ## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
 
 - Restored the optional `mcp-runtime` transport in independently validated stages while keeping the default build limited to operational health/readiness endpoints.
