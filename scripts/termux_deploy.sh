@@ -146,7 +146,8 @@ probe_runtime() {
 }
 
 atomic_link() {
-  local target="$1" link="$2" tmp="${link}.next.$$"
+  local target="$1" link="$2"
+  local tmp="${link}.next.$$"
   run ln -s "$target" "$tmp"
   run mv -Tf "$tmp" "$link"
 }
