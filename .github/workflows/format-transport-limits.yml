@@ -33,6 +33,7 @@ jobs:
 
       - name: Commit formatting changes
         run: |
+          # This follow-up branch commit intentionally triggers the workflow after registration.
           if git diff --quiet -- '*.rs'; then
             echo 'No Rust formatting changes required.'
             exit 0
