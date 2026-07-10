@@ -9,6 +9,8 @@
 //! - Graceful shutdown under runit supervision
 //! - Single-binary deployment optimized for Android Termux
 
+use std::ffi::OsStr;
+
 #[cfg(feature = "mcp-runtime")]
 use axum::{extract::DefaultBodyLimit, middleware};
 use axum::{extract::State, routing::get, Json, Router};
@@ -27,10 +29,11 @@ use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("termux-mcp-server {}", env!("CARGO_PKG_VERSION"));
+    if handle_cli()? {
         return Ok(());
     }
 
@@ -148,6 +151,28 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Server shutdown complete");
     Ok(())
+}
+
+fn handle_cli() -> anyhow::Result<bool> {
+    let mut arguments = std::env::args_os();
+    let _program = arguments.next();
+    let first = arguments.next();
+    let second = arguments.next();
+
+    match (first.as_deref(), second.as_deref()) {
+        (None, None) => Ok(false),
+        (Some(argument), None) if argument == OsStr::new("--version") => {
+            println!("termux-mcp-server {}", env!("CARGO_PKG_VERSION"));
+            Ok(true)
+        }
+        (Some(argument), None)
+            if argument == OsStr::new("--help") || argument == OsStr::new("-h") =>
+        {
+            print!("{CLI_HELP}");
+            Ok(true)
+        }
+        _ => anyhow::bail!("unsupported command-line arguments; use --help"),
+    }
 }
 
 async fn health_check() -> &'static str {
