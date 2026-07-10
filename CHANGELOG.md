@@ -2,7 +2,9 @@
 
 ## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
 
-- Restored the optional `mcp-runtime` transport in independently validated stages while keeping the default build limited to the health endpoint.
+- Restored the optional `mcp-runtime` transport in independently validated stages while keeping the default build limited to operational health/readiness endpoints.
+- Enforced configured bearer authentication on the complete `/mcp` route before Host/Origin validation, JSON-RPC parsing, tool discovery, or tool invocation; retained only explicit loopback-development bypass behavior.
+- Added HTTP 401 authentication failures with `WWW-Authenticate: Bearer`, `Cache-Control: no-store`, bounded credential parsing, constant-time token comparison, and token redaction in debug/error paths.
 - Added exact `Host` and browser `Origin` validation before MCP request dispatch.
 - Added staged discovery and tool-call coverage for `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
 - Kept Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service inspection, service mutation/control, and high-impact actions disabled.
@@ -14,7 +16,7 @@
 - Added command-execution and high-impact-controls gate documentation, capability/audit contracts, and operator validation guidance.
 - Hardened setup and cross-compilation scripts for strict error handling, validation, cleanup, and repeatable operation.
 - Pinned GitHub Actions inputs to immutable commits, standardized deterministic runners, and bounded workflow execution with timeouts.
-- Synchronized README, security, validation, contribution, roadmap, and release documentation with the current staged runtime and CI contract.
+- Synchronized README, security, validation, contribution, roadmap, operations, and release documentation with the current staged runtime and CI contract.
 
 ## 2026-06-26 — Authentication Posture Hardening
 
