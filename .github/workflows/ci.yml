@@ -52,6 +52,19 @@ jobs:
         # Swatinem/rust-cache@v2 resolved 2026-06-26
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
+      - name: Apply rustfmt for diagnostic artifact
+        run: cargo fmt --all
+
+      - name: Upload formatted Rust tree
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr-170-rustfmt-tree
+          path: |
+            src/**/*.rs
+            tests/**/*.rs
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Format check
         run: cargo fmt --all -- --check
 
