@@ -403,58 +403,94 @@ mod tests {
     }
 
     #[test]
-    fn unauthenticated_mode_is_rejected_for_non_loopback_bind() {
-        let config = app_config("0.0.0.0", None, true);
+    fn unauthenticated_localhost_only_mode_rejects_non_loopback_hosts() {
+        for host in ["0.0.0.0", "192.168.1.10", "example.com"] {
+            let config = app_config(host, None, true);
 
-        let err = validate_runtime_auth_posture(&config)
-            .expect_err("remote unauthenticated mode must fail closed");
+            let err = validate_runtime_auth_posture(&config)
+                .expect_err("non-loopback unauthenticated listener must fail closed");
 
-        assert!(err.to_string().contains("only allowed on localhost"));
+            assert!(err.to_string().contains("only allowed on localhost"));
+        }
     }
 
     #[test]
-    fn transport_security_defaults_are_exact_and_local() {
+    fn transport_security_config_accepts_exact_hosts_and_origins() {
+        validate_transport_security(&transport_config())
+            .expect("exact transport security allowlists should validate");
+    }
+
+    #[test]
+    fn transport_security_config_rejects_empty_allowed_hosts() {
         let transport = TransportConfig {
-            allowed_hosts: vec![
-                "localhost:8000".to_owned(),
-                "127.0.0.1:8000".to_owned(),
-                "[::1]:8000".to_owned(),
-            ],
-            allowed_origins: vec![
-                "http://localhost:8000".to_owned(),
-                "http://127.0.0.1:8000".to_owned(),
-                "http://[::1]:8000".to_owned(),
-            ],
-            allow_missing_origin: false,
+            allowed_hosts: vec![],
+            ..transport_config()
         };
 
-        validate_transport_security(&transport).expect("local exact defaults should validate");
-        assert!(!transport.allowed_hosts.iter().any(|host| host == "*"));
-        assert!(!transport.allowed_origins.iter().any(|origin| origin == "*"));
+        let err = validate_transport_security(&transport)
+            .expect_err("empty transport host allowlist must fail closed");
+
+        assert!(err.to_string().contains("ALLOWED_HOSTS"));
     }
 
     #[test]
-    fn wildcard_host_is_rejected() {
+    fn transport_security_config_rejects_wildcard_hosts() {
         let transport = TransportConfig {
             allowed_hosts: vec!["*".to_owned()],
             ..transport_config()
         };
 
         let err = validate_transport_security(&transport)
-            .expect_err("wildcard host must be rejected");
+            .expect_err("wildcard transport host allowlist must fail closed");
+
         assert!(err.to_string().contains("invalid host"));
     }
 
     #[test]
-    fn origin_with_path_is_rejected() {
+    fn transport_security_config_rejects_empty_allowed_origins() {
         let transport = TransportConfig {
-            allowed_origins: vec!["https://example.com/path".to_owned()],
+            allowed_origins: vec![],
             ..transport_config()
         };
 
         let err = validate_transport_security(&transport)
-            .expect_err("origin path must be rejected");
+            .expect_err("empty transport origin allowlist must fail closed");
+
+        assert!(err.to_string().contains("ALLOWED_ORIGINS"));
+    }
+
+    #[test]
+    fn transport_security_config_rejects_non_http_origins() {
+        let transport = TransportConfig {
+            allowed_origins: vec!["chrome-extension://example".to_owned()],
+            ..transport_config()
+        };
+
+        let err = validate_transport_security(&transport)
+            .expect_err("non-http transport origins must fail closed");
+
         assert!(err.to_string().contains("invalid origin"));
+    }
+
+    #[test]
+    fn transport_security_config_rejects_origin_paths_queries_fragments_and_userinfo() {
+        for origin in [
+            "http://localhost:8000/",
+            "http://localhost:8000/path",
+            "http://localhost:8000?debug=true",
+            "http://localhost:8000#fragment",
+            "https://user@example.com",
+        ] {
+            let transport = TransportConfig {
+                allowed_origins: vec![origin.to_owned()],
+                ..transport_config()
+            };
+
+            let err = validate_transport_security(&transport)
+                .expect_err("transport origin allowlist values must be exact origins only");
+
+            assert!(err.to_string().contains("invalid origin"));
+        }
     }
 
     #[test]
