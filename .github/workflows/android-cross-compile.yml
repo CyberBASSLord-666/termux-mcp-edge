@@ -37,8 +37,8 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Install Android NDK
-        # nttld/setup-ndk@v1 resolved 2026-07-09
-        uses: nttld/setup-ndk@1b1581dec54d118a36802c007e3f38dff507d74b
+        # nttld/setup-ndk@1.6.0 resolved 2026-07-10
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779
         with:
           ndk-version: r26d
           add-to-path: false
