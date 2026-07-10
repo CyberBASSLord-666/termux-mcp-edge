@@ -2,13 +2,21 @@
 
 ## Unreleased — Reproducible Termux Deployment
 
-- Added a dependency-light deployment manager for project-owned, versioned Termux installations.
-- Added atomic install and upgrade activation with retained previous-release state and explicit rollback.
-- Added automatic restoration of the previous release when candidate health or readiness validation fails.
-- Added project-scoped runit service generation, persistent configuration separation, restrictive directory permissions, architecture checks, idempotency guards, dry-run support, and deterministic uninstall behavior.
-- Added isolated shell tests covering install, duplicate refusal, upgrade, rollback, unsafe path/version rejection, secret non-disclosure, configuration preservation, and purge behavior.
-- Added CI execution for deployment shell tests and path triggers for deployment scripts.
-- Added a complete operator guide for install, upgrade, rollback, status, recovery, uninstall, cross-compiled artifacts, and on-device validation.
+- Added `scripts/termux_deploy.sh` as the canonical manager for project-owned, versioned Termux releases and the fixed `mcp_runtime` runit service.
+- Added distinct install and upgrade modes, atomic `current`/`previous` activation, explicit rollback, status, configuration-preserving uninstall, and explicit configuration purge.
+- Added strict root placement beneath `HOME` and `PREFIX`, path-segment validation, non-overlapping deployment/configuration roots, validated loopback probe URLs, and fixed service ownership boundaries.
+- Added artifact validation for regular executable state, non-symlink input, bounded size, SHA-256, ELF architecture, and exact embedded package version.
+- Added exact dependency-free binary `--version` and `--help` behavior with integration coverage for extra, unknown, and non-UTF-8 arguments.
+- Added a deployment lock with live-owner rejection, stale-lock recovery, restrictive lock metadata, and cleanup traps for locks, staging directories, and temporary links.
+- Added private `runtime.env` validation and a literal allowlisted `NAME=value` loader that does not evaluate configuration as program text.
+- Added fail-closed authentication-posture checks for deployed configuration and rejected group/world-accessible, symlinked, malformed, or non-allowlisted configuration.
+- Added exact deployment-state snapshots so a failed candidate restores prior `current`/`previous` links, removes the failed release, restarts the prior runtime, and verifies recovery.
+- Added rollback recovery that restores and re-probes the original active release when the selected rollback target is unhealthy.
+- Added invalid-link rejection for release targets that escape the project releases root or point to incomplete releases.
+- Added dry-run validation without release, service, link, or lock mutation.
+- Added CI deployment tests covering verification failures, operation-mode enforcement, initial-install cleanup, failed-upgrade recovery, failed-rollback recovery, active/stale locks, unsafe roots, invalid links, literal configuration handling, secret non-disclosure, uninstall preservation, and explicit purge.
+- Added canonical deployment, upgrade, rollback, recovery, validation, and on-device production-gate documentation.
+- Updated CI path filters and validation to include deployment scripts and shell tests.
 
 ## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
 
