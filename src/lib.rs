@@ -8,6 +8,7 @@ pub mod command_policy;
 pub mod config;
 pub mod error;
 pub mod health;
+pub mod json_rpc;
 #[cfg(feature = "mcp-runtime")]
 pub mod mcp_transport;
 pub mod platform_info;

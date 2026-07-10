@@ -1,25 +1,25 @@
 # MCP Restoration Validation Plan
 
-This document defines validation evidence for the current staged MCP transport and for any future capability expansion.
+This document defines validation evidence for the current staged MCP transport and for future protocol and capability expansion.
 
-The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated staged MCP discovery and the documented allowlisted tool set. This plan must be updated whenever the live transport or authorization boundary changes.
+The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated staged MCP discovery and the documented allowlisted tool set. The current POST endpoint is a staged custom transport; it must preserve JSON-RPC message rules and may not be described as a complete standard HTTP-with-SSE/session implementation until those stages land.
 
-## Required PR Shape
+## Required PR shape
 
-MCP work must remain staged through small, reviewable pull requests. A single PR must not combine broad dependency restoration, transport changes, high-impact tool exposure, and unrelated maintenance.
+MCP work must remain staged through small, reviewable pull requests. Do not combine broad dependency restoration, protocol/lifecycle changes, high-impact tool exposure, and unrelated maintenance.
 
-For future expansion, use this sequence:
+For future expansion:
 
-1. Define the capability and threat model.
-2. Add inert policy and validation primitives without runtime exposure.
-3. Add or update authentication/authorization and audit boundaries.
+1. Define the protocol or capability contract and threat model.
+2. Add independently testable validation/policy primitives.
+3. Add or update authentication, authorization, resource, and audit boundaries.
 4. Add disabled-by-default runtime wiring.
-5. Add discovery and invocation tests for the smallest allowed surface.
-6. Add operator documentation and recovery/rollback notes.
+5. Add allowed, denied, boundary, notification, recovery, and regression tests.
+6. Add operator documentation and rollback/recovery notes.
 
-## Exact-Head Gate
+## Exact-head gate
 
-Every MCP runtime PR must prove these checks on the exact PR head SHA:
+Every MCP runtime PR must prove:
 
 ```bash
 cargo fmt --all -- --check
@@ -29,78 +29,113 @@ cargo build --release
 cargo build --release --features mcp-runtime
 ```
 
-GitHub CI must succeed for the exact head. The Security workflow must also succeed when Cargo dependencies, the lockfile, or Security workflow inputs change. A path-filtered Security non-run is acceptable only when the PR documents that those inputs are unchanged.
+CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation is required when runtime, dependency, workflow, or deployment changes can affect the device artifact.
 
-## Dependency Gate
+## Dependency gate
 
-Before merge, dependency review must confirm one of the following:
+Before merge, dependency review must confirm one of:
 
-- no dependency changes were made;
-- dependency alerts remain clear after the exact PR head was pushed;
-- any remaining advisory is documented as an accepted exception with scope, impact, mitigation, owner, and review date.
+- no dependency changes;
+- exact-head Security and dependency alerts are clear;
+- any accepted advisory has documented scope, impact, mitigation, owner, and review date.
 
-Restoring unused dependencies is not acceptable. Dependencies must correspond to compiled, tested code paths.
+Unused dependencies must be removed rather than retained for hypothetical future work.
 
-## Transport Authentication and Security Tests
-
-Any PR that exposes or changes MCP transport must include automated or explicitly documented smoke coverage for these cases:
+## Authentication, resource, and transport security tests
 
 | Scenario | Expected result |
 | --- | --- |
-| Missing authorization in static-token mode | HTTP 401 before JSON-RPC handling. |
-| Empty, malformed, oversized, or incorrect bearer token | HTTP 401 with no sensitive detail. |
-| Valid bearer token | Request reaches Host/Origin validation and the permitted MCP path. |
-| Unexpected `Host` header | Request is rejected. |
-| Unexpected browser `Origin` header | Request is rejected on browser-reachable routes. |
-| Loopback-only unauthenticated mode on loopback | Development-only startup and MCP access are allowed. |
+| Missing authorization in static-token mode | HTTP 401 before MCP resource accounting or message handling. |
+| Malformed, oversized, or incorrect bearer token | HTTP 401 with no sensitive detail. |
+| Valid bearer token | Request reaches request limits and Host/Origin validation. |
+| Concurrency saturated | HTTP 503 with bounded non-sensitive response. |
+| Request duration exceeded | HTTP 504. |
+| Request body exceeded | HTTP 413. |
+| Unexpected `Host` | HTTP 403 before JSON-RPC dispatch. |
+| Unexpected browser `Origin` | HTTP 403 before JSON-RPC dispatch. |
+| Loopback-only unauthenticated mode on loopback | Development-only access is allowed. |
 | Loopback-only unauthenticated mode on non-loopback bind | Startup fails closed. |
-| Debug/error output | Configured bearer values remain redacted. |
+| Debug/error output | Tokens, private paths, and caller payloads remain absent. |
 
-`/health` and `/ready` may remain unauthenticated only while their responses stay non-sensitive and contain no tool output.
+`/health` and `/ready` may remain unauthenticated only while responses remain coarse and non-sensitive.
 
-## Tool Discovery Tests
+## JSON-RPC and MCP message-envelope tests
 
-Any PR that exposes or changes MCP tool discovery must prove:
+Every transport implementation must distinguish malformed JSON from a valid JSON value that is not a valid request object.
 
-1. unauthenticated clients cannot discover tools in static-token mode;
-2. authenticated clients can discover only the intended tool set;
-3. high-impact tools remain absent unless explicitly enabled;
-4. discovery output does not reveal private filesystem paths, local tokens, command arguments, cookies, or Android account data.
+Required evidence:
 
-## Tool Invocation Tests
+- malformed JSON returns `-32700 Parse error` with `id: null`;
+- valid non-object JSON, unsupported batch arrays in the current stage, missing/wrong `jsonrpc`, missing/non-string method, invalid ID types, and primitive params return `-32600 Invalid Request`;
+- `jsonrpc` is exactly `"2.0"`;
+- MCP request IDs are non-null strings or integer numbers;
+- params are object/array when present;
+- notifications omit ID and receive no JSON-RPC response;
+- `notifications/initialized` receives HTTP 204 with an empty body;
+- notification-shaped request methods are not dispatched and cannot mutate state;
+- unsupported notifications receive no response;
+- valid request IDs are preserved in request errors, while invalid IDs are never reflected.
 
-Any PR that exposes or changes MCP tool invocation must prove:
+The current focused envelope stage does not claim batch, session, lifecycle, or SSE completion. Those require a separate design and integration stage.
 
-1. unauthenticated invocation is rejected in static-token mode;
-2. unknown or unauthorized tool names are rejected;
-3. disabled high-impact tools cannot be invoked;
-4. allowed tools enforce their configured boundaries;
-5. failures do not leak secrets, private paths, command arguments, tokens, cookies, or personal data.
+## Lifecycle and standard transport completion gate
 
-## High-Impact Tool Requirements
+Before claiming complete MCP 2024-11-05 interoperability, the runtime must implement and test:
 
-High-impact tools include command-capable actions, package management, process control, browser automation, network mutation, Android shared-storage operations, rish/Shizuku actions, device control, and any broad host mutation.
+- initialization as the first client/server interaction;
+- protocol-version and capability negotiation;
+- receipt of `notifications/initialized` before normal operation;
+- per-client/session state and request-ID uniqueness where applicable;
+- the standard HTTP-with-SSE connection model or a fully documented custom transport that preserves lifecycle and bidirectional requirements;
+- cancellation, shutdown, reconnect, and multiple-client behavior;
+- batch behavior if supported, or a documented compatibility decision supported by the selected MCP schema/transport.
 
-A PR exposing any high-impact tool must document and test:
+## Tool discovery tests
 
-- the feature gate and authorization scope that enable it;
-- the default-disabled behavior;
-- which authenticated clients can discover it;
-- which authenticated clients can invoke it;
-- path, command, network, browser, or platform boundaries;
-- confirmation and dry-run/preview behavior;
+Any discovery change must prove:
+
+1. unauthenticated callers receive no tools;
+2. authenticated callers receive only the intended staged set;
+3. high-impact tools remain absent until explicitly gated;
+4. schemas and descriptions match runtime behavior;
+5. discovery does not expose secrets, private paths, process inventory, or credential-bearing arguments.
+
+## Tool invocation tests
+
+Any invocation change must prove:
+
+1. unauthenticated invocation is rejected;
+2. unknown or unauthorized tools are rejected;
+3. notification-shaped tool calls do not dispatch;
+4. disabled high-impact tools cannot be invoked;
+5. enabled tools enforce safe roots, bounds, dry-run/mutation rules, and audit privacy;
+6. failures do not leak secrets, private paths, raw I/O errors, command arguments, tokens, or personal data.
+
+## High-impact tool requirements
+
+High-impact tools include command execution, package management, process/service control, Android/device control, broad filesystem mutation, network mutation, browser automation, credential handling, and shared-storage operations.
+
+A PR exposing any high-impact family must document and test:
+
+- compile-time and runtime gates;
+- authenticated discovery/invocation scope;
+- fixed allowlists and bounded inputs/outputs;
+- confirmation or capability-grant requirements;
+- dry-run/preview behavior;
 - denied-access behavior;
-- audit coverage that avoids sensitive data leakage;
-- rollback and cancellation cleanup where feasible.
+- non-sensitive audit coverage;
+- timeout, cancellation, cleanup, and rollback semantics.
 
-## Manual Android Smoke Validation
+## Manual Android smoke validation
 
-For Termux deployments, include a smoke-test note covering:
+For a versioned Termux deployment:
 
 ```bash
-sv status mcp-server
+scripts/termux_deploy.sh status
+sv status "$PREFIX/var/service/mcp_runtime"
 curl -fsS http://127.0.0.1:8000/health
-MCP_TEST_TOKEN="$(cat "$HOME/.termux_mcp_token")"
+curl -fsS http://127.0.0.1:8000/ready
+MCP_TEST_TOKEN="$(sed -n 's/^MCP__AUTH__STATIC_TOKEN=//p' "$HOME/.config/termux-mcp-edge/runtime.env")"
 curl -sS \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
@@ -108,21 +143,28 @@ curl -sS \
   -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
   http://127.0.0.1:8000/mcp
+curl -i -sS \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  http://127.0.0.1:8000/mcp
 unset MCP_TEST_TOKEN
 ```
 
-The note must identify the exact build/commit and verify authenticated discovery plus at least one permitted tool call for the changed surface.
+The evidence must identify the exact commit/artifact digest and verify authenticated discovery, no-response notification behavior, and representative allowed/denied tool calls.
 
-## Stop Conditions
+## Stop conditions
 
-Do not merge an MCP runtime PR when any of these are true:
+Do not merge when any of these are true:
 
 - exact-head CI is not green;
-- required Security validation is not green;
-- dependency alerts are unresolved or unreviewed;
-- browser-reachable routes lack Host or Origin protection;
-- static-token mode does not enforce authentication before MCP handling;
+- required Security or Android validation is not green;
+- browser-reachable routes lack auth, bounds, Host, or Origin protection;
+- malformed and invalid request objects are misclassified;
+- notifications receive JSON-RPC responses or dispatch request-only methods;
 - unauthenticated clients can discover or invoke tools;
 - high-impact tools are enabled by default;
-- tests or smoke notes do not cover denied access;
-- documentation claims broader runtime capability than the compiled code provides.
+- tests omit denied, boundary, cancellation, or recovery paths;
+- documentation claims broader MCP interoperability than the implementation provides.
