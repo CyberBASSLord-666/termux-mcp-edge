@@ -4,10 +4,12 @@
 
 Termux MCP Edge has two deliberate compile-time postures:
 
-- The default feature set exposes the Axum `GET /health` endpoint and validates fail-closed startup authentication configuration.
+- The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
 - The optional `mcp-runtime` feature additionally exposes the staged `POST /mcp` JSON-RPC transport and its narrowly scoped tool registry.
 
-The optional runtime is not a broad host-control surface. It validates exact `Host` and browser `Origin` allowlists before dispatch and exposes only the currently documented staged tools:
+In static-token mode, the complete `/mcp` route requires `Authorization: Bearer <configured-token>` before transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Missing, malformed, oversized, or incorrect credentials are rejected with HTTP 401 and a non-sensitive response. The only authentication bypass is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
+
+The optional runtime is not a broad host-control surface. After authentication, it validates exact `Host` and browser `Origin` allowlists before dispatch and exposes only the currently documented staged tools:
 
 - `runtime_status`
 - `platform_info`
@@ -21,7 +23,7 @@ Android platform control, shell fallback, arbitrary command execution, global pr
 
 ## Authentication and Startup Behavior
 
-Startup requires `MCP__AUTH__STATIC_TOKEN` by default. Empty or whitespace-only values are rejected before the HTTP listener starts.
+Startup requires `MCP__AUTH__STATIC_TOKEN` by default. Empty or whitespace-only values are rejected before the HTTP listener starts. The configured token is redacted from debug output and must not be logged or copied into issue reports.
 
 The only supported exception is explicit local development mode:
 
@@ -32,12 +34,21 @@ export MCP__SERVER__HOST=127.0.0.1
 
 This opt-in is rejected for non-loopback bind addresses. Do not use unauthenticated mode with tunnels, LAN exposure, reverse proxies, shared devices, or any remotely reachable deployment.
 
+For a static-token deployment, every MCP request must include:
+
+```http
+Authorization: Bearer <configured-token>
+```
+
+The bearer scheme is case-insensitive, but the token value is an exact match. Authentication failures include `WWW-Authenticate: Bearer` and `Cache-Control: no-store` and must not reveal whether a token was missing, malformed, or incorrect.
+
 ## Current Endpoint and Tool Surface
 
 | Surface | Default build | `mcp-runtime` build |
 |---|---:|---:|
-| `GET /health` | Enabled | Enabled |
-| `POST /mcp` staged transport | Disabled | Enabled |
+| `GET /health` | Enabled, unauthenticated | Enabled, unauthenticated |
+| `GET /ready` | Enabled, unauthenticated | Enabled, unauthenticated |
+| `POST /mcp` staged transport | Disabled | Bearer-authenticated, except explicit loopback development mode |
 | `runtime_status` / `platform_info` | Disabled | Read-only |
 | `android_status` | Disabled | Read-only allowlisted metadata |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
@@ -46,9 +57,11 @@ This opt-in is rejected for non-loopback bind addresses. Do not use unauthentica
 | `write_file` | Disabled | Payload-bounded, safe-rooted, dry-run by default |
 | Android control / command execution / high-impact controls | Disabled | Disabled |
 
+The unauthenticated operational endpoints are intentionally coarse. They must not return secrets, raw configuration, private paths, tool discovery, or tool results.
+
 ## Transport Security
 
-Browser-reachable MCP requests must match the configured exact transport allowlists:
+Browser-reachable MCP requests must match the configured exact transport allowlists after authentication succeeds:
 
 ```bash
 export MCP__TRANSPORT__ALLOWED_HOSTS='["localhost:8000"]'
@@ -57,7 +70,7 @@ export MCP__TRANSPORT__ALLOWED_ORIGINS='["http://localhost:8000"]'
 
 `MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only appropriate for explicitly reviewed non-browser clients that cannot send `Origin`. It must not be used as a general browser compatibility bypass.
 
-Transport validation occurs before JSON-RPC request dispatch. Rejected hosts or origins must not reach tool-call handling.
+Authentication occurs before transport validation and JSON-RPC dispatch. Rejected credentials must not reach Host/Origin checks, body parsing, discovery, or tool-call handling. Authenticated requests with rejected hosts or origins must not reach JSON-RPC or tool-call handling.
 
 ## Filesystem and Tool Safety Rules
 
@@ -81,7 +94,7 @@ The staged runtime exposes in-memory aggregate audit counters through `runtime_s
 
 They must not retain raw paths, file contents, command arguments or output, environment names or values, bearer tokens, capability-token values, hostnames, usernames, Android identifiers, or arbitrary caller strings.
 
-Audit counters provide evidence of gate decisions; they are not authorization and reset when the process restarts.
+Audit counters provide evidence of gate decisions; they are not authorization and reset when the process restarts. Authentication failures are deliberately handled before MCP tool audit counters because unauthorized callers must not enter the MCP dispatch path.
 
 ## Command and High-Impact Capability Boundaries
 
@@ -107,9 +120,10 @@ Cargo, lockfile, or security-workflow changes must remain separate from unrelate
 - Prefer a VPN-bound endpoint or named tunnel over raw port exposure.
 - Keep exact Host and Origin allowlists minimal.
 - Keep filesystem safe roots limited to dedicated project directories.
+- Protect the token file with restrictive permissions and avoid printing the token during validation.
 - Rotate tokens after suspected exposure.
 - Keep CI, Security, Dependabot, and pinned GitHub Actions enabled.
-- Validate the optional staged MCP surface before enabling it in a supervised service.
+- Validate both unauthorized rejection and authenticated MCP behavior before enabling the staged runtime in a supervised service.
 
 ## Incident Response
 
@@ -118,6 +132,6 @@ If compromise is suspected:
 1. Stop the runit service.
 2. Rotate bearer tokens and tunnel credentials.
 3. Inspect service and tunnel logs without copying secrets into issues or audit counters.
-4. Recheck transport allowlists and filesystem safe-root configuration.
+4. Recheck authentication mode, transport allowlists, and filesystem safe-root configuration.
 5. Review recent dependency, workflow, and runtime changes.
 6. Redeploy only after the relevant exact-head CI and Security checks are green.

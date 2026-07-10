@@ -1,6 +1,6 @@
 //! Configuration management with strong validation.
 
-use std::{env, net::IpAddr, path::PathBuf};
+use std::{env, fmt, net::IpAddr, path::PathBuf};
 
 use anyhow::{anyhow, bail};
 
@@ -26,7 +26,7 @@ pub struct ServerConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthConfig {
     /// Static bearer token for simple deployments.
     /// For production, consider integrating with external IdP.
@@ -34,6 +34,22 @@ pub struct AuthConfig {
     /// Explicit unsafe/local-only opt-in for development without a bearer token.
     /// When true, startup still requires binding to localhost.
     pub allow_unauthenticated_localhost_only: bool,
+}
+
+impl fmt::Debug for AuthConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthConfig")
+            .field(
+                "static_token",
+                &self.static_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "allow_unauthenticated_localhost_only",
+                &self.allow_unauthenticated_localhost_only,
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -45,9 +61,9 @@ pub struct FileConfig {
 
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
-    /// Allowed HTTP Host header values for future MCP transport routes.
+    /// Allowed HTTP Host header values for staged MCP transport routes.
     pub allowed_hosts: Vec<String>,
-    /// Allowed browser Origin header values for future MCP transport routes.
+    /// Allowed browser Origin header values for staged MCP transport routes.
     pub allowed_origins: Vec<String>,
     /// Explicit compatibility switch for non-browser clients that omit Origin.
     pub allow_missing_origin: bool,
@@ -291,6 +307,18 @@ mod tests {
     }
 
     #[test]
+    fn auth_config_debug_output_redacts_static_token() {
+        let auth = AuthConfig {
+            static_token: Some("secret-value".to_owned()),
+            allow_unauthenticated_localhost_only: false,
+        };
+        let debug = format!("{auth:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret-value"));
+    }
+
+    #[test]
     fn default_file_safe_root_is_narrow_termux_home_directory() {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
@@ -463,5 +491,12 @@ mod tests {
 
             assert!(err.to_string().contains("invalid origin"));
         }
+    }
+
+    #[test]
+    fn malformed_boolean_is_rejected() {
+        let err =
+            parse_bool("TEST_BOOL", "sometimes").expect_err("malformed boolean must fail closed");
+        assert!(err.to_string().contains("must be a boolean value"));
     }
 }

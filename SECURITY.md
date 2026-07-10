@@ -2,9 +2,14 @@
 
 ## Supported Runtime Scope
 
-The supported production line is the conservative Axum health-check runtime on `main`.
+The supported production line has two explicit compile-time postures:
 
-The current runtime intentionally exposes only `GET /health`. MCP transport, MCP tool discovery, filesystem tools, platform tools, shell-like actions, package-manager actions, network actions, browser automation, and rish/Shizuku-backed actions are not currently supported production surfaces.
+- The default build exposes operational health/readiness endpoints only.
+- The optional `mcp-runtime` build exposes the staged `/mcp` transport and its documented allowlisted tool set.
+
+The staged MCP route requires the configured static bearer token before JSON-RPC parsing, tool discovery, or tool invocation. The only exception is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
+
+Current staged tools remain limited to `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. Android platform control, shell access, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact controls are not supported runtime surfaces.
 
 ## Reporting Security Issues
 
@@ -25,6 +30,20 @@ Security reports should include:
 
 Reports must not include real bearer tokens, SSH keys, cookies, API keys, private file contents, or unrelated personal data from the Android device.
 
+## Authentication Boundary
+
+For static-token deployments, every request to `/mcp` must include:
+
+```http
+Authorization: Bearer <configured-token>
+```
+
+Authentication must run before transport validation, JSON-RPC parsing, discovery, or invocation. Missing, malformed, oversized, or incorrect credentials must return HTTP 401 with a non-sensitive response and `WWW-Authenticate: Bearer`.
+
+`/health` and `/ready` remain unauthenticated operational probes and must not return secrets, raw configuration, private paths, or tool results.
+
+Bearer values must never appear in logs, debug output, errors, audit counters, tests, issue text, or screenshots.
+
 ## Dependency Advisory Gate
 
 Dependency changes are blocked from merge until:
@@ -39,7 +58,7 @@ A dependency may not be restored solely to support code paths that are not compi
 
 ## MCP Transport and Tool Exposure Gate
 
-Any pull request that restores MCP transport, tool discovery, or tool invocation must satisfy the repository threat model and authorization policy before merge.
+Any pull request that changes MCP transport, tool discovery, or tool invocation must satisfy the repository threat model and authorization policy before merge.
 
 At minimum, it must prove:
 
@@ -53,7 +72,7 @@ At minimum, it must prove:
 
 ## Secret Handling
 
-Logs, errors, test fixtures, and documentation must not expose bearer tokens, session identifiers, private paths containing user names, SSH keys, API keys, cookies, or command arguments that contain credentials.
+Logs, errors, debug formatting, test fixtures, audit counters, and documentation must not expose bearer tokens, session identifiers, private paths containing user names, SSH keys, API keys, cookies, or command arguments that contain credentials.
 
 Use placeholders for examples, and redact sensitive values before adding logs or screenshots to issues and pull requests.
 
