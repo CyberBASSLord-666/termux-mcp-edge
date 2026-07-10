@@ -9,6 +9,7 @@ use crate::request_limits::{
     MAX_CONFIGURED_BODY_BYTES, MAX_CONFIGURED_CONCURRENT_REQUESTS,
     MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS, MIN_CONFIGURED_BODY_BYTES,
 };
+use crate::transport_security::{normalize_host, normalize_origin};
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
 const EMPTY_STATIC_TOKEN_ERROR: &str =
@@ -298,15 +299,13 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
     }
 
     for host in &transport.allowed_hosts {
-        let host = host.trim();
-        if host.is_empty() || host == "*" || host.contains('/') || host.contains(' ') {
+        if normalize_host(host).is_none() {
             bail!("MCP__TRANSPORT__ALLOWED_HOSTS contains an invalid host: {host}");
         }
     }
 
     for origin in &transport.allowed_origins {
-        let origin = origin.trim();
-        if !is_exact_http_origin(origin) {
+        if normalize_origin(origin).is_none() {
             bail!("MCP__TRANSPORT__ALLOWED_ORIGINS contains an invalid origin: {origin}");
         }
     }
@@ -331,24 +330,6 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
     }
 
     Ok(())
-}
-
-fn is_exact_http_origin(origin: &str) -> bool {
-    let authority = if let Some(authority) = origin.strip_prefix("http://") {
-        authority
-    } else if let Some(authority) = origin.strip_prefix("https://") {
-        authority
-    } else {
-        return false;
-    };
-
-    !authority.is_empty()
-        && !authority.contains('*')
-        && !authority.contains(' ')
-        && !authority.contains('/')
-        && !authority.contains('?')
-        && !authority.contains('#')
-        && !authority.contains('@')
 }
 
 #[cfg(test)]
@@ -495,6 +476,51 @@ mod tests {
     fn transport_security_config_accepts_exact_hosts_origins_and_safe_limits() {
         validate_transport_security(&transport_config())
             .expect("exact transport security allowlists and safe limits should validate");
+    }
+
+    #[test]
+    fn transport_security_config_uses_request_authority_contract() {
+        let accepted = [
+            ("LOCALHOST:8000", "HTTP://LOCALHOST:8000"),
+            ("127.0.0.1:8000", "http://127.0.0.1:8000"),
+            ("[0:0:0:0:0:0:0:1]:8000", "http://[0:0:0:0:0:0:0:1]:8000"),
+        ];
+        for (host, origin) in accepted {
+            let transport = TransportConfig {
+                allowed_hosts: vec![host.to_owned()],
+                allowed_origins: vec![origin.to_owned()],
+                ..transport_config()
+            };
+            validate_transport_security(&transport)
+                .unwrap_or_else(|error| panic!("accepted authority rejected: {error}"));
+        }
+
+        let rejected = [
+            "localhost\t:8000",
+            "localhost\n:8000",
+            "user@localhost:8000",
+            "localhost:0",
+            "localhost:65536",
+            "localhost:",
+            "::1",
+            "[::1",
+            "[::1]junk",
+        ];
+        for authority in rejected {
+            let transport = TransportConfig {
+                allowed_hosts: vec![authority.to_owned()],
+                ..transport_config()
+            };
+            validate_transport_security(&transport)
+                .expect_err("malformed configured host must fail startup");
+
+            let transport = TransportConfig {
+                allowed_origins: vec![format!("http://{authority}")],
+                ..transport_config()
+            };
+            validate_transport_security(&transport)
+                .expect_err("malformed configured origin must fail startup");
+        }
     }
 
     #[test]
