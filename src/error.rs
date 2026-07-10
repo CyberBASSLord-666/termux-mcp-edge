@@ -1,5 +1,6 @@
 //! Centralized error types for the server.
 
+use axum::http::StatusCode;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,17 +21,95 @@ pub enum AppError {
     Unauthorized,
 }
 
+impl AppError {
+    /// Return the stable, non-sensitive HTTP representation for this error.
+    ///
+    /// Internal `Display` output remains available for trusted diagnostics, but
+    /// request-derived paths and operating-system error text must never cross
+    /// the HTTP boundary.
+    fn public_response(&self) -> (StatusCode, &'static str) {
+        match self {
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Authentication failed"),
+            AppError::PathTraversal { .. } => {
+                (StatusCode::FORBIDDEN, "Requested path is not permitted")
+            }
+            AppError::FileTooLarge { .. } => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "File exceeds the configured read limit",
+            ),
+            AppError::WritePayloadTooLarge { .. } => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Write payload exceeds the configured limit",
+            ),
+            AppError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+        }
+    }
+}
+
 impl axum::response::IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        use axum::http::StatusCode;
-        let status = match self {
-            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::PathTraversal { .. } => StatusCode::FORBIDDEN,
-            AppError::FileTooLarge { .. } | AppError::WritePayloadTooLarge { .. } => {
-                StatusCode::PAYLOAD_TOO_LARGE
-            }
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        let (status, message) = self.public_response();
+        (status, message).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_traversal_http_response_redacts_attempted_path() {
+        let attempted = "/data/data/com.termux/files/home/.ssh/id_ed25519";
+        let error = AppError::PathTraversal {
+            attempted: attempted.to_owned(),
         };
-        (status, self.to_string()).into_response()
+
+        let (status, message) = error.public_response();
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(message, "Requested path is not permitted");
+        assert!(!message.contains(attempted));
+    }
+
+    #[test]
+    fn io_http_response_redacts_operating_system_error_text() {
+        let sensitive = "/data/data/com.termux/files/home/private/runtime.env";
+        let error = AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("permission denied while opening {sensitive}"),
+        ));
+
+        let (status, message) = error.public_response();
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(message, "Internal server error");
+        assert!(!message.contains(sensitive));
+        assert!(!message.contains("permission denied"));
+    }
+
+    #[test]
+    fn bounded_input_errors_keep_distinct_safe_contracts() {
+        assert_eq!(
+            AppError::FileTooLarge {
+                size: 1025,
+                max_size: 1024,
+            }
+            .public_response(),
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "File exceeds the configured read limit",
+            )
+        );
+        assert_eq!(
+            AppError::WritePayloadTooLarge {
+                size: 1025,
+                max_size: 1024,
+            }
+            .public_response(),
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Write payload exceeds the configured limit",
+            )
+        );
     }
 }
