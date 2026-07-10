@@ -10,6 +10,15 @@ use crate::audit::{AuditDecision, AuditEvent, AuditMode};
 /// Command execution remains disabled until a later transport/runtime gate.
 pub const COMMAND_EXECUTION_ENABLED: bool = false;
 
+/// Smallest accepted command timeout for a policy preview.
+pub const MIN_COMMAND_TIMEOUT_SECONDS: u64 = 1;
+/// Smallest accepted stdout/stderr byte cap for a policy preview.
+pub const MIN_COMMAND_OUTPUT_BYTES: u64 = 1;
+/// Maximum request-side argv cardinality inspected by the design-only policy.
+pub const MAX_COMMAND_ARGV_COUNT: usize = 16;
+/// Maximum request-side environment-name cardinality inspected by the policy.
+pub const MAX_COMMAND_ENVIRONMENT_NAME_COUNT: usize = 8;
+
 const COMMAND_EXECUTION_TOOL_NAME: &str = "command_execution_policy";
 const COMMAND_EXECUTION_GATE: &str = "command_execution";
 const COMMAND_ORDINAL_METADATA: &str = "command_ordinal";
@@ -22,10 +31,16 @@ const ENV_NAME_COUNT_METADATA: &str = "env_name_count";
 const POLICY_ALLOWED_REASON: &str = "policy_preview_allowed";
 const EXECUTION_DISABLED_REASON: &str = "execution_disabled";
 const COMMAND_NOT_ALLOWLISTED_REASON: &str = "command_not_allowlisted";
+const ARGV_COUNT_EXCEEDS_LIMIT_REASON: &str = "argv_count_exceeds_limit";
 const ARGV_MISMATCH_REASON: &str = "argv_mismatch";
+const TIMEOUT_BELOW_MINIMUM_REASON: &str = "timeout_below_minimum";
 const TIMEOUT_EXCEEDS_LIMIT_REASON: &str = "timeout_exceeds_limit";
+const STDOUT_CAP_BELOW_MINIMUM_REASON: &str = "stdout_cap_below_minimum";
 const STDOUT_CAP_EXCEEDS_LIMIT_REASON: &str = "stdout_cap_exceeds_limit";
+const STDERR_CAP_BELOW_MINIMUM_REASON: &str = "stderr_cap_below_minimum";
 const STDERR_CAP_EXCEEDS_LIMIT_REASON: &str = "stderr_cap_exceeds_limit";
+const ENVIRONMENT_NAME_COUNT_EXCEEDS_LIMIT_REASON: &str =
+    "environment_name_count_exceeds_limit";
 const ENVIRONMENT_NOT_ALLOWLISTED_REASON: &str = "environment_not_allowlisted";
 const SAFE_ROOT_REQUIRED_REASON: &str = "safe_root_required";
 
@@ -97,16 +112,43 @@ impl CommandExecutionPolicy {
             return denied(request, Some(command), EXECUTION_DISABLED_REASON);
         }
 
+        // Bound caller-controlled cardinality before any detailed element
+        // comparison. This keeps work and audit metadata deterministic even for
+        // malformed or adversarial previews.
+        if request.argv.len() > MAX_COMMAND_ARGV_COUNT {
+            return denied(request, Some(command), ARGV_COUNT_EXCEEDS_LIMIT_REASON);
+        }
+
+        if request.environment_names.len() > MAX_COMMAND_ENVIRONMENT_NAME_COUNT {
+            return denied(
+                request,
+                Some(command),
+                ENVIRONMENT_NAME_COUNT_EXCEEDS_LIMIT_REASON,
+            );
+        }
+
         if request.argv != command.argv {
             return denied(request, Some(command), ARGV_MISMATCH_REASON);
+        }
+
+        if request.timeout_seconds < MIN_COMMAND_TIMEOUT_SECONDS {
+            return denied(request, Some(command), TIMEOUT_BELOW_MINIMUM_REASON);
         }
 
         if request.timeout_seconds > command.timeout_seconds {
             return denied(request, Some(command), TIMEOUT_EXCEEDS_LIMIT_REASON);
         }
 
+        if request.max_stdout_bytes < MIN_COMMAND_OUTPUT_BYTES {
+            return denied(request, Some(command), STDOUT_CAP_BELOW_MINIMUM_REASON);
+        }
+
         if request.max_stdout_bytes > command.max_stdout_bytes {
             return denied(request, Some(command), STDOUT_CAP_EXCEEDS_LIMIT_REASON);
+        }
+
+        if request.max_stderr_bytes < MIN_COMMAND_OUTPUT_BYTES {
+            return denied(request, Some(command), STDERR_CAP_BELOW_MINIMUM_REASON);
         }
 
         if request.max_stderr_bytes > command.max_stderr_bytes {
@@ -288,6 +330,42 @@ mod tests {
     }
 
     #[test]
+    fn argv_cardinality_is_bounded_before_detailed_comparison() {
+        let oversized = vec!["invalid"; MAX_COMMAND_ARGV_COUNT + 1];
+        let mut request = valid_request();
+        request.argv = &oversized;
+
+        let decision = CommandExecutionPolicy::new().evaluate(&request);
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason_code, ARGV_COUNT_EXCEEDS_LIMIT_REASON);
+        assert_eq!(decision.argv_count, MAX_COMMAND_ARGV_COUNT + 1);
+    }
+
+    #[test]
+    fn argv_cardinality_boundary_reaches_exact_matching_check() {
+        let boundary = vec!["invalid"; MAX_COMMAND_ARGV_COUNT];
+        let mut request = valid_request();
+        request.argv = &boundary;
+
+        let decision = CommandExecutionPolicy::new().evaluate(&request);
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason_code, ARGV_MISMATCH_REASON);
+    }
+
+    #[test]
+    fn timeout_zero_is_denied_and_minimum_is_allowed() {
+        let mut request = valid_request();
+        request.timeout_seconds = 0;
+        assert_eq!(
+            CommandExecutionPolicy::new().evaluate(&request).reason_code,
+            TIMEOUT_BELOW_MINIMUM_REASON
+        );
+
+        request.timeout_seconds = MIN_COMMAND_TIMEOUT_SECONDS;
+        assert!(CommandExecutionPolicy::new().evaluate(&request).allowed);
+    }
+
+    #[test]
     fn timeout_above_allowlist_limit_is_denied() {
         let mut request = valid_request();
         request.timeout_seconds = 121;
@@ -298,23 +376,68 @@ mod tests {
     }
 
     #[test]
-    fn stdout_cap_above_allowlist_limit_is_denied() {
+    fn output_caps_reject_zero_accept_minimum_and_reject_above_limit() {
         let mut request = valid_request();
-        request.max_stdout_bytes = 65_537;
+        request.max_stdout_bytes = 0;
+        assert_eq!(
+            CommandExecutionPolicy::new().evaluate(&request).reason_code,
+            STDOUT_CAP_BELOW_MINIMUM_REASON
+        );
 
-        let decision = CommandExecutionPolicy::new().evaluate(&request);
-        assert!(!decision.allowed);
-        assert_eq!(decision.reason_code, STDOUT_CAP_EXCEEDS_LIMIT_REASON);
+        request = valid_request();
+        request.max_stderr_bytes = 0;
+        assert_eq!(
+            CommandExecutionPolicy::new().evaluate(&request).reason_code,
+            STDERR_CAP_BELOW_MINIMUM_REASON
+        );
+
+        request = valid_request();
+        request.max_stdout_bytes = MIN_COMMAND_OUTPUT_BYTES;
+        request.max_stderr_bytes = MIN_COMMAND_OUTPUT_BYTES;
+        assert!(CommandExecutionPolicy::new().evaluate(&request).allowed);
+
+        request = valid_request();
+        request.max_stdout_bytes = 65_537;
+        assert_eq!(
+            CommandExecutionPolicy::new().evaluate(&request).reason_code,
+            STDOUT_CAP_EXCEEDS_LIMIT_REASON
+        );
+
+        request = valid_request();
+        request.max_stderr_bytes = 65_537;
+        assert_eq!(
+            CommandExecutionPolicy::new().evaluate(&request).reason_code,
+            STDERR_CAP_EXCEEDS_LIMIT_REASON
+        );
     }
 
     #[test]
-    fn stderr_cap_above_allowlist_limit_is_denied() {
+    fn environment_name_cardinality_is_bounded_before_allowlist_comparison() {
+        let oversized = vec!["TOKEN"; MAX_COMMAND_ENVIRONMENT_NAME_COUNT + 1];
         let mut request = valid_request();
-        request.max_stderr_bytes = 65_537;
+        request.environment_names = &oversized;
 
         let decision = CommandExecutionPolicy::new().evaluate(&request);
         assert!(!decision.allowed);
-        assert_eq!(decision.reason_code, STDERR_CAP_EXCEEDS_LIMIT_REASON);
+        assert_eq!(
+            decision.reason_code,
+            ENVIRONMENT_NAME_COUNT_EXCEEDS_LIMIT_REASON
+        );
+        assert_eq!(
+            decision.environment_name_count,
+            MAX_COMMAND_ENVIRONMENT_NAME_COUNT + 1
+        );
+    }
+
+    #[test]
+    fn environment_name_cardinality_boundary_reaches_allowlist_check() {
+        let boundary = vec!["TOKEN"; MAX_COMMAND_ENVIRONMENT_NAME_COUNT];
+        let mut request = valid_request();
+        request.environment_names = &boundary;
+
+        let decision = CommandExecutionPolicy::new().evaluate(&request);
+        assert!(!decision.allowed);
+        assert_eq!(decision.reason_code, ENVIRONMENT_NOT_ALLOWLISTED_REASON);
     }
 
     #[test]
@@ -326,6 +449,22 @@ mod tests {
         assert!(!decision.allowed);
         assert_eq!(decision.reason_code, ENVIRONMENT_NOT_ALLOWLISTED_REASON);
         assert_eq!(decision.environment_name_count, 2);
+    }
+
+    #[test]
+    fn cardinality_denials_precede_lower_bound_and_safe_root_denials() {
+        let oversized = vec!["invalid"; MAX_COMMAND_ARGV_COUNT + 1];
+        let mut request = valid_request();
+        request.argv = &oversized;
+        request.timeout_seconds = 0;
+        request.max_stdout_bytes = 0;
+        request.max_stderr_bytes = 0;
+        request.working_directory_is_safe_rooted = false;
+
+        assert_eq!(
+            CommandExecutionPolicy::new().evaluate(&request).reason_code,
+            ARGV_COUNT_EXCEEDS_LIMIT_REASON
+        );
     }
 
     #[test]
@@ -359,6 +498,29 @@ mod tests {
         assert_eq!(value["metadata"][MAX_STDERR_BYTES_METADATA], 65_536);
         assert_eq!(value["metadata"][ENV_NAME_COUNT_METADATA], 1);
 
+        assert_no_sensitive_command_tokens(&value);
+    }
+
+    #[test]
+    fn bounded_denial_audit_keeps_counts_and_omits_values() {
+        let oversized = vec!["TOKEN"; MAX_COMMAND_ENVIRONMENT_NAME_COUNT + 1];
+        let mut request = valid_request();
+        request.environment_names = &oversized;
+
+        let value = serde_json::to_value(
+            CommandExecutionPolicy::new().audit_decision(3, &request),
+        )
+        .unwrap();
+
+        assert_eq!(value["decision"], "denied");
+        assert_eq!(
+            value["reason_code"],
+            ENVIRONMENT_NAME_COUNT_EXCEEDS_LIMIT_REASON
+        );
+        assert_eq!(
+            value["metadata"][ENV_NAME_COUNT_METADATA],
+            MAX_COMMAND_ENVIRONMENT_NAME_COUNT + 1
+        );
         assert_no_sensitive_command_tokens(&value);
     }
 
