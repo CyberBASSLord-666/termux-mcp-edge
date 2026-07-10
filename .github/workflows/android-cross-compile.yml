@@ -5,9 +5,20 @@ on:
   push:
     tags:
       - "v*"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/cross_compile.sh"
+      - ".github/workflows/android-cross-compile.yml"
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   android-aarch64:
@@ -38,8 +49,10 @@ jobs:
         run: ./scripts/cross_compile.sh
 
       - name: Upload binary artifact
-        # actions/upload-artifact@v4 resolved 2026-07-02
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: termux-mcp-server-aarch64-linux-android
           path: target/aarch64-linux-android/release/termux-mcp-server
+          if-no-files-found: error
+          retention-days: 3
