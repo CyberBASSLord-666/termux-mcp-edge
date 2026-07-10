@@ -9,6 +9,8 @@ on:
       - "rust-toolchain.toml"
       - "src/**"
       - "tests/**"
+      - "benches/**"
+      - "examples/**"
       - "scripts/**"
       - ".github/workflows/ci.yml"
   pull_request:
@@ -19,6 +21,8 @@ on:
       - "rust-toolchain.toml"
       - "src/**"
       - "tests/**"
+      - "benches/**"
+      - "examples/**"
       - "scripts/**"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
