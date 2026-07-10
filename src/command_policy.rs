@@ -39,8 +39,7 @@ const STDOUT_CAP_BELOW_MINIMUM_REASON: &str = "stdout_cap_below_minimum";
 const STDOUT_CAP_EXCEEDS_LIMIT_REASON: &str = "stdout_cap_exceeds_limit";
 const STDERR_CAP_BELOW_MINIMUM_REASON: &str = "stderr_cap_below_minimum";
 const STDERR_CAP_EXCEEDS_LIMIT_REASON: &str = "stderr_cap_exceeds_limit";
-const ENVIRONMENT_NAME_COUNT_EXCEEDS_LIMIT_REASON: &str =
-    "environment_name_count_exceeds_limit";
+const ENVIRONMENT_NAME_COUNT_EXCEEDS_LIMIT_REASON: &str = "environment_name_count_exceeds_limit";
 const ENVIRONMENT_NOT_ALLOWLISTED_REASON: &str = "environment_not_allowlisted";
 const SAFE_ROOT_REQUIRED_REASON: &str = "safe_root_required";
 
@@ -507,10 +506,8 @@ mod tests {
         let mut request = valid_request();
         request.environment_names = &oversized;
 
-        let value = serde_json::to_value(
-            CommandExecutionPolicy::new().audit_decision(3, &request),
-        )
-        .unwrap();
+        let value = serde_json::to_value(CommandExecutionPolicy::new().audit_decision(3, &request))
+            .unwrap();
 
         assert_eq!(value["decision"], "denied");
         assert_eq!(
