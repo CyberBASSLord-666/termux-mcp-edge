@@ -12,6 +12,7 @@ READY_URL="${TERMUX_MCP_READY_URL:-http://127.0.0.1:8000/ready}"
 PROBE_ATTEMPTS="${TERMUX_MCP_PROBE_ATTEMPTS:-15}"
 PROBE_DELAY_SECONDS="${TERMUX_MCP_PROBE_DELAY_SECONDS:-1}"
 TEST_MODE="${TERMUX_MCP_TEST_MODE:-0}"
+TEST_PROBE_RESULT="${TERMUX_MCP_TEST_PROBE_RESULT:-success}"
 DRY_RUN="${TERMUX_MCP_DRY_RUN:-0}"
 
 usage() {
@@ -27,6 +28,7 @@ Environment overrides:
   TERMUX_MCP_DEPLOY_ROOT, TERMUX_MCP_CONFIG_ROOT, TERMUX_MCP_SERVICE_ROOT
   TERMUX_MCP_HEALTH_URL, TERMUX_MCP_READY_URL
   TERMUX_MCP_TEST_MODE=1       Skip live runit and HTTP operations.
+  TERMUX_MCP_TEST_PROBE_RESULT Test-only probe result: success or failure.
   TERMUX_MCP_DRY_RUN=1        Print mutations without applying them.
 EOF
 }
@@ -95,13 +97,15 @@ validate_artifact() {
 write_service() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
   local run_file="$service_dir/run"
+  local shell_prefix="${PREFIX:-/data/data/com.termux/files/usr}"
+  validate_absolute_safe_path "$shell_prefix"
   run mkdir -p "$service_dir/log"
   if [[ "$DRY_RUN" == "1" ]]; then
     log "would write project-owned runit service at $run_file"
     return
   fi
   cat >"$run_file" <<EOF
-#!/data/data/com.termux/files/usr/bin/sh
+#!$shell_prefix/bin/sh
 set -eu
 umask 077
 CONFIG_FILE="$CONFIG_ROOT/runtime.env"
@@ -130,7 +134,6 @@ start_service() {
 
 probe_url() {
   local url="$1" expected="$2" attempt
-  [[ "$TEST_MODE" == "1" ]] && return 0
   require_command curl
   for ((attempt=1; attempt<=PROBE_ATTEMPTS; attempt++)); do
     local body
@@ -142,12 +145,22 @@ probe_url() {
 }
 
 probe_runtime() {
+  if [[ "$TEST_MODE" == "1" ]]; then
+    case "$TEST_PROBE_RESULT" in
+      success) return 0 ;;
+      failure) return 1 ;;
+      *) fail "invalid TERMUX_MCP_TEST_PROBE_RESULT: $TEST_PROBE_RESULT" ;;
+    esac
+  fi
   probe_url "$HEALTH_URL" "ok" && probe_url "$READY_URL" "ready"
 }
 
 atomic_link() {
-  local target="$1" link="$2"
+  local target="$1"
+  local link="$2"
   local tmp="${link}.next.$$"
+  validate_absolute_safe_path "$target"
+  validate_absolute_safe_path "$link"
   run ln -s "$target" "$tmp"
   run mv -Tf "$tmp" "$link"
 }
