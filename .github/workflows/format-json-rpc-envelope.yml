@@ -1,0 +1,73 @@
+name: Normalize JSON-RPC envelope branch
+
+on:
+  push:
+    branches:
+      - json-rpc-envelope-186
+
+permissions:
+  contents: write
+
+concurrency:
+  group: normalize-json-rpc-envelope-186
+  cancel-in-progress: true
+
+jobs:
+  normalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: json-rpc-envelope-186
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          components: rustfmt
+
+      - name: Normalize focused transport code
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/mcp_transport.rs')
+          text = path.read_text()
+          text = text.replace(
+              '#[rustfmt::skip]\nasync fn handle_mcp_request(',
+              'async fn handle_mcp_request(',
+              1,
+          )
+          old = '''fn handle_notification(method: &str) -> Response {
+              match method {
+                  "notifications/initialized" => StatusCode::NO_CONTENT.into_response(),
+                  _ => StatusCode::NO_CONTENT.into_response(),
+              }
+          }
+          '''.replace('          ', '')
+          new = '''fn handle_notification(_method: &str) -> Response {
+              StatusCode::NO_CONTENT.into_response()
+          }
+          '''.replace('          ', '')
+          if old not in text:
+              raise SystemExit('notification handler marker not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+          cargo fmt --all
+
+      - name: Commit normalization
+        run: |
+          if git diff --quiet -- '*.rs'; then
+            echo 'No Rust normalization changes required.'
+            exit 0
+          fi
+          git add -- '*.rs'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Normalize strict JSON-RPC transport code'
+          git push origin HEAD:json-rpc-envelope-186
