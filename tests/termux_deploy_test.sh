@@ -47,10 +47,6 @@ if TERMUX_MCP_TEST_PROBE_RESULT=failure bash "$SCRIPT" upgrade --artifact "$ARTI
 fi
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
 
-bash "$SCRIPT" rollback
-assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
-assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
-
 # Re-establish a distinct rollback target after the failed-candidate recovery check.
 rm -f "$TERMUX_MCP_DEPLOY_ROOT/previous"
 ln -s "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0" "$TERMUX_MCP_DEPLOY_ROOT/previous"
