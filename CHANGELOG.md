@@ -17,6 +17,7 @@
 - Added CI deployment tests covering verification failures, operation-mode enforcement, initial-install cleanup, failed-upgrade recovery, failed-rollback recovery, active/stale locks, unsafe roots, invalid links, literal configuration handling, secret non-disclosure, uninstall preservation, and explicit purge.
 - Added canonical deployment, upgrade, rollback, recovery, validation, and on-device production-gate documentation.
 - Updated CI path filters and validation to include deployment scripts and shell tests.
+- Hardened the design-only command policy with explicit timeout/output lower bounds, bounded argv and environment-name cardinality, deterministic denial precedence, non-sensitive reason codes, and boundary regression coverage.
 
 ## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
 
