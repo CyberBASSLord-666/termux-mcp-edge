@@ -357,7 +357,7 @@ mod tests {
             );
         }
         assert!(CapabilityGrant::new(
-            "grant_ok",
+            "grant__bad",
             CapabilityClass::DeviceControl,
             "device:wake-lock",
             NOW + 1,
