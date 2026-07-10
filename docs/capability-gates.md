@@ -162,4 +162,4 @@ Before any mutating or command-capable gate expands further, add or update audit
 
 Audit counters and any future retained audit logs must not include credential material, raw file contents, raw filesystem paths, environment values, runtime output, unfixed command text, Android identifiers, hostnames, usernames, global process inventories, bearer material, or arbitrary caller-supplied strings.
 
-Closes #138
+Originally added for #138; synchronized to current project governance by #165.
