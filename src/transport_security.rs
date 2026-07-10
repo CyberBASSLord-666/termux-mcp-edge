@@ -327,23 +327,28 @@ mod tests {
     #[test]
     fn constructor_fails_closed_for_invalid_allowlist_entries() {
         assert_eq!(
-            TransportSecurityPolicy::new(["localhost:8000", "bad host"], ["http://localhost:8000"], false),
+            TransportSecurityPolicy::new(
+                ["localhost:8000", "bad host"],
+                ["http://localhost:8000"],
+                false,
+            ),
             Err(TransportSecurityPolicyError::InvalidHost)
         );
         assert_eq!(
-            TransportSecurityPolicy::new(["localhost:8000"], ["http://localhost:8000", "file://localhost"], false),
+            TransportSecurityPolicy::new(
+                ["localhost:8000"],
+                ["http://localhost:8000", "file://localhost"],
+                false,
+            ),
             Err(TransportSecurityPolicyError::InvalidOrigin)
         );
     }
 
     #[test]
     fn allows_case_insensitive_origin_scheme_and_authority() {
-        let policy = TransportSecurityPolicy::new(
-            ["localhost:8000"],
-            ["HTTP://LOCALHOST:8000"],
-            false,
-        )
-        .unwrap();
+        let policy =
+            TransportSecurityPolicy::new(["localhost:8000"], ["HTTP://LOCALHOST:8000"], false)
+                .unwrap();
         assert!(policy.allowed_origins().contains("http://localhost:8000"));
 
         policy
@@ -494,7 +499,10 @@ mod tests {
     #[test]
     fn transport_security_policy_errors_render_stable_reason_codes() {
         let cases = [
-            (TransportSecurityPolicyError::InvalidHost, "invalid_allowed_host"),
+            (
+                TransportSecurityPolicyError::InvalidHost,
+                "invalid_allowed_host",
+            ),
             (
                 TransportSecurityPolicyError::InvalidOrigin,
                 "invalid_allowed_origin",
