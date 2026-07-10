@@ -1,0 +1,285 @@
+name: Strict JSON-RPC patch
+
+on:
+  push:
+    branches:
+      - strict-jsonrpc-envelope-187
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: true
+      - name: Apply focused transport patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/mcp_transport.rs')
+          text = path.read_text()
+
+          old_struct = '''#[derive(Debug, Deserialize)]
+          struct JsonRpcRequest {
+              #[allow(dead_code)]
+              jsonrpc: Option<String>,
+              id: Option<Value>,
+              method: Option<String>,
+              params: Option<Value>,
+          }
+          '''
+          new_struct = '''#[derive(Debug)]
+          struct JsonRpcRequest {
+              id: Option<Value>,
+              method: String,
+              params: Option<Value>,
+              is_notification: bool,
+          }
+
+          fn classify_json_rpc_request(value: Value) -> Result<JsonRpcRequest, &'static str> {
+              let object = value
+                  .as_object()
+                  .ok_or("JSON-RPC request must be an object.")?;
+
+              if object.get("jsonrpc") != Some(&Value::String("2.0".to_owned())) {
+                  return Err("JSON-RPC request must declare jsonrpc version 2.0.");
+              }
+
+              let method = object
+                  .get("method")
+                  .and_then(Value::as_str)
+                  .filter(|method| !method.is_empty())
+                  .ok_or("JSON-RPC request must include a non-empty string method.")?
+                  .to_owned();
+
+              let id = match object.get("id") {
+                  None => None,
+                  Some(Value::String(value)) => Some(Value::String(value.clone())),
+                  Some(Value::Number(value)) if value.is_i64() || value.is_u64() => {
+                      Some(Value::Number(value.clone()))
+                  }
+                  Some(_) => {
+                      return Err("JSON-RPC request id must be a string or integer when present.")
+                  }
+              };
+
+              let params = object.get("params").cloned();
+              if let Some(params) = &params {
+                  if !params.is_object() && !params.is_array() {
+                      return Err("JSON-RPC params must be an object or array when present.");
+                  }
+              }
+
+              Ok(JsonRpcRequest {
+                  is_notification: id.is_none(),
+                  id,
+                  method,
+                  params,
+              })
+          }
+          '''
+          if old_struct not in text:
+              raise SystemExit('request struct marker not found')
+          text = text.replace(old_struct, new_struct, 1)
+
+          old_parse = '''    let request = match serde_json::from_slice::<JsonRpcRequest>(&body) {
+                  Ok(request) => request,
+                  Err(error) => {
+                      return (
+                          StatusCode::BAD_REQUEST,
+                          Json(json!({
+                              "jsonrpc": "2.0",
+                              "id": Value::Null,
+                              "error": {
+                                  "code": -32700,
+                                  "message": "Parse error",
+                                  "data": error.to_string(),
+                              },
+                          })),
+                      )
+                          .into_response();
+                  }
+              };
+
+              let JsonRpcRequest {
+                  id, method, params, ..
+              } = request;
+
+              let Some(method) = method else {
+                  return invalid_request(id, "JSON-RPC request is missing required method.");
+              };
+
+              match method.as_str() {
+                  "initialize" => initialize_response(id),
+                  "tools/list" => tools_list_response(id),
+                  "tools/call" => handle_tool_call(id, params, &state).await,
+                  _ => method_not_available(
+                      id,
+                      "Only initialize, tools/list, runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
+                  ),
+              }
+          }
+          '''
+          new_parse = '''    let value = match serde_json::from_slice::<Value>(&body) {
+                  Ok(value) => value,
+                  Err(_) => return parse_error(),
+              };
+
+              let request = match classify_json_rpc_request(value) {
+                  Ok(request) => request,
+                  Err(message) => return invalid_request(None, message),
+              };
+
+              let JsonRpcRequest {
+                  id,
+                  method,
+                  params,
+                  is_notification,
+              } = request;
+
+              let response = match method.as_str() {
+                  "initialize" => initialize_response(id),
+                  "tools/list" => tools_list_response(id),
+                  "tools/call" => handle_tool_call(id, params, &state).await,
+                  _ => method_not_available(
+                      id,
+                      "Only initialize, tools/list, runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
+                  ),
+              };
+
+              if is_notification {
+                  StatusCode::NO_CONTENT.into_response()
+              } else {
+                  response
+              }
+          }
+          '''
+          if old_parse not in text:
+              raise SystemExit('handler parse marker not found')
+          text = text.replace(old_parse, new_parse, 1)
+
+          marker = '''#[rustfmt::skip]
+          fn invalid_request(id: Option<Value>, message: &str) -> Response {
+          '''
+          helper = '''#[rustfmt::skip]
+          fn parse_error() -> Response {
+              (
+                  StatusCode::BAD_REQUEST,
+                  Json(json!({
+                      "jsonrpc": "2.0",
+                      "id": Value::Null,
+                      "error": {
+                          "code": -32700,
+                          "message": "Parse error",
+                      },
+                  })),
+              )
+                  .into_response()
+          }
+
+          #[rustfmt::skip]
+          fn invalid_request(id: Option<Value>, message: &str) -> Response {
+          '''
+          if marker not in text:
+              raise SystemExit('invalid request marker not found')
+          text = text.replace(marker, helper, 1)
+
+          tests_marker = '''    #[test]
+              fn filesystem_write_audit_mode_and_reason_follow_dry_run_state() {
+                  assert_eq!(filesystem_write_mode(true), AuditMode::DryRun);
+                  assert_eq!(filesystem_write_mode(false), AuditMode::Mutating);
+                  assert_eq!(filesystem_write_allowed_reason(true), FILESYSTEM_DRY_RUN_ALLOWED);
+                  assert_eq!(filesystem_write_allowed_reason(false), FILESYSTEM_WRITE_ALLOWED);
+              }
+          }
+          '''
+          tests_replacement = '''    #[test]
+              fn filesystem_write_audit_mode_and_reason_follow_dry_run_state() {
+                  assert_eq!(filesystem_write_mode(true), AuditMode::DryRun);
+                  assert_eq!(filesystem_write_mode(false), AuditMode::Mutating);
+                  assert_eq!(filesystem_write_allowed_reason(true), FILESYSTEM_DRY_RUN_ALLOWED);
+                  assert_eq!(filesystem_write_allowed_reason(false), FILESYSTEM_WRITE_ALLOWED);
+              }
+
+              #[test]
+              fn json_rpc_classifier_accepts_string_and_integer_ids() {
+                  for id in [json!("request-1"), json!(7), json!(u64::MAX)] {
+                      let request = classify_json_rpc_request(json!({
+                          "jsonrpc": "2.0",
+                          "id": id,
+                          "method": "tools/list",
+                      }))
+                      .expect("valid request");
+                      assert!(!request.is_notification);
+                      assert!(request.id.is_some());
+                  }
+              }
+
+              #[test]
+              fn json_rpc_classifier_marks_absent_id_as_notification() {
+                  let request = classify_json_rpc_request(json!({
+                      "jsonrpc": "2.0",
+                      "method": "tools/list",
+                  }))
+                  .expect("valid notification");
+                  assert!(request.is_notification);
+                  assert!(request.id.is_none());
+              }
+
+              #[test]
+              fn json_rpc_classifier_rejects_invalid_envelopes() {
+                  let invalid = [
+                      json!([]),
+                      json!({"method": "tools/list"}),
+                      json!({"jsonrpc": "1.0", "method": "tools/list"}),
+                      json!({"jsonrpc": "2.0"}),
+                      json!({"jsonrpc": "2.0", "method": ""}),
+                      json!({"jsonrpc": "2.0", "method": 1}),
+                      json!({"jsonrpc": "2.0", "method": "tools/list", "id": null}),
+                      json!({"jsonrpc": "2.0", "method": "tools/list", "id": 1.5}),
+                      json!({"jsonrpc": "2.0", "method": "tools/list", "id": true}),
+                      json!({"jsonrpc": "2.0", "method": "tools/list", "params": "invalid"}),
+                  ];
+
+                  for value in invalid {
+                      assert!(classify_json_rpc_request(value).is_err());
+                  }
+              }
+          }
+          '''
+          if tests_marker not in text:
+              raise SystemExit('tests marker not found')
+          text = text.replace(tests_marker, tests_replacement, 1)
+          path.write_text(text)
+
+          changelog = Path('CHANGELOG.md')
+          change = changelog.read_text()
+          anchor = '## [Unreleased]\n'
+          entry = '''## [Unreleased]\n\n### Changed\n\n- Enforce strict JSON-RPC 2.0 request envelopes on the staged MCP transport, including exact version, method, structured params, bounded request-ID types, safe parse errors, and notification response suppression.\n'''
+          if anchor in change and 'strict JSON-RPC 2.0 request envelopes' not in change:
+              change = change.replace(anchor, entry, 1)
+              changelog.write_text(change)
+
+          workflow = Path('.github/workflows/strict-jsonrpc-patch.yml')
+          workflow.unlink()
+          PY
+      - name: Format and test
+        shell: bash
+        run: |
+          cargo fmt --all
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets --all-features
+      - name: Commit focused result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/mcp_transport.rs CHANGELOG.md .github/workflows/strict-jsonrpc-patch.yml
+          git commit -m "Enforce strict JSON-RPC request envelopes"
+          git push origin HEAD:strict-jsonrpc-envelope-187
