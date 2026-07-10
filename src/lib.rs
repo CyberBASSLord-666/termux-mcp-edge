@@ -2,6 +2,7 @@
 
 pub mod android_status;
 pub mod audit;
+pub mod auth;
 pub mod capability_token;
 pub mod command_policy;
 pub mod config;
