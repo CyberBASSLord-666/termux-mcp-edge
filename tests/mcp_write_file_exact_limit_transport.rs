@@ -48,25 +48,22 @@ async fn transport_write_file_allows_exact_default_limit_as_dry_run_preview() {
     assert_eq!(response.status(), StatusCode::OK);
     let payload = response_json(response).await;
     let result = payload.get("result").expect("response missing result");
+    let content_text = result["content"][0]["text"]
+        .as_str()
+        .expect("response missing content text");
+    let structured_content = result
+        .get("structuredContent")
+        .expect("response missing structuredContent");
+    let expected_structured_content = json!({
+        "dryRun": true,
+        "bytes": DEFAULT_MAX_WRITE_BYTES,
+        "message": EXPECTED_DRY_RUN_RESPONSE
+    });
+    let is_error = result.get("isError").and_then(|value| value.as_bool());
 
     assert_eq!(payload["id"], "exact-limit-dry-run");
-    assert_eq!(
-        result["content"][0]["text"],
-        EXPECTED_DRY_RUN_RESPONSE,
-    );
-    assert_eq!(
-        result
-            .get("structuredContent")
-            .expect("response missing structuredContent"),
-        &json!({
-            "dryRun": true,
-            "bytes": DEFAULT_MAX_WRITE_BYTES,
-            "message": EXPECTED_DRY_RUN_RESPONSE
-        }),
-    );
-    assert_eq!(
-        result.get("isError").and_then(|value| value.as_bool()),
-        Some(false),
-    );
+    assert_eq!(content_text, EXPECTED_DRY_RUN_RESPONSE);
+    assert_eq!(structured_content, &expected_structured_content);
+    assert_eq!(is_error, Some(false));
     assert!(!target.exists());
 }
