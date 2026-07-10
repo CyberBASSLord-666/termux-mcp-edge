@@ -47,20 +47,26 @@ async fn transport_write_file_allows_exact_default_limit_as_dry_run_preview() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload = response_json(response).await;
+    let result = payload.get("result").expect("response missing result");
 
     assert_eq!(payload["id"], "exact-limit-dry-run");
     assert_eq!(
-        payload["result"]["content"][0]["text"],
+        result["content"][0]["text"],
         EXPECTED_DRY_RUN_RESPONSE
     );
     assert_eq!(
-        payload["result"]["structuredContent"],
-        json!({
+        result
+            .get("structuredContent")
+            .expect("response missing structuredContent"),
+        &json!({
             "dryRun": true,
             "bytes": DEFAULT_MAX_WRITE_BYTES,
             "message": EXPECTED_DRY_RUN_RESPONSE
         })
     );
-    assert_eq!(payload["result"]["isError"], false);
+    assert_eq!(
+        result.get("isError").and_then(|value| value.as_bool()),
+        Some(false)
+    );
     assert!(!target.exists());
 }
