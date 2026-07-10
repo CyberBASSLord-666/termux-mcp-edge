@@ -141,7 +141,6 @@ pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTo
         })
 }
 
-#[rustfmt::skip]
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
     headers: HeaderMap,
@@ -176,18 +175,18 @@ async fn handle_mcp_request(
         Ok(message) => message,
         Err(JsonRpcEnvelopeError::ParseError { detail }) => {
             return (
-  StatusCode::BAD_REQUEST,
-  Json(json!({
-      "jsonrpc": "2.0",
-      "id": Value::Null,
-      "error": {
-          "code": -32700,
-          "message": "Parse error",
-          "data": detail,
-      },
-  })),
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": Value::Null,
+                    "error": {
+                        "code": -32700,
+                        "message": "Parse error",
+                        "data": detail,
+                    },
+                })),
             )
-  .into_response();
+                .into_response();
         }
         Err(JsonRpcEnvelopeError::InvalidRequest { id, reason }) => {
             return invalid_request(id, reason);
@@ -200,22 +199,16 @@ async fn handle_mcp_request(
             "tools/list" => tools_list_response(Some(id)),
             "tools/call" => handle_tool_call(Some(id), params, &state).await,
             _ => method_not_available(
-  Some(id),
-  "Only initialize, tools/list, and tools/call are available in this staged runtime.",
+                Some(id),
+                "Only initialize, tools/list, and tools/call are available in this staged runtime.",
             ),
         },
-        IncomingJsonRpcMessage::Notification { method, params: _ } => {
-            handle_notification(&method)
-        }
+        IncomingJsonRpcMessage::Notification { method, params: _ } => handle_notification(&method),
     }
-
 }
 
-fn handle_notification(method: &str) -> Response {
-    match method {
-        "notifications/initialized" => StatusCode::NO_CONTENT.into_response(),
-        _ => StatusCode::NO_CONTENT.into_response(),
-    }
+fn handle_notification(_method: &str) -> Response {
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[rustfmt::skip]

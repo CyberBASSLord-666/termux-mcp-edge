@@ -13,7 +13,14 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn valid_json_with_invalid_request_shapes_returns_invalid_request() {
-    for value in [json!(null), json!(true), json!(1), json!("text"), json!([]), json!([{}])] {
+    for value in [
+        json!(null),
+        json!(true),
+        json!(1),
+        json!("text"),
+        json!([]),
+        json!([{}]),
+    ] {
         let response = post_json(value).await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -48,7 +55,13 @@ async fn requires_exact_json_rpc_version_and_string_method() {
 
 #[tokio::test]
 async fn rejects_invalid_mcp_request_ids_without_reflecting_them() {
-    for id in [json!(null), json!(true), json!([]), json!({"private":"value"}), json!(1.5)] {
+    for id in [
+        json!(null),
+        json!(true),
+        json!([]),
+        json!({"private":"value"}),
+        json!(1.5),
+    ] {
         let response = post_json(json!({
             "jsonrpc":"2.0",
             "id":id,
