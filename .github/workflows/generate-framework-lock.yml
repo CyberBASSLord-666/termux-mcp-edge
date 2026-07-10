@@ -1,0 +1,45 @@
+name: Generate framework migration lockfile
+
+on:
+  push:
+    branches:
+      - rust-framework-migration-183
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generate-framework-lock
+  cancel-in-progress: true
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout migration branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: rust-framework-migration-183
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          components: rustfmt, clippy
+
+      - name: Resolve dependency graph
+        run: cargo update
+
+      - name: Commit lockfile
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo 'Cargo.lock is already current.'
+            exit 0
+          fi
+          git add Cargo.lock
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Regenerate lockfile for framework migration'
+          git push origin HEAD:rust-framework-migration-183
