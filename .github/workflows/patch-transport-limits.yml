@@ -1,0 +1,187 @@
+name: Patch transport limits branch
+
+on:
+  push:
+    branches:
+      - transport-limits-169
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-transport-limits-169
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: transport-limits-169
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          components: rustfmt
+
+      - name: Apply focused source patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          limits = Path('src/request_limits.rs')
+          text = limits.read_text()
+          text = text.replace(
+              'pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 8;\n'
+              'pub const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;\n'
+              'pub const DEFAULT_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;\n\n'
+              'pub const MAX_CONFIGURED_CONCURRENT_REQUESTS: usize = 256;\n'
+              'pub const MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS: u64 = 300;\n'
+              'pub const MIN_CONFIGURED_BODY_BYTES: usize = 1_024;\n'
+              'pub const MAX_CONFIGURED_BODY_BYTES: usize = 16 * 1024 * 1024;',
+              'pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;\n'
+              'pub const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;\n'
+              'pub const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;\n\n'
+              'pub const MAX_CONFIGURED_CONCURRENT_REQUESTS: usize = 64;\n'
+              'pub const MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS: u64 = 300;\n'
+              'pub const MIN_CONFIGURED_BODY_BYTES: usize = 1_024;\n'
+              'pub const MAX_CONFIGURED_BODY_BYTES: usize = 8 * 1024 * 1024;',
+          )
+          limits.write_text(text)
+
+          health = Path('src/health.rs')
+          text = health.read_text()
+          text = text.replace('max_concurrent_requests: 8,', 'max_concurrent_requests: 4,')
+          text = text.replace('max_body_bytes: 8 * 1024 * 1024,', 'max_body_bytes: 2 * 1024 * 1024,')
+          health.write_text(text)
+
+          filesystem = Path('src/tools/filesystem.rs')
+          text = filesystem.read_text()
+          text = text.replace(
+              'use tokio::{fs, io::AsyncReadExt};',
+              'use tokio::{\n    fs,\n    io::{AsyncReadExt, AsyncWriteExt},\n};',
+          )
+
+          constants = '''const DEFAULT_LIST_DEPTH: u32 = 1;
+          const MAX_LIST_DEPTH: u32 = 5;
+          const MAX_LIST_ENTRIES: usize = 4_096;
+          const MAX_READ_BYTES: u64 = 1_048_576;
+          '''.replace('          ', '')
+          guard = '''const DEFAULT_LIST_DEPTH: u32 = 1;
+          const MAX_LIST_DEPTH: u32 = 5;
+          const MAX_LIST_ENTRIES: usize = 4_096;
+          const MAX_READ_BYTES: u64 = 1_048_576;
+
+          struct TempFileCleanup {
+              path: PathBuf,
+              armed: bool,
+          }
+
+          impl TempFileCleanup {
+              fn new(path: PathBuf) -> Self {
+                  Self { path, armed: true }
+              }
+
+              fn disarm(&mut self) {
+                  self.armed = false;
+              }
+          }
+
+          impl Drop for TempFileCleanup {
+              fn drop(&mut self) {
+                  if self.armed {
+                      let _ = std::fs::remove_file(&self.path);
+                  }
+              }
+          }
+          '''.replace('          ', '')
+          if constants not in text:
+              raise SystemExit('filesystem constants marker not found')
+          text = text.replace(constants, guard, 1)
+
+          old_write = '''        let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+
+                  if let Err(err) = fs::write(&tmp, content.as_bytes()).await {
+                      let _ = fs::remove_file(&tmp).await;
+                      return Err(err.into());
+                  }
+
+                  if let Err(err) = fs::rename(&tmp, &safe_path).await {
+                      let _ = fs::remove_file(&tmp).await;
+                      return Err(err.into());
+                  }
+          '''.replace('          ', '')
+          new_write = '''        let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+                  let std_file = std::fs::OpenOptions::new()
+                      .write(true)
+                      .create_new(true)
+                      .open(&tmp)?;
+                  let mut cleanup = TempFileCleanup::new(tmp.clone());
+                  let mut file = fs::File::from_std(std_file);
+
+                  file.write_all(content.as_bytes()).await?;
+                  file.flush().await?;
+                  drop(file);
+                  fs::rename(&tmp, &safe_path).await?;
+                  cleanup.disarm();
+          '''.replace('          ', '')
+          if old_write not in text:
+              raise SystemExit('filesystem write block not found')
+          text = text.replace(old_write, new_write, 1)
+
+          marker = '''    #[tokio::test]
+              async fn write_file_requires_explicit_false_to_mutate_safe_rooted_file() {
+          '''.replace('              ', '')
+          tests = '''    #[test]
+              fn armed_temp_file_cleanup_removes_file_on_drop() {
+                  let root = tempfile::tempdir().unwrap();
+                  let path = root.path().join("armed.tmp");
+                  std::fs::write(&path, "temporary").unwrap();
+
+                  {
+                      let _cleanup = TempFileCleanup::new(path.clone());
+                  }
+
+                  assert!(!path.exists());
+              }
+
+              #[test]
+              fn disarmed_temp_file_cleanup_preserves_file() {
+                  let root = tempfile::tempdir().unwrap();
+                  let path = root.path().join("disarmed.tmp");
+                  std::fs::write(&path, "temporary").unwrap();
+
+                  {
+                      let mut cleanup = TempFileCleanup::new(path.clone());
+                      cleanup.disarm();
+                  }
+
+                  assert!(path.exists());
+              }
+
+              #[tokio::test]
+              async fn write_file_requires_explicit_false_to_mutate_safe_rooted_file() {
+          '''.replace('              ', '')
+          if marker not in text:
+              raise SystemExit('filesystem test marker not found')
+          text = text.replace(marker, tests, 1)
+          filesystem.write_text(text)
+          PY
+
+          cargo fmt --all
+
+      - name: Commit focused patch
+        run: |
+          if git diff --quiet; then
+            echo 'No patch changes required.'
+            exit 0
+          fi
+          git add src/request_limits.rs src/health.rs src/tools/filesystem.rs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Make MCP limits mobile-conscious and write cancellation-safe'
+          git push origin HEAD:transport-limits-169
