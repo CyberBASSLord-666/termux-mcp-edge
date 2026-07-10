@@ -42,9 +42,9 @@ mod tests {
     #[test]
     fn readiness_response_uses_package_version_feature_state_and_limits() {
         let limits = McpRequestLimitReadiness {
-            max_concurrent_requests: 8,
+            max_concurrent_requests: 4,
             request_timeout_seconds: 30,
-            max_body_bytes: 8 * 1024 * 1024,
+            max_body_bytes: 2 * 1024 * 1024,
         };
         let response = build_readiness_response(2, "static_token", Some(limits.clone()));
 
