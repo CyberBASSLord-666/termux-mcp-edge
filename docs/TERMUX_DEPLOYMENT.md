@@ -1,78 +1,106 @@
 # Termux Deployment, Upgrade, and Recovery
 
-This procedure installs the cross-compiled `termux-mcp-server` binary into a project-owned, versioned layout and manages only the `mcp_runtime` runit service.
+This guide installs a validated `termux-mcp-server` binary into a project-owned, versioned layout and manages only the `mcp_runtime` runit service.
 
-## Prerequisites
-
-Install Termux packages used by the runtime and deployment manager:
-
-```bash
-pkg update
-pkg install curl file termux-services
-```
-
-Build or download the `aarch64-linux-android` artifact, then make the deployment manager executable:
-
-```bash
-chmod 700 scripts/termux_deploy.sh
-```
-
-The default layout is:
+## Layout and boundaries
 
 ```text
 ~/.local/share/termux-mcp-edge/
   releases/<version>/termux-mcp-server
-  current -> releases/<active-version>
+  releases/<version>/VERSION
+  current  -> releases/<active-version>
   previous -> releases/<rollback-version>
 ~/.config/termux-mcp-edge/runtime.env
 $PREFIX/var/service/mcp_runtime/run
 ```
 
-Configuration and bearer-token material remain outside versioned releases. The deployment manager creates configuration directories with mode `0700` and never prints `runtime.env`.
+Deployment and configuration roots must remain below `HOME`. The service root and service interpreter must remain below `PREFIX`. Deployment and configuration roots may not overlap. Configuration and bearer material remain outside versioned releases.
 
-## Initial install
+Install, upgrade, rollback, and uninstall are serialized by a project deployment lock. Temporary staging directories, link files, and owned stale locks are cleaned automatically.
 
-Create `~/.config/termux-mcp-edge/runtime.env` with mode `0600` before starting a network-accessible runtime:
+## Prerequisites
 
 ```bash
-install -d -m 700 ~/.config/termux-mcp-edge
-cat > ~/.config/termux-mcp-edge/runtime.env <<'EOF'
+pkg update
+pkg install bash coreutils curl file termux-services
+chmod 700 scripts/termux_deploy.sh
+```
+
+The deployment manager requires the standard Termux implementations of `realpath`, `stat`, `sha256sum`, `timeout`, `file`, `uname`, `install`, and `readlink`.
+
+## Runtime configuration
+
+Create a private configuration file before installation:
+
+```bash
+install -d -m 700 "$HOME/.config/termux-mcp-edge"
+umask 077
+cat >"$HOME/.config/termux-mcp-edge/runtime.env" <<'EOF'
 MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
 MCP__SERVER__HOST=127.0.0.1
 MCP__SERVER__PORT=8000
-MCP__TRANSPORT__ALLOWED_HOSTS=["localhost:8000"]
-MCP__TRANSPORT__ALLOWED_ORIGINS=["http://localhost:8000"]
+MCP__TRANSPORT__ALLOWED_HOSTS=localhost:8000,127.0.0.1:8000
+MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
+MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
+MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
+MCP__TRANSPORT__MAX_BODY_BYTES=2097152
+RUST_LOG=termux_mcp_server=info
 EOF
-chmod 600 ~/.config/termux-mcp-edge/runtime.env
+chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 ```
 
-Install a validated artifact:
+The file must be a regular non-symlink file, owner-readable, and inaccessible to group and other users. Blank lines and comments are allowed. Entries use literal `NAME=value` syntax and are limited to `MCP__*`, `RUST_LOG`, and `RUST_BACKTRACE`.
+
+Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
+
+## Validate the candidate
+
+```bash
+ARTIFACT="target/aarch64-linux-android/release/termux-mcp-server"
+file "$ARTIFACT"
+"$ARTIFACT" --version
+ARTIFACT_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
+```
+
+The candidate must be a non-empty regular executable, must not be a symbolic link, must remain below the configured artifact-size ceiling, and must report the requested version through `--version`. Outside test mode it must be an ELF executable matching the device architecture.
+
+SHA-256 verification is required by default. An advanced operator may explicitly select the documented unverified-local-artifact option after independent validation; that option does not disable version, executable, architecture, size, root, configuration, or readiness checks.
+
+## Initial install
 
 ```bash
 scripts/termux_deploy.sh install \
-  --artifact target/aarch64-linux-android/release/termux-mcp-server \
-  --version 0.5.1
+  --artifact "$ARTIFACT" \
+  --version 0.5.1 \
+  --sha256 "$ARTIFACT_SHA256"
 ```
 
-The manager validates the artifact, stages it in a version-specific directory, writes the project-owned runit service, atomically switches `current`, starts the service, and checks `/health` and `/ready`.
+Initial install requires no active release. The manager validates all inputs, acquires the lock, stages the release, writes the fixed project service, atomically activates `current`, starts the service, and verifies `/health` and `/ready`.
+
+If readiness fails, the failed candidate and active link are removed while persistent configuration is preserved.
 
 ## Upgrade
 
 ```bash
-scripts/termux_deploy.sh upgrade --artifact /path/to/new/termux-mcp-server --version 0.6.0
+NEW_ARTIFACT="/path/to/termux-mcp-server"
+NEW_SHA256="$(sha256sum "$NEW_ARTIFACT" | awk '{print $1}')"
+scripts/termux_deploy.sh upgrade \
+  --artifact "$NEW_ARTIFACT" \
+  --version 0.6.0 \
+  --sha256 "$NEW_SHA256"
 ```
 
-The previous active release is retained through the `previous` symlink. If the candidate fails health or readiness checks, the manager restores and restarts the previous release automatically.
+Upgrade requires an active release. The exact prior `current` and `previous` link state is captured before activation. If the candidate fails readiness, the prior state is restored, the failed release is removed, and the prior active runtime is restarted and probed. The upgrade still exits non-zero after successful recovery.
 
-## Explicit rollback
+## Rollback
 
 ```bash
 scripts/termux_deploy.sh rollback
 ```
 
-Rollback swaps `current` and `previous`, restarts the project-owned service, and requires the restored runtime to pass health and readiness probes.
+Rollback accepts only complete release targets below the project releases root. If the selected rollback target fails readiness, the original exact link state is restored and the original active runtime is restarted and probed. The command exits non-zero when rollback validation fails.
 
-## Status and recovery
+## Status
 
 ```bash
 scripts/termux_deploy.sh status
@@ -81,43 +109,64 @@ curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/ready
 ```
 
-For interrupted deployments, re-run the same install or upgrade with a new version identifier after removing only an abandoned `.staging-*` directory under the project deployment root. Never remove the persistent configuration directory during routine recovery.
+Status reports only the deployment root, validated current and previous targets, and the fixed service name. Invalid or escaping release links produce a non-zero result. Configuration and token values are never printed.
+
+## Dry run
+
+```bash
+scripts/termux_deploy.sh upgrade \
+  --artifact "$NEW_ARTIFACT" \
+  --version 0.6.0 \
+  --sha256 "$NEW_SHA256" \
+  --dry-run
+```
+
+Dry run validates the requested operation and prints planned mutations without creating releases, links, services, or locks.
 
 ## Uninstall
 
-Remove releases and the project-owned runit service while preserving configuration:
+Preserve configuration:
 
 ```bash
 scripts/termux_deploy.sh uninstall
 ```
 
-Explicitly remove persistent configuration and token material:
+Remove configuration explicitly:
 
 ```bash
 scripts/termux_deploy.sh uninstall --purge-config
 ```
 
-## CI and dry-run validation
+Both operations target only the configured project deployment root, the fixed `mcp_runtime` service directory, and—when explicitly requested—the project configuration root.
 
-CI uses an isolated test root and does not require Android or a live runit daemon:
+## Interrupted-operation recovery
+
+1. Run `scripts/termux_deploy.sh status`.
+2. Inspect only the project deployment root and its `.deploy-lock` sibling.
+3. Re-run the intended operation; an abandoned lock whose owner is no longer active is recovered automatically.
+4. Do not manually point `current` or `previous` outside the releases root.
+5. Preserve `runtime.env` during ordinary recovery.
+
+## CI validation
 
 ```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 ```
 
-Inspect planned mutations without applying them:
+The test suite covers the binary CLI contract, verified install, invalid operation modes, checksum and version failures, active and stale locks, dry-run immutability, literal configuration handling, failed-candidate recovery, failed-rollback recovery, invalid links, unsafe roots, configuration preservation, and explicit purge.
 
-```bash
-TERMUX_MCP_DRY_RUN=1 scripts/termux_deploy.sh install --artifact /path/to/binary --version test
-```
+## On-device production gate
 
-## On-device release checklist
-
-1. Confirm the artifact came from the expected exact commit or release tag.
-2. Confirm `file termux-mcp-server` reports an AArch64 Android-compatible executable.
-3. Confirm `runtime.env` is mode `0600` and contains a non-empty static bearer token.
-4. Install or upgrade through `termux_deploy.sh`.
-5. Confirm `status`, `sv status`, `/health`, and `/ready` succeed.
-6. Run authenticated MCP discovery using the operator-validation procedure.
-7. Deliberately test rollback before treating a release as production-ready.
-8. Preserve the previous release until the new release has completed sustained device validation.
+1. Confirm the artifact corresponds to the intended exact commit or release.
+2. Verify its SHA-256 digest.
+3. Verify AArch64 Android-compatible ELF metadata.
+4. Confirm `--version` exactly matches the release version.
+5. Confirm `runtime.env` is private and contains the intended authentication and transport settings.
+6. Install or upgrade through `termux_deploy.sh`.
+7. Confirm deployment status, runit status, `/health`, and `/ready`.
+8. Run authenticated MCP discovery and representative allowed and denied calls.
+9. Exercise rollback and restoration behavior.
+10. Preserve the prior known-good release until sustained device validation is complete under realistic battery, thermal, and process-restriction conditions.
