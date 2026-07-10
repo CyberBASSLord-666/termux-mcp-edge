@@ -21,6 +21,7 @@ use crate::{
         read_only_denied_event, AuditCounters, AuditMode,
     },
     error::AppError,
+    json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
     platform_info::collect_platform_info,
     service_status::{
         collect_project_service_status, unsupported_project_service_error,
@@ -86,15 +87,6 @@ struct McpTransportState {
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
     audit_counters: SharedAuditCounters,
-}
-
-#[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
-    #[allow(dead_code)]
-    jsonrpc: Option<String>,
-    id: Option<Value>,
-    method: Option<String>,
-    params: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,41 +172,49 @@ async fn handle_mcp_request(
             .into_response();
     }
 
-    let request = match serde_json::from_slice::<JsonRpcRequest>(&body) {
-        Ok(request) => request,
-        Err(error) => {
+    let message = match parse_incoming_message(&body) {
+        Ok(message) => message,
+        Err(JsonRpcEnvelopeError::ParseError { detail }) => {
             return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": Value::Null,
-                    "error": {
-                        "code": -32700,
-                        "message": "Parse error",
-                        "data": error.to_string(),
-                    },
-                })),
+  StatusCode::BAD_REQUEST,
+  Json(json!({
+      "jsonrpc": "2.0",
+      "id": Value::Null,
+      "error": {
+          "code": -32700,
+          "message": "Parse error",
+          "data": detail,
+      },
+  })),
             )
-                .into_response();
+  .into_response();
+        }
+        Err(JsonRpcEnvelopeError::InvalidRequest { id, reason }) => {
+            return invalid_request(id, reason);
         }
     };
 
-    let JsonRpcRequest {
-        id, method, params, ..
-    } = request;
+    match message {
+        IncomingJsonRpcMessage::Request { id, method, params } => match method.as_str() {
+            "initialize" => initialize_response(Some(id)),
+            "tools/list" => tools_list_response(Some(id)),
+            "tools/call" => handle_tool_call(Some(id), params, &state).await,
+            _ => method_not_available(
+  Some(id),
+  "Only initialize, tools/list, and tools/call are available in this staged runtime.",
+            ),
+        },
+        IncomingJsonRpcMessage::Notification { method, params: _ } => {
+            handle_notification(&method)
+        }
+    }
 
-    let Some(method) = method else {
-        return invalid_request(id, "JSON-RPC request is missing required method.");
-    };
+}
 
-    match method.as_str() {
-        "initialize" => initialize_response(id),
-        "tools/list" => tools_list_response(id),
-        "tools/call" => handle_tool_call(id, params, &state).await,
-        _ => method_not_available(
-            id,
-            "Only initialize, tools/list, runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
-        ),
+fn handle_notification(method: &str) -> Response {
+    match method {
+        "notifications/initialized" => StatusCode::NO_CONTENT.into_response(),
+        _ => StatusCode::NO_CONTENT.into_response(),
     }
 }
 

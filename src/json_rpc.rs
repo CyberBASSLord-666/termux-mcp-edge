@@ -22,7 +22,9 @@ pub enum IncomingJsonRpcMessage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JsonRpcEnvelopeError {
-    ParseError { detail: String },
+    ParseError {
+        detail: String,
+    },
     InvalidRequest {
         id: Option<Value>,
         reason: &'static str,
@@ -36,7 +38,9 @@ pub fn parse_incoming_message(body: &[u8]) -> Result<IncomingJsonRpcMessage, Jso
         }
     })?;
 
-    let object = value.as_object().ok_or_else(|| invalid(None, "JSON-RPC input must be an object."))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(None, "JSON-RPC input must be an object."))?;
     validate_object(object)
 }
 
@@ -141,10 +145,7 @@ mod tests {
     fn malformed_json_is_parse_error() {
         let error = parse_incoming_message(b"{not-json").unwrap_err();
 
-        assert!(matches!(
-            error,
-            JsonRpcEnvelopeError::ParseError { .. }
-        ));
+        assert!(matches!(error, JsonRpcEnvelopeError::ParseError { .. }));
     }
 
     #[test]
