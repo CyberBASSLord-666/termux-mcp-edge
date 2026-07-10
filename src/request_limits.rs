@@ -17,14 +17,14 @@ use axum::{
 use serde_json::json;
 use tokio::{sync::Semaphore, time::timeout};
 
-pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 8;
+pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;
 pub const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
-pub const DEFAULT_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
-pub const MAX_CONFIGURED_CONCURRENT_REQUESTS: usize = 256;
+pub const MAX_CONFIGURED_CONCURRENT_REQUESTS: usize = 64;
 pub const MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS: u64 = 300;
 pub const MIN_CONFIGURED_BODY_BYTES: usize = 1_024;
-pub const MAX_CONFIGURED_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_CONFIGURED_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct McpRequestLimits {
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn debug_output_contains_only_non_sensitive_limit_values() {
-        let limits = McpRequestLimits::new(8, Duration::from_secs(30), 1024).unwrap();
+        let limits = McpRequestLimits::new(4, Duration::from_secs(30), 2 * 1024 * 1024).unwrap();
         let debug = format!("{limits:?}");
 
         assert!(debug.contains("max_concurrent_requests"));
