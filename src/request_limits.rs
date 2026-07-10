@@ -8,7 +8,6 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use anyhow::bail;
 use axum::{
-    body::{to_bytes, Body},
     extract::{Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::Next,
@@ -95,11 +94,13 @@ impl fmt::Debug for McpRequestLimits {
     }
 }
 
-/// Enforce fail-fast concurrency, bounded body buffering, and request timeout.
+/// Enforce fail-fast concurrency and a bounded total request duration.
 ///
-/// This middleware is intended to run after bearer authentication. Unauthenticated
-/// requests are rejected before their bodies are buffered, while authenticated
-/// requests are bounded before JSON-RPC parsing or tool dispatch.
+/// This middleware is intended to run after bearer authentication. Axum's
+/// `DefaultBodyLimit` provides the actual streaming body ceiling so the request
+/// body is not buffered twice on memory-constrained Termux devices. This layer
+/// performs an early `Content-Length` rejection when possible and normalizes
+/// Axum's non-JSON body-limit response.
 pub async fn enforce_mcp_request_limits(
     State(limits): State<McpRequestLimits>,
     request: Request,
@@ -114,20 +115,8 @@ pub async fn enforce_mcp_request_limits(
         Err(_) => return concurrency_limit_response(),
     };
 
-    let timeout_duration = limits.request_timeout;
-    let max_body_bytes = limits.max_body_bytes;
-    let guarded_request = async move {
-        let (parts, body) = request.into_parts();
-        let body = match to_bytes(body, max_body_bytes).await {
-            Ok(body) => body,
-            Err(_) => return body_limit_response(),
-        };
-        let request = Request::from_parts(parts, Body::from(body));
-        next.run(request).await
-    };
-
-    let response = match timeout(timeout_duration, guarded_request).await {
-        Ok(response) => response,
+    let response = match timeout(limits.request_timeout, next.run(request)).await {
+        Ok(response) => normalize_body_limit_response(response),
         Err(_) => timeout_response(),
     };
 
@@ -142,6 +131,20 @@ fn content_length_exceeds_limit(request: &Request, max_body_bytes: usize) -> boo
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
         .is_some_and(|length| length > max_body_bytes as u64)
+}
+
+fn normalize_body_limit_response(response: Response) -> Response {
+    let is_json = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json"));
+
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE && !is_json {
+        body_limit_response()
+    } else {
+        response
+    }
 }
 
 fn concurrency_limit_response() -> Response {
@@ -168,7 +171,7 @@ fn body_limit_response() -> Response {
     limit_response(
         StatusCode::PAYLOAD_TOO_LARGE,
         "mcp_request_body_too_large",
-        "The MCP request body exceeds the configured byte limit or could not be buffered safely.",
+        "The MCP request body exceeds the configured byte limit.",
     )
 }
 
@@ -192,8 +195,8 @@ mod tests {
     use std::sync::Arc;
 
     use axum::{
-        body::{to_bytes, Body},
-        extract::State as HandlerState,
+        body::{to_bytes, Body, Bytes},
+        extract::{DefaultBodyLimit, State as HandlerState},
         http::Request as HttpRequest,
         middleware,
         routing::post,
@@ -214,31 +217,40 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    #[tokio::test]
-    async fn request_inside_limits_reaches_handler() {
-        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 64).unwrap();
-        let app = Router::new()
-            .route("/mcp", post(|| async { "ok" }))
+    async fn body_handler(body: Bytes) -> String {
+        format!("{}", body.len())
+    }
+
+    fn limited_router(limits: McpRequestLimits) -> Router {
+        let max_body_bytes = limits.max_body_bytes();
+        Router::new()
+            .route("/mcp", post(body_handler))
+            .layer(DefaultBodyLimit::max(max_body_bytes))
             .route_layer(middleware::from_fn_with_state(
                 limits,
                 enforce_mcp_request_limits,
-            ));
+            ))
+    }
 
-        let response = app.oneshot(request("small-body")).await.unwrap();
+    #[tokio::test]
+    async fn request_inside_limits_reaches_handler() {
+        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 64).unwrap();
+        let response = limited_router(limits)
+            .oneshot(request("small-body"))
+            .await
+            .unwrap();
+
         assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn oversized_body_is_rejected_with_non_sensitive_response() {
+    async fn oversized_chunked_body_is_rejected_with_non_sensitive_response() {
         let limits = McpRequestLimits::new(1, Duration::from_secs(1), 8).unwrap();
-        let app = Router::new()
-            .route("/mcp", post(|| async { "unexpected" }))
-            .route_layer(middleware::from_fn_with_state(
-                limits,
-                enforce_mcp_request_limits,
-            ));
+        let response = limited_router(limits)
+            .oneshot(request("123456789"))
+            .await
+            .unwrap();
 
-        let response = app.oneshot(request("123456789")).await.unwrap();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
@@ -247,6 +259,24 @@ mod tests {
         let payload = json_body(response).await;
         assert_eq!(payload["error"], "mcp_request_body_too_large");
         assert!(!payload.to_string().contains("123456789"));
+    }
+
+    #[tokio::test]
+    async fn oversized_content_length_is_rejected_before_handler() {
+        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 8).unwrap();
+        let response = limited_router(limits)
+            .oneshot(
+                HttpRequest::post("/mcp")
+                    .header(header::CONTENT_LENGTH, "9")
+                    .body(Body::from("small"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"], "mcp_request_body_too_large");
     }
 
     #[tokio::test]
