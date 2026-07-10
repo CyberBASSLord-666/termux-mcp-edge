@@ -217,9 +217,7 @@ fn env_string_list(name: &str, defaults: &[&str]) -> Vec<String> {
 fn env_exact_string_list(name: &str, defaults: &[&str]) -> anyhow::Result<Vec<String>> {
     match env::var(name) {
         Ok(value) => split_exact_env_list(name, &value),
-        Err(env::VarError::NotPresent) => {
-            Ok(defaults.iter().copied().map(str::to_owned).collect())
-        }
+        Err(env::VarError::NotPresent) => Ok(defaults.iter().copied().map(str::to_owned).collect()),
         Err(env::VarError::NotUnicode(_)) => {
             bail!("{name} must contain valid Unicode text")
         }
