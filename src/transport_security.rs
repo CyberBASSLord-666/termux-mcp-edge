@@ -31,6 +31,29 @@ impl fmt::Display for TransportSecurityError {
 
 impl std::error::Error for TransportSecurityError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportSecurityPolicyError {
+    InvalidHost,
+    InvalidOrigin,
+}
+
+impl TransportSecurityPolicyError {
+    pub fn reason_code(self) -> &'static str {
+        match self {
+            Self::InvalidHost => "invalid_allowed_host",
+            Self::InvalidOrigin => "invalid_allowed_origin",
+        }
+    }
+}
+
+impl fmt::Display for TransportSecurityPolicyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.reason_code())
+    }
+}
+
+impl std::error::Error for TransportSecurityPolicyError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportSecurityPolicy {
     allowed_hosts: BTreeSet<String>,
@@ -43,18 +66,27 @@ impl TransportSecurityPolicy {
         allowed_hosts: impl IntoIterator<Item = impl Into<String>>,
         allowed_origins: impl IntoIterator<Item = impl Into<String>>,
         allow_missing_origin: bool,
-    ) -> Self {
-        Self {
-            allowed_hosts: allowed_hosts
-                .into_iter()
-                .filter_map(|host| normalize_host(&host.into()))
-                .collect(),
-            allowed_origins: allowed_origins
-                .into_iter()
-                .filter_map(|origin| normalize_origin(&origin.into()))
-                .collect(),
+    ) -> Result<Self, TransportSecurityPolicyError> {
+        let allowed_hosts = allowed_hosts
+            .into_iter()
+            .map(|host| {
+                let host = host.into();
+                normalize_host(&host).ok_or(TransportSecurityPolicyError::InvalidHost)
+            })
+            .collect::<Result<_, _>>()?;
+        let allowed_origins = allowed_origins
+            .into_iter()
+            .map(|origin| {
+                let origin = origin.into();
+                normalize_origin(&origin).ok_or(TransportSecurityPolicyError::InvalidOrigin)
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(Self {
+            allowed_hosts,
+            allowed_origins,
             allow_missing_origin,
-        }
+        })
     }
 
     pub fn localhost(port: u16, allow_missing_origin: bool) -> Self {
@@ -72,6 +104,7 @@ impl TransportSecurityPolicy {
             ],
             allow_missing_origin,
         )
+        .expect("built-in localhost transport authorities must be valid")
     }
 
     pub fn validate_request(
@@ -292,9 +325,25 @@ mod tests {
     }
 
     #[test]
+    fn constructor_fails_closed_for_invalid_allowlist_entries() {
+        assert_eq!(
+            TransportSecurityPolicy::new(["localhost:8000", "bad host"], ["http://localhost:8000"], false),
+            Err(TransportSecurityPolicyError::InvalidHost)
+        );
+        assert_eq!(
+            TransportSecurityPolicy::new(["localhost:8000"], ["http://localhost:8000", "file://localhost"], false),
+            Err(TransportSecurityPolicyError::InvalidOrigin)
+        );
+    }
+
+    #[test]
     fn allows_case_insensitive_origin_scheme_and_authority() {
-        let policy =
-            TransportSecurityPolicy::new(["localhost:8000"], ["HTTP://LOCALHOST:8000"], false);
+        let policy = TransportSecurityPolicy::new(
+            ["localhost:8000"],
+            ["HTTP://LOCALHOST:8000"],
+            false,
+        )
+        .unwrap();
         assert!(policy.allowed_origins().contains("http://localhost:8000"));
 
         policy
@@ -373,19 +422,14 @@ mod tests {
 
     #[test]
     fn requires_http_origin_scheme() {
-        let policy = TransportSecurityPolicy::new(
-            ["localhost:8000"],
-            ["chrome-extension://example", "file://localhost"],
-            false,
+        assert_eq!(
+            TransportSecurityPolicy::new(
+                ["localhost:8000"],
+                ["chrome-extension://example", "file://localhost"],
+                false,
+            ),
+            Err(TransportSecurityPolicyError::InvalidOrigin)
         );
-
-        assert!(policy.allowed_origins().is_empty());
-        assert!(matches!(
-            policy
-                .validate_request(Some("localhost:8000"), Some("chrome-extension://example"))
-                .unwrap_err(),
-            TransportSecurityError::InvalidOrigin { .. }
-        ));
     }
 
     #[test]
@@ -438,6 +482,22 @@ mod tests {
                     received: "https://identity@localhost:8000".to_string(),
                 },
                 "invalid_origin",
+            ),
+        ];
+
+        for (error, reason_code) in cases {
+            assert_eq!(error.reason_code(), reason_code);
+            assert_eq!(error.to_string(), reason_code);
+        }
+    }
+
+    #[test]
+    fn transport_security_policy_errors_render_stable_reason_codes() {
+        let cases = [
+            (TransportSecurityPolicyError::InvalidHost, "invalid_allowed_host"),
+            (
+                TransportSecurityPolicyError::InvalidOrigin,
+                "invalid_allowed_origin",
             ),
         ];
 
