@@ -556,6 +556,20 @@ mod tests {
             validate_transport_security(&transport)
                 .expect_err("configured authority whitespace must fail closed");
         }
+
+        for value in [
+            " http://localhost:8000",
+            "http://localhost:8000 ",
+            "http://localhost:8000,\thttp://127.0.0.1:8000",
+        ] {
+            let transport = TransportConfig {
+                allowed_origins: split_exact_env_list("ALLOWED_ORIGINS", value).unwrap(),
+                ..transport_config()
+            };
+
+            validate_transport_security(&transport)
+                .expect_err("configured origin whitespace must fail closed");
+        }
     }
 
     #[test]
