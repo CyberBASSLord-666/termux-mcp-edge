@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -38,9 +38,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout branch
         # actions/checkout@v4 resolved 2026-06-26
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: transport-limits-169
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
@@ -52,18 +55,18 @@ jobs:
         # Swatinem/rust-cache@v2 resolved 2026-06-26
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      - name: Apply rustfmt for diagnostic artifact
-        run: cargo fmt --all
-
-      - name: Upload formatted Rust tree
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: pr-170-rustfmt-tree
-          path: |
-            src/**/*.rs
-            tests/**/*.rs
-          if-no-files-found: error
-          retention-days: 1
+      - name: Apply and commit rustfmt
+        run: |
+          cargo fmt --all
+          if git diff --quiet -- '*.rs'; then
+            echo 'No Rust formatting changes required.'
+          else
+            git add -- '*.rs'
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'Apply rustfmt to MCP request limit changes'
+            git push origin HEAD:transport-limits-169
+          fi
 
       - name: Format check
         run: cargo fmt --all -- --check
