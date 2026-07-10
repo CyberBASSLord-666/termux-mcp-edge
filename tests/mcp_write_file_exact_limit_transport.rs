@@ -126,4 +126,6 @@ async fn transport_write_file_allows_exact_default_limit_with_explicit_mutation(
         tokio::fs::metadata(&target).await.unwrap().len(),
         DEFAULT_MAX_WRITE_BYTES as u64
     );
+    let written_content = tokio::fs::read_to_string(&target).await.unwrap();
+    assert_eq!(written_content, content);
 }
