@@ -265,7 +265,11 @@ mod tests {
 
     const NOW: u64 = 1_725_000_000;
 
-    fn requirement(class: CapabilityClass, scope: &str, confirmation: bool) -> CapabilityRequirement {
+    fn requirement(
+        class: CapabilityClass,
+        scope: &str,
+        confirmation: bool,
+    ) -> CapabilityRequirement {
         CapabilityRequirement::new(class, scope, confirmation).unwrap()
     }
 
@@ -275,20 +279,42 @@ mod tests {
 
     #[test]
     fn allows_matching_active_unexpired_confirmed_grant() {
-        let requirement = requirement(CapabilityClass::ProjectServiceMutation, "project-service:restart", true);
-        let grant = grant("grant-status-restart-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW + 60)
-            .with_confirmation_satisfied(true);
+        let requirement = requirement(
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            true,
+        );
+        let grant = grant(
+            "grant-status-restart-001",
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            NOW + 60,
+        )
+        .with_confirmation_satisfied(true);
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
         assert_eq!(evaluation.decision, CapabilityDecision::Allowed);
-        assert_eq!(evaluation.reason_code, CapabilityReasonCode::CapabilityGrantAllowed);
+        assert_eq!(
+            evaluation.reason_code,
+            CapabilityReasonCode::CapabilityGrantAllowed
+        );
     }
 
     #[test]
     fn preserves_stable_serialized_shape() {
-        let requirement = requirement(CapabilityClass::CommandExecution, "command-profile:diagnostics", false);
-        let grant = grant("grant-diagnostics-001", CapabilityClass::CommandExecution, "command-profile:diagnostics", NOW + 60);
+        let requirement = requirement(
+            CapabilityClass::CommandExecution,
+            "command-profile:diagnostics",
+            false,
+        );
+        let grant = grant(
+            "grant-diagnostics-001",
+            CapabilityClass::CommandExecution,
+            "command-profile:diagnostics",
+            NOW + 60,
+        );
         assert_eq!(
-            serde_json::to_value(evaluate_capability_grant(&requirement, Some(&grant), NOW)).unwrap(),
+            serde_json::to_value(evaluate_capability_grant(&requirement, Some(&grant), NOW))
+                .unwrap(),
             json!({
                 "decision": "allowed",
                 "reason_code": "capability_grant_allowed",
@@ -302,36 +328,80 @@ mod tests {
     #[test]
     fn rejects_empty_oversized_and_malformed_metadata() {
         assert_eq!(
-            CapabilityRequirement::new(CapabilityClass::DeviceControl, "", false).unwrap_err().kind,
+            CapabilityRequirement::new(CapabilityClass::DeviceControl, "", false)
+                .unwrap_err()
+                .kind,
             CapabilityMetadataErrorKind::Empty
         );
         assert_eq!(
-            CapabilityRequirement::new(CapabilityClass::DeviceControl, "a".repeat(MAX_CAPABILITY_SCOPE_BYTES + 1), false).unwrap_err().kind,
+            CapabilityRequirement::new(
+                CapabilityClass::DeviceControl,
+                "a".repeat(MAX_CAPABILITY_SCOPE_BYTES + 1),
+                false,
+            )
+            .unwrap_err()
+            .kind,
             CapabilityMetadataErrorKind::TooLong
         );
-        for value in ["UPPER", "has space", "/data/path", ":leading", "trailing:", "double::separator"] {
-            assert!(CapabilityRequirement::new(CapabilityClass::DeviceControl, value, false).is_err(), "{value}");
+        for value in [
+            "UPPER",
+            "has space",
+            "/data/path",
+            ":leading",
+            "trailing:",
+            "double::separator",
+        ] {
+            assert!(
+                CapabilityRequirement::new(CapabilityClass::DeviceControl, value, false).is_err(),
+                "{value}"
+            );
         }
-        assert!(CapabilityGrant::new("grant_ok", CapabilityClass::DeviceControl, "device:wake-lock", NOW + 1).is_err());
+        assert!(CapabilityGrant::new(
+            "grant_ok",
+            CapabilityClass::DeviceControl,
+            "device:wake-lock",
+            NOW + 1,
+        )
+        .is_err());
     }
 
     #[test]
     fn accepts_exact_byte_limits() {
         let scope = "a".repeat(MAX_CAPABILITY_SCOPE_BYTES);
         let grant_id = "g".repeat(MAX_CAPABILITY_GRANT_ID_BYTES);
-        assert!(CapabilityRequirement::new(CapabilityClass::DeviceControl, scope.clone(), false).is_ok());
-        assert!(CapabilityGrant::new(grant_id, CapabilityClass::DeviceControl, scope, NOW + 1).is_ok());
+        assert!(
+            CapabilityRequirement::new(CapabilityClass::DeviceControl, scope.clone(), false)
+                .is_ok()
+        );
+        assert!(
+            CapabilityGrant::new(grant_id, CapabilityClass::DeviceControl, scope, NOW + 1).is_ok()
+        );
     }
 
     #[test]
     fn denial_precedence_remains_stable() {
-        let requirement = requirement(CapabilityClass::ProjectServiceMutation, "project-service:restart", true);
-        let inactive = grant("grant-inactive-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW + 60).inactive();
+        let requirement = requirement(
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            true,
+        );
+        let inactive = grant(
+            "grant-inactive-001",
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            NOW + 60,
+        )
+        .inactive();
         assert_eq!(
             evaluate_capability_grant(&requirement, Some(&inactive), NOW).reason_code,
             CapabilityReasonCode::CapabilityGrantInactive
         );
-        let expired = grant("grant-expired-001", CapabilityClass::ProjectServiceMutation, "project-service:restart", NOW);
+        let expired = grant(
+            "grant-expired-001",
+            CapabilityClass::ProjectServiceMutation,
+            "project-service:restart",
+            NOW,
+        );
         assert_eq!(
             evaluate_capability_grant(&requirement, Some(&expired), NOW).reason_code,
             CapabilityReasonCode::CapabilityGrantExpired
