@@ -1,25 +1,27 @@
 # MCP Transport Threat Model
 
-This document defines the security boundary for the staged MCP transport currently compiled by the optional `mcp-runtime` feature and the controls required for its migration to stable MCP 2025-11-25 Streamable HTTP.
+This document defines the security boundary for the stable MCP 2025-11-25 Streamable HTTP transport compiled by the optional `mcp-runtime` feature and its deliberately staged tool authority.
 
 ## Current Runtime Boundary
 
 The default build exposes unauthenticated coarse `GET /health` and `GET /ready` probes. It does not compile the MCP route or MCP tools.
 
-The `mcp-runtime` build additionally exposes authenticated `POST /mcp` with:
+The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `DELETE /mcp` handling with:
 
 - bearer authentication, except for explicit loopback-only development mode;
 - bounded concurrency, request duration, and body size;
 - exact Host and browser Origin validation;
-- strict JSON-RPC request/notification envelope classification;
+- strict single-message JSON-RPC request, notification, and response classification;
+- stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
+- at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
 - the seven-tool allowlist documented in README and the authorization policy;
 - safe-root, payload, dry-run, and audit-counter controls for the current filesystem surface.
 
-The transport is still a custom POST-only stage. It reports protocol version `2024-11-05` but does not implement complete initialization-state enforcement, stable 2025-11-25 Streamable HTTP GET/POST behavior, media negotiation, the `MCP-Protocol-Version` header contract, or optional session/resumption behavior. It must not be represented as fully MCP-conformant until #199 lands.
+POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.
 
 ## Assets to Protect
 
-- The configured bearer token and any future session identifiers.
+- The configured bearer token and active session identifiers.
 - Termux home data and configured filesystem safe roots.
 - Android shared storage and app-private data outside those roots.
 - SSH keys, API keys, cookies, tunnel credentials, and other device-local secrets.
@@ -41,9 +43,9 @@ Current controls:
 - failures return one non-sensitive 401 contract with `WWW-Authenticate: Bearer` and `Cache-Control: no-store`;
 - unauthenticated mode requires explicit configuration and a loopback bind.
 
-Required preservation:
+Preserved boundary:
 
-- future lifecycle or session identifiers must never replace request authentication;
+- lifecycle and session identifiers never replace request authentication;
 - authentication failures must not allocate MCP sessions, consume tool concurrency, or enter tool audit counters.
 
 ### Browser rebinding and ambient browser access
@@ -57,27 +59,27 @@ Current controls:
 - rejection of malformed authorities, wildcard/userinfo/path/query/fragment forms, whitespace/control characters, malformed IP literals, and invalid ports;
 - missing Origin is denied unless an operator explicitly enables the reviewed non-browser compatibility switch.
 
-Required preservation:
+Preserved boundary:
 
-- Streamable HTTP GET and POST must share the same Origin and authentication policy;
+- Streamable HTTP GET, POST, DELETE, and unsupported-method handling share the same Origin and authentication policy;
 - reverse proxies or tunnels must not broaden allowlists implicitly.
 
 ### Cross-client lifecycle or session confusion
 
 One client may attempt to reuse another client's state, request identifiers, session identifier, resumability cursor, or initialization status.
 
-Current limitation:
+Current controls:
 
-- the staged transport has no complete per-client MCP lifecycle/session implementation.
-
-Required controls for #199:
-
-- negotiate a supported protocol version during `initialize`;
-- require `notifications/initialized` before normal operations;
-- bind any session state to the authenticated client context;
-- generate non-predictable session identifiers if sessions are enabled;
-- validate `MCP-Protocol-Version` on subsequent requests;
-- define cancellation, shutdown, reconnection, and resumption behavior without cross-client state leakage.
+- valid initialize params are required before a session is allocated, and the server always negotiates its supported stable version `2025-11-25`;
+- each session has independent pending/active lifecycle state, and only ping is accepted as a request before `notifications/initialized`;
+- every session-bearing request is independently authenticated before lookup, so a session ID never grants authority by itself;
+- UUID v4 identifiers are generated locally, contain visible ASCII only, and are never derived from or paired with retained client metadata;
+- the single static token represents one operator security principal; possession of both that credential and a session identifier is treated as the same principal rather than a distinct end-user identity;
+- missing protocol/session headers fail with HTTP 400, unsupported protocol versions fail with HTTP 400, and unknown, expired, or terminated sessions fail with HTTP 404 without reflecting presented identifiers;
+- the store holds at most 64 sessions, expires them after 30 minutes of inactivity, prunes during session operations, and is cleared on process shutdown;
+- DELETE provides explicit shutdown; after deletion, expiry, or process restart, clients reconnect with a new initialize request;
+- server-initiated requests, SSE, replay, and resumption are not implemented, so there are no cross-stream request IDs or cursors to confuse; syntactically valid client responses are accepted and discarded with HTTP 202;
+- cancellation notifications are accepted without a JSON-RPC response, while request timeout and cancellation-safe write cleanup bound work; there is no separate long-lived operation registry to cancel across HTTP requests.
 
 ### Resource exhaustion
 
@@ -93,7 +95,7 @@ Current controls:
 Remaining work:
 
 - #206 must add deterministic filesystem response-byte budgets and avoid duplicate large content in MCP results;
-- protocol work must bound SSE connections, queues, replay buffers, session state, and reconnect behavior.
+- any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
 
 ### Filesystem escape and mutation
 
@@ -150,7 +152,7 @@ Current controls:
 
 Required controls:
 
-- target the latest adopted stable MCP specification explicitly rather than a draft or superseded transport;
+- keep the adopted stable MCP revision explicit and treat any later revision or SSE expansion as a focused compatibility change;
 - require Security and dependency-alert review for graph changes;
 - remove unused dependency features instead of retaining hypothetical surface.
 

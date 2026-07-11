@@ -2,16 +2,13 @@
 
 mod support;
 
-use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
-    response::Response,
-    Router,
-};
+use axum::{http::StatusCode, response::Response, Router};
 use serde_json::{json, Map, Value};
-use support::{empty_test_file_tools, post_json_with_empty_root, response_json, test_router};
+use support::{
+    empty_test_file_tools, initialize_session, post_json_to_session, post_json_with_empty_root,
+    response_json, test_router,
+};
 use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
-use tower::ServiceExt;
 
 const NO_ARGUMENT_TOOLS: [&str; 3] = ["runtime_status", "platform_info", "android_status"];
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
@@ -33,17 +30,8 @@ fn tool_call(id: impl Into<Value>, name: &str, arguments: Option<Value>) -> Valu
 }
 
 async fn post_to_router(router: Router, request_body: Value) -> Response {
-    router
-        .oneshot(
-            Request::post("/mcp")
-                .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "http://localhost:8000")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(request_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
+    let session_id = initialize_session(&router).await;
+    post_json_to_session(router, &session_id, request_body).await
 }
 
 async fn assert_invalid_params(response: Response, expected_id: &Value, expected_data: &str) {
@@ -67,8 +55,21 @@ async fn tools_call_envelope_is_closed_and_returns_one_bounded_error() {
     .await;
     assert_invalid_params(omitted_response, &omitted_id, TOOL_CALL_PARAMS_INVALID).await;
 
+    let array_id = json!("closed-envelope-array");
+    let array_response = post_json_with_empty_root(json!({
+        "jsonrpc": "2.0",
+        "id": array_id.clone(),
+        "method": "tools/call",
+        "params": []
+    }))
+    .await;
+    assert_eq!(array_response.status(), StatusCode::BAD_REQUEST);
+    let array_payload = response_json(array_response).await;
+    assert_eq!(array_payload["id"], array_id);
+    assert_eq!(array_payload["error"]["code"], -32600);
+    assert_eq!(array_payload["error"]["message"], "Invalid Request");
+
     let cases = [
-        json!([]),
         json!({}),
         json!({"name": 7}),
         json!({"name": "runtime_status", "unexpected": sensitive}),

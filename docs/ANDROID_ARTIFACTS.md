@@ -4,8 +4,8 @@ The `Android Cross Compile` workflow validates the pinned Rust 1.88.0 toolchain 
 
 The workflow builds two isolated feature postures:
 
-- `termux-mcp-server-aarch64-linux-android-default` contains the default feature set. It provides the health/readiness runtime and does not include the staged MCP transport.
-- `termux-mcp-server-aarch64-linux-android-mcp-runtime` is built with `--features mcp-runtime`. It contains the authenticated staged MCP transport and its currently enabled bounded tool surface.
+- `termux-mcp-server-aarch64-linux-android-default` contains the default feature set. It provides the health/readiness runtime and does not include the MCP transport.
+- `termux-mcp-server-aarch64-linux-android-mcp-runtime` is built with `--features mcp-runtime`. It contains the authenticated stable MCP 2025-11-25 transport and its currently enabled staged, bounded tool surface.
 
 Artifact names are part of the release evidence. Do not rename either artifact to a generic Android name or substitute one posture for the other.
 

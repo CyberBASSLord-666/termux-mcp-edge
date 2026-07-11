@@ -1,6 +1,6 @@
 # Production Readiness Checklist
 
-This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes the two supported compile-time postures and does not treat the staged MCP transport as fully protocol-conformant or broadly production-ready.
+This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes the two supported compile-time postures: the optional runtime implements the stable MCP 2025-11-25 Streamable HTTP lifecycle around a deliberately staged tool surface, but protocol conformance does not make the remaining filesystem, deployment, configuration, packaging, or response-bound work broadly production-ready.
 
 ## Supported Compile-Time Postures
 
@@ -8,19 +8,18 @@ This checklist defines the evidence required to merge, release, and operate the 
 | --- | --- | --- |
 | `GET /health` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response |
 | `GET /ready` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, includes non-sensitive request-limit metadata |
-| `POST /mcp` | Not compiled | Compiled as an authenticated, resource-bounded staged transport |
+| `POST`, `GET`, `DELETE /mcp` | Not compiled | Authenticated, resource-bounded stable 2025-11-25 transport; GET deliberately returns 405 because SSE is not offered |
 | MCP tools | None | `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, `write_file` |
 | Android control, shell, command execution, arbitrary service control, and other high-impact actions | Disabled | Disabled |
 
 Both postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
 
-The `mcp-runtime` build currently implements a custom POST-only JSON-RPC transport that reports protocol version `2024-11-05`. It does not yet implement the complete stable MCP 2025-11-25 Streamable HTTP lifecycle, media negotiation, protocol-version header, or optional session behavior. Track that work separately under #199.
+The `mcp-runtime` build negotiates protocol version `2025-11-25`, validates initialize metadata, issues cryptographically random bounded sessions, gates normal operations on `notifications/initialized`, enforces POST media negotiation and the subsequent-request protocol/session headers, accepts compliant client notifications and responses with HTTP 202, and supports DELETE termination. The stable specification permits GET to return HTTP 405 when server-initiated SSE is not offered; this runtime therefore has no SSE, replay buffer, or resumability state.
 
 ## Open Production Blockers
 
 Do not describe the staged MCP posture as fully production-ready while these confirmed lanes remain open:
 
-- #199: stable MCP 2025-11-25 lifecycle and Streamable HTTP conformance are incomplete;
 - #200: filesystem operations retain canonicalize-then-use symlink race windows;
 - #203: runit service transitions and failed-first-install cleanup are not fully atomic;
 - #204: invalid-Unicode environment handling and port/list configuration need uniform fail-closed behavior;
@@ -75,12 +74,16 @@ For each released artifact:
 
 ## Current MCP Runtime Gate
 
-A change to the staged transport or tool registry must prove:
+A change to the stable transport or staged tool registry must prove:
 
 - bearer authentication remains outside request-limit accounting and message handling;
 - localhost-only unauthenticated mode cannot bind to a non-loopback address;
 - unexpected `Host` and browser `Origin` values fail before JSON-RPC dispatch;
 - malformed JSON and invalid JSON-RPC request objects remain distinct;
+- initialization negotiates `2025-11-25`, creates no session for invalid params, and gates normal operations until `notifications/initialized`;
+- POST content and accepted response media types, `MCP-Protocol-Version`, and `MCP-Session-Id` are enforced without ambiguous duplicate headers;
+- sessions remain random, bounded, expiring, isolated, explicitly terminable, and subordinate to request authentication;
+- notifications and client responses receive HTTP 202 with no body, batches remain rejected, and GET returns the documented 405 without creating SSE/replay state;
 - notification-shaped tool calls cannot dispatch or mutate state;
 - unauthenticated callers cannot discover or invoke tools;
 - discovery lists only the current seven-tool allowlist;
@@ -90,7 +93,7 @@ A change to the staged transport or tool registry must prove:
 - errors and audit counters retain only stable non-sensitive data;
 - command execution, Android control, shell fallback, and other high-impact tools remain absent.
 
-Protocol migration work must additionally satisfy the stable MCP 2025-11-25 requirements documented in [`MCP_RESTORATION_VALIDATION.md`](MCP_RESTORATION_VALIDATION.md).
+Stable transport regression evidence is defined in [`MCP_RESTORATION_VALIDATION.md`](MCP_RESTORATION_VALIDATION.md). Future SSE, replay, or protocol-version changes require a new focused transport gate rather than an implicit compatibility expansion.
 
 ## High-Impact Capability Gate
 

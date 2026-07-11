@@ -5,9 +5,9 @@
 Termux MCP Edge has two deliberate compile-time postures:
 
 - The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
-- The optional `mcp-runtime` feature additionally exposes the staged `POST /mcp` JSON-RPC transport and its narrowly scoped tool registry.
+- The optional `mcp-runtime` feature additionally exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its narrowly scoped staged tool registry.
 
-The staged transport reports protocol version `2024-11-05` through a custom POST-only contract. It does not yet implement the complete stable MCP 2025-11-25 lifecycle and Streamable HTTP requirements, so protocol conformance remains a separate security and interoperability gate.
+The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 because optional server-initiated SSE, replay, and resumption are not implemented.
 
 In static-token mode, the complete `/mcp` route requires `Authorization: Bearer <configured-token>` before request resource limits, transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Missing, malformed, oversized, or incorrect credentials are rejected with HTTP 401 and a non-sensitive response. The only authentication bypass is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
 
@@ -50,7 +50,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 |---|---:|---:|
 | `GET /health` | Enabled, unauthenticated | Enabled, unauthenticated |
 | `GET /ready` | Enabled, unauthenticated | Enabled, unauthenticated with non-sensitive limit metadata |
-| `POST /mcp` staged transport | Disabled | Bearer-authenticated, resource-bounded, except explicit loopback development mode |
+| `POST`, `GET`, `DELETE /mcp` stable transport | Disabled | Bearer-authenticated, resource-bounded, except explicit loopback development mode; GET returns 405 without SSE |
 | `runtime_status` / `platform_info` | Disabled | Read-only |
 | `android_status` | Disabled | Read-only allowlisted metadata |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
@@ -74,9 +74,13 @@ export MCP__TRANSPORT__ALLOWED_ORIGINS='http://localhost:8000'
 
 Authentication occurs before request-limit accounting, transport validation, and JSON-RPC dispatch. Rejected credentials must not consume MCP concurrency permits or body-buffer capacity. Authenticated requests with rejected hosts or origins must not reach JSON-RPC or tool-call handling.
 
+Every POST must use `Content-Type: application/json` and explicitly accept both `application/json` and `text/event-stream`. After initialize returns `MCP-Session-Id`, every subsequent POST, GET, or DELETE must send that identifier and `MCP-Protocol-Version: 2025-11-25`. Duplicate, malformed, missing, unknown, expired, and mismatched header states fail closed. Accepted notifications and client responses return HTTP 202 without bodies.
+
+Session identifiers are UUID v4 values, but they are not authentication credentials. The server re-runs bearer authentication for every request before session lookup. The in-memory store retains no client-provided identity or capability metadata, holds at most 64 sessions, expires idle records after 30 minutes, and supports explicit DELETE termination. Protect session identifiers from disclosure anyway: a caller possessing both the shared operator bearer token and an active session ID can act within that session. All `/mcp` handler responses use `Cache-Control: no-store`.
+
 ## Request Resource Limits
 
-The staged MCP transport uses explicit limits intended for a supervised mobile process:
+The MCP transport uses explicit limits intended for a supervised mobile process:
 
 - `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS`: default `4`, valid `1–64`.
 - `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS`: default `30`, valid `1–300`.
@@ -140,7 +144,7 @@ Cargo, lockfile, or security-workflow changes must remain separate from unrelate
 - Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600` and avoid printing the token during validation.
 - Rotate tokens after suspected exposure.
 - Keep CI, Security, Dependabot, and pinned GitHub Actions enabled.
-- Validate unauthorized rejection, request-limit failures, and authenticated MCP behavior before enabling the staged runtime in a supervised service.
+- Validate unauthorized rejection, initialization/session behavior, request-limit failures, and authenticated MCP behavior before enabling the optional runtime in a supervised service.
 
 ## Incident Response
 

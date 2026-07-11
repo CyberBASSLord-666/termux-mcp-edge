@@ -2,7 +2,7 @@
 
 ## Current Runtime Validation Scope
 
-The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles the staged `/mcp` transport and its current limited tool surface.
+The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its current limited tool surface.
 
 Current staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`. Android control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
 
@@ -77,26 +77,61 @@ curl -i -sS \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":0,"method":"tools/list"}' \
   http://127.0.0.1:8000/mcp
 ```
 
 Expected behavior: HTTP 401, `WWW-Authenticate: Bearer`, a non-sensitive `unauthorized` response, and no tool-discovery result.
 
-Then verify authenticated discovery using the exact allowed `Host` and `Origin` headers:
+Then initialize a bounded session using the exact allowed `Host` and `Origin` headers:
 
 ```bash
-curl -sS \
+MCP_RESPONSE_HEADERS="$(mktemp)"
+curl -sS -D "$MCP_RESPONSE_HEADERS" \
   -X POST \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-validation","version":"1.0.0"}}}' \
+  http://127.0.0.1:8000/mcp | jq -e '.result.protocolVersion == "2025-11-25"'
+MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$MCP_RESPONSE_HEADERS")"
+test -n "$MCP_SESSION_ID"
 ```
 
-Confirm discovery returns exactly the staged tools expected for the current release line: `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
+Complete initialization and confirm the notification receives HTTP 202 without a body:
+
+```bash
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  http://127.0.0.1:8000/mcp)" = 202
+```
+
+Verify authenticated discovery within that session:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 7'
+```
+
+Confirm discovery returns exactly the staged tools expected for the current release line: `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
 
 Validate the project-owned service status tool with the current allowlisted service name:
 
@@ -107,7 +142,10 @@ curl -sS \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"project_service_status","arguments":{"service_name":"mcp_runtime"}}}' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"project_service_status","arguments":{"service_name":"mcp_runtime"}}}' \
   http://127.0.0.1:8000/mcp
 ```
 
@@ -149,6 +187,9 @@ curl -i -sS \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
   --data-binary @/tmp/mcp-oversized.json \
   http://127.0.0.1:8000/mcp
 rm -f /tmp/mcp-oversized.json
@@ -176,6 +217,9 @@ Clear the temporary token variable and restore defaults after validation:
 
 ```bash
 unset MCP_TEST_TOKEN
+unset MCP_SESSION_ID
+rm -f "$MCP_RESPONSE_HEADERS"
+unset MCP_RESPONSE_HEADERS
 unset MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS
 unset MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS
 unset MCP__TRANSPORT__MAX_BODY_BYTES
@@ -213,4 +257,4 @@ Do not mark the project as broadly MCP-runtime-ready until each enabled capabili
 
 ## Current Known Limitation
 
-The current runtime intentionally remains staged. It exposes selected low-risk and controlled MCP tools, but it does not expose Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, or high-impact controls. Restoring those surfaces is product work, not cleanup-only work.
+The transport implements the stable non-SSE MCP 2025-11-25 posture, while the tool authority intentionally remains staged. It exposes selected low-risk and controlled tools but not Android platform control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, or high-impact controls. Restoring those surfaces is product work, not cleanup-only work.

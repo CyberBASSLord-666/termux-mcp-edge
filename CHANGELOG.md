@@ -21,6 +21,9 @@
 - Centralized Host and Origin authority normalization across startup configuration and request validation, rejecting ASCII whitespace/control characters, wildcard/userinfo/URL delimiters, malformed DNS/IPv4/bracketed-IPv6 forms, ambiguous colons, and invalid ports while preserving case-insensitive exact allowlist matching.
 - Pinned CI and Android validation to Rust 1.88.0, verified the active toolchain and Android target, and made Android AArch64 validation build and publish separately named default and `mcp-runtime` feature postures for Rust source and toolchain changes.
 - Enforced every advertised MCP tool input schema at runtime, centralized omitted-or-empty no-argument handling, replaced serde-derived public errors with stable bounded responses, and corrected write-payload limit mapping.
+- Migrated `/mcp` to the stable MCP 2025-11-25 Streamable HTTP contract with initialize negotiation, pending/active lifecycle gating, strict POST media handling, protocol-version headers, compliant HTTP 202 notification/response handling, and explicit non-SSE GET 405 behavior.
+- Added bounded UUID session management with 64-session capacity, 30-minute idle expiry, per-session isolation, DELETE termination, restart/reconnect semantics, and no retained client initialize metadata.
+- Extended strict JSON-RPC classification to stable single-message client responses, rejected batch arrays and non-object MCP params, preserved authentication/Host/Origin/request-limit ordering, and added end-to-end transport conformance coverage.
 
 ## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
 

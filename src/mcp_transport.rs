@@ -6,9 +6,9 @@ use std::{
 use axum::{
     body::Bytes,
     extract::State,
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::any,
     Json, Router,
 };
 use serde::{Deserialize, Deserializer};
@@ -22,6 +22,7 @@ use crate::{
     },
     error::AppError,
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
+    mcp_session::{McpSessionStore, SessionPhase, SessionStoreError},
     platform_info::collect_platform_info,
     service_status::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
@@ -30,6 +31,14 @@ use crate::{
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
 };
+
+pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
+pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+pub const MCP_POST_ACCEPT: &str = "application/json, text/event-stream";
+
+const APPLICATION_JSON: &str = "application/json";
+const TEXT_EVENT_STREAM: &str = "text/event-stream";
 
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const PLATFORM_INFO_TOOL: &str = "platform_info";
@@ -90,6 +99,22 @@ struct McpTransportState {
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
     audit_counters: SharedAuditCounters,
+    sessions: McpSessionStore,
+}
+
+enum SessionRequestError {
+    ProtocolVersionRequired,
+    UnsupportedProtocolVersion,
+    InvalidProtocolVersionHeader,
+    SessionRequired,
+    SessionNotFound,
+    Store(SessionStoreError),
+}
+
+impl From<SessionStoreError> for SessionRequestError {
+    fn from(error: SessionStoreError) -> Self {
+        Self::Store(error)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,9 +193,9 @@ struct WriteFileArguments {
     dry_run: Option<bool>,
 }
 
-/// Build the staged MCP transport shell.
+/// Build the stable MCP 2025-11-25 Streamable HTTP transport.
 ///
-/// The staged runtime exposes transport liveness, MCP discovery,
+/// The runtime exposes negotiated, session-scoped MCP discovery,
 /// deterministic runtime metadata, non-sensitive platform metadata,
 /// read-only Android/Termux status metadata, read-only project-owned service
 /// status metadata, safe-rooted directory listing, bounded safe-rooted UTF-8
@@ -180,42 +205,64 @@ struct WriteFileArguments {
 #[rustfmt::skip]
 pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
     Router::new()
-        .route("/mcp", post(handle_mcp_request))
+        .route("/mcp", any(handle_mcp_request))
         .with_state(McpTransportState {
             security_policy,
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
+            sessions: McpSessionStore::new(),
         })
 }
 
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
+    method: Method,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let host = header_value(&headers, header::HOST);
     let origin = header_value(&headers, header::ORIGIN);
 
-    if let Err(error) = state.security_policy.validate_request(host, origin) {
-        return (
+    let mut response = if let Err(error) = state.security_policy.validate_request(host, origin) {
+        (
             StatusCode::FORBIDDEN,
             Json(json!({
                 "error": "transport_security_rejected",
                 "message": error.to_string(),
             })),
         )
-            .into_response();
+            .into_response()
+    } else {
+        match method {
+            Method::POST => handle_mcp_post(&state, &headers, body).await,
+            Method::GET => handle_mcp_get(&state, &headers),
+            Method::DELETE => handle_mcp_delete(&state, &headers),
+            _ => method_not_allowed(),
+        }
+    };
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: Bytes) -> Response {
+    if !has_json_content_type(headers) {
+        return transport_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_content_type",
+            "MCP POST requests require Content-Type application/json.",
+        );
     }
 
-    if body.is_empty() {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({
-                "status": "mcp_transport_shell",
-                "message": "MCP transport is reachable. Tool discovery, runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this stage; later high-risk surfaces remain disabled.",
-            })),
-        )
-            .into_response();
+    if !accepts_media_type(headers, APPLICATION_JSON)
+        || !accepts_media_type(headers, TEXT_EVENT_STREAM)
+    {
+        return transport_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "unsupported_accept",
+            "MCP POST requests must accept application/json and text/event-stream.",
+        );
     }
 
     let message = match parse_incoming_message(&body) {
@@ -240,33 +287,132 @@ async fn handle_mcp_request(
         }
     };
 
+    if let IncomingJsonRpcMessage::Request { id, method, params } = &message {
+        if method == "initialize" {
+            if headers.contains_key(MCP_SESSION_ID_HEADER) {
+                return transport_error(
+                    StatusCode::BAD_REQUEST,
+                    "session_not_allowed",
+                    "Initialize requests must not include MCP-Session-Id.",
+                );
+            }
+            return initialize_response(Some(id.clone()), params.clone(), state);
+        }
+    }
+
+    let (session_id, phase) = match validate_session_request(headers, &state.sessions) {
+        Ok(session) => session,
+        Err(error) => return session_request_error_response(error),
+    };
+
     match message {
-        IncomingJsonRpcMessage::Request { id, method, params } => match method.as_str() {
-            "initialize" => initialize_response(Some(id)),
-            "tools/list" => tools_list_response(Some(id)),
-            "tools/call" => handle_tool_call(Some(id), params, &state).await,
-            _ => method_not_available(
-                Some(id),
-                "Only initialize, tools/list, and tools/call are available in this staged runtime.",
-            ),
-        },
-        IncomingJsonRpcMessage::Notification { method, params: _ } => handle_notification(&method),
+        IncomingJsonRpcMessage::Request { id, method, params } => {
+            if method == "ping" {
+                return ping_response(Some(id));
+            }
+            if phase != SessionPhase::Active {
+                return server_not_initialized(Some(id));
+            }
+
+            match method.as_str() {
+                "tools/list" => tools_list_response(Some(id)),
+                "tools/call" => handle_tool_call(Some(id), params, state).await,
+                _ => method_not_available(
+                    Some(id),
+                    "Only ping, tools/list, and tools/call are available after initialization.",
+                ),
+            }
+        }
+        IncomingJsonRpcMessage::Notification { method, params: _ } => {
+            if method == "notifications/initialized" {
+                return match state.sessions.activate(&session_id) {
+                    Ok(()) => StatusCode::ACCEPTED.into_response(),
+                    Err(error) => session_store_error_response(error),
+                };
+            }
+            if phase != SessionPhase::Active {
+                return server_not_initialized(None);
+            }
+            StatusCode::ACCEPTED.into_response()
+        }
+        IncomingJsonRpcMessage::Response => {
+            if phase != SessionPhase::Active {
+                return server_not_initialized(None);
+            }
+            StatusCode::ACCEPTED.into_response()
+        }
     }
 }
 
-fn handle_notification(_method: &str) -> Response {
-    StatusCode::NO_CONTENT.into_response()
+fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
+    if !accepts_media_type(headers, TEXT_EVENT_STREAM) {
+        return transport_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "unsupported_accept",
+            "MCP GET requests must accept text/event-stream.",
+        );
+    }
+
+    let (_, phase) = match validate_session_request(headers, &state.sessions) {
+        Ok(session) => session,
+        Err(error) => return session_request_error_response(error),
+    };
+    if phase != SessionPhase::Active {
+        return server_not_initialized(None);
+    }
+
+    let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("POST, DELETE"));
+    response
+}
+
+fn handle_mcp_delete(state: &McpTransportState, headers: &HeaderMap) -> Response {
+    let (session_id, _) = match validate_session_request(headers, &state.sessions) {
+        Ok(session) => session,
+        Err(error) => return session_request_error_response(error),
+    };
+
+    match state.sessions.terminate(&session_id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => session_store_error_response(error),
+    }
+}
+
+fn method_not_allowed() -> Response {
+    let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("POST, GET, DELETE"));
+    response
 }
 
 #[rustfmt::skip]
-fn initialize_response(id: Option<Value>) -> Response {
-    (
+fn initialize_response(
+    id: Option<Value>,
+    params: Option<Value>,
+    state: &McpTransportState,
+) -> Response {
+    if !valid_initialize_params(params.as_ref()) {
+        return invalid_params(
+            id,
+            "initialize params must match the MCP 2025-11-25 schema.",
+        );
+    }
+
+    let session_id = match state.sessions.create() {
+        Ok(session_id) => session_id,
+        Err(error) => return session_store_error_response(error),
+    };
+
+    let mut response = (
         StatusCode::OK,
         Json(json!({
             "jsonrpc": "2.0",
             "id": id.unwrap_or(Value::Null),
             "result": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
                 "serverInfo": {
                     "name": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
@@ -276,6 +422,356 @@ fn initialize_response(id: Option<Value>) -> Response {
                         "listChanged": false,
                     },
                 },
+            },
+        })),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        MCP_SESSION_ID_HEADER,
+        HeaderValue::try_from(session_id.as_str())
+            .expect("UUID session IDs are valid header values"),
+    );
+    response
+}
+
+#[rustfmt::skip]
+fn ping_response(id: Option<Value>) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {},
+        })),
+    )
+        .into_response()
+}
+
+fn valid_initialize_params(params: Option<&Value>) -> bool {
+    let Some(params) = params.and_then(Value::as_object) else {
+        return false;
+    };
+
+    params.get("protocolVersion").is_some_and(Value::is_string)
+        && params
+            .get("capabilities")
+            .and_then(Value::as_object)
+            .is_some_and(valid_client_capabilities)
+        && params
+            .get("clientInfo")
+            .and_then(Value::as_object)
+            .is_some_and(valid_client_implementation)
+        && params.get("_meta").is_none_or(valid_meta)
+}
+
+fn valid_client_capabilities(capabilities: &serde_json::Map<String, Value>) -> bool {
+    for key in ["roots", "sampling", "elicitation", "tasks"] {
+        if capabilities
+            .get(key)
+            .is_some_and(|value| !value.is_object())
+        {
+            return false;
+        }
+    }
+
+    if let Some(experimental) = capabilities.get("experimental") {
+        let Some(experimental) = experimental.as_object() else {
+            return false;
+        };
+        if experimental.values().any(|value| !value.is_object()) {
+            return false;
+        }
+    }
+
+    if let Some(roots) = capabilities.get("roots").and_then(Value::as_object) {
+        if roots
+            .get("listChanged")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return false;
+        }
+    }
+
+    if let Some(sampling) = capabilities.get("sampling").and_then(Value::as_object) {
+        if ["context", "tools"]
+            .into_iter()
+            .any(|key| sampling.get(key).is_some_and(|value| !value.is_object()))
+        {
+            return false;
+        }
+    }
+
+    if let Some(elicitation) = capabilities.get("elicitation").and_then(Value::as_object) {
+        if ["form", "url"]
+            .into_iter()
+            .any(|key| elicitation.get(key).is_some_and(|value| !value.is_object()))
+        {
+            return false;
+        }
+    }
+
+    capabilities
+        .get("tasks")
+        .and_then(Value::as_object)
+        .is_none_or(valid_task_capabilities)
+}
+
+fn valid_task_capabilities(tasks: &serde_json::Map<String, Value>) -> bool {
+    if ["cancel", "list"]
+        .into_iter()
+        .any(|key| tasks.get(key).is_some_and(|value| !value.is_object()))
+    {
+        return false;
+    }
+
+    let Some(requests) = tasks.get("requests") else {
+        return true;
+    };
+    let Some(requests) = requests.as_object() else {
+        return false;
+    };
+
+    for (group, request) in [("elicitation", "create"), ("sampling", "createMessage")] {
+        let Some(group) = requests.get(group) else {
+            continue;
+        };
+        let Some(group) = group.as_object() else {
+            return false;
+        };
+        if group.get(request).is_some_and(|value| !value.is_object()) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn valid_client_implementation(info: &serde_json::Map<String, Value>) -> bool {
+    if !info.get("name").is_some_and(Value::is_string)
+        || !info.get("version").is_some_and(Value::is_string)
+    {
+        return false;
+    }
+
+    if ["title", "description", "websiteUrl"]
+        .into_iter()
+        .any(|key| info.get(key).is_some_and(|value| !value.is_string()))
+    {
+        return false;
+    }
+
+    let Some(icons) = info.get("icons") else {
+        return true;
+    };
+    let Some(icons) = icons.as_array() else {
+        return false;
+    };
+
+    icons.iter().all(|icon| {
+        let Some(icon) = icon.as_object() else {
+            return false;
+        };
+        icon.get("src").is_some_and(Value::is_string)
+            && icon.get("mimeType").is_none_or(|value| value.is_string())
+            && icon.get("sizes").is_none_or(|sizes| {
+                sizes
+                    .as_array()
+                    .is_some_and(|sizes| sizes.iter().all(Value::is_string))
+            })
+            && icon
+                .get("theme")
+                .is_none_or(|theme| matches!(theme.as_str(), Some("light" | "dark")))
+    })
+}
+
+fn valid_meta(meta: &Value) -> bool {
+    meta.as_object().is_some_and(|meta| {
+        meta.get("progressToken").is_none_or(|token| {
+            token.is_string()
+                || token
+                    .as_number()
+                    .is_some_and(|number| number.is_i64() || number.is_u64())
+        })
+    })
+}
+
+fn has_json_content_type(headers: &HeaderMap) -> bool {
+    let Ok(Some(value)) = single_header_value(headers, header::CONTENT_TYPE.as_str()) else {
+        return false;
+    };
+    value
+        .split(';')
+        .next()
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(APPLICATION_JSON))
+}
+
+fn accepts_media_type(headers: &HeaderMap, expected: &str) -> bool {
+    headers
+        .get_all(header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|item| acceptable_media_range(item, expected))
+}
+
+fn acceptable_media_range(item: &str, expected: &str) -> bool {
+    let mut segments = item.split(';');
+    if !segments
+        .next()
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(expected))
+    {
+        return false;
+    }
+
+    let mut quality = 1.0_f32;
+    let mut saw_quality = false;
+    for parameter in segments {
+        let Some((name, value)) = parameter.trim().split_once('=') else {
+            return false;
+        };
+        if name.trim().eq_ignore_ascii_case("q") {
+            if saw_quality {
+                return false;
+            }
+            saw_quality = true;
+            let Ok(parsed) = value.trim().parse::<f32>() else {
+                return false;
+            };
+            if !(0.0..=1.0).contains(&parsed) {
+                return false;
+            }
+            quality = parsed;
+        }
+    }
+
+    quality > 0.0
+}
+
+fn validate_session_request(
+    headers: &HeaderMap,
+    sessions: &McpSessionStore,
+) -> Result<(String, SessionPhase), SessionRequestError> {
+    let protocol = match single_header_value(headers, MCP_PROTOCOL_VERSION_HEADER) {
+        Ok(Some(protocol)) if protocol == MCP_PROTOCOL_VERSION => protocol,
+        Ok(Some(_)) => {
+            return Err(SessionRequestError::UnsupportedProtocolVersion);
+        }
+        Ok(None) => {
+            return Err(SessionRequestError::ProtocolVersionRequired);
+        }
+        Err(()) => {
+            return Err(SessionRequestError::InvalidProtocolVersionHeader);
+        }
+    };
+    debug_assert_eq!(protocol, MCP_PROTOCOL_VERSION);
+
+    let session_id = match single_header_value(headers, MCP_SESSION_ID_HEADER) {
+        Ok(Some(session_id))
+            if !session_id.is_empty()
+                && session_id.len() <= 128
+                && session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) =>
+        {
+            session_id.to_owned()
+        }
+        Ok(None) => {
+            return Err(SessionRequestError::SessionRequired);
+        }
+        Ok(Some(_)) | Err(()) => {
+            return Err(SessionRequestError::SessionNotFound);
+        }
+    };
+
+    sessions
+        .phase(&session_id)
+        .map(|phase| (session_id, phase))
+        .map_err(SessionRequestError::from)
+}
+
+fn single_header_value<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, ()> {
+    let mut values = headers.get_all(name).iter();
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(());
+    }
+    first.to_str().map(Some).map_err(|_| ())
+}
+
+fn session_store_error_response(error: SessionStoreError) -> Response {
+    match error {
+        SessionStoreError::CapacityExhausted => transport_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "session_capacity_reached",
+            "The bounded MCP session capacity is currently exhausted.",
+        ),
+        SessionStoreError::NotFound => transport_error(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "The MCP session does not exist or has expired.",
+        ),
+        SessionStoreError::Poisoned => transport_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session_state_unavailable",
+            "MCP session state is unavailable.",
+        ),
+    }
+}
+
+fn session_request_error_response(error: SessionRequestError) -> Response {
+    match error {
+        SessionRequestError::ProtocolVersionRequired => transport_error(
+            StatusCode::BAD_REQUEST,
+            "protocol_version_required",
+            "MCP-Protocol-Version is required after initialization.",
+        ),
+        SessionRequestError::UnsupportedProtocolVersion => transport_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported_protocol_version",
+            "MCP-Protocol-Version must match the negotiated protocol version.",
+        ),
+        SessionRequestError::InvalidProtocolVersionHeader => transport_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_protocol_version_header",
+            "MCP-Protocol-Version must contain exactly one valid value.",
+        ),
+        SessionRequestError::SessionRequired => transport_error(
+            StatusCode::BAD_REQUEST,
+            "session_required",
+            "MCP-Session-Id is required after initialization.",
+        ),
+        SessionRequestError::SessionNotFound => transport_error(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "The MCP session does not exist or has expired.",
+        ),
+        SessionRequestError::Store(error) => session_store_error_response(error),
+    }
+}
+
+#[rustfmt::skip]
+fn transport_error(status: StatusCode, error: &'static str, message: &'static str) -> Response {
+    (
+        status,
+        Json(json!({
+            "error": error,
+            "message": message,
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
+fn server_not_initialized(id: Option<Value>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32000,
+                "message": "Server not initialized",
+                "data": "Send notifications/initialized before normal operations.",
             },
         })),
     )
@@ -534,13 +1030,15 @@ fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounte
                 "content": [
                     {
                         "type": "text",
-                        "text": "termux-mcp-edge runtime_status: transport=staged, tools=runtime-status-platform-info-android-status-project-service-status-directory-listing-read-file-and-default-dry-run-write-file, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
+                        "text": "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, tools=runtime-status-platform-info-android-status-project-service-status-directory-listing-read-file-and-default-dry-run-write-file, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
                     },
                 ],
                 "structuredContent": {
                     "server": "termux-mcp-edge",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "transport": "staged_mcp_runtime",
+                    "transport": "streamable_http_2025_11_25",
+                    "sessionManagement": "bounded_uuid_idle_expiry",
+                    "serverSentEvents": false,
                     "availableTools": AVAILABLE_TOOLS,
                     "platformInfo": true,
                     "platformInfoMode": "read_only_non_sensitive_metadata",

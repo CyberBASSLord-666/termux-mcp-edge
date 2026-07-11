@@ -1,8 +1,8 @@
 # MCP Runtime Validation Plan
 
-This document defines validation evidence for the current staged MCP transport and for future protocol and capability expansion.
+This document defines validation evidence for the stable MCP transport around the current staged tool surface and for future protocol or capability expansion.
 
-The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated staged MCP discovery and the documented allowlisted tool set. Its current custom POST-only endpoint reports protocol version `2024-11-05`; it is not a complete stable MCP 2025-11-25 Streamable HTTP implementation.
+The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented allowlisted tool set. It uses bounded session-backed lifecycle state and deliberately declines optional SSE streams with HTTP 405.
 
 ## Required PR shape
 
@@ -66,36 +66,35 @@ Every transport implementation must distinguish malformed JSON from a valid JSON
 Required evidence:
 
 - malformed JSON returns `-32700 Parse error` with `id: null`;
-- valid non-object JSON, unsupported batch arrays in the current stage, missing/wrong `jsonrpc`, missing/non-string method, invalid ID types, and primitive params return `-32600 Invalid Request`;
+- valid non-object JSON, batch arrays, missing/wrong `jsonrpc`, missing/non-string method, invalid ID types, and non-object params return `-32600 Invalid Request`;
 - `jsonrpc` is exactly `"2.0"`;
 - MCP request IDs are non-null strings or integer numbers;
-- params are object/array when present;
-- notifications omit ID and receive no JSON-RPC response;
-- in the current staged transport, `notifications/initialized` receives HTTP 204 with an empty body;
+- MCP params are objects when present;
+- valid client success/error responses are distinguished from requests and notifications;
+- notifications and client responses receive HTTP 202 with an empty body and no JSON-RPC response object;
 - notification-shaped request methods are not dispatched and cannot mutate state;
-- unsupported notifications receive no response;
+- unsupported but valid notifications receive HTTP 202 without dispatch;
 - valid request IDs are preserved in request errors, while invalid IDs are never reflected.
 
-The HTTP 204 notification behavior is a regression contract for the current custom transport, not the stable MCP transport target. The protocol migration may revise HTTP notification status semantics while preserving the JSON-RPC rule that notifications do not receive JSON-RPC response objects.
+The adopted 2025-11-25 schema defines a single JSON-RPC message rather than a batch, so arrays remain a documented invalid-request compatibility decision. This server does not issue JSON-RPC requests to clients; syntactically valid client responses are accepted and discarded without retained correlation state.
 
-The current focused envelope stage does not claim batch, session, lifecycle, GET/SSE, or Streamable HTTP completion. Those require a separate design and integration stage.
+## Stable protocol and transport regression gate
 
-## Stable protocol and transport completion gate
-
-Before claiming stable MCP 2025-11-25 interoperability, the runtime must implement and test:
+The implemented non-SSE MCP 2025-11-25 posture must continue to prove:
 
 - initialization as the first client/server interaction;
 - protocol-version and capability negotiation;
 - receipt of `notifications/initialized` before normal operation;
-- a single MCP endpoint with the required POST and GET Streamable HTTP behavior;
-- compliant `Content-Type` and `Accept` negotiation for JSON and `text/event-stream` responses;
+- a single MCP endpoint with POST, GET, and DELETE handling;
+- compliant POST `Content-Type` and explicit `Accept` support for JSON and `text/event-stream` responses;
 - exact browser `Origin` protection before message handling;
 - the `MCP-Protocol-Version` request-header contract after initialization;
 - compliant notification and response status/body behavior;
-- an explicit session decision and, if sessions are used, cryptographically secure opaque identifiers plus lifecycle validation;
-- per-client/session state and request-ID uniqueness where applicable;
-- cancellation, shutdown, reconnect, and multiple-client behavior;
-- batch behavior if supported, or a documented compatibility decision supported by the selected MCP schema/transport.
+- cryptographically random visible-ASCII UUID sessions, bounded to 64 records with 30-minute idle expiry, explicit DELETE termination, and no retained client initialize metadata;
+- independent pending/active state across concurrent sessions;
+- ping before activation, request timeout/cancellation-safe cleanup, process-shutdown state reset, HTTP 404 reinitialization behavior, and multiple-client isolation;
+- GET with `Accept: text/event-stream` returning HTTP 405 because optional SSE, replay, and resumption are not offered;
+- rejection of batch arrays, consistent with the selected stable schema's single-message transport body.
 
 The target contracts are the official [MCP 2025-11-25 specification](https://modelcontextprotocol.io/specification/2025-11-25), [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle), and [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) documents.
 
@@ -148,21 +147,63 @@ sv status "$PREFIX/var/service/mcp_runtime"
 curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/ready
 MCP_TEST_TOKEN="$(sed -n 's/^MCP__AUTH__STATIC_TOKEN=//p' "$HOME/.config/termux-mcp-edge/runtime.env")"
+MCP_RESPONSE_HEADERS="$(mktemp)"
+trap 'rm -f "$MCP_RESPONSE_HEADERS"; unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS' EXIT
+
+curl -sS -D "$MCP_RESPONSE_HEADERS" \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-smoke-test","version":"1.0.0"}}}' \
+  http://127.0.0.1:8000/mcp | jq -e '.result.protocolVersion == "2025-11-25"'
+
+MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$MCP_RESPONSE_HEADERS")"
+test -n "$MCP_SESSION_ID"
+
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  http://127.0.0.1:8000/mcp)" = 202
+
 curl -sS \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp
-curl -i -sS \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 7'
+
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-  http://127.0.0.1:8000/mcp
-unset MCP_TEST_TOKEN
+  -H 'Accept: text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  http://127.0.0.1:8000/mcp)" = 405
+
+test "$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  http://127.0.0.1:8000/mcp)" = 204
+
+rm -f "$MCP_RESPONSE_HEADERS"
+unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS
+trap - EXIT
 ```
 
 The evidence must identify the exact commit/artifact digest and verify authenticated discovery, no-response notification behavior, and representative allowed/denied tool calls.

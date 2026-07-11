@@ -10,7 +10,10 @@ use axum::{
 use serde_json::{json, Value};
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
-    mcp_transport,
+    mcp_transport::{
+        self, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
+        MCP_SESSION_ID_HEADER,
+    },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
 };
@@ -26,28 +29,75 @@ async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> 
     let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     let app = protected_router(policy, file_tools);
 
+    let initialize = authenticated_request(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "auth-initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "auth-tests", "version": "1.0.0"}
+            }
+        }),
+        authorization,
+        None,
+    );
+    let initialize_response = app.clone().oneshot(initialize).await.unwrap();
+    if initialize_response.status() != StatusCode::OK {
+        return initialize_response;
+    }
+    let session_id = initialize_response
+        .headers()
+        .get(MCP_SESSION_ID_HEADER)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let initialized = authenticated_request(
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }),
+        authorization,
+        Some(&session_id),
+    );
+    let initialized_response = app.clone().oneshot(initialized).await.unwrap();
+    assert_eq!(initialized_response.status(), StatusCode::ACCEPTED);
+
+    app.oneshot(authenticated_request(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "auth-test",
+            "method": "tools/list"
+        }),
+        authorization,
+        Some(&session_id),
+    ))
+    .await
+    .unwrap()
+}
+
+fn authenticated_request(
+    body: Value,
+    authorization: Option<&str>,
+    session_id: Option<&str>,
+) -> Request<Body> {
     let mut request = Request::post("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
-        .header(header::CONTENT_TYPE, "application/json");
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, MCP_POST_ACCEPT);
     if let Some(authorization) = authorization {
         request = request.header(header::AUTHORIZATION, authorization);
     }
-
-    app.oneshot(
-        request
-            .body(Body::from(
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": "auth-test",
-                    "method": "tools/list"
-                })
-                .to_string(),
-            ))
-            .unwrap(),
-    )
-    .await
-    .unwrap()
+    if let Some(session_id) = session_id {
+        request = request
+            .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
+            .header(MCP_SESSION_ID_HEADER, session_id);
+    }
+    request.body(Body::from(body.to_string())).unwrap()
 }
 
 async fn response_json(response: Response) -> Value {
