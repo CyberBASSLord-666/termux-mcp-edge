@@ -6,6 +6,7 @@ IFS=$'\n\t'
 
 TARGET="aarch64-linux-android"
 ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
+BUILD_FEATURES="${BUILD_FEATURES:-}"
 OUTPUT_DIR="target/${TARGET}/release"
 
 log() {
@@ -58,7 +59,13 @@ export CC_aarch64_linux_android="$CC_PATH"
 export AR_aarch64_linux_android="$AR_PATH"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_PATH"
 
-cargo build --release --target "$TARGET"
+if [[ -n "$BUILD_FEATURES" ]]; then
+  log "Building explicit feature posture: ${BUILD_FEATURES}"
+  cargo build --release --target "$TARGET" --features "$BUILD_FEATURES"
+else
+  log "Building default feature posture"
+  cargo build --release --target "$TARGET"
+fi
 
 log "Binary ready at: ${OUTPUT_DIR}/termux-mcp-server"
 log "Transfer this binary to your device and place it in a safe location, such as ~/bin/."

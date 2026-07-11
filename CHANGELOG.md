@@ -19,6 +19,7 @@
 - Updated CI path filters and validation to include deployment scripts and shell tests.
 - Hardened the design-only command policy with explicit timeout/output lower bounds, bounded argv and environment-name cardinality, deterministic denial precedence, non-sensitive reason codes, and boundary regression coverage.
 - Centralized Host and Origin authority normalization across startup configuration and request validation, rejecting ASCII whitespace/control characters, wildcard/userinfo/URL delimiters, malformed DNS/IPv4/bracketed-IPv6 forms, ambiguous colons, and invalid ports while preserving case-insensitive exact allowlist matching.
+- Pinned CI and Android validation to Rust 1.88.0, verified the active toolchain and Android target, and made Android AArch64 validation build and publish separately named default and `mcp-runtime` feature postures for Rust source and toolchain changes.
 
 ## 2026-07-10 — v0.5.1 Staged MCP Runtime and Audit Hardening
 

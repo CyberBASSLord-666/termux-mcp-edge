@@ -10,6 +10,8 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
       - "scripts/cross_compile.sh"
       - ".github/workflows/android-cross-compile.yml"
 
@@ -22,9 +24,19 @@ concurrency:
 
 jobs:
   android-aarch64:
-    name: Build aarch64-linux-android
+    name: Build aarch64-linux-android (${{ matrix.posture }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - posture: default
+            features: ""
+            artifact: termux-mcp-server-aarch64-linux-android-default
+          - posture: mcp-runtime
+            features: mcp-runtime
+            artifact: termux-mcp-server-aarch64-linux-android-mcp-runtime
     steps:
       - name: Checkout
         # actions/checkout@v7.0.0 resolved 2026-07-10
@@ -32,11 +44,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
+      - name: Install pinned Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
+          toolchain: 1.88.0
           targets: aarch64-linux-android
+
+      - name: Verify Rust toolchain and target
+        run: |
+          test "$(rustc --version | awk '{print $2}')" = "1.88.0"
+          test "$(cargo --version | awk '{print $2}')" = "1.88.0"
+          rustup target list --installed | grep -Fx aarch64-linux-android
 
       - name: Install Android NDK
         id: setup-ndk
@@ -49,13 +68,14 @@ jobs:
       - name: Cross compile
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          BUILD_FEATURES: ${{ matrix.features }}
         run: ./scripts/cross_compile.sh
 
       - name: Upload binary artifact
         # actions/upload-artifact@v7.0.1 resolved 2026-07-10
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: termux-mcp-server-aarch64-linux-android
+          name: ${{ matrix.artifact }}
           path: target/aarch64-linux-android/release/termux-mcp-server
           if-no-files-found: error
           retention-days: 3
