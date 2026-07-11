@@ -205,10 +205,11 @@ Do not mark the project as broadly MCP-runtime-ready until each enabled capabili
 4. Authenticated MCP tool discovery works.
 5. Request concurrency, timeout, and body-size boundaries are validated.
 6. Representative authenticated MCP tool calls work for the enabled surface.
-7. Authentication and authorization behavior is documented and tested.
-8. Mutating filesystem cancellation does not strand temporary files.
-9. README, operations, security, roadmap, and changelog documentation match the implemented runtime.
-10. Android release artifacts are validated when producing a device build.
+7. Every tool handler enforces its advertised closed input schema with stable non-sensitive errors.
+8. Authentication and authorization behavior is documented and tested.
+9. Mutating filesystem cancellation does not strand temporary files.
+10. README, operations, security, roadmap, and changelog documentation match the implemented runtime.
+11. Android release artifacts are validated when producing a device build.
 
 ## Current Known Limitation
 

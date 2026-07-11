@@ -119,12 +119,10 @@ Callers may send extra fields, wrong JSON types, oversized field names, or malfo
 Current controls:
 
 - strict top-level JSON-RPC envelope classification;
-- stable public transport and filesystem errors for several rejection classes;
+- a closed `tools/call` parameter envelope and closed typed argument structs for every advertised tool;
+- one shared validator that accepts only omitted arguments or `{}` for no-argument tools;
+- stable bounded invalid-parameter responses that do not expose serde diagnostics or rejected caller values;
 - request-body limits and non-sensitive audit labels.
-
-Remaining work:
-
-- #198 must make every tool handler enforce its advertised closed schema and replace detailed serde-derived response text with stable bounded errors.
 
 ### High-impact capability exposure
 
