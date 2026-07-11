@@ -1,0 +1,270 @@
+name: Apply schema boundaries 198
+
+on:
+  push:
+    branches: [ schema-boundaries-198 ]
+    paths:
+      - ".github/workflows/apply-schema-boundaries-198.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: schema-boundaries-198
+          fetch-depth: 0
+      - name: Apply focused source patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/mcp_transport.rs')
+          text = path.read_text()
+
+          text = text.replace(
+              '#[derive(Debug, Deserialize)]\nstruct ToolCallParams {',
+              '#[derive(Debug, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct ToolCallParams {'
+          )
+          text = text.replace(
+              '#[derive(Debug, Deserialize)]\nstruct ListDirectoryArguments {',
+              '#[derive(Debug, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct ListDirectoryArguments {'
+          )
+          text = text.replace(
+              '#[derive(Debug, Deserialize)]\nstruct ReadFileArguments {',
+              '#[derive(Debug, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct ReadFileArguments {'
+          )
+          text = text.replace(
+              '#[derive(Debug, Deserialize)]\nstruct WriteFileArguments {',
+              '#[derive(Debug, Deserialize)]\n#[serde(deny_unknown_fields)]\nstruct WriteFileArguments {'
+          )
+          text = text.replace(
+              'const RUNTIME_STATUS_ALLOWED: &str = "staged_runtime_metadata";',
+              'const RUNTIME_STATUS_ALLOWED: &str = "staged_runtime_metadata";\nconst RUNTIME_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";'
+          )
+
+          old = '''        RUNTIME_STATUS_TOOL => {
+            record_read_only_allowed(
+                &state.audit_counters,
+                RUNTIME_STATUS_TOOL,
+                RUNTIME_STATUS_GATE,
+                RUNTIME_STATUS_ALLOWED,
+            );
+            runtime_status_response(id, &state.audit_counters)
+        }'''
+          new = '''        RUNTIME_STATUS_TOOL => runtime_status_response(
+            id,
+            call.arguments,
+            &state.audit_counters,
+        )'''
+          if old not in text:
+              raise SystemExit('runtime_status dispatch anchor missing')
+          text = text.replace(old, new)
+
+          old = '''fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounters) -> Response {
+    let audit_counters_snapshot = audit_counters_snapshot(audit_counters);'''
+          new = '''fn runtime_status_response(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    if validate_no_arguments(arguments).is_err() {
+        record_read_only_denied(
+            audit_counters,
+            RUNTIME_STATUS_TOOL,
+            RUNTIME_STATUS_GATE,
+            RUNTIME_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(
+            id,
+            "runtime_status requires no arguments; arguments must be an empty object or omitted.",
+        );
+    }
+
+    record_read_only_allowed(
+        audit_counters,
+        RUNTIME_STATUS_TOOL,
+        RUNTIME_STATUS_GATE,
+        RUNTIME_STATUS_ALLOWED,
+    );
+    let audit_counters_snapshot = audit_counters_snapshot(audit_counters);'''
+          if old not in text:
+              raise SystemExit('runtime_status function anchor missing')
+          text = text.replace(old, new)
+
+          old = '''    if let Some(arguments) = arguments {
+        if arguments
+            .as_object()
+            .is_some_and(|object| !object.is_empty())
+        {
+            record_read_only_denied(
+                audit_counters,
+                PLATFORM_INFO_TOOL,
+                PLATFORM_INFO_GATE,
+                PLATFORM_INFO_ARGUMENTS_DENIED,
+            );
+            return invalid_params(id, "platform_info does not accept arguments.");
+        }
+    }'''
+          new = '''    if validate_no_arguments(arguments).is_err() {
+        record_read_only_denied(
+            audit_counters,
+            PLATFORM_INFO_TOOL,
+            PLATFORM_INFO_GATE,
+            PLATFORM_INFO_ARGUMENTS_DENIED,
+        );
+        return invalid_params(
+            id,
+            "platform_info requires no arguments; arguments must be an empty object or omitted.",
+        );
+    }'''
+          if old not in text:
+              raise SystemExit('platform_info validation anchor missing')
+          text = text.replace(old, new)
+
+          old = '''    if let Some(arguments) = arguments {
+        if !arguments.is_object()
+            || arguments
+                .as_object()
+                .is_some_and(|object| !object.is_empty())
+        {
+            record_read_only_denied(
+                audit_counters,
+                ANDROID_STATUS_TOOL,
+                ANDROID_STATUS_GATE,
+                ANDROID_STATUS_ARGUMENTS_DENIED,
+            );
+            return invalid_params(
+                id,
+                "android_status requires no arguments; arguments must be an empty object or omitted.",
+            );
+        }
+    }'''
+          new = '''    if validate_no_arguments(arguments).is_err() {
+        record_read_only_denied(
+            audit_counters,
+            ANDROID_STATUS_TOOL,
+            ANDROID_STATUS_GATE,
+            ANDROID_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(
+            id,
+            "android_status requires no arguments; arguments must be an empty object or omitted.",
+        );
+    }'''
+          if old not in text:
+              raise SystemExit('android_status validation anchor missing')
+          text = text.replace(old, new)
+
+          replacements = {
+              'Err(error) => return invalid_params(id, &format!("Invalid tools/call params: {error}")),':
+                  'Err(_error) => return invalid_params(id, "Invalid tools/call params."),',
+              '&format!("Invalid project_service_status arguments: {error}"),':
+                  '"Invalid project_service_status arguments.",',
+              'return invalid_params(id, &format!("Invalid list_directory arguments: {error}"));':
+                  'return invalid_params(id, "Invalid list_directory arguments.");',
+              'return invalid_params(id, &format!("Invalid read_file arguments: {error}"));':
+                  'return invalid_params(id, "Invalid read_file arguments.");',
+              'return invalid_params(id, &format!("Invalid write_file arguments: {error}"));':
+                  'return invalid_params(id, "Invalid write_file arguments.");',
+              'Err(AppError::FileTooLarge { .. }) => {\n            record_filesystem_denied(\n                audit_counters,\n                WRITE_FILE_TOOL,':
+                  'Err(AppError::WritePayloadTooLarge { .. }) => {\n            record_filesystem_denied(\n                audit_counters,\n                WRITE_FILE_TOOL,'
+          }
+          for old_value, new_value in replacements.items():
+              if old_value not in text:
+                  raise SystemExit(f'replacement anchor missing: {old_value[:60]}')
+              text = text.replace(old_value, new_value, 1)
+
+          helper_anchor = '''fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+'''
+          helper = '''fn validate_no_arguments(arguments: Option<Value>) -> Result<(), ()> {
+    match arguments {
+        None => Ok(()),
+        Some(Value::Object(object)) if object.is_empty() => Ok(()),
+        Some(_) => Err(()),
+    }
+}
+
+'''
+          if helper_anchor not in text:
+              raise SystemExit('helper anchor missing')
+          text = text.replace(helper_anchor, helper_anchor + '\n' + helper)
+
+          test_anchor = '''    #[test]
+    fn read_only_audit_recorder_counts_allowed_status_call() {'''
+          tests = '''    #[test]
+    fn no_argument_contract_accepts_only_omission_or_empty_object() {
+        assert!(validate_no_arguments(None).is_ok());
+        assert!(validate_no_arguments(Some(json!({}))).is_ok());
+        for invalid in [json!(null), json!(false), json!(0), json!(""), json!([]), json!({"extra": true})] {
+            assert!(validate_no_arguments(Some(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn tools_call_and_tool_argument_structs_reject_unknown_fields() {
+        assert!(serde_json::from_value::<ToolCallParams>(json!({
+            "name": "runtime_status",
+            "unexpected": true
+        })).is_err());
+        assert!(serde_json::from_value::<ProjectServiceStatusArguments>(json!({
+            "service_name": "mcp_runtime",
+            "unexpected": true
+        })).is_err());
+        assert!(serde_json::from_value::<ListDirectoryArguments>(json!({
+            "path": "/tmp",
+            "unexpected": true
+        })).is_err());
+        assert!(serde_json::from_value::<ReadFileArguments>(json!({
+            "path": "/tmp/file",
+            "unexpected": true
+        })).is_err());
+        assert!(serde_json::from_value::<WriteFileArguments>(json!({
+            "path": "/tmp/file",
+            "content": "data",
+            "unexpected": true
+        })).is_err());
+    }
+
+    #[test]
+    fn concrete_tool_argument_structs_reject_missing_and_wrong_types() {
+        assert!(serde_json::from_value::<ProjectServiceStatusArguments>(json!({})).is_err());
+        assert!(serde_json::from_value::<ListDirectoryArguments>(json!({"path": 1})).is_err());
+        assert!(serde_json::from_value::<ReadFileArguments>(json!({"path": false})).is_err());
+        assert!(serde_json::from_value::<WriteFileArguments>(json!({"path": "/tmp/file"})).is_err());
+        assert!(serde_json::from_value::<WriteFileArguments>(json!({
+            "path": "/tmp/file",
+            "content": "data",
+            "dry_run": "false"
+        })).is_err());
+    }
+
+'''
+          if test_anchor not in text:
+              raise SystemExit('test anchor missing')
+          text = text.replace(test_anchor, tests + test_anchor)
+          path.write_text(text)
+
+          changelog = Path('CHANGELOG.md')
+          change_text = changelog.read_text()
+          changelog_anchor = '## Unreleased — Reproducible Termux Deployment\n\n'
+          entry = '- Enforced strict MCP `tools/call` and per-tool argument schemas at deserialization boundaries, centralized empty-object handling for no-argument tools, stabilized non-sensitive invalid-parameter responses, and corrected write payload-limit classification.\n'
+          if changelog_anchor not in change_text:
+              raise SystemExit('changelog anchor missing')
+          changelog.write_text(change_text.replace(changelog_anchor, changelog_anchor + entry, 1))
+          PY
+          cargo fmt --all
+          rm .github/workflows/apply-schema-boundaries-198.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/mcp_transport.rs CHANGELOG.md .github/workflows/apply-schema-boundaries-198.yml
+          git commit -m "fix: enforce strict MCP tool argument schemas"
+          git push origin HEAD:schema-boundaries-198
