@@ -1,113 +1,122 @@
 # Production Readiness Checklist
 
-This checklist defines the minimum production-readiness gate for the current conservative Termux runtime and for any future MCP transport restoration work.
+This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes the two supported compile-time postures and does not treat the staged MCP transport as fully protocol-conformant or broadly production-ready.
 
-## Current Supported Runtime
+## Supported Compile-Time Postures
 
-The current supported runtime is the Axum health-check service on `main`.
+| Surface | Default build | `mcp-runtime` build |
+| --- | --- | --- |
+| `GET /health` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response |
+| `GET /ready` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, includes non-sensitive request-limit metadata |
+| `POST /mcp` | Not compiled | Compiled as an authenticated, resource-bounded staged transport |
+| MCP tools | None | `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, `write_file` |
+| Android control, shell, command execution, arbitrary service control, and other high-impact actions | Disabled | Disabled |
 
-Production readiness for the current line means:
+Both postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
 
-- `GET /health` is the only exposed HTTP route.
-- MCP transport is not exposed.
-- MCP tool discovery and invocation are not exposed.
-- Filesystem, platform, command-capable, network, browser, package-manager, rish, and Shizuku-backed tools are not exposed.
-- Startup fails closed unless a non-empty static bearer token is configured or explicit localhost-only development mode is enabled.
-- Local unauthenticated development mode is rejected for non-loopback bind addresses.
-- Filesystem safe roots remain narrow and do not default to Android shared storage.
+The `mcp-runtime` build currently implements a custom POST-only JSON-RPC transport that reports protocol version `2024-11-05`. It does not yet implement the complete stable MCP 2025-11-25 Streamable HTTP lifecycle, media negotiation, protocol-version header, or optional session behavior. Track that work separately under #199.
 
-## Required Merge Gate
+## Open Production Blockers
 
-Every production-readiness pull request must satisfy all of the following before merge:
+Do not describe the staged MCP posture as fully production-ready while these confirmed lanes remain open:
 
-1. Exact-head CI succeeds.
-2. Exact-head Security succeeds.
-3. The diff remains narrow and directly related to the stated remediation.
-4. Dependency changes are absent, or dependency alerts are reviewed after the exact PR head is pushed.
-5. Runtime claims in README, operations, validation, and security documentation match the compiled behavior.
-6. No PR combines broad dependency restoration, transport exposure, and high-impact tool exposure in one change.
+- #198: runtime tool arguments do not yet enforce every advertised closed-schema rule consistently;
+- #199: stable MCP 2025-11-25 lifecycle and Streamable HTTP conformance are incomplete;
+- #200: filesystem operations retain canonicalize-then-use symlink race windows;
+- #203: runit service transitions and failed-first-install cleanup are not fully atomic;
+- #204: invalid-Unicode environment handling and port/list configuration need uniform fail-closed behavior;
+- #205: package metadata, dependency features, and shipped license materials require reconciliation;
+- #206: filesystem response byte bounds, determinism, and happy/boundary coverage remain incomplete.
 
-## Current Runtime Release Checklist
+These blockers do not erase the controls already present. They define the remaining evidence required before a broad readiness claim.
 
-Before treating a build as releasable:
+## Required Pull Request Gate
+
+Every implementation pull request must satisfy all applicable items:
+
+1. The diff is focused on one tracked concern and is based on current `main`.
+2. Exact-head CI passes formatting, all-target/all-feature Clippy with warnings denied, the full all-feature test suite, and Termux deployment shell tests.
+3. Exact-head Android validation passes for both the default and `mcp-runtime` AArch64 postures when Rust source, toolchain, dependencies, cross-compilation, or device artifacts can change.
+4. Exact-head Security passes when Cargo metadata, `Cargo.lock`, or the Security workflow changes.
+5. Dependency alerts are reviewed after dependency changes.
+6. All actionable review threads are resolved and the head SHA has not changed since validation.
+7. Documentation and tests match the resulting compiled behavior.
+8. No change combines protocol migration, dependency maintenance, and unrelated high-impact capability exposure.
+
+Documentation-only changes may document why path-filtered workflow non-runs are acceptable. Changes to Rust source comments still match `src/**` workflow filters and require the checks they trigger.
+
+## Release Candidate Checklist
+
+Run the host gates with the pinned toolchain:
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace --all-targets --all-features
+bash tests/termux_deploy_test.sh
 cargo build --release
+cargo build --release --features mcp-runtime
 ```
 
-Then verify the runtime locally:
+For Android, require both posture-specific artifacts described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md):
 
-```bash
-curl -fsS http://127.0.0.1:8000/health
-```
+- `termux-mcp-server-aarch64-linux-android-default`;
+- `termux-mcp-server-aarch64-linux-android-mcp-runtime`.
 
-Expected response:
+For each released artifact:
 
-```text
-ok
-```
+1. Record the exact commit and workflow run.
+2. Verify the SHA-256 digest, AArch64 Android ELF identity, size, and embedded `--version` output.
+3. Install through `scripts/termux_deploy.sh`; do not mix it with the legacy runit path.
+4. Confirm private non-symlink `runtime.env` configuration and the intended authentication posture.
+5. Confirm runit state, `GET /health`, and `GET /ready`.
+6. For the `mcp-runtime` artifact, prove unauthenticated rejection, authenticated discovery, representative allowed/denied tool calls, request-limit behavior, and filesystem boundaries.
+7. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
+8. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions.
 
-For Android deployment, also confirm:
+## Current MCP Runtime Gate
 
-- the runit service reads a token file created with restrictive permissions;
-- the token file is present, non-empty, and not whitespace-only;
-- the configured host is loopback unless an authenticated deployment path has been reviewed;
-- the service is not exposed directly to the public internet;
-- Android battery and process restrictions are configured for the intended service lifetime.
+A change to the staged transport or tool registry must prove:
 
-## MCP Restoration Readiness Gate
+- bearer authentication remains outside request-limit accounting and message handling;
+- localhost-only unauthenticated mode cannot bind to a non-loopback address;
+- unexpected `Host` and browser `Origin` values fail before JSON-RPC dispatch;
+- malformed JSON and invalid JSON-RPC request objects remain distinct;
+- notification-shaped tool calls cannot dispatch or mutate state;
+- unauthenticated callers cannot discover or invoke tools;
+- discovery lists only the current seven-tool allowlist;
+- filesystem tools remain safe-rooted, bounded, and dry-run-first for writes;
+- read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
+- errors and audit counters retain only stable non-sensitive data;
+- command execution, Android control, shell fallback, and other high-impact tools remain absent.
 
-A future PR that restores MCP transport must not merge until it proves all of the following on the exact PR head:
+Protocol migration work must additionally satisfy the stable MCP 2025-11-25 requirements documented in [`MCP_RESTORATION_VALIDATION.md`](MCP_RESTORATION_VALIDATION.md).
 
-- CI success.
-- Security success.
-- Dependency alerts are clear or documented as accepted exceptions.
-- Authentication is enforced before MCP session or message handling.
-- Unexpected `Host` headers are rejected.
-- Unexpected browser `Origin` headers are rejected on browser-reachable routes.
-- Unauthenticated development mode remains loopback-only.
-- Unauthorized clients cannot discover tools.
-- Unauthorized clients cannot invoke tools.
-- MCP tool discovery has a smoke test.
-- At least one permitted MCP tool call has a smoke test.
-- Denied tool discovery or invocation paths have a smoke test or documented negative validation.
+## High-Impact Capability Gate
 
-## High-Impact Tool Exposure Gate
+Any future tool that executes commands, controls Android or services, accesses broad/shared storage, performs network or package mutation, automates a browser, handles credentials, or otherwise expands device authority requires:
 
-High-impact tools include any tool that can:
+1. a dedicated compile-time and runtime opt-in;
+2. a fixed allowlist and bounded inputs/outputs;
+3. explicit operator consent or capability-grant semantics appropriate to the action;
+4. deterministic allowed, denied, boundary, timeout, cancellation, cleanup, and rollback tests;
+5. non-sensitive audit coverage for every decision;
+6. operator documentation and on-device validation;
+7. an independently reviewable pull request.
 
-- read or write files;
-- list directories;
-- execute commands or command-like platform actions;
-- call package managers;
-- access Android shared storage;
-- use rish or Shizuku-backed privileges;
-- make network requests;
-- automate a browser;
-- expose local device metadata beyond basic health information.
-
-These tools must be disabled by default and protected by explicit feature gates, authorization scope, or an equivalent documented control before production exposure.
-
-A PR that exposes high-impact tools must document:
-
-1. which tools are exposed;
-2. which clients can discover them;
-3. which clients can invoke them;
-4. what filesystem, command, network, or browser boundaries apply;
-5. how denied access is tested;
-6. how logs avoid leaking secrets, private paths, command arguments, tokens, cookies, and personal data.
+Inert policy modules are not authorization to expose a live capability.
 
 ## Stop Conditions
 
-Do not merge when any of the following are true:
+Do not merge or release when any applicable condition is true:
 
-- CI or Security is missing, pending, cancelled, skipped, or failing for the exact PR head.
-- The PR head changed after validation and has not been revalidated.
-- The diff is broader than the stated production-readiness remediation.
-- Documentation claims MCP readiness before MCP transport and tool validation exist.
-- Dependency restoration reopens unresolved advisories.
-- Browser-reachable routes lack documented Host and Origin protections.
-- Command-capable or filesystem-capable tools are exposed without an explicit gate.
+- exact-head CI, Android, or Security evidence is missing, stale, cancelled, or failing;
+- an artifact's feature posture or source commit is ambiguous;
+- actionable review feedback remains unresolved;
+- documentation claims behavior or conformance the code does not implement;
+- unauthenticated clients can reach MCP discovery or invocation in static-token mode;
+- browser-reachable MCP traffic lacks exact Host/Origin enforcement;
+- errors, logs, or audit data can expose tokens, private paths, raw I/O text, or caller payloads;
+- filesystem mutation can occur without explicit `dry_run:false` and safe-root validation;
+- a dependency advisory is unresolved without a documented accepted-risk decision;
+- a high-impact capability appears without its independent gate and validation evidence.

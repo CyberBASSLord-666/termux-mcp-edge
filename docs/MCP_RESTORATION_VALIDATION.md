@@ -1,14 +1,14 @@
-# MCP Restoration Validation Plan
+# MCP Runtime Validation Plan
 
 This document defines validation evidence for the current staged MCP transport and for future protocol and capability expansion.
 
-The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated staged MCP discovery and the documented allowlisted tool set. The current POST endpoint is a staged custom transport; it must preserve JSON-RPC message rules and may not be described as a complete standard HTTP-with-SSE/session implementation until those stages land.
+The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated staged MCP discovery and the documented allowlisted tool set. Its current custom POST-only endpoint reports protocol version `2024-11-05`; it is not a complete stable MCP 2025-11-25 Streamable HTTP implementation.
 
 ## Required PR shape
 
 MCP work must remain staged through small, reviewable pull requests. Do not combine broad dependency restoration, protocol/lifecycle changes, high-impact tool exposure, and unrelated maintenance.
 
-For future expansion:
+For protocol or capability expansion:
 
 1. Define the protocol or capability contract and threat model.
 2. Add independently testable validation/policy primitives.
@@ -29,7 +29,7 @@ cargo build --release
 cargo build --release --features mcp-runtime
 ```
 
-CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation is required when runtime, dependency, workflow, or deployment changes can affect the device artifact.
+CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for both the default and `mcp-runtime` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
 
 ## Dependency gate
 
@@ -71,24 +71,33 @@ Required evidence:
 - MCP request IDs are non-null strings or integer numbers;
 - params are object/array when present;
 - notifications omit ID and receive no JSON-RPC response;
-- `notifications/initialized` receives HTTP 204 with an empty body;
+- in the current staged transport, `notifications/initialized` receives HTTP 204 with an empty body;
 - notification-shaped request methods are not dispatched and cannot mutate state;
 - unsupported notifications receive no response;
 - valid request IDs are preserved in request errors, while invalid IDs are never reflected.
 
-The current focused envelope stage does not claim batch, session, lifecycle, or SSE completion. Those require a separate design and integration stage.
+The HTTP 204 notification behavior is a regression contract for the current custom transport, not the stable MCP transport target. The protocol migration may revise HTTP notification status semantics while preserving the JSON-RPC rule that notifications do not receive JSON-RPC response objects.
 
-## Lifecycle and standard transport completion gate
+The current focused envelope stage does not claim batch, session, lifecycle, GET/SSE, or Streamable HTTP completion. Those require a separate design and integration stage.
 
-Before claiming complete MCP 2024-11-05 interoperability, the runtime must implement and test:
+## Stable protocol and transport completion gate
+
+Before claiming stable MCP 2025-11-25 interoperability, the runtime must implement and test:
 
 - initialization as the first client/server interaction;
 - protocol-version and capability negotiation;
 - receipt of `notifications/initialized` before normal operation;
+- a single MCP endpoint with the required POST and GET Streamable HTTP behavior;
+- compliant `Content-Type` and `Accept` negotiation for JSON and `text/event-stream` responses;
+- exact browser `Origin` protection before message handling;
+- the `MCP-Protocol-Version` request-header contract after initialization;
+- compliant notification and response status/body behavior;
+- an explicit session decision and, if sessions are used, cryptographically secure opaque identifiers plus lifecycle validation;
 - per-client/session state and request-ID uniqueness where applicable;
-- the standard HTTP-with-SSE connection model or a fully documented custom transport that preserves lifecycle and bidirectional requirements;
 - cancellation, shutdown, reconnect, and multiple-client behavior;
 - batch behavior if supported, or a documented compatibility decision supported by the selected MCP schema/transport.
+
+The target contracts are the official [MCP 2025-11-25 specification](https://modelcontextprotocol.io/specification/2025-11-25), [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle), and [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) documents.
 
 ## Tool discovery tests
 

@@ -21,13 +21,20 @@ cargo build --release
 cargo build --release --features mcp-runtime
 ```
 
-5. For Android release validation, run:
+5. For Android release validation, build both supported postures:
 
 ```bash
-ANDROID_NDK_HOME=/path/to/android-ndk ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES='' \
+  ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES=mcp-runtime \
+  ./scripts/cross_compile.sh
 ```
 
-6. Record the exact head SHA and the relevant CI/Security result before merge.
+See [`docs/ANDROID_ARTIFACTS.md`](docs/ANDROID_ARTIFACTS.md) for artifact naming and release evidence.
+
+6. Record the exact head SHA and the applicable CI, Android, and Security results before merge.
 7. Do not merge stale, behind-base, cancelled, failing, broadened, or unreviewed work.
 
 ## Pull request scope

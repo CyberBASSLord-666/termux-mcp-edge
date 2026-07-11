@@ -6,6 +6,8 @@ The project is designed for developers, advanced Termux operators, and power use
 
 The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-token mode, bearer authentication is enforced before resource-limit accounting, transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Authenticated requests must pass mobile-conscious concurrency, timeout, body-size, exact `Host`, and browser `Origin` checks.
 
+The transport is currently a custom POST-only JSON-RPC stage that reports protocol version `2024-11-05`. It is not yet a complete stable MCP 2025-11-25 Streamable HTTP implementation; lifecycle, GET/SSE, media negotiation, protocol-version request headers, and session work is tracked by #199.
+
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
@@ -13,7 +15,7 @@ The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-to
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated `POST /mcp` when built with `--features mcp-runtime`.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
-- **Filesystem surface:** bounded safe-rooted directory listing and UTF-8 reads; safe-rooted writes are payload-bounded, cancellation-safe, and dry-run by default.
+- **Filesystem surface:** bounded safe-rooted directory listing and UTF-8 reads; safe-rooted writes are payload-bounded, cancellation-safe, and dry-run by default. Descriptor-relative race hardening remains tracked by #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
@@ -71,7 +73,7 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 ## Filesystem safe roots
 
-The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists, relative roots, filesystem root `/`, traversal, and symlink escapes are rejected.
+The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists, relative roots, filesystem root `/`, traversal, and static symlink escapes are rejected. These checks do not yet close every canonicalize-then-use race.
 
 ## Build and validate
 
@@ -106,7 +108,7 @@ Use [`docs/TERMUX_DEPLOYMENT.md`](docs/TERMUX_DEPLOYMENT.md) as the canonical in
 - serializes mutations with a project lock;
 - creates only the fixed `mcp_runtime` runit service;
 - activates releases atomically;
-- restores the exact previous state when candidate or rollback validation fails.
+- restores prior release links, restarts the prior active runtime, and re-probes it when candidate or rollback validation fails.
 
 Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticated MCP, audit-counter, filesystem, Android-status, service-status, and capability-boundary checks.
 
@@ -115,7 +117,11 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Operations guide](docs/OPERATIONS.md)
 - [Security guide](docs/SECURITY.md)
 - [Validation guide](docs/VALIDATION.md)
+- [Production readiness checklist](docs/PRODUCTION_READINESS.md)
+- [Transport threat model](docs/TRANSPORT_THREAT_MODEL.md)
+- [MCP runtime validation plan](docs/MCP_RESTORATION_VALIDATION.md)
 - [MCP runtime roadmap](docs/MCP_RUNTIME_ROADMAP.md)
+- [Android artifact contract](docs/ANDROID_ARTIFACTS.md)
 - [Termux deployment and recovery](docs/TERMUX_DEPLOYMENT.md)
 - [Operator validation checklist](docs/operator-validation.md)
 
@@ -123,7 +129,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 
 - Rust 2021 single binary.
 - Axum HTTP runtime.
-- Minimal internal JSON-RPC MCP transport; no external MCP framework dependency.
+- Minimal internal staged JSON-RPC transport; no external MCP framework dependency.
 - `termux-services` / runit supervision.
 - Localhost-first networking with explicit authenticated remote-access posture.
 - Staged capability gates for higher-risk developer and power-user functionality.

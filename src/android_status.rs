@@ -2,9 +2,9 @@
 //!
 //! This module is intentionally data-only. It does not call Android APIs, read
 //! environment variables, inspect packages, enumerate processes, execute shell
-//! commands, or perform device-control actions. The goal is to define the
-//! explicit allowlist and denylist for a later transport wiring PR while keeping
-//! the current runtime surface unchanged.
+//! commands, or perform device-control actions. The optional `mcp-runtime`
+//! transport exposes this allowlisted data without expanding it into Android
+//! inspection or control behavior.
 
 use serde::Serialize;
 
@@ -29,8 +29,8 @@ pub const ANDROID_STATUS_ALLOWED_FIELDS: &[&str] = &[
 /// Explicit denylist for Android/Termux status expansion.
 ///
 /// These fields must remain absent from the read-only status primitive and from
-/// any future MCP transport response unless a later, separately reviewed gate
-/// explicitly authorizes them.
+/// every MCP response unless a later, separately reviewed gate explicitly
+/// authorizes them.
 pub const ANDROID_STATUS_DENIED_FIELDS: &[&str] = &[
     "android_id",
     "advertising_id",

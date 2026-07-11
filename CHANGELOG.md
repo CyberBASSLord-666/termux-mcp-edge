@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Reproducible Termux Deployment
+## Unreleased
 
 - Added `scripts/termux_deploy.sh` as the canonical manager for project-owned, versioned Termux releases and the fixed `mcp_runtime` runit service.
 - Added distinct install and upgrade modes, atomic `current`/`previous` activation, explicit rollback, status, configuration-preserving uninstall, and explicit configuration purge.

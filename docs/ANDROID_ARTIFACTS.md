@@ -41,4 +41,4 @@ Before treating an Android artifact as releasable, record:
 6. On-device `/health` and `/ready` results.
 7. For the `mcp-runtime` posture, authenticated discovery and representative allowed and denied tool calls.
 
-Both postures must remain bounded by the same authentication, Host/Origin, request-limit, safe-root, audit-privacy, and deployment requirements. The `mcp-runtime` artifact does not enable Android control, arbitrary command execution, shell fallback, arbitrary service mutation, or other high-impact capabilities unless those surfaces are separately implemented behind explicit gates and validated.
+Both postures must satisfy the same startup-authentication and deployment requirements. The `mcp-runtime` artifact must additionally preserve Host/Origin validation, request limits, safe-root controls, and audit privacy. It does not enable Android control, arbitrary command execution, shell fallback, arbitrary service mutation, or other high-impact capabilities unless those surfaces are separately implemented behind explicit gates and validated.
