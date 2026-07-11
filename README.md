@@ -23,6 +23,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Default filesystem root:** `/data/data/com.termux/files/home/mcp-files`.
 - **Project service name:** `mcp_runtime`.
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
+- **Named tunnels:** explicit, non-overwriting Cloudflare Tunnel setup with strict hostname validation and hermetic failure-path tests.
 
 Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, network mutation, and high-impact actions remain unavailable until their separate capability gates are implemented and validated.
 
