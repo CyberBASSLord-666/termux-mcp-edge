@@ -14,10 +14,10 @@ assert_fails() { if "$@" >/dev/null 2>&1; then fail_test "command unexpectedly s
 make_shell() {
   local prefix="$1"
   mkdir -p "$prefix/bin"
-  cat >"$prefix/bin/sh" <<'EOF'
-#!/bin/sh
-exec /bin/sh "$@"
-EOF
+  # A shebang interpreter must be a native executable. Copy the host POSIX
+  # shell to model Termux's binary $PREFIX/bin/sh; a script wrapper cannot
+  # itself reliably serve as a Linux shebang interpreter.
+  cp -L -- /bin/sh "$prefix/bin/sh"
   chmod 700 "$prefix/bin/sh"
 }
 make_config() {
