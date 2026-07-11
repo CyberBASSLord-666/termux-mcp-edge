@@ -419,7 +419,11 @@ deploy() {
   STAGING_DIR="$RELEASES_ROOT/.staging-$version-$$"; run mkdir -p "$STAGING_DIR"; run chmod 700 "$STAGING_DIR"; run install -m 700 "$artifact" "$STAGING_DIR/$PROGRAM"
   if ! is_true "$DRY_RUN"; then printf '%s\n' "$version" >"$STAGING_DIR/VERSION"; chmod 600 "$STAGING_DIR/VERSION"; fi
   run mv -- "$STAGING_DIR" "$release_dir"; STAGING_DIR=""; TRANSACTION_ACTIVE=1
-  stop_service_confirmed || fail "deployment aborted because canonical service shutdown was not confirmed"
+  if ! stop_service_confirmed; then
+  run rm -rf -- "$release_dir"
+  TRANSACTION_ACTIVE=0
+  fail "deployment aborted because canonical service shutdown was not confirmed"
+fi
   prepare_service_stopped; activate_release "$release_dir"; start_service
   if ! probe_runtime; then
     log "$mode readiness validation failed; restoring the exact previous state"
