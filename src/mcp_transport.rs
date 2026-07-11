@@ -102,6 +102,21 @@ struct McpTransportState {
     sessions: McpSessionStore,
 }
 
+enum SessionRequestError {
+    ProtocolVersionRequired,
+    UnsupportedProtocolVersion,
+    InvalidProtocolVersionHeader,
+    SessionRequired,
+    SessionNotFound,
+    Store(SessionStoreError),
+}
+
+impl From<SessionStoreError> for SessionRequestError {
+    fn from(error: SessionStoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ToolCallParams {
@@ -287,7 +302,7 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
 
     let (session_id, phase) = match validate_session_request(headers, &state.sessions) {
         Ok(session) => session,
-        Err(response) => return response,
+        Err(error) => return session_request_error_response(error),
     };
 
     match message {
@@ -340,7 +355,7 @@ fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
 
     let (_, phase) = match validate_session_request(headers, &state.sessions) {
         Ok(session) => session,
-        Err(response) => return response,
+        Err(error) => return session_request_error_response(error),
     };
     if phase != SessionPhase::Active {
         return server_not_initialized(None);
@@ -356,7 +371,7 @@ fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
 fn handle_mcp_delete(state: &McpTransportState, headers: &HeaderMap) -> Response {
     let (session_id, _) = match validate_session_request(headers, &state.sessions) {
         Ok(session) => session,
-        Err(response) => return response,
+        Err(error) => return session_request_error_response(error),
     };
 
     match state.sessions.terminate(&session_id) {
@@ -635,29 +650,17 @@ fn acceptable_media_range(item: &str, expected: &str) -> bool {
 fn validate_session_request(
     headers: &HeaderMap,
     sessions: &McpSessionStore,
-) -> Result<(String, SessionPhase), Response> {
+) -> Result<(String, SessionPhase), SessionRequestError> {
     let protocol = match single_header_value(headers, MCP_PROTOCOL_VERSION_HEADER) {
         Ok(Some(protocol)) if protocol == MCP_PROTOCOL_VERSION => protocol,
         Ok(Some(_)) => {
-            return Err(transport_error(
-                StatusCode::BAD_REQUEST,
-                "unsupported_protocol_version",
-                "MCP-Protocol-Version must match the negotiated protocol version.",
-            ));
+            return Err(SessionRequestError::UnsupportedProtocolVersion);
         }
         Ok(None) => {
-            return Err(transport_error(
-                StatusCode::BAD_REQUEST,
-                "protocol_version_required",
-                "MCP-Protocol-Version is required after initialization.",
-            ));
+            return Err(SessionRequestError::ProtocolVersionRequired);
         }
         Err(()) => {
-            return Err(transport_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_protocol_version_header",
-                "MCP-Protocol-Version must contain exactly one valid value.",
-            ));
+            return Err(SessionRequestError::InvalidProtocolVersionHeader);
         }
     };
     debug_assert_eq!(protocol, MCP_PROTOCOL_VERSION);
@@ -671,25 +674,17 @@ fn validate_session_request(
             session_id.to_owned()
         }
         Ok(None) => {
-            return Err(transport_error(
-                StatusCode::BAD_REQUEST,
-                "session_required",
-                "MCP-Session-Id is required after initialization.",
-            ));
+            return Err(SessionRequestError::SessionRequired);
         }
         Ok(Some(_)) | Err(()) => {
-            return Err(transport_error(
-                StatusCode::NOT_FOUND,
-                "session_not_found",
-                "The MCP session does not exist or has expired.",
-            ));
+            return Err(SessionRequestError::SessionNotFound);
         }
     };
 
     sessions
         .phase(&session_id)
         .map(|phase| (session_id, phase))
-        .map_err(session_store_error_response)
+        .map_err(SessionRequestError::from)
 }
 
 fn single_header_value<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, ()> {
@@ -720,6 +715,37 @@ fn session_store_error_response(error: SessionStoreError) -> Response {
             "session_state_unavailable",
             "MCP session state is unavailable.",
         ),
+    }
+}
+
+fn session_request_error_response(error: SessionRequestError) -> Response {
+    match error {
+        SessionRequestError::ProtocolVersionRequired => transport_error(
+            StatusCode::BAD_REQUEST,
+            "protocol_version_required",
+            "MCP-Protocol-Version is required after initialization.",
+        ),
+        SessionRequestError::UnsupportedProtocolVersion => transport_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported_protocol_version",
+            "MCP-Protocol-Version must match the negotiated protocol version.",
+        ),
+        SessionRequestError::InvalidProtocolVersionHeader => transport_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_protocol_version_header",
+            "MCP-Protocol-Version must contain exactly one valid value.",
+        ),
+        SessionRequestError::SessionRequired => transport_error(
+            StatusCode::BAD_REQUEST,
+            "session_required",
+            "MCP-Session-Id is required after initialization.",
+        ),
+        SessionRequestError::SessionNotFound => transport_error(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "The MCP session does not exist or has expired.",
+        ),
+        SessionRequestError::Store(error) => session_store_error_response(error),
     }
 }
 
