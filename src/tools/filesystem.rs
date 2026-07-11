@@ -50,6 +50,19 @@ impl Drop for TempFileCleanup {
     }
 }
 
+fn open_restrictive_new_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    options.open(path)
+}
+
 #[derive(Clone)]
 pub struct FileSystemTools {
     safe_roots: Vec<PathBuf>,
@@ -366,10 +379,7 @@ impl FileSystemTools {
         }
 
         let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
-        let std_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let std_file = open_restrictive_new_file(&tmp)?;
         let mut cleanup = TempFileCleanup::new(tmp.clone());
         let mut file = fs::File::from_std(std_file);
 
@@ -693,6 +703,20 @@ mod tests {
         }
 
         assert!(path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrictive_new_file_is_owner_read_write_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("restricted.tmp");
+        let file = open_restrictive_new_file(&path).unwrap();
+        drop(file);
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[tokio::test]
