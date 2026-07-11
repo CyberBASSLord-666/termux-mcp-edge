@@ -39,3 +39,24 @@ async fn read_file_rejects_link_resolving_beyond_safe_root() {
 
     assert!(matches!(result, Err(AppError::PathTraversal { .. })));
 }
+
+#[tokio::test]
+async fn list_and_read_reject_symlinked_parent_components() {
+    let root = tempfile::tempdir().unwrap();
+    let peer = tempfile::tempdir().unwrap();
+    let peer_file = peer.path().join("peer.txt");
+    tokio::fs::write(&peer_file, "peer data").await.unwrap();
+    let linked_parent = root.path().join("linked-parent");
+    std::os::unix::fs::symlink(peer.path(), &linked_parent).unwrap();
+    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+    let list_result = tools
+        .list_directory(linked_parent.to_string_lossy().to_string(), Some(1))
+        .await;
+    let read_result = tools
+        .read_file(linked_parent.join("peer.txt").to_string_lossy().to_string())
+        .await;
+
+    assert_path_traversal(list_result);
+    assert_path_traversal(read_result);
+}

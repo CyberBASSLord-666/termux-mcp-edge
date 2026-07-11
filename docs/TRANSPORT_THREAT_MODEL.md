@@ -104,15 +104,12 @@ An authenticated caller may attempt traversal, symlink escape, race-based path r
 Current controls:
 
 - absolute dedicated safe roots with no filesystem-root default;
-- rejection of explicit parent traversal, NUL bytes, unsafe missing parents, and static symlink escapes;
-- bounded UTF-8 reads and directory traversal;
-- dry-run-by-default writes, explicit `dry_run:false`, payload limits, same-directory temporary files, and atomic rename.
+- rejection of explicit parent traversal, NUL bytes, unsafe missing parents, and symlink components;
+- safe-root descriptor anchoring and component-by-component no-follow descendant resolution;
+- bounded deterministic UTF-8 reads and directory traversal;
+- dry-run-by-default writes, explicit `dry_run:false`, payload limits, descriptor-relative mode-0600 temporary files, file sync, atomic rename, and parent-directory sync.
 
-Remaining work:
-
-- #200 must replace canonicalize-then-use pathname operations with descriptor-relative no-follow/beneath access to close symlink/directory race windows;
-- #206 must bound and determinize serialized results;
-- #203 must complete atomic deployment/service transition behavior around the runtime binary.
+The focused remediation and regression evidence are tracked in #200, #206, and #203 respectively. Any future filesystem expansion must preserve these descriptor, response, and deployment boundaries.
 
 ### Schema confusion and response reflection
 
