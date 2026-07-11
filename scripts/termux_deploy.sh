@@ -20,8 +20,10 @@ ALLOW_UNVERIFIED_ARTIFACT="${TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT:-0}"
 TEST_MODE="${TERMUX_MCP_TEST_MODE:-0}"
 TEST_PROBE_SEQUENCE="${TERMUX_MCP_TEST_PROBE_SEQUENCE:-success}"
 TEST_STOP_SEQUENCE="${TERMUX_MCP_TEST_STOP_SEQUENCE:-success}"
+TEST_START_SEQUENCE="${TERMUX_MCP_TEST_START_SEQUENCE:-success}"
 TEST_PROBE_INDEX=0
 TEST_STOP_INDEX=0
+TEST_START_INDEX=0
 DRY_RUN="${TERMUX_MCP_DRY_RUN:-0}"
 
 RELEASES_ROOT=""
@@ -31,6 +33,8 @@ STAGING_DIR=""
 LINK_TMP=""
 SERVICE_STAGE=""
 SERVICE_SNAPSHOT=""
+SERVICE_RUN_TMP=""
+CANDIDATE_RELEASE=""
 TRANSACTION_ACTIVE=0
 RECOVERING=0
 CURRENT_BEFORE=""
@@ -64,6 +68,7 @@ Environment overrides:
   TERMUX_MCP_TEST_MODE=1       Skip live runit, architecture, and HTTP operations.
   TERMUX_MCP_TEST_PROBE_SEQUENCE
   TERMUX_MCP_TEST_STOP_SEQUENCE
+  TERMUX_MCP_TEST_START_SEQUENCE
                                 Test-only comma-separated success/failure values.
   TERMUX_MCP_DRY_RUN=1         Print mutations without applying them.
 EOF
@@ -97,6 +102,13 @@ cleanup() {
     log "interrupted deployment; restoring pre-operation service and link state"
     if stop_service_confirmed >/dev/null 2>&1; then
       if restore_link_state >/dev/null 2>&1 && restore_service_state >/dev/null 2>&1; then
+        if [[ -n "$CANDIDATE_RELEASE" ]]; then
+          if rm -rf -- "$CANDIDATE_RELEASE" 2>/dev/null; then
+            CANDIDATE_RELEASE=""
+          else
+            log "interrupted deployment recovery left an unreferenced candidate release that requires operator cleanup"
+          fi
+        fi
         if prior_runtime_was_running && ! start_service >/dev/null 2>&1; then
           log "interrupted deployment recovery restored state but could not restart the prior runtime"
         fi
@@ -111,6 +123,7 @@ cleanup() {
     [[ -n "$LINK_TMP" ]] && rm -f -- "$LINK_TMP" 2>/dev/null || true
     [[ -n "$STAGING_DIR" ]] && rm -rf -- "$STAGING_DIR" 2>/dev/null || true
     [[ -n "$SERVICE_STAGE" ]] && rm -rf -- "$SERVICE_STAGE" 2>/dev/null || true
+    [[ -n "$SERVICE_RUN_TMP" ]] && rm -f -- "$SERVICE_RUN_TMP" 2>/dev/null || true
     [[ -n "$SERVICE_SNAPSHOT" ]] && rm -rf -- "$SERVICE_SNAPSHOT" 2>/dev/null || true
     if [[ "$LOCK_HELD" == "1" && -n "$LOCK_DIR" ]]; then
       rm -rf -- "$LOCK_DIR" 2>/dev/null || true
@@ -138,6 +151,12 @@ validate_absolute_safe_path() {
 canonicalize_path() { realpath -m -- "$1"; }
 is_descendant() { [[ "$1" == "$2/"* ]]; }
 paths_overlap() { [[ "$1" == "$2" || "$1" == "$2/"* || "$2" == "$1/"* ]]; }
+same_filesystem() {
+  local left_device right_device
+  left_device="$(stat -c '%d' "$1")" || return 1
+  right_device="$(stat -c '%d' "$2")" || return 1
+  [[ "$left_device" == "$right_device" ]]
+}
 
 validate_environment_roots() {
   require_command realpath
@@ -307,7 +326,7 @@ prior_runtime_was_running() {
     && SERVICE_DOWN_BEFORE_PRESENT == 0))
 }
 restore_service_state() {
-  local service_dir="$SERVICE_ROOT/$SERVICE_NAME" temp
+  local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
   if ((SERVICE_DIR_BEFORE_PRESENT == 0)); then
     run rm -rf -- "$service_dir" || return 1
     return 0
@@ -315,9 +334,10 @@ restore_service_state() {
   run mkdir -p -- "$service_dir" || return 1
   run chmod "$SERVICE_DIR_MODE_BEFORE" "$service_dir" || return 1
   if ((SERVICE_RUN_BEFORE_PRESENT == 1)); then
-    temp="$service_dir/.run.restore.$$"
-    run install -m 700 "$SERVICE_SNAPSHOT/run" "$temp" || return 1
-    run mv -Tf -- "$temp" "$service_dir/run" || return 1
+    SERVICE_RUN_TMP="$service_dir/.run.restore.$$"
+    run install -m 700 "$SERVICE_SNAPSHOT/run" "$SERVICE_RUN_TMP" || return 1
+    run mv -Tf -- "$SERVICE_RUN_TMP" "$service_dir/run" || return 1
+    SERVICE_RUN_TMP=""
   else
     run rm -f -- "$service_dir/run" || return 1
   fi
@@ -364,7 +384,7 @@ stop_service_confirmed() {
   return 1
 }
 prepare_service_stopped() {
-  local service_dir="$SERVICE_ROOT/$SERVICE_NAME" run_tmp
+  local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
   if ((SERVICE_DIR_BEFORE_PRESENT == 0)); then
     if is_true "$DRY_RUN"; then
       log "would atomically publish project-owned runit service at $service_dir"
@@ -375,14 +395,26 @@ prepare_service_stopped() {
     fi
   else
     run touch "$service_dir/down"; run chmod 600 "$service_dir/down"
-    run_tmp="$service_dir/.run.next.$$"
-    if is_true "$DRY_RUN"; then log "would atomically publish project-owned runit service at $service_dir/run"; else render_service_run "$run_tmp"; mv -Tf -- "$run_tmp" "$service_dir/run"; fi
+    SERVICE_RUN_TMP="$service_dir/.run.next.$$"
+    if is_true "$DRY_RUN"; then
+      log "would atomically publish project-owned runit service at $service_dir/run"
+    else
+      render_service_run "$SERVICE_RUN_TMP"
+      mv -Tf -- "$SERVICE_RUN_TMP" "$service_dir/run"
+    fi
+    SERVICE_RUN_TMP=""
   fi
 }
 start_service() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
   run rm -f -- "$service_dir/down" || return 1
-  is_true "$TEST_MODE" && return 0
+  if is_true "$TEST_MODE"; then
+    if ! next_sequence_result "$TEST_START_SEQUENCE" TEST_START_INDEX; then
+      soft_error "unable to start canonical service"
+      return 1
+    fi
+    return 0
+  fi
   require_command sv
   run sv up "$service_dir"
 }
@@ -453,6 +485,7 @@ recover_failed_deployment() {
   restore_link_state || return 1
   restore_service_state || return 1
   run rm -rf -- "$failed_release" || return 1
+  CANDIDATE_RELEASE=""
   if prior_runtime_was_running; then
     start_service || return 1
     probe_runtime || return 1
@@ -471,12 +504,16 @@ deploy() {
     upgrade) ((CURRENT_BEFORE_PRESENT == 1)) || fail "no active release exists; use install" ;;
     *) fail "unsupported deployment mode" ;;
   esac
+  if ((SERVICE_DIR_BEFORE_PRESENT == 0)) && ! is_true "$DRY_RUN"; then
+    same_filesystem "$DEPLOY_ROOT" "$SERVICE_ROOT" || fail "deployment and service roots must share a filesystem for atomic service publication"
+  fi
   release_dir="$RELEASES_ROOT/$version"; [[ ! -e "$release_dir" && ! -L "$release_dir" ]] || fail "release already exists"
   STAGING_DIR="$RELEASES_ROOT/.staging-$version-$$"; run mkdir -p "$STAGING_DIR"; run chmod 700 "$STAGING_DIR"; run install -m 700 "$artifact" "$STAGING_DIR/$PROGRAM"
   if ! is_true "$DRY_RUN"; then printf '%s\n' "$version" >"$STAGING_DIR/VERSION"; chmod 600 "$STAGING_DIR/VERSION"; fi
-  run mv -T -- "$STAGING_DIR" "$release_dir"; STAGING_DIR=""; TRANSACTION_ACTIVE=1
+  run mv -T -- "$STAGING_DIR" "$release_dir"; STAGING_DIR=""; CANDIDATE_RELEASE="$release_dir"; TRANSACTION_ACTIVE=1
   if ! stop_service_confirmed; then
     run rm -rf -- "$release_dir"
+    CANDIDATE_RELEASE=""
     TRANSACTION_ACTIVE=0
     fail "deployment aborted because canonical service shutdown was not confirmed"
   fi
@@ -487,6 +524,7 @@ deploy() {
     fail "candidate failed readiness and the prior release could not be recovered"
   fi
   TRANSACTION_ACTIVE=0
+  CANDIDATE_RELEASE=""
   if ! is_true "$DRY_RUN"; then rm -rf -- "$SERVICE_SNAPSHOT"; fi
   SERVICE_SNAPSHOT=""; log "$mode complete: $version"
 }
