@@ -3,8 +3,9 @@
 //! This module intentionally models service posture from an explicit in-repo
 //! allowlist only. It does not enumerate processes, inspect arbitrary PIDs,
 //! read command lines, read process environments, execute shell commands, call
-//! Android APIs, or perform service-control actions. Transport exposure is left
-//! to a later gate once this data-only surface has been reviewed independently.
+//! Android APIs, or perform service-control actions. The optional `mcp-runtime`
+//! transport exposes this independently reviewed data-only surface without
+//! expanding it into arbitrary inspection or control behavior.
 
 use serde::Serialize;
 use thiserror::Error;

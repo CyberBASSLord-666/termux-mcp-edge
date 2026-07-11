@@ -23,7 +23,7 @@ Before validating behavior, confirm the operator configuration is deliberately n
 
 1. Build with the intended feature set, normally `--features mcp-runtime` for staged MCP validation.
 2. Use a strong static bearer token for any deployment that is not explicitly loopback-development only.
-3. Protect the token file with mode `0600`; do not echo the token or use shell tracing while it is loaded.
+3. Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600`; do not echo the token or use shell tracing while it is loaded.
 4. Use localhost-only unauthenticated mode only when the server is bound to a loopback address and not exposed through a tunnel, LAN listener, or reverse proxy.
 5. Keep `MCP__TRANSPORT__ALLOWED_HOSTS` and `MCP__TRANSPORT__ALLOWED_ORIGINS` exact and minimal.
 6. Keep filesystem safe roots limited to a dedicated project directory, not broad shared storage such as `/storage/emulated/0` or `/sdcard`.
@@ -33,7 +33,7 @@ Before validating behavior, confirm the operator configuration is deliberately n
 For static-token validation, load the protected token into a temporary shell variable without printing it:
 
 ```bash
-MCP_TEST_TOKEN="$(cat "$HOME/.termux_mcp_token")"
+MCP_TEST_TOKEN="$(sed -n 's/^MCP__AUTH__STATIC_TOKEN=//p' "$HOME/.config/termux-mcp-edge/runtime.env")"
 ```
 
 Prove all of the following:

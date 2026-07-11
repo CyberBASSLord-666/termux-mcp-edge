@@ -66,7 +66,7 @@ The `/health` and `/ready` operational probes do not require bearer authenticati
 When built with `--features mcp-runtime`, load the configured token without printing it:
 
 ```bash
-MCP_TEST_TOKEN="$(cat "$HOME/.termux_mcp_token")"
+MCP_TEST_TOKEN="$(sed -n 's/^MCP__AUTH__STATIC_TOKEN=//p' "$HOME/.config/termux-mcp-edge/runtime.env")"
 ```
 
 First prove unauthenticated discovery is rejected before request-limit accounting or JSON-RPC dispatch:
@@ -188,9 +188,12 @@ Use [`operator-validation.md`](operator-validation.md) for representative allowe
 ```bash
 rustup target add aarch64-linux-android
 ANDROID_NDK_HOME=/path/to/android-ndk ./scripts/cross_compile.sh
+BUILD_FEATURES=mcp-runtime \
+  ANDROID_NDK_HOME=/path/to/android-ndk \
+  ./scripts/cross_compile.sh
 ```
 
-The `Android Cross Compile` workflow also supports manual dispatch and `v*` tag builds. Verify the uploaded artifact exists and contains `termux-mcp-server` before treating the run as release evidence.
+The `Android Cross Compile` workflow validates both postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific `termux-mcp-server-aarch64-linux-android-default` and `termux-mcp-server-aarch64-linux-android-mcp-runtime` artifacts before treating a release run as complete. Verify their commit, digest, Android AArch64 ELF identity, size, and embedded version as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 
 ## MCP Runtime Gate
 

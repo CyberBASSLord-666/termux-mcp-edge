@@ -7,6 +7,8 @@ Termux MCP Edge has two deliberate compile-time postures:
 - The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
 - The optional `mcp-runtime` feature additionally exposes the staged `POST /mcp` JSON-RPC transport and its narrowly scoped tool registry.
 
+The staged transport reports protocol version `2024-11-05` through a custom POST-only contract. It does not yet implement the complete stable MCP 2025-11-25 lifecycle and Streamable HTTP requirements, so protocol conformance remains a separate security and interoperability gate.
+
 In static-token mode, the complete `/mcp` route requires `Authorization: Bearer <configured-token>` before request resource limits, transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Missing, malformed, oversized, or incorrect credentials are rejected with HTTP 401 and a non-sensitive response. The only authentication bypass is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
 
 The optional runtime is not a broad host-control surface. After authentication, it enforces bounded concurrency, request duration, and request-body size, then validates exact `Host` and browser `Origin` allowlists before dispatch. It exposes only the currently documented staged tools:
@@ -64,8 +66,8 @@ The unauthenticated operational endpoints are intentionally coarse. They must no
 Browser-reachable MCP requests must match the configured exact transport allowlists after authentication and request-limit admission succeed:
 
 ```bash
-export MCP__TRANSPORT__ALLOWED_HOSTS='["localhost:8000"]'
-export MCP__TRANSPORT__ALLOWED_ORIGINS='["http://localhost:8000"]'
+export MCP__TRANSPORT__ALLOWED_HOSTS='localhost:8000'
+export MCP__TRANSPORT__ALLOWED_ORIGINS='http://localhost:8000'
 ```
 
 `MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only appropriate for explicitly reviewed non-browser clients that cannot send `Origin`. It must not be used as a general browser compatibility bypass.
@@ -87,6 +89,8 @@ The body ceiling is implemented with Axum's streaming extractor limit rather tha
 ## Filesystem and Tool Safety Rules
 
 Filesystem paths are canonicalized or resolved through existing parents and must remain inside configured safe roots. The implementation rejects relative paths, NUL bytes, explicit parent traversal, missing unsafe parents, and symlink escapes beyond a safe root.
+
+These checks constrain static path escapes but do not close every canonicalize-then-use race. Descriptor-relative operations and race-focused tests remain required before treating the filesystem surface as hardened against concurrent symlink replacement.
 
 The default safe root is deliberately narrow:
 
@@ -133,7 +137,7 @@ Cargo, lockfile, or security-workflow changes must remain separate from unrelate
 - Keep exact Host and Origin allowlists minimal.
 - Keep the mobile-conscious request-limit defaults unless measured workload requires a reviewed increase.
 - Keep filesystem safe roots limited to dedicated project directories.
-- Protect the token file with restrictive permissions and avoid printing the token during validation.
+- Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600` and avoid printing the token during validation.
 - Rotate tokens after suspected exposure.
 - Keep CI, Security, Dependabot, and pinned GitHub Actions enabled.
 - Validate unauthorized rejection, request-limit failures, and authenticated MCP behavior before enabling the staged runtime in a supervised service.

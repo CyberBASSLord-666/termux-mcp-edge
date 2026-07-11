@@ -157,9 +157,9 @@ Do not manually repoint release links outside the project releases directory. Pr
 1. Run format, workspace/all-target/all-feature Clippy, workspace/all-target/all-feature tests, and deployment shell tests.
 2. Build both default and `mcp-runtime` release postures.
 3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
-4. Cross-compile or validate the tag/manual Android artifact.
-5. Record and verify the artifact SHA-256 digest.
-6. Verify `file` and `--version` against the intended release.
+4. Cross-compile and validate both the default and `mcp-runtime` Android postures.
+5. Record and verify each posture-specific artifact's SHA-256 digest.
+6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.
 8. Confirm deployment status, runit state, health, readiness, and authenticated discovery.
 9. Validate representative allowed and denied MCP calls.

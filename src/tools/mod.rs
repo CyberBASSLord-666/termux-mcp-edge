@@ -1,8 +1,9 @@
-//! Tool module placeholders for the current HTTP health-check service.
+//! Tool implementations for the default and staged MCP build postures.
 //!
-//! MCP tool transport integration is intentionally tracked separately. Until a
-//! patched and compatible rmcp integration is restored, the vulnerable rmcp-backed
-//! tool modules remain out of the compiled module tree.
+//! The optional `mcp-runtime` feature compiles the safe-rooted filesystem tools
+//! used by the current internal staged transport. The default build retains only
+//! the lightweight configuration holder. `SystemTools` remains inert; no command
+//! execution or broad host-control surface is compiled here.
 
 #[cfg(feature = "mcp-runtime")]
 mod filesystem;

@@ -2,12 +2,14 @@
 
 ## Supported Runtime Scope
 
-The supported production line has two explicit compile-time postures:
+The supported runtime line has two explicit compile-time postures:
 
 - The default build exposes operational health/readiness endpoints only.
 - The optional `mcp-runtime` build exposes the staged `/mcp` transport and its documented allowlisted tool set.
 
 The staged MCP route requires the configured static bearer token before JSON-RPC parsing, tool discovery, or tool invocation. The only exception is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
+
+The route is a custom POST-only transport that reports protocol version `2024-11-05`; it is not yet a complete stable MCP 2025-11-25 Streamable HTTP implementation. Protocol completion and descriptor-relative filesystem race hardening remain release-readiness requirements.
 
 Current staged tools remain limited to `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. Android platform control, shell access, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact controls are not supported runtime surfaces.
 

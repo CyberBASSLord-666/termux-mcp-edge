@@ -8,7 +8,9 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes a staged transport that validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes a staged custom POST-only transport that reports protocol version `2024-11-05`, validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state.
+
+This stage is not a complete stable MCP 2025-11-25 Streamable HTTP implementation. Lifecycle state, GET/SSE behavior, media negotiation, the protocol-version request header, and the explicit session model remain tracked by #199.
 
 The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. Command-policy and high-impact capability-token modules are inert policy scaffolding only. Android platform control, shell fallback, live command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact actions remain unavailable until their own power-user capability gates land.
 
@@ -79,7 +81,7 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, payload limits, explicit write controls, and non-sensitive audit counter coverage.
 
-Status: complete for the currently exposed staged filesystem surface: safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, explicit safe-rooted writes, and runtime audit counters for allowed and denied filesystem decisions. The filesystem surface remains constrained by safe-root validation, symlink boundary checks, payload-size validation, exact-limit boundary tests, and explicit `dry_run:false` for mutation.
+Status: exposed, with production hardening incomplete. The staged surface includes safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, explicit safe-rooted writes, and runtime audit counters for allowed and denied filesystem decisions. Static validation constrains safe roots, symlinks, write payloads, and explicit `dry_run:false` mutation. Descriptor-relative operations that close canonicalize-then-use race windows remain tracked by #200, and deterministic response byte bounds plus happy/boundary coverage remain tracked by #206.
 
 Required gates:
 
@@ -94,6 +96,23 @@ Required gates:
 - Documentation of the filesystem audit counter contract in [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md).
 - Runtime audit counter documentation in [`runtime-audit-counters.md`](runtime-audit-counters.md).
 - Documentation of operator assumptions through the staged [`operator-validation.md`](operator-validation.md) checklist.
+
+## Protocol Completion Track: Stable MCP 2025-11-25
+
+Migrate the staged custom transport to the stable MCP 2025-11-25 lifecycle and Streamable HTTP contract without expanding the tool authority in the same change.
+
+Status: not complete; tracked by #199.
+
+Required gates:
+
+- Initialization is the first client/server interaction and negotiated state gates normal operation.
+- The single MCP endpoint implements required POST and GET behavior, including JSON/SSE media negotiation.
+- Requests after initialization enforce the `MCP-Protocol-Version` header contract.
+- Notification HTTP behavior and JSON-RPC no-response semantics conform to the stable transport.
+- Session support is either deliberately omitted or implemented with secure opaque identifiers and explicit lifecycle rules.
+- Cancellation, shutdown, reconnect, and multiple-client behavior are covered.
+- Existing authentication, Host/Origin, resource, tool-authorization, and audit boundaries remain intact.
+- Compatibility claims and operator validation cite the exact implemented protocol revision.
 
 ## Stage 6: Android Platform Tools
 
@@ -146,6 +165,4 @@ Required before live implementation:
 - Do not treat `project_service_status` as arbitrary service discovery or process inspection.
 - Do not treat read-only Android/Termux status metadata as Android platform control.
 - Do not treat inert command/capability policy modules as live execution or authorization.
-- Do not claim broad MCP production readiness without transport and tool smoke tests for each enabled surface.
-
-Originally created for #137; synchronized to current `main` by #165.
+- Do not claim broad MCP production readiness without stable protocol conformance and tool smoke tests for each enabled surface.
