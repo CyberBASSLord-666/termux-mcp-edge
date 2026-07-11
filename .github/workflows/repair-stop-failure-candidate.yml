@@ -1,5 +1,5 @@
 # Temporary one-shot branch repair; self-deletes after success.
-name: Repair stop-failure candidate cleanup
+name: Finalize stop-failure candidate cleanup
 
 on:
   push:
@@ -19,8 +19,9 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           ref: atomic-service-transitions-203
+          fetch-depth: 0
           persist-credentials: true
-      - name: Apply focused fail-closed cleanup repair
+      - name: Apply focused repair and restore canonical CI
         shell: bash
         run: |
           python3 - <<'PY'
@@ -38,14 +39,15 @@ jobs:
               raise SystemExit(f'expected exactly one stop-failure site, found {text.count(old)}')
           path.write_text(text.replace(old, new))
           PY
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           bash -n scripts/termux_deploy.sh
           bash tests/termux_deploy_test.sh
-      - name: Commit repair and remove temporary workflow
+      - name: Commit focused repair and remove temporary workflow
         shell: bash
         run: |
           rm -f .github/workflows/repair-stop-failure-candidate.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add scripts/termux_deploy.sh .github/workflows/repair-stop-failure-candidate.yml
+          git add scripts/termux_deploy.sh .github/workflows/ci.yml .github/workflows/repair-stop-failure-candidate.yml
           git commit -m "fix: remove untouched candidate when shutdown fails"
           git push origin HEAD:atomic-service-transitions-203
