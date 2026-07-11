@@ -71,6 +71,7 @@ EOF
 
 log() { printf '[termux-deploy] %s\n' "$*"; }
 fail() { printf '[termux-deploy] ERROR: %s\n' "$*" >&2; exit 1; }
+soft_error() { printf '[termux-deploy] ERROR: %s\n' "$*" >&2; return 1; }
 
 is_boolean() {
   case "${1,,}" in 0|1|false|true|no|yes|off|on) return 0 ;; *) return 1 ;; esac
@@ -94,11 +95,14 @@ cleanup() {
   if ((TRANSACTION_ACTIVE == 1 && RECOVERING == 0)) && ! is_true "$DRY_RUN"; then
     RECOVERING=1
     log "interrupted deployment; restoring pre-operation service and link state"
-    stop_service_confirmed >/dev/null 2>&1 || true
-    restore_link_state >/dev/null 2>&1 || true
-    restore_service_state >/dev/null 2>&1 || true
-    if ((CURRENT_BEFORE_PRESENT == 1)); then
-      start_service >/dev/null 2>&1 || true
+    if stop_service_confirmed >/dev/null 2>&1; then
+      restore_link_state >/dev/null 2>&1 || true
+      restore_service_state >/dev/null 2>&1 || true
+      if ((CURRENT_BEFORE_PRESENT == 1)); then
+        start_service >/dev/null 2>&1 || true
+      fi
+    else
+      log "interrupted deployment recovery could not confirm service shutdown; preserving current state"
     fi
   fi
   if ! is_true "$DRY_RUN"; then
@@ -309,15 +313,18 @@ next_sequence_result() {
 stop_service_confirmed() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" attempt output
   [[ -d "$service_dir" && ! -L "$service_dir" ]] || return 0
-  if is_true "$TEST_MODE"; then next_sequence_result "$TEST_STOP_SEQUENCE" TEST_STOP_INDEX || fail "unable to stop and confirm canonical service is down"; return 0; fi
-  require_command sv
-  run sv down "$service_dir" || fail "unable to request canonical service shutdown"
+  if is_true "$TEST_MODE"; then
+    next_sequence_result "$TEST_STOP_SEQUENCE" TEST_STOP_INDEX || soft_error "unable to stop and confirm canonical service is down"
+    return 0
+  fi
+  command -v sv >/dev/null 2>&1 || soft_error "required command not found: sv"
+  run sv down "$service_dir" || soft_error "unable to request canonical service shutdown"
   for ((attempt=1; attempt<=STOP_ATTEMPTS; attempt++)); do
     output="$(sv status "$service_dir" 2>&1 || true)"
     [[ "$output" == down:* ]] && return 0
     sleep "$STOP_DELAY_SECONDS"
   done
-  fail "canonical service did not reach the down state"
+  soft_error "canonical service did not reach the down state"
 }
 prepare_service_stopped() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" run_tmp
@@ -381,13 +388,12 @@ activate_release() {
   atomic_link "$release_dir" "$DEPLOY_ROOT/current"
 }
 recover_failed_deployment() {
-  local failed_release="$1" recovered=0
+  local failed_release="$1"
   RECOVERING=1
   stop_service_confirmed || return 1
   restore_link_state; restore_service_state; run rm -rf -- "$failed_release"
   if ((CURRENT_BEFORE_PRESENT == 1)); then start_service; probe_runtime || return 1; fi
-  TRANSACTION_ACTIVE=0; RECOVERING=0; recovered=1
-  ((recovered == 1))
+  TRANSACTION_ACTIVE=0; RECOVERING=0
 }
 
 deploy() {
@@ -403,7 +409,8 @@ deploy() {
   STAGING_DIR="$RELEASES_ROOT/.staging-$version-$$"; run mkdir -p "$STAGING_DIR"; run chmod 700 "$STAGING_DIR"; run install -m 700 "$artifact" "$STAGING_DIR/$PROGRAM"
   if ! is_true "$DRY_RUN"; then printf '%s\n' "$version" >"$STAGING_DIR/VERSION"; chmod 600 "$STAGING_DIR/VERSION"; fi
   run mv -- "$STAGING_DIR" "$release_dir"; STAGING_DIR=""; TRANSACTION_ACTIVE=1
-  stop_service_confirmed; prepare_service_stopped; activate_release "$release_dir"; start_service
+  stop_service_confirmed || fail "deployment aborted because canonical service shutdown was not confirmed"
+  prepare_service_stopped; activate_release "$release_dir"; start_service
   if ! probe_runtime; then
     log "$mode readiness validation failed; restoring the exact previous state"
     if recover_failed_deployment "$release_dir"; then fail "candidate failed readiness and was removed after recovery"; fi
@@ -414,10 +421,15 @@ deploy() {
 rollback() {
   ensure_layout; validate_runtime_config; acquire_lock; capture_link_state; capture_service_state
   ((CURRENT_BEFORE_PRESENT == 1)) || fail "no active release is available"; ((PREVIOUS_BEFORE_PRESENT == 1)) || fail "no previous release is available"
-  TRANSACTION_ACTIVE=1; stop_service_confirmed; prepare_service_stopped
+  TRANSACTION_ACTIVE=1
+  stop_service_confirmed || fail "rollback aborted because canonical service shutdown was not confirmed"
+  prepare_service_stopped
   atomic_link "$PREVIOUS_BEFORE" "$DEPLOY_ROOT/current"; atomic_link "$CURRENT_BEFORE" "$DEPLOY_ROOT/previous"; start_service
   if ! probe_runtime; then
-    log "rollback target failed readiness; restoring the original release state"; RECOVERING=1; stop_service_confirmed; restore_link_state; restore_service_state; start_service
+    log "rollback target failed readiness; restoring the original release state"
+    RECOVERING=1
+    stop_service_confirmed || fail "rollback target failed readiness and shutdown could not be confirmed; current state was preserved"
+    restore_link_state; restore_service_state; start_service
     if probe_runtime; then TRANSACTION_ACTIVE=0; fail "rollback target failed readiness and the original release was restored"; fi
     fail "rollback target and original release both failed readiness"
   fi
@@ -433,7 +445,8 @@ status() {
 }
 uninstall() {
   local purge_config="$1"
-  acquire_lock; capture_service_state; stop_service_confirmed
+  acquire_lock; capture_service_state
+  stop_service_confirmed || fail "uninstall aborted because canonical service shutdown was not confirmed"
   run rm -rf -- "$SERVICE_ROOT/$SERVICE_NAME" "$DEPLOY_ROOT"
   if [[ "$purge_config" == 1 ]]; then run rm -rf -- "$CONFIG_ROOT"; fi
   SERVICE_SNAPSHOT=""; log "uninstall complete"
