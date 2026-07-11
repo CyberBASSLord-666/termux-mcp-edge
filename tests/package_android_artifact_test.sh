@@ -26,6 +26,8 @@ set -euo pipefail
 target="${*: -1}"
 if grep -Fq wrong-arch "$target"; then
   printf '%s\n' 'ELF 64-bit LSB executable, x86-64, for GNU/Linux'
+elif grep -Fq linker-only "$target"; then
+  printf '%s\n' 'ELF 64-bit LSB pie executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /system/bin/linker64, stripped'
 else
   printf '%s\n' 'ELF 64-bit LSB pie executable, ARM aarch64, for Android 24'
 fi
@@ -79,6 +81,12 @@ jq -e '
 MCP_BUNDLE="$ROOT/output/mcp"
 run_package "$BINARY" "$MCP_BUNDLE" termux-mcp-server-aarch64-linux-android-mcp-runtime mcp-runtime >/dev/null
 jq -e '.posture == "mcp-runtime" and .features == ["mcp-runtime"]' "$MCP_BUNDLE/artifact-manifest.json" >/dev/null
+
+LINKER_ONLY="$ROOT/linker-only-candidate"
+printf '%s\n' '#!/usr/bin/env bash' '# linker-only' 'exit 0' >"$LINKER_ONLY"
+chmod 700 "$LINKER_ONLY"
+run_package "$LINKER_ONLY" "$ROOT/output/linker-only" termux-mcp-server-aarch64-linux-android-default default >/dev/null
+jq -e '.elf == "aarch64-android-elf"' "$ROOT/output/linker-only/artifact-manifest.json" >/dev/null
 
 assert_fails run_package "$BINARY" "$ROOT/output/mismatch" termux-mcp-server-aarch64-linux-android-default mcp-runtime
 grep -Fq artifact_name_posture_mismatch "$ROOT/last.stderr" || fail_test "posture mismatch code absent"

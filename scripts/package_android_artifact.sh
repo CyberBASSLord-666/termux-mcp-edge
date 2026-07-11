@@ -90,7 +90,8 @@ install -m 700 "$BINARY" "$STAGING_DIR/termux-mcp-server" 2>/dev/null || fail bi
 bytes="$(stat -c '%s' "$STAGING_DIR/termux-mcp-server" 2>/dev/null)" || fail binary_stat_failed
 [[ "$bytes" == "$source_bytes" ]] || fail binary_copy_size_mismatch
 identity="$(file -b -- "$STAGING_DIR/termux-mcp-server" 2>/dev/null)" || fail binary_identity_failed
-[[ "$identity" == *ELF* && "$identity" == *"ARM aarch64"* && "$identity" == *Android* ]] || fail binary_architecture_mismatch
+[[ "$identity" == *ELF* && "$identity" == *"ARM aarch64"* ]] || fail binary_architecture_mismatch
+[[ "$identity" == *Android* || "$identity" == *"/system/bin/linker64"* ]] || fail binary_android_identity_missing
 digest="$(sha256sum -- "$STAGING_DIR/termux-mcp-server" 2>/dev/null | awk '{print $1}')" || fail binary_digest_failed
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || fail binary_digest_failed
 
