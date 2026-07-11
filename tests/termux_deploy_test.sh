@@ -148,6 +148,13 @@ assert_fails env TERMUX_MCP_CONFIG_ROOT="$HOME/bad path" bash "$SCRIPT" status
 assert_fails env TERMUX_MCP_SERVICE_ROOT="$ROOT/outside-prefix" bash "$SCRIPT" status
 
 (
+  configure_environment "$ROOT/initial-dry-run"
+  artifact="$ROOT/initial-dry-run-server"; make_artifact "$artifact" 3.0.0; sha="$(artifact_sha "$artifact")"
+  bash "$SCRIPT" install --artifact "$artifact" --version 3.0.0 --sha256 "$sha" --dry-run >/dev/null
+  [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT" && ! -e "$TERMUX_MCP_SERVICE_ROOT" ]]
+)
+
+(
   configure_environment "$ROOT/initial-failure"
   artifact="$ROOT/initial-failure-server"; make_artifact "$artifact" 3.0.0; sha="$(artifact_sha "$artifact")"
   if TERMUX_MCP_TEST_PROBE_SEQUENCE=failure bash "$SCRIPT" install --artifact "$artifact" --version 3.0.0 --sha256 "$sha" >/dev/null 2>&1; then fail_test "unhealthy initial install unexpectedly succeeded"; fi
