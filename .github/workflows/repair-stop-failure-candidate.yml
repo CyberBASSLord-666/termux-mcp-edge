@@ -1,3 +1,4 @@
+# Temporary one-shot branch repair; self-deletes after success.
 name: Repair stop-failure candidate cleanup
 
 on:
