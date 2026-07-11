@@ -1,5 +1,6 @@
 name: Repair PR 216
 
+# Branch-only one-shot repair; this workflow deletes itself after applying the patch.
 on:
   push:
     branches:
