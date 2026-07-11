@@ -10,7 +10,10 @@ use axum::{
 use serde_json::{json, Value};
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
-    mcp_transport::{self, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER},
+    mcp_transport::{
+        self, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
+        MCP_SESSION_ID_HEADER,
+    },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
 };

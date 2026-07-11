@@ -99,11 +99,7 @@ impl McpSessionStore {
         Ok(session_id)
     }
 
-    fn phase_at(
-        &self,
-        session_id: &str,
-        now: Instant,
-    ) -> Result<SessionPhase, SessionStoreError> {
+    fn phase_at(&self, session_id: &str, now: Instant) -> Result<SessionPhase, SessionStoreError> {
         let mut registry = self.inner.lock().map_err(|_| SessionStoreError::Poisoned)?;
         registry.prune_expired(now, self.idle_timeout);
         let session = registry
@@ -155,7 +151,10 @@ mod tests {
         let store = McpSessionStore::new();
         let session_id = store.create().unwrap();
 
-        assert_eq!(Uuid::parse_str(&session_id).unwrap().to_string(), session_id);
+        assert_eq!(
+            Uuid::parse_str(&session_id).unwrap().to_string(),
+            session_id
+        );
         assert!(session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)));
         assert_eq!(
             store.phase(&session_id).unwrap(),
@@ -207,7 +206,9 @@ mod tests {
             SessionPhase::AwaitingInitialized
         );
         assert_eq!(
-            store.create_at(start + Duration::from_secs(10)).unwrap_err(),
+            store
+                .create_at(start + Duration::from_secs(10))
+                .unwrap_err(),
             SessionStoreError::CapacityExhausted
         );
 

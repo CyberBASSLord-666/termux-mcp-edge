@@ -108,7 +108,10 @@ async fn initialize_negotiates_stable_version_and_returns_secure_session() {
         let (response, session_id) = initialize_pending(&router, requested_version).await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(Uuid::parse_str(&session_id).unwrap().to_string(), session_id);
+        assert_eq!(
+            Uuid::parse_str(&session_id).unwrap().to_string(),
+            session_id
+        );
         assert!(session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)));
         assert!(response
             .headers()
@@ -227,12 +230,8 @@ async fn subsequent_requests_require_exact_protocol_and_session_headers() {
     let session_id = initialize_session(&router).await;
     let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string();
 
-    let missing_session = request_with_body(
-        Method::POST,
-        body.clone(),
-        None,
-        Some(MCP_PROTOCOL_VERSION),
-    );
+    let missing_session =
+        request_with_body(Method::POST, body.clone(), None, Some(MCP_PROTOCOL_VERSION));
     let response = router.clone().oneshot(missing_session).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response_json(response).await["error"], "session_required");
@@ -328,7 +327,11 @@ async fn post_requires_json_content_type_and_both_explicit_accept_types() {
         assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
     }
 
-    for content_type in [None, Some("text/plain"), Some("application/json-patch+json")] {
+    for content_type in [
+        None,
+        Some("text/plain"),
+        Some("application/json-patch+json"),
+    ] {
         let mut builder = Request::post("/mcp")
             .header(header::HOST, "localhost:8000")
             .header(header::ORIGIN, "http://localhost:8000")

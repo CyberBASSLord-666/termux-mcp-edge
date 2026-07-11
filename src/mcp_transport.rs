@@ -231,11 +231,7 @@ async fn handle_mcp_request(
     response
 }
 
-async fn handle_mcp_post(
-    state: &McpTransportState,
-    headers: &HeaderMap,
-    body: Bytes,
-) -> Response {
+async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: Bytes) -> Response {
     if !has_json_content_type(headers) {
         return transport_error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -371,10 +367,9 @@ fn handle_mcp_delete(state: &McpTransportState, headers: &HeaderMap) -> Response
 
 fn method_not_allowed() -> Response {
     let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
-    response.headers_mut().insert(
-        header::ALLOW,
-        HeaderValue::from_static("POST, GET, DELETE"),
-    );
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("POST, GET, DELETE"));
     response
 }
 
@@ -442,9 +437,7 @@ fn valid_initialize_params(params: Option<&Value>) -> bool {
         return false;
     };
 
-    params
-        .get("protocolVersion")
-        .is_some_and(Value::is_string)
+    params.get("protocolVersion").is_some_and(Value::is_string)
         && params
             .get("capabilities")
             .and_then(Value::as_object)
@@ -458,7 +451,10 @@ fn valid_initialize_params(params: Option<&Value>) -> bool {
 
 fn valid_client_capabilities(capabilities: &serde_json::Map<String, Value>) -> bool {
     for key in ["roots", "sampling", "elicitation", "tasks"] {
-        if capabilities.get(key).is_some_and(|value| !value.is_object()) {
+        if capabilities
+            .get(key)
+            .is_some_and(|value| !value.is_object())
+        {
             return false;
         }
     }
@@ -561,17 +557,15 @@ fn valid_client_implementation(info: &serde_json::Map<String, Value>) -> bool {
             return false;
         };
         icon.get("src").is_some_and(Value::is_string)
-            && icon
-                .get("mimeType")
-                .is_none_or(|value| value.is_string())
+            && icon.get("mimeType").is_none_or(|value| value.is_string())
             && icon.get("sizes").is_none_or(|sizes| {
                 sizes
                     .as_array()
                     .is_some_and(|sizes| sizes.iter().all(Value::is_string))
             })
-            && icon.get("theme").is_none_or(|theme| {
-                matches!(theme.as_str(), Some("light" | "dark"))
-            })
+            && icon
+                .get("theme")
+                .is_none_or(|theme| matches!(theme.as_str(), Some("light" | "dark")))
     })
 }
 
@@ -672,9 +666,7 @@ fn validate_session_request(
         Ok(Some(session_id))
             if !session_id.is_empty()
                 && session_id.len() <= 128
-                && session_id
-                    .bytes()
-                    .all(|byte| (0x21..=0x7e).contains(&byte)) =>
+                && session_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) =>
         {
             session_id.to_owned()
         }
@@ -700,10 +692,7 @@ fn validate_session_request(
         .map_err(session_store_error_response)
 }
 
-fn single_header_value<'a>(
-    headers: &'a HeaderMap,
-    name: &str,
-) -> Result<Option<&'a str>, ()> {
+fn single_header_value<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, ()> {
     let mut values = headers.get_all(name).iter();
     let Some(first) = values.next() else {
         return Ok(None);
