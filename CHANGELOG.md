@@ -14,7 +14,7 @@
 - Added rollback recovery that restores and re-probes the original active release when the selected rollback target is unhealthy.
 - Added invalid-link rejection for release targets that escape the project releases root or point to incomplete releases.
 - Added dry-run validation without release, service, link, or lock mutation.
-- Added fail-closed runit shutdown confirmation before activation, rollback, recovery, or uninstall; a failed or unconfirmed stop leaves existing state untouched and removes only the newly published, never-activated candidate release.
+- Added fail-closed runit shutdown confirmation before activation, rollback, recovery, or uninstall; a failed or unconfirmed pre-activation stop leaves existing state untouched, removes only the newly published never-activated candidate, and permits a clean same-version retry.
 - Added atomic run-file publication, pre-activation `down` gating, and complete staged service-directory publication so runit cannot observe a partial or prematurely startable service.
 - Added service-state snapshots and interruption recovery for the canonical directory, `run` file, `down` marker, modes, and exact release links; failed first installation now removes all newly introduced service state.
 - Expanded deployment tests for stop failure, uninstall preservation, atomic run-file cleanup, pre-start gating, failed initial-service cleanup, failed upgrade recovery, and failed rollback recovery.
