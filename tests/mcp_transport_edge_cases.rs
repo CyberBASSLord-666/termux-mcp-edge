@@ -71,8 +71,13 @@ async fn unknown_method_returns_safe_method_not_found_without_runtime_expansion(
     assert_eq!(payload["error"]["message"], "Method not found");
     let data = payload["error"]["data"].as_str().unwrap();
     assert!(!data.is_empty(), "error data should list allowed methods");
-    assert!(data.contains("initialize"), "should mention initialize");
+    assert!(data.contains("ping"), "should mention ping");
     assert!(data.contains("tools/list"), "should mention tools/list");
+    assert!(data.contains("tools/call"), "should mention tools/call");
+    assert!(
+        !data.contains("initialize"),
+        "active sessions should not advertise re-initialization"
+    );
 }
 
 #[tokio::test]
