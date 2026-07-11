@@ -100,6 +100,13 @@ assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_RO
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
 [[ ! -e "$SERVICE_DIR/down" && -z "$(find "$SERVICE_DIR" -maxdepth 1 -name '.run.*' -print -quit)" ]]
 
+start_failure_run_sha="$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')"
+if TERMUX_MCP_TEST_START_SEQUENCE=failure,success bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120" >/dev/null 2>&1; then fail_test "start-failing upgrade unexpectedly succeeded"; fi
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
+assert_eq "$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')" "$start_failure_run_sha"
+[[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0" && ! -e "$SERVICE_DIR/down" ]]
+
 running_run_sha="$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')"
 if TERMUX_MCP_TEST_PROBE_SEQUENCE=failure,success bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120" >/dev/null 2>&1; then fail_test "unhealthy running-service upgrade unexpectedly succeeded"; fi
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
