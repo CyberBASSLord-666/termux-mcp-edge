@@ -46,7 +46,7 @@ rm -f -- "$HOME/.termux_mcp_token"
 
 ## Install or validate the canonical service
 
-Use the versioned deployment manager documented in `docs/termux-deployment.md`. Confirm only one project service exists and owns the configured listener:
+Use the versioned deployment manager documented in `docs/TERMUX_DEPLOYMENT.md`. Confirm only one project service exists and owns the configured listener:
 
 ```bash
 sv status "$PREFIX/var/service/mcp_runtime"
