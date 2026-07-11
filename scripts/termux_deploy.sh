@@ -15,6 +15,8 @@ PROBE_ATTEMPTS="${TERMUX_MCP_PROBE_ATTEMPTS:-15}"
 PROBE_DELAY_SECONDS="${TERMUX_MCP_PROBE_DELAY_SECONDS:-1}"
 STOP_ATTEMPTS="${TERMUX_MCP_STOP_ATTEMPTS:-15}"
 STOP_DELAY_SECONDS="${TERMUX_MCP_STOP_DELAY_SECONDS:-1}"
+START_ATTEMPTS="${TERMUX_MCP_START_ATTEMPTS:-15}"
+START_DELAY_SECONDS="${TERMUX_MCP_START_DELAY_SECONDS:-1}"
 ARTIFACT_MAX_BYTES="${TERMUX_MCP_ARTIFACT_MAX_BYTES:-134217728}"
 ALLOW_UNVERIFIED_ARTIFACT="${TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT:-0}"
 TEST_MODE="${TERMUX_MCP_TEST_MODE:-0}"
@@ -64,6 +66,7 @@ Environment overrides:
   TERMUX_MCP_SERVICE_SHELL, TERMUX_MCP_HEALTH_URL, TERMUX_MCP_READY_URL
   TERMUX_MCP_PROBE_ATTEMPTS, TERMUX_MCP_PROBE_DELAY_SECONDS
   TERMUX_MCP_STOP_ATTEMPTS, TERMUX_MCP_STOP_DELAY_SECONDS
+  TERMUX_MCP_START_ATTEMPTS, TERMUX_MCP_START_DELAY_SECONDS
   TERMUX_MCP_ARTIFACT_MAX_BYTES
   TERMUX_MCP_TEST_MODE=1       Skip live runit, architecture, and HTTP operations.
   TERMUX_MCP_TEST_PROBE_SEQUENCE
@@ -201,6 +204,8 @@ validate_deployment_settings() {
   validate_integer_range TERMUX_MCP_PROBE_DELAY_SECONDS "$PROBE_DELAY_SECONDS" 0 60
   validate_integer_range TERMUX_MCP_STOP_ATTEMPTS "$STOP_ATTEMPTS" 1 120
   validate_integer_range TERMUX_MCP_STOP_DELAY_SECONDS "$STOP_DELAY_SECONDS" 0 60
+  validate_integer_range TERMUX_MCP_START_ATTEMPTS "$START_ATTEMPTS" 1 120
+  validate_integer_range TERMUX_MCP_START_DELAY_SECONDS "$START_DELAY_SECONDS" 0 60
   validate_integer_range TERMUX_MCP_ARTIFACT_MAX_BYTES "$ARTIFACT_MAX_BYTES" 1 536870912
   validate_loopback_url TERMUX_MCP_HEALTH_URL "$HEALTH_URL"
   validate_loopback_url TERMUX_MCP_READY_URL "$READY_URL"
@@ -411,7 +416,7 @@ prepare_service_stopped() {
   fi
 }
 start_service() {
-  local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
+  local service_dir="$SERVICE_ROOT/$SERVICE_NAME" attempt
   run rm -f -- "$service_dir/down" || return 1
   if is_true "$TEST_MODE"; then
     if ! next_sequence_result "$TEST_START_SEQUENCE" TEST_START_INDEX; then
@@ -420,8 +425,23 @@ start_service() {
     fi
     return 0
   fi
+  if is_true "$DRY_RUN"; then
+    log "would start canonical service at $service_dir after runsvdir registration"
+    return 0
+  fi
   require_command sv
-  run sv up "$service_dir"
+  # runsvdir discovers a freshly atomically-published service asynchronously.
+  # Calling sv before its supervise FIFO exists fails even though the service
+  # definition is valid, so wait only for that registration boundary.
+  for ((attempt=1; attempt<=START_ATTEMPTS; attempt++)); do
+    if [[ -p "$service_dir/supervise/ok" ]]; then
+      run sv up "$service_dir"
+      return $?
+    fi
+    sleep "$START_DELAY_SECONDS"
+  done
+  soft_error "canonical service was not registered by runsvdir before startup deadline"
+  return 1
 }
 
 next_test_probe_result() { next_sequence_result "$TEST_PROBE_SEQUENCE" TEST_PROBE_INDEX; }

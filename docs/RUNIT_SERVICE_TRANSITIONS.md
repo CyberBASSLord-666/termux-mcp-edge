@@ -8,6 +8,8 @@ Upgrade, rollback, recovery, and uninstall must stop the canonical service befor
 
 The shutdown polling budget is controlled by `TERMUX_MCP_STOP_ATTEMPTS` and `TERMUX_MCP_STOP_DELAY_SECONDS`. Production defaults are bounded to avoid hanging a mobile deployment indefinitely.
 
+Initial service publication is discovered asynchronously by `runsvdir`. Before invoking `sv up`, the manager waits for the canonical service's `supervise/ok` FIFO, bounded by `TERMUX_MCP_START_ATTEMPTS` and `TERMUX_MCP_START_DELAY_SECONDS`. This prevents a valid newly published service from failing solely because supervision has not registered yet.
+
 Dry-run mode validates the supervisor command but only logs the planned stop, start, and readiness transitions. It does not invoke `sv`, poll service state, call the health endpoints, or mutate service state.
 
 ## Atomic service publication
