@@ -26,16 +26,20 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
     let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
 
-    mcp_transport::router(TransportSecurityPolicy::localhost(8000, false), file_tools)
-        .layer(DefaultBodyLimit::max(max_body_bytes))
-        .route_layer(middleware::from_fn_with_state(
-            limits,
-            enforce_mcp_request_limits,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            McpAuthPolicy::static_bearer("expected-token").unwrap(),
-            require_mcp_auth,
-        ))
+    mcp_transport::router(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+    )
+    .layer(DefaultBodyLimit::max(max_body_bytes))
+    .route_layer(middleware::from_fn_with_state(
+        limits,
+        enforce_mcp_request_limits,
+    ))
+    .route_layer(middleware::from_fn_with_state(
+        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        require_mcp_auth,
+    ))
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {

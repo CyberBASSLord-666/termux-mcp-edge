@@ -27,6 +27,8 @@ Android platform control, shell fallback, arbitrary command execution, global pr
 
 Startup requires `MCP__AUTH__STATIC_TOKEN` by default. Empty or whitespace-only values are rejected before the HTTP listener starts. The configured token is redacted from debug output and must not be logged or copied into issue reports.
 
+Only an absent environment variable may select its documented default. Present non-Unicode values for the bearer token, listener host/port, safe roots, transport allowlists, compatibility switch, or request limits fail startup with non-sensitive errors. `MCP__SERVER__PORT` accepts only `1–65535`; port `0` is not a supported supervised-listener configuration.
+
 The only supported exception is explicit local development mode:
 
 ```bash
@@ -102,7 +104,7 @@ The default safe root is deliberately narrow:
 /data/data/com.termux/files/home/mcp-files
 ```
 
-Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists, relative roots, and filesystem root `/` are rejected during configuration validation.
+Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
 `read_file` and `write_file` are payload bounded. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation.
 
