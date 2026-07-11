@@ -182,6 +182,8 @@ The default filesystem root is:
 
 Keep configured roots limited to dedicated project directories. Empty lists, relative roots, filesystem root `/`, traversal, and symlink escapes are rejected. Broad shared Android storage is not a default.
 
+The runtime opens the safe root and walks each descendant with descriptor-relative no-follow operations. Symlinks are not a supported aliasing mechanism inside a safe root. Writes use a private same-directory temporary file, sync the file before atomic rename, and sync the parent directory after rename; an error before the parent sync must be treated as a failed durability confirmation even if the new name is visible.
+
 ## Deployment status and recovery
 
 ```bash

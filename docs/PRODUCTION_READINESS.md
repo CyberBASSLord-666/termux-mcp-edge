@@ -16,17 +16,17 @@ Both postures validate startup authentication configuration. Static-token mode i
 
 The `mcp-runtime` build negotiates protocol version `2025-11-25`, validates initialize metadata, issues cryptographically random bounded sessions, gates normal operations on `notifications/initialized`, enforces POST media negotiation and the subsequent-request protocol/session headers, accepts compliant client notifications and responses with HTTP 202, and supports DELETE termination. The stable specification permits GET to return HTTP 405 when server-initiated SSE is not offered; this runtime therefore has no SSE, replay buffer, or resumability state.
 
-## Open Production Blockers
+## Remediated Production Lanes
 
-Do not describe the staged MCP posture as fully production-ready while these confirmed lanes remain open:
+The confirmed implementation lanes have focused merge evidence:
 
-- #200: filesystem operations retain canonicalize-then-use symlink race windows;
-- #203: runit service transitions and failed-first-install cleanup are not fully atomic;
-- #204: invalid-Unicode environment handling and port/list configuration need uniform fail-closed behavior;
-- #205: package metadata, dependency features, and shipped license materials require reconciliation;
-- #206: filesystem response byte bounds, determinism, and happy/boundary coverage remain incomplete.
+- #200: descriptor-relative no-follow filesystem operations and adversarial race coverage;
+- #203: atomic runit publication, shutdown confirmation, interruption recovery, and failed-first-install cleanup;
+- #204: uniform fail-closed environment parsing and listener/safe-root validation;
+- #205/#218: reconciled package licensing/metadata and minimized dependency features;
+- #206: deterministic response byte/cardinality bounds and happy/boundary coverage.
 
-These blockers do not erase the controls already present. They define the remaining evidence required before a broad readiness claim.
+Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, both Android artifacts are retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
 
 ## Required Pull Request Gate
 

@@ -15,7 +15,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
-- **Filesystem surface:** bounded safe-rooted directory listing and UTF-8 reads; safe-rooted writes are payload-bounded, cancellation-safe, and dry-run by default. Descriptor-relative race hardening remains tracked by #200.
+- **Filesystem surface:** deterministic bounded directory listing and UTF-8 reads; writes are descriptor-relative, payload-bounded, cancellation-safe, crash-durable, and dry-run by default. Race-hardening evidence is tracked by #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
@@ -100,7 +100,7 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 ## Filesystem safe roots
 
-The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and static symlink escapes are rejected. These checks do not yet close every canonicalize-then-use race.
+The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live list/read/write operations walk from an opened safe-root descriptor with no-follow semantics for every descendant instead of authorizing one pathname and using it later.
 
 ## Build and validate
 

@@ -803,6 +803,7 @@ dependencies = [
  "chrono",
  "metrics",
  "proptest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced canonicalize-then-use filesystem I/O with safe-root descriptor anchoring and component-by-component no-follow operations; directory enumeration, reads, temporary-file cleanup, atomic rename, file sync, and parent sync now remain descriptor-relative, with deterministic pre-open and post-open symlink/directory exchange regression tests.
 - Made filesystem read responses deterministic and mobile-bounded: directory listings are path-ordered with explicit cardinality/byte limits and truncation metadata, file reads emit content once with a bounded summary, JSON expansion is response-limited, invalid UTF-8 fails explicitly, and boundary/property regression coverage now exercises actual read/list and safe-root contracts.
 - Hardened named Cloudflare Tunnel setup with required explicit arguments, strict DNS-label validation, exact authenticated JSON tunnel discovery, explicit `--create` authorization, zero-call dry-run, non-overwriting DNS behavior, private cleanup, and hermetic fake-`cloudflared` regression coverage.
 - Made security- and network-relevant environment loading uniformly fail closed: only absent variables use defaults, present non-Unicode values are rejected without reflecting values, safe-root lists preserve exact entries and reject empties, and listener port `0` is rejected across runtime, transport helpers, and deployment validation.

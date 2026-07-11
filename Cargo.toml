@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "network-programming"]
 
 [features]
 default = []
-mcp-runtime = []
+mcp-runtime = ["dep:rustix"]
 
 [dependencies]
 axum = "0.8"
@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 metrics = "0.24"
+rustix = { version = "1", features = ["fs"], optional = true }
 
 [dev-dependencies]
 proptest = "1"

@@ -94,9 +94,9 @@ The body ceiling is implemented with Axum's streaming extractor limit rather tha
 
 ## Filesystem and Tool Safety Rules
 
-Filesystem paths are canonicalized or resolved through existing parents and must remain inside configured safe roots. The implementation rejects relative paths, NUL bytes, explicit parent traversal, missing unsafe parents, and symlink escapes beyond a safe root.
+Filesystem requests must lexically identify a descendant of a configured safe root. The implementation rejects relative paths, NUL bytes, explicit parent traversal, missing parents, and every symlink component used by a live operation.
 
-These checks constrain static path escapes but do not close every canonicalize-then-use race. Descriptor-relative operations and race-focused tests remain required before treating the filesystem surface as hardened against concurrent symlink replacement.
+Each live list, read, and write opens the selected safe root and resolves descendants one component at a time with descriptor-relative `openat` plus `O_NOFOLLOW`; directory enumeration and metadata lookup remain relative to the held directory descriptor. A concurrent directory/symlink exchange can therefore produce a bounded failure or continue against the already-open safe directory capability, but cannot redirect the operation through the replacement symlink. Deterministic adversarial tests cover swaps both before and after the parent descriptor is opened.
 
 The default safe root is deliberately narrow:
 
@@ -106,7 +106,7 @@ The default safe root is deliberately narrow:
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
-`list_directory`, `read_file`, and `write_file` are payload bounded. Directory results are deterministic, capped at 4,096 entries and a 256 KiB full response, and explicitly report truncation. Reads accept at most 1 MiB of valid UTF-8 while the full response is capped at 1,114,112 bytes; file content is emitted once rather than duplicated into the summary. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation.
+`list_directory`, `read_file`, and `write_file` are payload bounded. Directory results are deterministic, capped at 4,096 entries and a 256 KiB full response, and explicitly report truncation. Reads accept at most 1 MiB of valid UTF-8 while the full response is capped at 1,114,112 bytes; file content is emitted once rather than duplicated into the summary. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation. Explicit writes create an exclusive mode-0600 temporary file in the opened destination directory, sync its contents, rename relative to that same descriptor, and sync the parent directory. Cancellation before rename leaves descriptor-relative cleanup armed; after a successful rename the parent sync defines the crash-durability boundary.
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
 
