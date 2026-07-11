@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - atomic-service-transitions-203
-    paths:
-      - .github/workflows/repair-stop-failure-cleanup.yml
 
 permissions:
   contents: write
@@ -13,6 +11,7 @@ permissions:
 jobs:
   repair:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
