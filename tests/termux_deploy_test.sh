@@ -73,7 +73,15 @@ head -n 1 "$SERVICE_DIR/run" | grep -Fx "#!$PREFIX/bin/sh"
 
 PWNED="$ROOT/config-was-executed"
 printf 'RUST_BACKTRACE=$(touch %s)\n' "$PWNED" >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+set +e
 "$SERVICE_DIR/run"
+run_status=$?
+set -e
+if ((run_status != 0)); then
+  printf 'generated service run exited with status %s; tracing failure\n' "$run_status" >&2
+  "$PREFIX/bin/sh" -x "$SERVICE_DIR/run" >&2 || true
+  fail_test "generated service run exited with status $run_status"
+fi
 [[ ! -e "$PWNED" ]]
 
 assert_fails bash "$SCRIPT" install --artifact "$ARTIFACT_100" --version 1.0.0 --sha256 "$SHA_100"
