@@ -25,6 +25,8 @@ cargo build --release
 cargo build --release --features mcp-runtime
 ```
 
+Validate the exact release candidate on an AArch64 Termux device with the no-clone harness in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md). Its companion contract test runs in CI as `tests/termux_device_smoke_test.sh`; CI validates the harness interface and required coverage markers, while the actual run requires a real Termux/runit device.
+
 The CI workflow enforces format, Clippy, and all-feature tests. The Security workflow validates the locked dependency graph with `cargo audit` and fails on audit findings.
 
 ## Dependency Update Validation

@@ -76,4 +76,5 @@ jobs:
       - name: Termux deployment shell tests
         run: |
           bash tests/termux_deploy_test.sh
+          bash tests/termux_device_smoke_test.sh
           bash tests/setup_named_tunnel_test.sh

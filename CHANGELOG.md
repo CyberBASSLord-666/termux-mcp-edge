@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a reusable no-clone, exact-commit AArch64 Termux production-gate harness with native artifact verification, isolated real-runit install/upgrade/rollback/uninstall, failed-readiness recovery, authenticated stable-MCP lifecycle and allowlist checks, safe-root allowed/denied calls, dry-run and mode-`0600` writes, request-limit ordering, private reports, cleanup, CI contract coverage, and operator documentation.
 - Replaced canonicalize-then-use filesystem I/O with safe-root descriptor anchoring and component-by-component no-follow operations; directory enumeration, reads, temporary-file cleanup, atomic rename, file sync, and parent sync now remain descriptor-relative, with deterministic pre-open and post-open symlink/directory exchange regression tests.
 - Made filesystem read responses deterministic and mobile-bounded: directory listings are path-ordered with explicit cardinality/byte limits and truncation metadata, file reads emit content once with a bounded summary, JSON expansion is response-limited, invalid UTF-8 fails explicitly, and boundary/property regression coverage now exercises actual read/list and safe-root contracts.
 - Hardened named Cloudflare Tunnel setup with required explicit arguments, strict DNS-label validation, exact authenticated JSON tunnel discovery, explicit `--create` authorization, zero-call dry-run, non-overwriting DNS behavior, private cleanup, and hermetic fake-`cloudflared` regression coverage.

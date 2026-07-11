@@ -137,6 +137,8 @@ Use [`docs/TERMUX_DEPLOYMENT.md`](docs/TERMUX_DEPLOYMENT.md) as the canonical in
 - activates releases atomically;
 - restores prior release links, restarts the prior active runtime, and re-probes it when candidate or rollback validation fails.
 
+Before a release declaration, run the no-clone exact-commit AArch64 device gate in [`docs/DEVICE_PRODUCTION_GATE.md`](docs/DEVICE_PRODUCTION_GATE.md). The harness builds the pinned source natively in Termux and validates real isolated runit transitions, authenticated MCP lifecycle and tool boundaries, request-limit ordering, failed upgrade/rollback recovery, explicit rollback, uninstall, artifact identity, and cleanup.
+
 Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticated MCP, audit-counter, filesystem, Android-status, service-status, and capability-boundary checks.
 
 ## Project documentation
@@ -149,6 +151,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [MCP runtime validation plan](docs/MCP_RESTORATION_VALIDATION.md)
 - [MCP runtime roadmap](docs/MCP_RUNTIME_ROADMAP.md)
 - [Android artifact contract](docs/ANDROID_ARTIFACTS.md)
+- [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)
 - [Termux deployment and recovery](docs/TERMUX_DEPLOYMENT.md)
 - [Operator validation checklist](docs/operator-validation.md)
 
