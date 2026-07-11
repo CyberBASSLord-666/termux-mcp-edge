@@ -30,7 +30,13 @@ proptest! {
         let relative_result = tools.sanitize(&relative);
         let parent_result = tools.sanitize(parent_escape.to_string_lossy().as_ref());
 
-        prop_assert!(matches!(relative_result, Err(AppError::PathTraversal { .. })));
-        prop_assert!(matches!(parent_result, Err(AppError::PathTraversal { .. })));
+        prop_assert!(
+            matches!(relative_result, Err(AppError::PathTraversal { .. })),
+            "relative path should fail safe-root validation"
+        );
+        prop_assert!(
+            matches!(parent_result, Err(AppError::PathTraversal { .. })),
+            "parent escape should fail safe-root validation"
+        );
     }
 }
