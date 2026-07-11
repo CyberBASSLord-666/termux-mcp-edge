@@ -22,13 +22,18 @@ fn retirement_helper_is_fail_closed_and_preserves_configuration() {
     for required in [
         "sv down",
         "sv status",
+        "down:*)",
         "legacy service did not reach a confirmed down state",
         "legacy service path must not be a symlink",
         "preserved legacy token file",
     ] {
-        assert!(helper.contains(required), "missing retirement contract: {required}");
+        assert!(
+            helper.contains(required),
+            "missing retirement contract: {required}"
+        );
     }
 
+    assert!(!helper.contains("down:*|fail:*)"));
     assert!(!helper.contains("rm -f -- \"$LEGACY_TOKEN_FILE\""));
     assert!(!helper.contains("rm -rf -- \"$CANONICAL_SERVICE_DIR\""));
 }
