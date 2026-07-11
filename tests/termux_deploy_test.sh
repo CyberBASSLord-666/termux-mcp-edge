@@ -179,6 +179,7 @@ rm -f "$TERMUX_MCP_DEPLOY_ROOT/previous"; ln -s "$previous_target" "$TERMUX_MCP_
 
 chmod 644 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; chmod 600 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 printf 'PATH=/tmp\n' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i '/^PATH=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/^MCP__SERVER__PORT=8000$/MCP__SERVER__PORT=0/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__SERVER__PORT=0$/MCP__SERVER__PORT=8000/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 assert_fails env TERMUX_MCP_DEPLOY_ROOT="$HOME" bash "$SCRIPT" status
 assert_fails env TERMUX_MCP_CONFIG_ROOT="$HOME/bad path" bash "$SCRIPT" status
 assert_fails env TERMUX_MCP_SERVICE_ROOT="$ROOT/outside-prefix" bash "$SCRIPT" status

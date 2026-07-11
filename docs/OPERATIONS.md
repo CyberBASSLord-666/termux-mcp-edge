@@ -131,6 +131,8 @@ Each process holds at most 64 sessions and expires them after 30 idle minutes. M
 
 ## Request limits
 
+The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65535`. Port `0`, malformed numbers, and present non-Unicode security/network configuration values fail before the listener starts. Only absent variables use defaults.
+
 | Setting | Default | Valid range |
 |---|---:|---:|
 | `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS` | `4` | `1–64` |

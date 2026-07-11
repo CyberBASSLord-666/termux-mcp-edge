@@ -230,7 +230,7 @@ acquire_lock() {
 validate_runtime_config() {
   local config_file="$CONFIG_ROOT/runtime.env"
   [[ -f "$config_file" && ! -L "$config_file" ]] || fail "runtime configuration must be a regular non-symlink file"
-  local mode permissions line key value token_present=0 allow_local=0 server_host="127.0.0.1"
+  local mode permissions line key value token_present=0 allow_local=0 server_host="127.0.0.1" server_port="8000"
   mode="$(stat -c '%a' "$config_file")"; permissions=$((8#$mode))
   (((permissions & 077) == 0 && (permissions & 0400) != 0)) || fail "runtime configuration must be owner-readable and inaccessible to group/other"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -243,8 +243,10 @@ validate_runtime_config() {
       MCP__AUTH__STATIC_TOKEN) [[ -n "$value" && "$value" != *[[:space:]]* ]] || fail "runtime bearer token must be non-empty and contain no whitespace"; token_present=1 ;;
       MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY) is_boolean "$value" || fail "localhost-only authentication setting must be boolean"; is_true "$value" && allow_local=1 ;;
       MCP__SERVER__HOST) server_host="$value" ;;
+      MCP__SERVER__PORT) server_port="$value" ;;
     esac
   done <"$config_file"
+  validate_integer_range MCP__SERVER__PORT "$server_port" 1 65535
   if ((token_present == 0)); then
     ((allow_local == 1)) || fail "runtime configuration must define a bearer token or explicit localhost-only mode"
     case "$server_host" in localhost|127.0.0.1|::1) ;; *) fail "unauthenticated runtime configuration must bind to loopback" ;; esac

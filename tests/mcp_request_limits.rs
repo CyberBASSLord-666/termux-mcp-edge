@@ -26,7 +26,11 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
     let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
 
-    mcp_transport::router(TransportSecurityPolicy::localhost(8000, false), file_tools)
+    mcp_transport::router(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+    )
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .route_layer(middleware::from_fn_with_state(
             limits,

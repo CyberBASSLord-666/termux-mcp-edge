@@ -84,27 +84,40 @@ pub struct TransportConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
+        Self::load_with(env::var)
+    }
+
+    fn load_with(
+        read_variable: impl Fn(&str) -> Result<String, env::VarError>,
+    ) -> anyhow::Result<Self> {
         let config = Self {
             server: ServerConfig {
-                host: env_string("MCP__SERVER__HOST", "127.0.0.1"),
-                port: env_u16("MCP__SERVER__PORT", 8000)?,
+                host: env_string(&read_variable, "MCP__SERVER__HOST", "127.0.0.1")?,
+                port: env_port(&read_variable, "MCP__SERVER__PORT", 8000)?,
             },
             auth: AuthConfig {
-                static_token: env::var("MCP__AUTH__STATIC_TOKEN").ok(),
+                static_token: optional_env_string(&read_variable, "MCP__AUTH__STATIC_TOKEN")?,
                 allow_unauthenticated_localhost_only: env_bool(
+                    &read_variable,
                     "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
                     false,
                 )?,
             },
             file: FileConfig {
-                safe_roots: env_path_list("MCP__FILE__SAFE_ROOTS", &[DEFAULT_FILE_SAFE_ROOT]),
+                safe_roots: env_path_list(
+                    &read_variable,
+                    "MCP__FILE__SAFE_ROOTS",
+                    &[DEFAULT_FILE_SAFE_ROOT],
+                )?,
             },
             transport: TransportConfig {
                 allowed_hosts: env_exact_string_list(
+                    &read_variable,
                     "MCP__TRANSPORT__ALLOWED_HOSTS",
                     &["localhost:8000", "127.0.0.1:8000", "[::1]:8000"],
                 )?,
                 allowed_origins: env_exact_string_list(
+                    &read_variable,
                     "MCP__TRANSPORT__ALLOWED_ORIGINS",
                     &[
                         "http://localhost:8000",
@@ -112,16 +125,23 @@ impl AppConfig {
                         "http://[::1]:8000",
                     ],
                 )?,
-                allow_missing_origin: env_bool("MCP__TRANSPORT__ALLOW_MISSING_ORIGIN", false)?,
+                allow_missing_origin: env_bool(
+                    &read_variable,
+                    "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
+                    false,
+                )?,
                 max_concurrent_requests: env_usize(
+                    &read_variable,
                     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
                     DEFAULT_MAX_CONCURRENT_REQUESTS,
                 )?,
                 request_timeout_seconds: env_u64(
+                    &read_variable,
                     "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS",
                     DEFAULT_REQUEST_TIMEOUT_SECONDS,
                 )?,
                 max_body_bytes: env_usize(
+                    &read_variable,
                     "MCP__TRANSPORT__MAX_BODY_BYTES",
                     DEFAULT_MAX_BODY_BYTES,
                 )?,
@@ -134,34 +154,67 @@ impl AppConfig {
     }
 }
 
-fn env_string(name: &str, default: &str) -> String {
-    env::var(name).unwrap_or_else(|_| default.to_owned())
+fn read_env(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
+    match read_variable(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{name} must contain valid Unicode text"),
+    }
 }
 
-fn env_u16(name: &str, default: u16) -> anyhow::Result<u16> {
-    match env::var(name) {
-        Ok(value) => value
+fn optional_env_string(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+) -> anyhow::Result<Option<String>> {
+    read_env(read_variable, name)
+}
+
+fn env_string(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    default: &str,
+) -> anyhow::Result<String> {
+    Ok(read_env(read_variable, name)?.unwrap_or_else(|| default.to_owned()))
+}
+
+fn env_port(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    default: u16,
+) -> anyhow::Result<u16> {
+    match read_env(read_variable, name)? {
+        Some(value) => value
             .trim()
             .parse::<u16>()
-            .map_err(|source| anyhow!("{name} must be an integer between 0 and 65535: {source}")),
-        Err(env::VarError::NotPresent) => Ok(default),
-        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| anyhow!("{name} must be an integer between 1 and 65535")),
+        None => Ok(default),
     }
 }
 
-fn env_usize(name: &str, default: usize) -> anyhow::Result<usize> {
-    match env::var(name) {
-        Ok(value) => parse_usize(name, &value),
-        Err(env::VarError::NotPresent) => Ok(default),
-        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
+fn env_usize(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    default: usize,
+) -> anyhow::Result<usize> {
+    match read_env(read_variable, name)? {
+        Some(value) => parse_usize(name, &value),
+        None => Ok(default),
     }
 }
 
-fn env_u64(name: &str, default: u64) -> anyhow::Result<u64> {
-    match env::var(name) {
-        Ok(value) => parse_u64(name, &value),
-        Err(env::VarError::NotPresent) => Ok(default),
-        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
+fn env_u64(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    default: u64,
+) -> anyhow::Result<u64> {
+    match read_env(read_variable, name)? {
+        Some(value) => parse_u64(name, &value),
+        None => Ok(default),
     }
 }
 
@@ -179,11 +232,14 @@ fn parse_u64(name: &str, value: &str) -> anyhow::Result<u64> {
         .map_err(|source| anyhow!("{name} must be a non-negative integer: {source}"))
 }
 
-fn env_bool(name: &str, default: bool) -> anyhow::Result<bool> {
-    match env::var(name) {
-        Ok(value) => parse_bool(name, &value),
-        Err(env::VarError::NotPresent) => Ok(default),
-        Err(source) => Err(anyhow!("{name} could not be read: {source}")),
+fn env_bool(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    default: bool,
+) -> anyhow::Result<bool> {
+    match read_env(read_variable, name)? {
+        Some(value) => parse_bool(name, &value),
+        None => Ok(default),
     }
 }
 
@@ -207,37 +263,24 @@ fn parse_bool(name: &str, value: &str) -> anyhow::Result<bool> {
     bail!("{name} must be a boolean value: true/false, 1/0, yes/no, or on/off")
 }
 
-fn env_string_list(name: &str, defaults: &[&str]) -> Vec<String> {
-    match env::var(name) {
-        Ok(value) => split_env_list(&value),
-        Err(_) => defaults.iter().copied().map(str::to_owned).collect(),
+fn env_exact_string_list(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    defaults: &[&str],
+) -> anyhow::Result<Vec<String>> {
+    match read_env(read_variable, name)? {
+        Some(value) => split_exact_env_list(name, &value),
+        None => Ok(defaults.iter().copied().map(str::to_owned).collect()),
     }
 }
 
-fn env_exact_string_list(name: &str, defaults: &[&str]) -> anyhow::Result<Vec<String>> {
-    match env::var(name) {
-        Ok(value) => split_exact_env_list(name, &value),
-        Err(env::VarError::NotPresent) => Ok(defaults.iter().copied().map(str::to_owned).collect()),
-        Err(env::VarError::NotUnicode(_)) => {
-            bail!("{name} must contain valid Unicode text")
-        }
-    }
-}
-
-fn env_path_list(name: &str, defaults: &[&str]) -> Vec<PathBuf> {
-    env_string_list(name, defaults)
-        .into_iter()
-        .map(PathBuf::from)
-        .collect()
-}
-
-fn split_env_list(value: &str) -> Vec<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(str::to_owned)
-        .collect()
+fn env_path_list(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    defaults: &[&str],
+) -> anyhow::Result<Vec<PathBuf>> {
+    let paths = env_exact_string_list(read_variable, name, defaults)?;
+    Ok(paths.into_iter().map(PathBuf::from).collect())
 }
 
 fn split_exact_env_list(name: &str, value: &str) -> anyhow::Result<Vec<String>> {
@@ -293,10 +336,7 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
         }
 
         if !root.is_absolute() {
-            bail!(
-                "MCP__FILE__SAFE_ROOTS contains a non-absolute safe root: {}",
-                root.display()
-            );
+            bail!("MCP__FILE__SAFE_ROOTS contains a non-absolute safe root");
         }
 
         if root == std::path::Path::new("/") {
@@ -318,13 +358,13 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
 
     for host in &transport.allowed_hosts {
         if normalize_host(host).is_none() {
-            bail!("MCP__TRANSPORT__ALLOWED_HOSTS contains an invalid host: {host}");
+            bail!("MCP__TRANSPORT__ALLOWED_HOSTS contains an invalid host");
         }
     }
 
     for origin in &transport.allowed_origins {
         if normalize_origin(origin).is_none() {
-            bail!("MCP__TRANSPORT__ALLOWED_ORIGINS contains an invalid origin: {origin}");
+            bail!("MCP__TRANSPORT__ALLOWED_ORIGINS contains an invalid origin");
         }
     }
 
@@ -353,6 +393,22 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::{collections::BTreeMap, ffi::OsString};
+
+    fn load_from_os_values(
+        entries: impl IntoIterator<Item = (&'static str, OsString)>,
+    ) -> anyhow::Result<AppConfig> {
+        let values = entries
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect::<BTreeMap<_, _>>();
+
+        AppConfig::load_with(|name| match values.get(name).cloned() {
+            Some(value) => value.into_string().map_err(env::VarError::NotUnicode),
+            None => Err(env::VarError::NotPresent),
+        })
+    }
 
     fn app_config(host: &str, static_token: Option<&str>, allow_localhost_only: bool) -> AppConfig {
         AppConfig {
@@ -406,6 +462,117 @@ mod tests {
         assert_eq!(file.safe_roots, vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]);
         assert!(!file.safe_roots.contains(&broad_storage));
         assert!(!file.safe_roots.contains(&sdcard));
+    }
+
+    #[test]
+    fn absent_environment_values_use_documented_defaults() {
+        let config = load_from_os_values([]).expect("absent values should use safe defaults");
+
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 8000);
+        assert_eq!(config.auth.static_token, None);
+        assert_eq!(
+            config.file.safe_roots,
+            vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn present_non_unicode_security_environment_values_fail_closed() {
+        use std::os::unix::ffi::OsStringExt;
+
+        for name in [
+            "MCP__AUTH__STATIC_TOKEN",
+            "MCP__SERVER__HOST",
+            "MCP__FILE__SAFE_ROOTS",
+            "MCP__SERVER__PORT",
+            "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+            "MCP__TRANSPORT__ALLOWED_HOSTS",
+            "MCP__TRANSPORT__ALLOWED_ORIGINS",
+            "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
+            "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
+            "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS",
+            "MCP__TRANSPORT__MAX_BODY_BYTES",
+        ] {
+            let invalid = OsString::from_vec(vec![b'x', 0xff, b'y']);
+            let mut entries = vec![(name, invalid)];
+            if name == "MCP__AUTH__STATIC_TOKEN" {
+                entries.push((
+                    "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+                    OsString::from("true"),
+                ));
+            }
+            let error = load_from_os_values(entries)
+                .expect_err("present non-Unicode configuration must never default");
+            let message = error.to_string();
+
+            assert!(message.contains(name));
+            assert!(message.contains("valid Unicode text"));
+            assert!(!message.contains('�'));
+        }
+    }
+
+    #[test]
+    fn configured_server_port_must_be_between_one_and_65535() {
+        for value in ["0", "65536", "-1", "not-a-port"] {
+            let error = load_from_os_values([(
+                "MCP__SERVER__PORT",
+                OsString::from(value),
+            )])
+            .expect_err("invalid or ephemeral listener ports must fail closed");
+
+            assert_eq!(
+                error.to_string(),
+                "MCP__SERVER__PORT must be an integer between 1 and 65535"
+            );
+        }
+
+        let config = load_from_os_values([(
+            "MCP__SERVER__PORT",
+            OsString::from(" 65535 "),
+        )])
+        .expect("highest stable TCP port should be accepted");
+        assert_eq!(config.server.port, 65535);
+    }
+
+    #[test]
+    fn safe_root_list_rejects_empty_entries_without_trimming_paths() {
+        for value in ["", ",", "/tmp/root,", ",/tmp/root", "/tmp/a,,/tmp/b"] {
+            let error = load_from_os_values([(
+                "MCP__FILE__SAFE_ROOTS",
+                OsString::from(value),
+            )])
+            .expect_err("empty safe-root entries must fail closed");
+
+            assert_eq!(
+                error.to_string(),
+                "MCP__FILE__SAFE_ROOTS must not contain empty list entries"
+            );
+        }
+
+        let error = load_from_os_values([(
+            "MCP__FILE__SAFE_ROOTS",
+            OsString::from("/tmp/first, /tmp/second"),
+        )])
+        .expect_err("leading path whitespace must not be silently normalized");
+        assert_eq!(
+            error.to_string(),
+            "MCP__FILE__SAFE_ROOTS contains a non-absolute safe root"
+        );
+
+        let config = load_from_os_values([(
+            "MCP__FILE__SAFE_ROOTS",
+            OsString::from("/tmp/root with space,/tmp/trailing "),
+        )])
+        .expect("absolute safe-root text should preserve exact path semantics");
+        assert_eq!(
+            config.file.safe_roots,
+            vec![
+                PathBuf::from("/tmp/root with space"),
+                PathBuf::from("/tmp/trailing ")
+            ]
+        );
     }
 
     #[test]

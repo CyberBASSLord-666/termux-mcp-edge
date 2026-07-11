@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Made security- and network-relevant environment loading uniformly fail closed: only absent variables use defaults, present non-Unicode values are rejected without reflecting values, safe-root lists preserve exact entries and reject empties, and listener port `0` is rejected across runtime, transport helpers, and deployment validation.
 - Added `scripts/termux_deploy.sh` as the canonical manager for project-owned, versioned Termux releases and the fixed `mcp_runtime` runit service.
 - Added distinct install and upgrade modes, atomic `current`/`previous` activation, explicit rollback, status, configuration-preserving uninstall, and explicit configuration purge.
 - Added strict root placement beneath `HOME` and `PREFIX`, path-segment validation, non-overlapping deployment/configuration roots, validated loopback probe URLs, and fixed service ownership boundaries.

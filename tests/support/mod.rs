@@ -33,7 +33,11 @@ pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
 }
 
 pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
-    router(TransportSecurityPolicy::localhost(8000, false), file_tools)
+    router(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+    )
 }
 
 pub(super) async fn post_raw(body: impl Into<Body>) -> Response {

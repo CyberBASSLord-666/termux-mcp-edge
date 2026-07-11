@@ -68,6 +68,14 @@ export MCP__SERVER__HOST=localhost
 
 This mode is rejected for non-loopback binds and must not be combined with tunnels, LAN exposure, or reverse proxies.
 
+Only absent configuration variables use defaults. Every present security- or network-relevant value must be valid Unicode, and the listener setting
+
+```text
+MCP__SERVER__PORT=8000
+```
+
+must be an integer from `1` through `65535`; port `0` is rejected because supervised deployments require a stable listener. Comma-separated safe roots and transport allowlists reject empty entries and preserve each entry exactly rather than trimming it.
+
 Exact transport allowlists use comma-separated values:
 
 ```bash
@@ -91,7 +99,7 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 ## Filesystem safe roots
 
-The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists, relative roots, filesystem root `/`, traversal, and static symlink escapes are rejected. These checks do not yet close every canonicalize-then-use race.
+The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and static symlink escapes are rejected. These checks do not yet close every canonicalize-then-use race.
 
 ## Build and validate
 

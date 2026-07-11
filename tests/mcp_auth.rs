@@ -20,7 +20,11 @@ use termux_mcp_server::{
 use tower::ServiceExt;
 
 fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Router {
-    mcp_transport::router(TransportSecurityPolicy::localhost(8000, false), file_tools)
+    mcp_transport::router(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+    )
         .route_layer(middleware::from_fn_with_state(policy, require_mcp_auth))
 }
 

@@ -33,6 +33,7 @@ impl std::error::Error for TransportSecurityError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportSecurityPolicyError {
+    InvalidPort,
     InvalidHost,
     InvalidOrigin,
 }
@@ -40,6 +41,7 @@ pub enum TransportSecurityPolicyError {
 impl TransportSecurityPolicyError {
     pub fn reason_code(self) -> &'static str {
         match self {
+            Self::InvalidPort => "invalid_listener_port",
             Self::InvalidHost => "invalid_allowed_host",
             Self::InvalidOrigin => "invalid_allowed_origin",
         }
@@ -89,7 +91,13 @@ impl TransportSecurityPolicy {
         })
     }
 
-    pub fn localhost(port: u16, allow_missing_origin: bool) -> Self {
+    pub fn localhost(
+        port: u16,
+        allow_missing_origin: bool,
+    ) -> Result<Self, TransportSecurityPolicyError> {
+        if port == 0 {
+            return Err(TransportSecurityPolicyError::InvalidPort);
+        }
         let port = port.to_string();
         Self::new(
             [
@@ -104,7 +112,6 @@ impl TransportSecurityPolicy {
             ],
             allow_missing_origin,
         )
-        .expect("built-in localhost transport authorities must be valid")
     }
 
     pub fn validate_request(
@@ -298,7 +305,8 @@ mod tests {
 
     #[test]
     fn allows_expected_localhost_host_and_origin() {
-        let policy = TransportSecurityPolicy::localhost(8000, false);
+        let policy = TransportSecurityPolicy::localhost(8000, false)
+            .expect("localhost test policy must be valid");
         policy
             .validate_request(Some("LOCALHOST:8000"), Some("http://localhost:8000"))
             .unwrap();
@@ -345,6 +353,14 @@ mod tests {
     }
 
     #[test]
+    fn localhost_constructor_rejects_ephemeral_port_without_panicking() {
+        assert_eq!(
+            TransportSecurityPolicy::localhost(0, false),
+            Err(TransportSecurityPolicyError::InvalidPort)
+        );
+    }
+
+    #[test]
     fn allows_case_insensitive_origin_scheme_and_authority() {
         let policy =
             TransportSecurityPolicy::new(["localhost:8000"], ["HTTP://LOCALHOST:8000"], false)
@@ -358,7 +374,8 @@ mod tests {
 
     #[test]
     fn rejects_unlisted_host() {
-        let policy = TransportSecurityPolicy::localhost(8000, false);
+        let policy = TransportSecurityPolicy::localhost(8000, false)
+            .expect("localhost test policy must be valid");
         let error = policy
             .validate_request(Some("example.com:8000"), Some("http://localhost:8000"))
             .unwrap_err();
@@ -370,7 +387,8 @@ mod tests {
 
     #[test]
     fn rejects_unlisted_origin() {
-        let policy = TransportSecurityPolicy::localhost(8000, false);
+        let policy = TransportSecurityPolicy::localhost(8000, false)
+            .expect("localhost test policy must be valid");
         let error = policy
             .validate_request(Some("localhost:8000"), Some("https://example.com"))
             .unwrap_err();
@@ -382,7 +400,8 @@ mod tests {
 
     #[test]
     fn rejects_origin_url_components_beyond_exact_origin() {
-        let policy = TransportSecurityPolicy::localhost(8000, false);
+        let policy = TransportSecurityPolicy::localhost(8000, false)
+            .expect("localhost test policy must be valid");
 
         for origin in [
             "http://localhost:8000/",
@@ -404,7 +423,8 @@ mod tests {
 
     #[test]
     fn rejects_ascii_whitespace_and_controls_without_trimming() {
-        let policy = TransportSecurityPolicy::localhost(8000, false);
+        let policy = TransportSecurityPolicy::localhost(8000, false)
+            .expect("localhost test policy must be valid");
         for host in [" localhost:8000", "localhost:8000 ", "localhost\t:8000"] {
             assert_eq!(
                 policy.validate_request(Some(host), Some("http://localhost:8000")),
@@ -439,7 +459,8 @@ mod tests {
 
     #[test]
     fn requires_origin_when_configured() {
-        let policy = TransportSecurityPolicy::localhost(8000, false);
+        let policy = TransportSecurityPolicy::localhost(8000, false)
+            .expect("localhost test policy must be valid");
         assert_eq!(
             policy
                 .validate_request(Some("localhost:8000"), None)
@@ -450,7 +471,8 @@ mod tests {
 
     #[test]
     fn can_allow_missing_origin() {
-        let policy = TransportSecurityPolicy::localhost(8000, true);
+        let policy = TransportSecurityPolicy::localhost(8000, true)
+            .expect("localhost test policy must be valid");
         policy
             .validate_request(Some("127.0.0.1:8000"), None)
             .unwrap();
@@ -458,7 +480,8 @@ mod tests {
 
     #[test]
     fn rejects_missing_host() {
-        let policy = TransportSecurityPolicy::localhost(8000, true);
+        let policy = TransportSecurityPolicy::localhost(8000, true)
+            .expect("localhost test policy must be valid");
         assert_eq!(
             policy.validate_request(None, None).unwrap_err(),
             TransportSecurityError::MissingHost
@@ -499,6 +522,10 @@ mod tests {
     #[test]
     fn transport_security_policy_errors_render_stable_reason_codes() {
         let cases = [
+            (
+                TransportSecurityPolicyError::InvalidPort,
+                "invalid_listener_port",
+            ),
             (
                 TransportSecurityPolicyError::InvalidHost,
                 "invalid_allowed_host",
