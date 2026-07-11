@@ -159,9 +159,7 @@ impl FileSystemTools {
         let mut truncated = false;
 
         while let Some((dir_path, depth)) = queue.pop_front() {
-            if entries.len() >= MAX_LIST_ENTRIES
-                || *structured_bytes >= MAX_LIST_STRUCTURED_BYTES
-            {
+            if entries.len() >= MAX_LIST_ENTRIES || *structured_bytes >= MAX_LIST_STRUCTURED_BYTES {
                 truncated = true;
                 break;
             }
@@ -283,12 +281,7 @@ impl FileSystemTools {
             .map_err(std::io::Error::other)?
             .len();
         let truncated = self
-            .collect_entries_iterative(
-                &safe_path,
-                &mut entries,
-                depth,
-                &mut structured_bytes,
-            )
+            .collect_entries_iterative(&safe_path, &mut entries, depth, &mut structured_bytes)
             .await?;
         entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         result.entries = entries;
@@ -298,9 +291,8 @@ impl FileSystemTools {
         histogram!("mcp.fs.list.latency_seconds").record(duration);
         counter!("mcp.fs.list.calls_total").increment(1);
 
-        debug_assert!(serde_json::to_vec(&result).is_ok_and(|bytes| {
-            bytes.len() <= MAX_LIST_STRUCTURED_BYTES
-        }));
+        debug_assert!(serde_json::to_vec(&result)
+            .is_ok_and(|bytes| { bytes.len() <= MAX_LIST_STRUCTURED_BYTES }));
 
         Ok(result)
     }

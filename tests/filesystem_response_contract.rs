@@ -30,16 +30,15 @@ async fn list_directory_is_deterministic_and_byte_bounded() {
     let root = tempfile::tempdir().unwrap();
     for index in (0..1_500).rev() {
         let name = format!("{index:04}-{}", "x".repeat(180));
-        tokio::fs::write(root.path().join(name), b"x").await.unwrap();
+        tokio::fs::write(root.path().join(name), b"x")
+            .await
+            .unwrap();
     }
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     let path = root.path().to_string_lossy().to_string();
 
     let first = tools.list_directory(path.clone(), Some(1)).await.unwrap();
-    let second = tools
-        .list_directory(path.clone(), Some(1))
-        .await
-        .unwrap();
+    let second = tools.list_directory(path.clone(), Some(1)).await.unwrap();
     let first_value = serde_json::to_value(&first).unwrap();
     let second_value = serde_json::to_value(&second).unwrap();
     let paths: Vec<&str> = first
@@ -115,7 +114,9 @@ async fn read_file_accepts_exact_limit_and_rejects_the_next_byte() {
 async fn read_file_rejects_invalid_utf8_explicitly() {
     let root = tempfile::tempdir().unwrap();
     let invalid = root.path().join("invalid.bin");
-    tokio::fs::write(&invalid, [0xff, 0xfe, 0xfd]).await.unwrap();
+    tokio::fs::write(&invalid, [0xff, 0xfe, 0xfd])
+        .await
+        .unwrap();
     let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
 
     let error = tools
@@ -163,10 +164,7 @@ async fn transport_returns_file_content_once_with_a_bounded_summary() {
     );
     assert_eq!(
         summary,
-        format!(
-            "Read {} UTF-8 bytes from a safe-rooted file.",
-            marker.len()
-        )
+        format!("Read {} UTF-8 bytes from a safe-rooted file.", marker.len())
     );
 }
 
