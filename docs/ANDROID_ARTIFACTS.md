@@ -1,6 +1,6 @@
 # Android Validation Artifacts
 
-The `Android Cross Compile` workflow validates the pinned Rust 1.88.0 toolchain and the `aarch64-linux-android` target against Android NDK r26d. Pull requests that change `src/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the cross-compile script, the release-candidate validator, or the workflow itself trigger this validation. Pull-request builds explicitly check out the pull-request head SHA; main/tag builds use the event SHA.
+The `Android Cross Compile` workflow validates the pinned Rust 1.88.0 toolchain and the `aarch64-linux-android` target against Android NDK r26d. Pull requests and pushes to `main` that change `src/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the cross-compile script, the release-candidate validator, or the workflow itself trigger this validation; version-tag pushes also trigger it regardless of changed paths. Pull-request builds explicitly check out the pull-request head SHA; main/tag builds use the event SHA. This ensures that release evidence can be generated from artifacts rebuilt for the exact merged `main` commit instead of relying on pull-request artifacts.
 
 The workflow builds two isolated feature postures:
 

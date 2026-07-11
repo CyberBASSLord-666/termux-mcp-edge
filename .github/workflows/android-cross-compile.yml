@@ -3,8 +3,18 @@ name: Android Cross Compile
 on:
   workflow_dispatch:
   push:
+    branches: [ main ]
     tags:
       - "v*"
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "scripts/cross_compile.sh"
+      - "scripts/package_android_artifact.sh"
+      - "scripts/termux_release_validate.sh"
+      - ".github/workflows/android-cross-compile.yml"
   pull_request:
     branches: [ main ]
     paths:
