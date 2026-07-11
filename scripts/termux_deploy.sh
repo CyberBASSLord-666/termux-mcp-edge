@@ -299,7 +299,8 @@ restore_service_state() {
   if ((SERVICE_DOWN_BEFORE_PRESENT == 1)); then run touch "$service_dir/down"; run chmod 600 "$service_dir/down"; else run rm -f -- "$service_dir/down"; fi
 }
 next_sequence_result() {
-  local sequence="$1" index_name="$2" -a results=(); local index result
+  local sequence="$1" index_name="$2" index result
+  local -a results=()
   IFS=',' read -r -a results <<<"$sequence"; ((${#results[@]} > 0)) || return 1
   index="${!index_name}"; ((index < ${#results[@]})) || index=$((${#results[@]} - 1)); result="${results[$index]}"
   printf -v "$index_name" '%s' "$(( ${!index_name} + 1 ))"
