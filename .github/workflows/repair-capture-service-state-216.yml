@@ -1,0 +1,65 @@
+name: Repair PR 216 capture state status
+
+on:
+  push:
+    branches:
+      - atomic-service-transitions-203
+    paths:
+      - .github/workflows/repair-capture-service-state-216.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: atomic-service-transitions-203
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Apply focused repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/termux_deploy.sh")
+          text = path.read_text()
+          old = '''    [[ -e "$service_dir/down" ]] && SERVICE_DOWN_BEFORE_PRESENT=1
+  fi
+}
+restore_service_state() {
+'''
+          new = '''    if [[ -e "$service_dir/down" ]]; then
+      SERVICE_DOWN_BEFORE_PRESENT=1
+    fi
+  fi
+  return 0
+}
+restore_service_state() {
+'''
+          if old not in text:
+              raise SystemExit("expected capture_service_state block not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          rm -- .github/workflows/repair-capture-service-state-216.yml
+
+      - name: Validate focused repair
+        shell: bash
+        run: |
+          bash -n scripts/termux_deploy.sh
+          bash tests/termux_deploy_test.sh
+
+      - name: Commit repair and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/termux_deploy.sh .github/workflows/repair-capture-service-state-216.yml
+          git commit -m "fix: make service state capture return success"
+          git push origin HEAD:atomic-service-transitions-203
