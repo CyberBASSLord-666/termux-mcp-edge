@@ -10,9 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use metrics::{counter, histogram};
-use rustix::fs::{
-    self as descriptor_fs, AtFlags, Dir, FileType, Mode, OFlags,
-};
+use rustix::fs::{self as descriptor_fs, AtFlags, Dir, FileType, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
@@ -244,11 +242,8 @@ impl FileSystemTools {
                     continue;
                 }
                 let name = OsString::from_vec(name_bytes.to_vec());
-                let Ok(metadata) = descriptor_fs::statat(
-                    &dir_fd,
-                    &name,
-                    AtFlags::SYMLINK_NOFOLLOW,
-                ) else {
+                let Ok(metadata) = descriptor_fs::statat(&dir_fd, &name, AtFlags::SYMLINK_NOFOLLOW)
+                else {
                     counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
                     continue;
                 };
@@ -310,8 +305,9 @@ impl FileSystemTools {
                         Ok(child_fd) => {
                             queue.push_back((child_fd, pending.display_path, depth + 1))
                         }
-                        Err(_) => counter!("mcp.fs.list.skipped_unreadable_entries_total")
-                            .increment(1),
+                        Err(_) => {
+                            counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1)
+                        }
                     }
                 }
             }
@@ -379,12 +375,8 @@ impl FileSystemTools {
             let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
             let root_fd = open_root_directory(&anchored.root_path)?;
             let parent_fd = open_descendant_directory(root_fd, &parent_relative)?;
-            let metadata = descriptor_fs::statat(
-                &parent_fd,
-                &file_name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
-            .map_err(descriptor_error)?;
+            let metadata = descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(descriptor_error)?;
             if FileType::from_raw_mode(metadata.st_mode).is_symlink() {
                 return Err(path_rejected(
                     anchored.display_path.to_string_lossy().as_ref(),
@@ -453,11 +445,7 @@ impl FileSystemTools {
         let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
         let root_fd = open_root_directory(&anchored.root_path)?;
         let parent_fd = open_descendant_directory(root_fd, &parent_relative)?;
-        match descriptor_fs::statat(
-            &parent_fd,
-            &file_name,
-            AtFlags::SYMLINK_NOFOLLOW,
-        ) {
+        match descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
                 return Err(path_rejected(
                     anchored.display_path.to_string_lossy().as_ref(),
@@ -848,8 +836,7 @@ mod tests {
         let root_fd = open_root_directory(root.path()).unwrap();
 
         {
-            let _cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from("armed.tmp"));
+            let _cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from("armed.tmp"));
         }
 
         assert!(!path.exists());
@@ -929,8 +916,7 @@ mod tests {
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let requested = child.join("result.txt");
         let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
-        let (parent_relative, file_name) =
-            split_parent_and_name(&anchored.relative_path).unwrap();
+        let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path).unwrap();
         let root_fd = open_root_directory(&anchored.root_path).unwrap();
         let parent_fd = open_descendant_directory(root_fd, &parent_relative).unwrap();
 

@@ -54,12 +54,7 @@ async fn list_and_read_reject_symlinked_parent_components() {
         .list_directory(linked_parent.to_string_lossy().to_string(), Some(1))
         .await;
     let read_result = tools
-        .read_file(
-            linked_parent
-                .join("peer.txt")
-                .to_string_lossy()
-                .to_string(),
-        )
+        .read_file(linked_parent.join("peer.txt").to_string_lossy().to_string())
         .await;
 
     assert_path_traversal(list_result);
