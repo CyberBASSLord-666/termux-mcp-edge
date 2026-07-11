@@ -55,8 +55,21 @@ async fn tools_call_envelope_is_closed_and_returns_one_bounded_error() {
     .await;
     assert_invalid_params(omitted_response, &omitted_id, TOOL_CALL_PARAMS_INVALID).await;
 
+    let array_id = json!("closed-envelope-array");
+    let array_response = post_json_with_empty_root(json!({
+        "jsonrpc": "2.0",
+        "id": array_id.clone(),
+        "method": "tools/call",
+        "params": []
+    }))
+    .await;
+    assert_eq!(array_response.status(), StatusCode::BAD_REQUEST);
+    let array_payload = response_json(array_response).await;
+    assert_eq!(array_payload["id"], array_id);
+    assert_eq!(array_payload["error"]["code"], -32600);
+    assert_eq!(array_payload["error"]["message"], "Invalid Request");
+
     let cases = [
-        json!([]),
         json!({}),
         json!({"name": 7}),
         json!({"name": "runtime_status", "unexpected": sensitive}),
