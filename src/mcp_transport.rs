@@ -27,7 +27,7 @@ use crate::{
     service_status::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
-    tools::FileSystemTools,
+    tools::{FileSystemTools, MAX_LIST_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES},
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
 };
@@ -83,6 +83,8 @@ const FILESYSTEM_SAFE_ROOT_REJECTED: &str = "safe_root_rejected";
 const FILESYSTEM_LIST_ALLOWED: &str = "safe_root_listed";
 const FILESYSTEM_READ_ALLOWED: &str = "safe_root_read";
 const FILESYSTEM_READ_TOO_LARGE: &str = "read_size_limit_exceeded";
+const FILESYSTEM_READ_ENCODING_INVALID: &str = "read_encoding_invalid";
+const FILESYSTEM_RESPONSE_TOO_LARGE: &str = "response_size_limit_exceeded";
 const FILESYSTEM_READ_FAILED: &str = "filesystem_read_failed";
 const FILESYSTEM_DRY_RUN_ALLOWED: &str = "dry_run_preview";
 const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
@@ -1224,6 +1226,33 @@ async fn handle_list_directory_call(
 
     match file_tools.list_directory(args.path, args.max_depth).await {
         Ok(result) => {
+            let error_id = id.clone();
+            let summary = if result.truncated {
+                format!(
+                    "Listed {} safe-rooted filesystem entries; the bounded result was truncated.",
+                    result.entries.len()
+                )
+            } else {
+                format!("Listed {} safe-rooted filesystem entries.", result.entries.len())
+            };
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_LIST_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    LIST_DIRECTORY_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return payload_too_large(
+                    error_id,
+                    "Directory listing exceeds the staged response byte limit.",
+                );
+            };
             record_filesystem_allowed(
                 audit_counters,
                 LIST_DIRECTORY_TOOL,
@@ -1231,11 +1260,7 @@ async fn handle_list_directory_call(
                 AuditMode::ReadOnly,
                 FILESYSTEM_LIST_ALLOWED,
             );
-            ok_result(
-                id,
-                format!("Listed {} safe-rooted filesystem entries.", result.entries.len()),
-                json!(result),
-            )
+            response
         }
         Err(AppError::PathTraversal { .. }) => {
             record_filesystem_denied(
@@ -1300,6 +1325,29 @@ async fn handle_read_file_call(
 
     match file_tools.read_file(args.path).await {
         Ok(result) => {
+            let error_id = id.clone();
+            let summary = format!(
+                "Read {} UTF-8 bytes from a safe-rooted file.",
+                result.size
+            );
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_READ_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    READ_FILE_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return payload_too_large(
+                    error_id,
+                    "File content exceeds the staged read_file response byte limit.",
+                );
+            };
             record_filesystem_allowed(
                 audit_counters,
                 READ_FILE_TOOL,
@@ -1307,7 +1355,7 @@ async fn handle_read_file_call(
                 AuditMode::ReadOnly,
                 FILESYSTEM_READ_ALLOWED,
             );
-            ok_result(id, result.content.clone(), json!(result))
+            response
         }
         Err(AppError::PathTraversal { .. }) => {
             record_filesystem_denied(
@@ -1334,6 +1382,16 @@ async fn handle_read_file_call(
                 id,
                 "File content exceeds the staged read_file byte limit.",
             )
+        }
+        Err(AppError::InvalidFileEncoding) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_ENCODING_INVALID,
+            );
+            invalid_params(id, "File content must be valid UTF-8.")
         }
         Err(_error) => {
             record_filesystem_denied(
@@ -1451,24 +1509,42 @@ async fn handle_write_file_call(
 
 #[rustfmt::skip]
 fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id.unwrap_or(Value::Null),
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": text,
-                    },
-                ],
-                "structuredContent": structured_content,
-                "isError": false
-            },
-        })),
-    )
-        .into_response()
+    result_response(result_body(id, text, structured_content))
+}
+
+fn bounded_ok_result(
+    id: Option<Value>,
+    text: String,
+    structured_content: Value,
+    max_response_bytes: usize,
+) -> Option<Response> {
+    let body = result_body(id, text, structured_content);
+    if serde_json::to_vec(&body).ok()?.len() > max_response_bytes {
+        return None;
+    }
+
+    Some(result_response(body))
+}
+
+fn result_body(id: Option<Value>, text: String, structured_content: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": text,
+                },
+            ],
+            "structuredContent": structured_content,
+            "isError": false
+        },
+    })
+}
+
+fn result_response(body: Value) -> Response {
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 #[rustfmt::skip]

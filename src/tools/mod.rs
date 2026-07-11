@@ -12,7 +12,10 @@ mod filesystem;
 use std::path::PathBuf;
 
 #[cfg(feature = "mcp-runtime")]
-pub use filesystem::FileSystemTools;
+pub use filesystem::{
+    FileSystemTools, MAX_LIST_ENTRIES, MAX_LIST_RESPONSE_BYTES, MAX_READ_BYTES,
+    MAX_READ_RESPONSE_BYTES,
+};
 
 #[cfg(not(feature = "mcp-runtime"))]
 #[derive(Clone)]

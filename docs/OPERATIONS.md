@@ -165,6 +165,13 @@ Authenticated discovery currently exposes:
 
 The runtime does not expose Android platform control, arbitrary shell or command execution, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or high-impact controls.
 
+Filesystem read responses have explicit mobile-oriented ceilings:
+
+- `list_directory` returns at most 4,096 entries and at most 256 KiB for the complete JSON-RPC response. Entries are ordered deterministically by path before publication. `structuredContent.truncated` reports when either ceiling prevented a complete result and the response publishes both limits.
+- `read_file` reads at most 1 MiB of valid UTF-8 and caps the complete JSON-RPC response at 1,114,112 bytes. The file content appears once in `structuredContent.content`; the text content is a fixed-format byte-count summary. JSON escaping that would exceed the response ceiling is rejected with a bounded payload-too-large error.
+
+These response ceilings are independent of the authenticated request-body ceiling and cannot be increased through environment configuration.
+
 ## Filesystem safe roots
 
 The default filesystem root is:

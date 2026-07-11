@@ -11,6 +11,9 @@ pub enum AppError {
     #[error("File is too large to read: {size} bytes exceeds {max_size} byte limit")]
     FileTooLarge { size: u64, max_size: u64 },
 
+    #[error("File content is not valid UTF-8")]
+    InvalidFileEncoding,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -36,6 +39,10 @@ impl AppError {
             AppError::FileTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "File exceeds the configured read limit",
+            ),
+            AppError::InvalidFileEncoding => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "File content must be valid UTF-8",
             ),
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -109,6 +116,13 @@ mod tests {
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
+            )
+        );
+        assert_eq!(
+            AppError::InvalidFileEncoding.public_response(),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "File content must be valid UTF-8",
             )
         );
     }

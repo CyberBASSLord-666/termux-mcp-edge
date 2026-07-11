@@ -1,6 +1,6 @@
 //! Filesystem tools with safe-root enforcement, bounded traversal, and metrics.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,8 +17,15 @@ use crate::write_policy::{WritePolicy, WritePolicyError};
 
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
-const MAX_LIST_ENTRIES: usize = 4_096;
-const MAX_READ_BYTES: u64 = 1_048_576;
+pub const MAX_LIST_ENTRIES: usize = 4_096;
+pub const MAX_LIST_RESPONSE_BYTES: usize = 262_144;
+pub const MAX_READ_BYTES: usize = 1_048_576;
+pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
+
+// Leave deterministic room for the JSON-RPC envelope, bounded summary, and a
+// normally sized request id. The transport independently enforces the exact
+// full-response ceilings above, including caller-controlled ids.
+const MAX_LIST_STRUCTURED_BYTES: usize = MAX_LIST_RESPONSE_BYTES - 1_024;
 
 struct TempFileCleanup {
     path: PathBuf,
@@ -145,19 +152,28 @@ impl FileSystemTools {
         root_path: &Path,
         entries: &mut Vec<FileInfo>,
         max_depth: u32,
-    ) -> Result<(), AppError> {
+        structured_bytes: &mut usize,
+    ) -> Result<bool, AppError> {
         let mut queue = VecDeque::new();
         queue.push_back((root_path.to_path_buf(), 1_u32));
+        let mut truncated = false;
 
         while let Some((dir_path, depth)) = queue.pop_front() {
+            if entries.len() >= MAX_LIST_ENTRIES || *structured_bytes >= MAX_LIST_STRUCTURED_BYTES {
+                truncated = true;
+                break;
+            }
+
             let mut read_dir = fs::read_dir(&dir_path).await?;
+            // Keep only the lexicographically smallest candidates that can fit
+            // the remaining published entry and byte budgets. Removing the
+            // largest key after each insertion makes the selected subset
+            // independent of filesystem enumeration order while bounding
+            // memory by the same constants as the response.
+            let mut candidates = BTreeMap::new();
+            let mut candidate_bytes = 0_usize;
 
             while let Some(entry) = read_dir.next_entry().await? {
-                if entries.len() >= MAX_LIST_ENTRIES {
-                    counter!("mcp.fs.list.truncated_total").increment(1);
-                    return Ok(());
-                }
-
                 let entry_path = entry.path();
                 let Ok(file_type) = entry.file_type().await else {
                     counter!("mcp.fs.list.skipped_unreadable_entries_total").increment(1);
@@ -189,20 +205,57 @@ impl FileSystemTools {
                     continue;
                 };
 
-                entries.push(FileInfo {
+                let info = FileInfo {
                     path: safe_child.to_string_lossy().to_string(),
                     size,
                     is_dir,
                     modified,
-                });
+                };
+                let encoded_bytes = serde_json::to_vec(&info)
+                    .map_err(std::io::Error::other)?
+                    .len();
+                let key = info.path.clone();
 
-                if is_dir && depth < max_depth {
+                candidate_bytes += encoded_bytes;
+                if let Some((_, _, replaced_bytes)) =
+                    candidates.insert(key, (info, safe_child, encoded_bytes))
+                {
+                    candidate_bytes = candidate_bytes.saturating_sub(replaced_bytes);
+                }
+
+                while entries.len() + candidates.len() > MAX_LIST_ENTRIES
+                    || *structured_bytes
+                        + candidate_bytes
+                        + usize::from(!entries.is_empty())
+                        + candidates.len().saturating_sub(1)
+                        > MAX_LIST_STRUCTURED_BYTES
+                {
+                    let Some((_, (_, _, removed_bytes))) = candidates.pop_last() else {
+                        break;
+                    };
+                    candidate_bytes = candidate_bytes.saturating_sub(removed_bytes);
+                    truncated = true;
+                }
+            }
+
+            for (_, (info, safe_child, encoded_bytes)) in candidates {
+                let recurse = info.is_dir && depth < max_depth;
+                if !entries.is_empty() {
+                    *structured_bytes += 1;
+                }
+                *structured_bytes += encoded_bytes;
+                entries.push(info);
+                if recurse {
                     queue.push_back((safe_child, depth + 1));
                 }
             }
         }
 
-        Ok(())
+        if truncated {
+            counter!("mcp.fs.list.truncated_total").increment(1);
+        }
+
+        Ok(truncated)
     }
 
     pub async fn list_directory(
@@ -217,34 +270,51 @@ impl FileSystemTools {
             .clamp(1, MAX_LIST_DEPTH);
 
         let mut entries = Vec::new();
-        self.collect_entries_iterative(&safe_path, &mut entries, depth)
+        let mut result = ListDirResult {
+            path: safe_path.to_string_lossy().to_string(),
+            entries: Vec::new(),
+            truncated: false,
+            max_entries: MAX_LIST_ENTRIES,
+            max_response_bytes: MAX_LIST_RESPONSE_BYTES,
+        };
+        let mut structured_bytes = serde_json::to_vec(&result)
+            .map_err(std::io::Error::other)?
+            .len();
+        let truncated = self
+            .collect_entries_iterative(&safe_path, &mut entries, depth, &mut structured_bytes)
             .await?;
+        entries.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        result.entries = entries;
+        result.truncated = truncated;
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.list.latency_seconds").record(duration);
         counter!("mcp.fs.list.calls_total").increment(1);
 
-        Ok(ListDirResult {
-            path: safe_path.to_string_lossy().to_string(),
-            entries,
-        })
+        debug_assert!(serde_json::to_vec(&result)
+            .is_ok_and(|bytes| { bytes.len() <= MAX_LIST_STRUCTURED_BYTES }));
+
+        Ok(result)
     }
 
     pub async fn read_file(&self, path: String) -> Result<ReadFileResult, AppError> {
         let start = Instant::now();
         let safe_path = self.sanitize(&path)?;
         let file = fs::File::open(&safe_path).await?;
-        let mut limited_reader = file.take(MAX_READ_BYTES + 1);
-        let mut content = String::new();
-        let bytes_read = limited_reader.read_to_string(&mut content).await?;
+        let mut limited_reader = file.take((MAX_READ_BYTES + 1) as u64);
+        let mut bytes = Vec::with_capacity(MAX_READ_BYTES.min(64 * 1_024));
+        limited_reader.read_to_end(&mut bytes).await?;
+        let bytes_read = bytes.len();
 
-        if bytes_read as u64 > MAX_READ_BYTES {
+        if bytes_read > MAX_READ_BYTES {
             counter!("mcp.fs.read.rejected_too_large_total").increment(1);
             return Err(AppError::FileTooLarge {
                 size: bytes_read as u64,
-                max_size: MAX_READ_BYTES,
+                max_size: MAX_READ_BYTES as u64,
             });
         }
+
+        let content = String::from_utf8(bytes).map_err(|_| AppError::InvalidFileEncoding)?;
 
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.read.latency_seconds").record(duration);
@@ -345,9 +415,13 @@ pub struct FileInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListDirResult {
     pub path: String,
     pub entries: Vec<FileInfo>,
+    pub truncated: bool,
+    pub max_entries: usize,
+    pub max_response_bytes: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
