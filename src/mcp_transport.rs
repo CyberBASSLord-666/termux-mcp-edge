@@ -81,8 +81,7 @@ const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
-const TOOL_ARGUMENTS_INVALID: &str =
-    "Tool arguments do not match the advertised input schema.";
+const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised input schema.";
 
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
 

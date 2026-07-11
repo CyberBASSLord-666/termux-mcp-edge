@@ -15,8 +15,7 @@ use tower::ServiceExt;
 
 const NO_ARGUMENT_TOOLS: [&str; 3] = ["runtime_status", "platform_info", "android_status"];
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
-const TOOL_ARGUMENTS_INVALID: &str =
-    "Tool arguments do not match the advertised input schema.";
+const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised input schema.";
 
 fn tool_call(id: impl Into<Value>, name: &str, arguments: Option<Value>) -> Value {
     let mut params = Map::new();
@@ -111,8 +110,7 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
 
     for (tool_name, expected_data) in cases {
         let id = json!(format!("{tool_name}-omitted"));
-        let response =
-            post_json_with_empty_root(tool_call(id.clone(), tool_name, None)).await;
+        let response = post_json_with_empty_root(tool_call(id.clone(), tool_name, None)).await;
         assert_invalid_params(response, &id, expected_data).await;
     }
 }
@@ -202,11 +200,8 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     ];
 
     for (id, tool_name, arguments) in valid_calls {
-        let response = post_to_router(
-            router.clone(),
-            tool_call(id, tool_name, Some(arguments)),
-        )
-        .await;
+        let response =
+            post_to_router(router.clone(), tool_call(id, tool_name, Some(arguments))).await;
         assert_eq!(response.status(), StatusCode::OK, "valid call failed: {id}");
     }
 
@@ -263,7 +258,10 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
         assert_invalid_params(response, &id, TOOL_ARGUMENTS_INVALID).await;
     }
 
-    assert_eq!(tokio::fs::read_to_string(&target).await.unwrap(), "original");
+    assert_eq!(
+        tokio::fs::read_to_string(&target).await.unwrap(),
+        "original"
+    );
 }
 
 #[tokio::test]
@@ -375,7 +373,10 @@ async fn rejected_write_arguments_never_create_or_modify_files() {
         assert_invalid_params(response, &id, TOOL_ARGUMENTS_INVALID).await;
     }
 
-    assert_eq!(tokio::fs::read_to_string(&existing).await.unwrap(), "original");
+    assert_eq!(
+        tokio::fs::read_to_string(&existing).await.unwrap(),
+        "original"
+    );
     assert!(!missing.exists());
 }
 
