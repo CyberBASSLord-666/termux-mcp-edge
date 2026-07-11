@@ -28,55 +28,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  repair:
-    name: Trace focused branch repair
-    if: github.event_name == 'pull_request' && github.head_ref == 'atomic-service-transitions-203'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout active branch
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
-        with:
-          ref: atomic-service-transitions-203
-          persist-credentials: true
-      - name: Apply repair and trace remaining shell failure
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('scripts/termux_deploy.sh')
-          text = path.read_text()
-          old = '  stop_service_confirmed || fail "deployment aborted because canonical service shutdown was not confirmed"\n'
-          new = '''  if ! stop_service_confirmed; then
-            run rm -rf -- "$release_dir"
-            TRANSACTION_ACTIVE=0
-            fail "deployment aborted because canonical service shutdown was not confirmed"
-          fi
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected exactly one stop-failure site, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
-
-          test = Path('tests/termux_deploy_test.sh')
-          test_text = test.read_text()
-          target = 'bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"\n'
-          if test_text.count(target) != 1:
-              raise SystemExit(f'expected one valid-upgrade test site, found {test_text.count(target)}')
-          test.write_text(test_text.replace(target, 'bash -x "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"\n'))
-          PY
-          bash -n scripts/termux_deploy.sh
-          bash tests/termux_deploy_test.sh
-
   rust:
     name: Rust validation
-    needs: repair
-    if: always() && (needs.repair.result == 'success' || needs.repair.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
