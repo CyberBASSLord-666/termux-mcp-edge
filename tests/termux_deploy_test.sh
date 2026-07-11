@@ -8,6 +8,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/termux_deploy.sh"
 
 fail_test() { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }
+report_error() {
+  local status=$? line="${BASH_LINENO[0]:-unknown}" command="${BASH_COMMAND:-unknown}"
+  printf 'termux deployment test failed at line %s with status %s: %s\n' "$line" "$status" "$command" >&2
+  exit "$status"
+}
+trap report_error ERR
 assert_eq() { [[ "$1" == "$2" ]] || fail_test "expected $2, got $1"; }
 assert_fails() { if "$@" >/dev/null 2>&1; then fail_test "command unexpectedly succeeded: $*"; fi; }
 
