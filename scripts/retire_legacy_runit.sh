@@ -47,7 +47,7 @@ if command -v sv >/dev/null 2>&1; then
   if ! is_true "$DRY_RUN"; then
     status="$(sv status "$LEGACY_SERVICE_DIR" 2>&1 || true)"
     case "$status" in
-      down:*|fail:*) ;;
+      down:*) ;;
       *) fail "legacy service did not reach a confirmed down state" ;;
     esac
   fi
