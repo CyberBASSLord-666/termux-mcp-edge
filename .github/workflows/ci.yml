@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   repair:
-    name: Apply focused branch repair
+    name: Trace focused branch repair
     if: github.event_name == 'pull_request' && github.head_ref == 'atomic-service-transitions-203'
     runs-on: ubuntu-24.04
     steps:
@@ -45,7 +45,7 @@ jobs:
         with:
           ref: atomic-service-transitions-203
           persist-credentials: true
-      - name: Repair candidate cleanup and remove temporary automation
+      - name: Apply repair and trace remaining shell failure
         shell: bash
         run: |
           python3 - <<'PY'
@@ -62,17 +62,16 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one stop-failure site, found {text.count(old)}')
           path.write_text(text.replace(old, new))
+
+          test = Path('tests/termux_deploy_test.sh')
+          test_text = test.read_text()
+          target = 'bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"\n'
+          if test_text.count(target) != 1:
+              raise SystemExit(f'expected one valid-upgrade test site, found {test_text.count(target)}')
+          test.write_text(test_text.replace(target, 'bash -x "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"\n'))
           PY
-          rm -f .github/workflows/repair-stop-failure-candidate.yml
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/ci.yml
           bash -n scripts/termux_deploy.sh
           bash tests/termux_deploy_test.sh
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add scripts/termux_deploy.sh .github/workflows/ci.yml .github/workflows/repair-stop-failure-candidate.yml
-          git commit -m "fix: remove untouched candidate when shutdown fails"
-          git push origin HEAD:atomic-service-transitions-203
 
   rust:
     name: Rust validation
