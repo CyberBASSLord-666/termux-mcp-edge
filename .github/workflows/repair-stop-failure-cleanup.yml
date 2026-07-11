@@ -29,11 +29,11 @@ jobs:
           text = path.read_text()
           old = '  stop_service_confirmed || fail "deployment aborted because canonical service shutdown was not confirmed"\n'
           new = '''  if ! stop_service_confirmed; then
-    run rm -rf -- "$release_dir"
-    TRANSACTION_ACTIVE=0
-    fail "deployment aborted because canonical service shutdown was not confirmed"
-  fi
-'''
+            run rm -rf -- "$release_dir"
+            TRANSACTION_ACTIVE=0
+            fail "deployment aborted because canonical service shutdown was not confirmed"
+          fi
+          '''
           if text.count(old) != 1:
               raise SystemExit(f'expected exactly one deployment stop call, found {text.count(old)}')
           path.write_text(text.replace(old, new))
