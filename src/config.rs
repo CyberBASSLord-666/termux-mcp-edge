@@ -84,7 +84,7 @@ pub struct TransportConfig {
 
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
-        Self::load_with(env::var)
+        Self::load_with(|name| env::var(name))
     }
 
     fn load_with(
