@@ -107,6 +107,14 @@ enum ToolArguments {
     Present(Value),
 }
 
+struct NoArgumentToolContract {
+    tool_name: &'static str,
+    gate_name: &'static str,
+    allowed_reason: &'static str,
+    denied_reason: &'static str,
+    response_builder: fn(Option<Value>, &SharedAuditCounters) -> Response,
+}
+
 impl ToolArguments {
     fn into_value(self) -> Option<Value> {
         match self {
@@ -415,31 +423,37 @@ async fn handle_tool_call(
             id,
             call.arguments,
             &state.audit_counters,
-            RUNTIME_STATUS_TOOL,
-            RUNTIME_STATUS_GATE,
-            RUNTIME_STATUS_ALLOWED,
-            RUNTIME_STATUS_ARGUMENTS_DENIED,
-            runtime_status_response,
+            NoArgumentToolContract {
+                tool_name: RUNTIME_STATUS_TOOL,
+                gate_name: RUNTIME_STATUS_GATE,
+                allowed_reason: RUNTIME_STATUS_ALLOWED,
+                denied_reason: RUNTIME_STATUS_ARGUMENTS_DENIED,
+                response_builder: runtime_status_response,
+            },
         ),
         PLATFORM_INFO_TOOL => handle_no_argument_tool_call(
             id,
             call.arguments,
             &state.audit_counters,
-            PLATFORM_INFO_TOOL,
-            PLATFORM_INFO_GATE,
-            PLATFORM_INFO_ALLOWED,
-            PLATFORM_INFO_ARGUMENTS_DENIED,
-            platform_info_response,
+            NoArgumentToolContract {
+                tool_name: PLATFORM_INFO_TOOL,
+                gate_name: PLATFORM_INFO_GATE,
+                allowed_reason: PLATFORM_INFO_ALLOWED,
+                denied_reason: PLATFORM_INFO_ARGUMENTS_DENIED,
+                response_builder: platform_info_response,
+            },
         ),
         ANDROID_STATUS_TOOL => handle_no_argument_tool_call(
             id,
             call.arguments,
             &state.audit_counters,
-            ANDROID_STATUS_TOOL,
-            ANDROID_STATUS_GATE,
-            ANDROID_STATUS_ALLOWED,
-            ANDROID_STATUS_ARGUMENTS_DENIED,
-            android_status_response,
+            NoArgumentToolContract {
+                tool_name: ANDROID_STATUS_TOOL,
+                gate_name: ANDROID_STATUS_GATE,
+                allowed_reason: ANDROID_STATUS_ALLOWED,
+                denied_reason: ANDROID_STATUS_ARGUMENTS_DENIED,
+                response_builder: android_status_response,
+            },
         ),
         PROJECT_SERVICE_STATUS_TOOL => {
             project_service_status_response(
@@ -486,19 +500,25 @@ fn handle_no_argument_tool_call(
     id: Option<Value>,
     arguments: ToolArguments,
     audit_counters: &SharedAuditCounters,
-    tool_name: &'static str,
-    gate_name: &'static str,
-    allowed_reason: &'static str,
-    denied_reason: &'static str,
-    response_builder: fn(Option<Value>, &SharedAuditCounters) -> Response,
+    contract: NoArgumentToolContract,
 ) -> Response {
     if !arguments.is_omitted_or_empty_object() {
-        record_read_only_denied(audit_counters, tool_name, gate_name, denied_reason);
+        record_read_only_denied(
+            audit_counters,
+            contract.tool_name,
+            contract.gate_name,
+            contract.denied_reason,
+        );
         return invalid_params(id, TOOL_ARGUMENTS_INVALID);
     }
 
-    record_read_only_allowed(audit_counters, tool_name, gate_name, allowed_reason);
-    response_builder(id, audit_counters)
+    record_read_only_allowed(
+        audit_counters,
+        contract.tool_name,
+        contract.gate_name,
+        contract.allowed_reason,
+    );
+    (contract.response_builder)(id, audit_counters)
 }
 
 #[rustfmt::skip]
