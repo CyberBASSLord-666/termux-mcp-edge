@@ -142,6 +142,24 @@ bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$current_before"
 [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/2.0.0" ]]
 
+fake_bin="$ROOT/production-dry-run-bin"; mkdir -p "$fake_bin"
+dry_run_external_call="$ROOT/production-dry-run-external-call"
+for command_name in sv curl; do
+  cat >"$fake_bin/$command_name" <<EOF
+#!/bin/sh
+touch '$dry_run_external_call'
+exit 99
+EOF
+  chmod 700 "$fake_bin/$command_name"
+done
+previous_before="$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")"
+service_before_sha="$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')"
+TERMUX_MCP_TEST_MODE=0 PATH="$fake_bin:$PATH" bash "$SCRIPT" rollback --dry-run >/dev/null
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$current_before"
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$previous_before"
+assert_eq "$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')" "$service_before_sha"
+[[ ! -e "$dry_run_external_call" ]]
+
 status="$(bash "$SCRIPT" status)"
 [[ "$status" == *"current=$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0"* && "$status" != *test-static-token* ]]
 
