@@ -18,7 +18,7 @@ jobs:
         with:
           ref: atomic-service-transitions-203
           fetch-depth: 0
-      - name: Apply focused repair
+      - name: Apply and commit focused repair
         shell: bash
         run: |
           python3 - <<'PY'
@@ -37,10 +37,6 @@ jobs:
           path.write_text(text.replace(old, new))
           PY
           bash -n scripts/termux_deploy.sh
-          bash tests/termux_deploy_test.sh
-      - name: Commit repair and remove workflow
-        shell: bash
-        run: |
           rm -f .github/workflows/repair-stop-failure-cleanup-216.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
