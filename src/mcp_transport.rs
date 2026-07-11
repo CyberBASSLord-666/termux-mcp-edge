@@ -11,7 +11,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 use crate::{
@@ -24,8 +24,7 @@ use crate::{
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
     platform_info::collect_platform_info,
     service_status::{
-        collect_project_service_status, unsupported_project_service_error,
-        ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
+        collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
@@ -59,6 +58,7 @@ const FILESYSTEM_READ_GATE: &str = "filesystem_read";
 const FILESYSTEM_WRITE_GATE: &str = "filesystem_write";
 
 const RUNTIME_STATUS_ALLOWED: &str = "staged_runtime_metadata";
+const RUNTIME_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
 const PLATFORM_INFO_ALLOWED: &str = "read_only_platform_metadata";
 const PLATFORM_INFO_ARGUMENTS_DENIED: &str = "arguments_not_supported";
 const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
@@ -80,6 +80,10 @@ const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
 const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
+const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
+const TOOL_ARGUMENTS_INVALID: &str =
+    "Tool arguments do not match the advertised input schema.";
+
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
 
 #[derive(Clone)]
@@ -90,9 +94,42 @@ struct McpTransportState {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ToolCallParams {
     name: String,
-    arguments: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_tool_arguments")]
+    arguments: ToolArguments,
+}
+
+#[derive(Debug, Default)]
+enum ToolArguments {
+    #[default]
+    Omitted,
+    Present(Value),
+}
+
+impl ToolArguments {
+    fn into_value(self) -> Option<Value> {
+        match self {
+            Self::Omitted => None,
+            Self::Present(value) => Some(value),
+        }
+    }
+
+    fn is_omitted_or_empty_object(&self) -> bool {
+        match self {
+            Self::Omitted => true,
+            Self::Present(Value::Object(object)) => object.is_empty(),
+            Self::Present(_) => false,
+        }
+    }
+}
+
+fn deserialize_tool_arguments<'de, D>(deserializer: D) -> Result<ToolArguments, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(ToolArguments::Present)
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +139,7 @@ struct ProjectServiceStatusArguments {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ListDirectoryArguments {
     path: String,
     #[serde(default)]
@@ -109,11 +147,13 @@ struct ListDirectoryArguments {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReadFileArguments {
     path: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WriteFileArguments {
     path: String,
     content: String,
@@ -363,43 +403,103 @@ async fn handle_tool_call(
 ) -> Response {
     let params = match params {
         Some(params) => params,
-        None => return invalid_params(id, "tools/call requires params with a tool name."),
+        None => return invalid_params(id, TOOL_CALL_PARAMS_INVALID),
     };
 
     let call = match serde_json::from_value::<ToolCallParams>(params) {
         Ok(call) => call,
-        Err(error) => return invalid_params(id, &format!("Invalid tools/call params: {error}")),
+        Err(_error) => return invalid_params(id, TOOL_CALL_PARAMS_INVALID),
     };
 
     match call.name.as_str() {
-        RUNTIME_STATUS_TOOL => {
-            record_read_only_allowed(
-                &state.audit_counters,
-                RUNTIME_STATUS_TOOL,
-                RUNTIME_STATUS_GATE,
-                RUNTIME_STATUS_ALLOWED,
-            );
-            runtime_status_response(id, &state.audit_counters)
-        }
-        PLATFORM_INFO_TOOL => platform_info_response(id, call.arguments, &state.audit_counters),
-        ANDROID_STATUS_TOOL => android_status_response(id, call.arguments, &state.audit_counters),
+        RUNTIME_STATUS_TOOL => handle_no_argument_tool_call(
+            id,
+            call.arguments,
+            &state.audit_counters,
+            RUNTIME_STATUS_TOOL,
+            RUNTIME_STATUS_GATE,
+            RUNTIME_STATUS_ALLOWED,
+            RUNTIME_STATUS_ARGUMENTS_DENIED,
+            runtime_status_response,
+        ),
+        PLATFORM_INFO_TOOL => handle_no_argument_tool_call(
+            id,
+            call.arguments,
+            &state.audit_counters,
+            PLATFORM_INFO_TOOL,
+            PLATFORM_INFO_GATE,
+            PLATFORM_INFO_ALLOWED,
+            PLATFORM_INFO_ARGUMENTS_DENIED,
+            platform_info_response,
+        ),
+        ANDROID_STATUS_TOOL => handle_no_argument_tool_call(
+            id,
+            call.arguments,
+            &state.audit_counters,
+            ANDROID_STATUS_TOOL,
+            ANDROID_STATUS_GATE,
+            ANDROID_STATUS_ALLOWED,
+            ANDROID_STATUS_ARGUMENTS_DENIED,
+            android_status_response,
+        ),
         PROJECT_SERVICE_STATUS_TOOL => {
-            project_service_status_response(id, call.arguments, &state.audit_counters)
+            project_service_status_response(
+                id,
+                call.arguments.into_value(),
+                &state.audit_counters,
+            )
         }
         LIST_DIRECTORY_TOOL => {
-            handle_list_directory_call(id, call.arguments, &state.file_tools, &state.audit_counters).await
+            handle_list_directory_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
         }
         READ_FILE_TOOL => {
-            handle_read_file_call(id, call.arguments, &state.file_tools, &state.audit_counters).await
+            handle_read_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
         }
         WRITE_FILE_TOOL => {
-            handle_write_file_call(id, call.arguments, &state.file_tools, &state.audit_counters).await
+            handle_write_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
         }
         _ => method_not_available(
             id,
             "Only runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
         ),
     }
+}
+
+fn handle_no_argument_tool_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    audit_counters: &SharedAuditCounters,
+    tool_name: &'static str,
+    gate_name: &'static str,
+    allowed_reason: &'static str,
+    denied_reason: &'static str,
+    response_builder: fn(Option<Value>, &SharedAuditCounters) -> Response,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(audit_counters, tool_name, gate_name, denied_reason);
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    record_read_only_allowed(audit_counters, tool_name, gate_name, allowed_reason);
+    response_builder(id, audit_counters)
 }
 
 #[rustfmt::skip]
@@ -448,30 +548,8 @@ fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounte
 #[rustfmt::skip]
 fn platform_info_response(
     id: Option<Value>,
-    arguments: Option<Value>,
-    audit_counters: &SharedAuditCounters,
+    _audit_counters: &SharedAuditCounters,
 ) -> Response {
-    if let Some(arguments) = arguments {
-        if arguments
-            .as_object()
-            .is_some_and(|object| !object.is_empty())
-        {
-            record_read_only_denied(
-                audit_counters,
-                PLATFORM_INFO_TOOL,
-                PLATFORM_INFO_GATE,
-                PLATFORM_INFO_ARGUMENTS_DENIED,
-            );
-            return invalid_params(id, "platform_info does not accept arguments.");
-        }
-    }
-
-    record_read_only_allowed(
-        audit_counters,
-        PLATFORM_INFO_TOOL,
-        PLATFORM_INFO_GATE,
-        PLATFORM_INFO_ALLOWED,
-    );
     let info = collect_platform_info();
     ok_result(
         id,
@@ -486,34 +564,8 @@ fn platform_info_response(
 #[rustfmt::skip]
 fn android_status_response(
     id: Option<Value>,
-    arguments: Option<Value>,
-    audit_counters: &SharedAuditCounters,
+    _audit_counters: &SharedAuditCounters,
 ) -> Response {
-    if let Some(arguments) = arguments {
-        if !arguments.is_object()
-            || arguments
-                .as_object()
-                .is_some_and(|object| !object.is_empty())
-        {
-            record_read_only_denied(
-                audit_counters,
-                ANDROID_STATUS_TOOL,
-                ANDROID_STATUS_GATE,
-                ANDROID_STATUS_ARGUMENTS_DENIED,
-            );
-            return invalid_params(
-                id,
-                "android_status requires no arguments; arguments must be an empty object or omitted.",
-            );
-        }
-    }
-
-    record_read_only_allowed(
-        audit_counters,
-        ANDROID_STATUS_TOOL,
-        ANDROID_STATUS_GATE,
-        ANDROID_STATUS_ALLOWED,
-    );
     let status = collect_android_status();
     ok_result(
         id,
@@ -554,32 +606,16 @@ fn project_service_status_response(
         }
     };
 
-    if !arguments.is_object() {
-        record_read_only_denied(
-            audit_counters,
-            PROJECT_SERVICE_STATUS_TOOL,
-            PROJECT_SERVICE_STATUS_GATE,
-            PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS,
-        );
-        return invalid_params(
-            id,
-            "project_service_status arguments must be an object with service_name.",
-        );
-    }
-
     let args = match serde_json::from_value::<ProjectServiceStatusArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => {
+        Err(_error) => {
             record_read_only_denied(
                 audit_counters,
                 PROJECT_SERVICE_STATUS_TOOL,
                 PROJECT_SERVICE_STATUS_GATE,
                 PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS,
             );
-            return invalid_params(
-                id,
-                &format!("Invalid project_service_status arguments: {error}"),
-            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
         }
     };
 
@@ -611,11 +647,7 @@ fn project_service_status_response(
                 PROJECT_SERVICE_STATUS_GATE,
                 PROJECT_SERVICE_STATUS_UNSUPPORTED,
             );
-            invalid_params_json(
-                id,
-                "Invalid params",
-                json!(unsupported_project_service_error(&args.service_name)),
-            )
+            invalid_params(id, TOOL_ARGUMENTS_INVALID)
         }
     }
 }
@@ -643,7 +675,7 @@ async fn handle_list_directory_call(
 
     let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => {
+        Err(_error) => {
             record_filesystem_denied(
                 audit_counters,
                 LIST_DIRECTORY_TOOL,
@@ -651,7 +683,7 @@ async fn handle_list_directory_call(
                 AuditMode::ReadOnly,
                 FILESYSTEM_INVALID_ARGUMENTS,
             );
-            return invalid_params(id, &format!("Invalid list_directory arguments: {error}"));
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
         }
     };
 
@@ -737,7 +769,7 @@ async fn handle_read_file_call(
 
     let args = match serde_json::from_value::<ReadFileArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => {
+        Err(_error) => {
             record_filesystem_denied(
                 audit_counters,
                 READ_FILE_TOOL,
@@ -745,7 +777,7 @@ async fn handle_read_file_call(
                 AuditMode::ReadOnly,
                 FILESYSTEM_INVALID_ARGUMENTS,
             );
-            return invalid_params(id, &format!("Invalid read_file arguments: {error}"));
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
         }
     };
 
@@ -822,7 +854,7 @@ async fn handle_write_file_call(
 
     let args = match serde_json::from_value::<WriteFileArguments>(arguments) {
         Ok(args) => args,
-        Err(error) => {
+        Err(_error) => {
             record_filesystem_denied(
                 audit_counters,
                 WRITE_FILE_TOOL,
@@ -830,7 +862,7 @@ async fn handle_write_file_call(
                 AuditMode::DryRun,
                 FILESYSTEM_INVALID_ARGUMENTS,
             );
-            return invalid_params(id, &format!("Invalid write_file arguments: {error}"));
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
         }
     };
 
@@ -838,17 +870,6 @@ async fn handle_write_file_call(
     let bytes = args.content.len();
     let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
     let mode = filesystem_write_mode(dry_run);
-
-    if policy.validate_payload_size(bytes).is_err() {
-        record_filesystem_denied(
-            audit_counters,
-            WRITE_FILE_TOOL,
-            FILESYSTEM_WRITE_GATE,
-            mode,
-            FILESYSTEM_WRITE_TOO_LARGE,
-        );
-        return payload_too_large(id, "File content exceeds the staged write_file byte limit.");
-    }
 
     match file_tools
         .write_file(args.path, args.content, Some(dry_run))
@@ -885,7 +906,7 @@ async fn handle_write_file_call(
                 "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
             )
         }
-        Err(AppError::FileTooLarge { .. }) => {
+        Err(AppError::WritePayloadTooLarge { .. }) => {
             record_filesystem_denied(
                 audit_counters,
                 WRITE_FILE_TOOL,

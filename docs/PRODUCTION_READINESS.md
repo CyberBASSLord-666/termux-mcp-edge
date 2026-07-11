@@ -20,7 +20,6 @@ The `mcp-runtime` build currently implements a custom POST-only JSON-RPC transpo
 
 Do not describe the staged MCP posture as fully production-ready while these confirmed lanes remain open:
 
-- #198: runtime tool arguments do not yet enforce every advertised closed-schema rule consistently;
 - #199: stable MCP 2025-11-25 lifecycle and Streamable HTTP conformance are incomplete;
 - #200: filesystem operations retain canonicalize-then-use symlink race windows;
 - #203: runit service transitions and failed-first-install cleanup are not fully atomic;
@@ -85,6 +84,7 @@ A change to the staged transport or tool registry must prove:
 - notification-shaped tool calls cannot dispatch or mutate state;
 - unauthenticated callers cannot discover or invoke tools;
 - discovery lists only the current seven-tool allowlist;
+- every tool call enforces its advertised closed input schema, including the omitted-or-empty contract for no-argument tools;
 - filesystem tools remain safe-rooted, bounded, and dry-run-first for writes;
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
 - errors and audit counters retain only stable non-sensitive data;

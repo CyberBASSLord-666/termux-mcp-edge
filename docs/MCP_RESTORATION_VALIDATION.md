@@ -117,8 +117,11 @@ Any invocation change must prove:
 2. unknown or unauthorized tools are rejected;
 3. notification-shaped tool calls do not dispatch;
 4. disabled high-impact tools cannot be invoked;
-5. enabled tools enforce safe roots, bounds, dry-run/mutation rules, and audit privacy;
-6. failures do not leak secrets, private paths, raw I/O errors, command arguments, tokens, or personal data.
+5. no-argument tools accept only omitted arguments or an empty object;
+6. every advertised closed schema rejects null/scalar/array shapes, missing required fields, wrong types, and unknown fields;
+7. rejected mutating arguments cannot create or alter files;
+8. enabled tools enforce safe roots, bounds, dry-run/mutation rules, and audit privacy;
+9. failures do not leak secrets, private paths, raw I/O errors, serde diagnostics, rejected values, command arguments, tokens, or personal data.
 
 ## High-impact tool requirements
 
