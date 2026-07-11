@@ -26,6 +26,8 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 5. Avoid direct public port exposure. Use a reviewed VPN or named-tunnel path only after authentication is configured and tested.
 6. Keep the mobile request-limit defaults unless target-device measurements justify a reviewed increase.
 
+For a reviewed named-tunnel deployment, use [`NAMED_TUNNEL_SETUP.md`](NAMED_TUNNEL_SETUP.md). The helper requires explicit tunnel/hostname arguments, supports a zero-call `--dry-run`, requires `--create` before login or creation, and never overwrites an existing DNS record.
+
 ## Install and service supervision
 
 Install prerequisites:

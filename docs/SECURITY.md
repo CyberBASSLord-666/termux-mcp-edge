@@ -140,6 +140,7 @@ Cargo, lockfile, or security-workflow changes must remain separate from unrelate
 - Bind to localhost unless a remote access path is explicitly required.
 - Configure a strong bearer token before using tunnels or LAN access.
 - Prefer a VPN-bound endpoint or named tunnel over raw port exposure.
+- Treat tunnel login, creation, and DNS routing as explicit operator mutations. Use `scripts/setup_named_tunnel.sh --dry-run` first; never enable DNS overwrite to bypass a route conflict.
 - Keep exact Host and Origin allowlists minimal.
 - Keep the mobile-conscious request-limit defaults unless measured workload requires a reviewed increase.
 - Keep filesystem safe roots limited to dedicated project directories.

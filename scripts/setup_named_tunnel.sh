@@ -1,101 +1,145 @@
 #!/usr/bin/env bash
-# Setup Named Cloudflare Tunnel for Termux MCP Server.
-#
-# Idempotency goals:
-# - Reuse an existing named tunnel instead of recreating it.
-# - Treat an existing DNS route as success.
-# - Clean temporary files on every exit path.
+# Safely provision an explicitly named Cloudflare Tunnel and DNS hostname.
 
 set -euo pipefail
 IFS=$'\n\t'
+umask 077
 
-TUNNEL_NAME="${1:-termux-mcp}"
-DOMAIN="${2:-mcp.yourdomain.com}"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/termux-mcp-tunnel.XXXXXX")"
+CREATE_ALLOWED=0
+DRY_RUN=0
+POSITIONAL=()
+TMP_DIR=""
 
-log() {
-  printf '[setup_named_tunnel] %s\n' "$*"
+usage() {
+  cat <<'EOF'
+Usage:
+  setup_named_tunnel.sh [--create] [--dry-run] TUNNEL_NAME HOSTNAME
+
+Options:
+  --create   Explicitly authorize tunnel creation when the exact tunnel name
+             does not already exist. Authentication must already be configured
+             with cloudflared.
+  --dry-run  Validate and print the bounded plan without calling cloudflared.
+
+The script never overwrites an existing DNS record. A hostname owned by a
+different tunnel or record type is a hard error requiring operator review.
+EOF
 }
 
-fail() {
-  printf '[setup_named_tunnel] ERROR: %s\n' "$*" >&2
-  exit 1
-}
+log() { printf '[setup_named_tunnel] %s\n' "$*"; }
+fail() { printf '[setup_named_tunnel] ERROR: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
-  rm -rf "$TMP_DIR"
+  [[ -n "$TMP_DIR" ]] && rm -rf -- "$TMP_DIR"
+  return 0
 }
 
 terminate() {
+  local status="$1"
+  trap - EXIT INT TERM HUP
   cleanup
-  trap - EXIT INT TERM
-  exit "$1"
+  exit "$status"
 }
 
 trap cleanup EXIT
 trap 'terminate 130' INT
-trap 'terminate 143' TERM
+trap 'terminate 143' TERM HUP
 
 require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
 }
 
-validate_token() {
-  local name="$1"
-  local value="$2"
-
-  [[ -n "${value//[[:space:]]/}" ]] || fail "$name must not be empty"
-  [[ "$value" =~ ^[[:alnum:]._-]+$ ]] || fail "$name contains invalid characters: $value"
+validate_tunnel_name() {
+  local value="$1"
+  ((${#value} >= 1 && ${#value} <= 63)) || fail "tunnel name must contain 1 to 63 characters"
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || fail "tunnel name must start with an alphanumeric character and contain only alphanumerics, underscore, or hyphen"
 }
 
-tunnel_exists() {
-  cloudflared tunnel info "$TUNNEL_NAME" >/dev/null 2>&1
+validate_hostname() {
+  local value="$1" label
+  local -a labels=()
+  ((${#value} >= 1 && ${#value} <= 253)) || fail "hostname must contain 1 to 253 characters"
+  [[ "$value" != *[[:space:][:cntrl:]]* ]] || fail "hostname must not contain whitespace or control characters"
+  [[ "$value" != *://* && "$value" != *:* && "$value" != */* && "$value" != *'?'* && "$value" != *'#'* && "$value" != *'*'* ]] || fail "hostname must be a plain DNS name without a scheme, port, path, query, fragment, or wildcard"
+  [[ "$value" != .* && "$value" != *. && "$value" != *..* ]] || fail "hostname contains an empty DNS label"
+  IFS='.' read -r -a labels <<<"$value"
+  ((${#labels[@]} >= 2)) || fail "hostname must contain at least two DNS labels"
+  for label in "${labels[@]}"; do
+    ((${#label} >= 1 && ${#label} <= 63)) || fail "hostname contains a DNS label outside the 1 to 63 character range"
+    [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || fail "hostname contains an invalid DNS label"
+  done
 }
 
-dns_route_exists() {
-  local route_list="${TMP_DIR}/route-list.log"
+for argument in "$@"; do
+  case "$argument" in
+    --create) CREATE_ALLOWED=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    --help|-h) usage; exit 0 ;;
+    --*) fail "unsupported option: $argument" ;;
+    *) POSITIONAL+=("$argument") ;;
+  esac
+done
 
-  if ! cloudflared tunnel route list >"$route_list" 2>/dev/null; then
-    return 1
+((${#POSITIONAL[@]} == 2)) || { usage >&2; fail "explicit tunnel name and hostname are required"; }
+TUNNEL_NAME="${POSITIONAL[0]}"
+HOSTNAME="${POSITIONAL[1]}"
+validate_tunnel_name "$TUNNEL_NAME"
+validate_hostname "$HOSTNAME"
+
+if ((DRY_RUN == 1)); then
+  log "dry-run: would inspect exact tunnel name: $TUNNEL_NAME"
+  if ((CREATE_ALLOWED == 1)); then
+    log "dry-run: would create the tunnel only if authenticated inventory confirms it is absent"
+  else
+    log "dry-run: tunnel creation is not authorized"
   fi
-
-  grep -F -- "$DOMAIN" "$route_list" | grep -F -- "$TUNNEL_NAME" >/dev/null 2>&1
-}
-
-ensure_dns_route() {
-  local route_log="${TMP_DIR}/route-dns.log"
-
-  if dns_route_exists; then
-    log "DNS route already exists: ${DOMAIN} -> ${TUNNEL_NAME}"
-    return 0
-  fi
-
-  if cloudflared tunnel route dns "$TUNNEL_NAME" "$DOMAIN" >"$route_log" 2>&1; then
-    log "DNS route ensured: ${DOMAIN} -> ${TUNNEL_NAME}"
-    return 0
-  fi
-
-  cat "$route_log" >&2
-  return 1
-}
-
-require_command cloudflared
-require_command grep
-validate_token TUNNEL_NAME "$TUNNEL_NAME"
-validate_token DOMAIN "$DOMAIN"
-
-log "Setting up named Cloudflare Tunnel: ${TUNNEL_NAME}"
-
-if tunnel_exists; then
-  log "Tunnel already exists; reusing: ${TUNNEL_NAME}"
-else
-  log "No existing tunnel found; starting Cloudflare login/create flow."
-  cloudflared tunnel login
-  cloudflared tunnel create "$TUNNEL_NAME"
-  log "Tunnel created: ${TUNNEL_NAME}"
+  log "dry-run: would create a non-overwriting DNS route for: $HOSTNAME"
+  printf '  cloudflared tunnel run %q\n' "$TUNNEL_NAME"
+  exit 0
 fi
 
-ensure_dns_route
+require_command cloudflared
+require_command jq
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/termux-mcp-tunnel.XXXXXX")"
+chmod 700 "$TMP_DIR"
+TUNNEL_LIST="$TMP_DIR/tunnels.json"
+ROUTE_LOG="$TMP_DIR/route-dns.log"
 
-log "Tunnel is ready. Update your runit service to use:"
+list_tunnels() {
+  if ! cloudflared tunnel list --output json >"$TUNNEL_LIST" 2>/dev/null; then
+    return 1
+  fi
+  jq -e 'type == "array" and all(.[]; (.name | type) == "string")' "$TUNNEL_LIST" >/dev/null 2>&1 ||
+    fail "cloudflared returned an unsupported tunnel-list JSON shape"
+}
+
+tunnel_match_count() {
+  jq -r --arg name "$TUNNEL_NAME" '[.[] | select(.name == $name)] | length' "$TUNNEL_LIST"
+}
+
+if ! list_tunnels; then
+  fail "unable to list tunnels; authenticate cloudflared and resolve network or Cloudflare service errors before mutation"
+fi
+MATCH_COUNT="$(tunnel_match_count)"
+[[ "$MATCH_COUNT" =~ ^[0-9]+$ ]] || fail "unable to determine exact tunnel identity"
+
+case "$MATCH_COUNT" in
+  1) log "exact tunnel already exists; reusing it" ;;
+  0)
+    ((CREATE_ALLOWED == 1)) || fail "exact tunnel does not exist; rerun with --create only after reviewing the external login/create operation"
+    log "exact tunnel is absent; starting explicitly authorized create flow"
+    cloudflared tunnel create "$TUNNEL_NAME" >/dev/null 2>&1 || fail "cloudflared tunnel creation failed"
+    list_tunnels
+    [[ "$(tunnel_match_count)" == 1 ]] || fail "created tunnel could not be confirmed by exact name"
+    log "tunnel created and confirmed"
+    ;;
+  *) fail "multiple active tunnels matched the exact requested name" ;;
+esac
+
+if ! cloudflared tunnel route dns "$TUNNEL_NAME" "$HOSTNAME" >"$ROUTE_LOG" 2>&1; then
+  fail "DNS route was not created; an existing record conflict or Cloudflare error requires operator review (no overwrite attempted)"
+fi
+
+log "DNS route confirmed without overwrite"
+log "tunnel is ready; run it with:"
 printf '  cloudflared tunnel run %q\n' "$TUNNEL_NAME"
