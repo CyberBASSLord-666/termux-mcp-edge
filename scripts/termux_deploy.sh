@@ -352,9 +352,13 @@ stop_service_confirmed() {
 prepare_service_stopped() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" run_tmp
   if ((SERVICE_DIR_BEFORE_PRESENT == 0)); then
-    SERVICE_STAGE="$DEPLOY_ROOT/.service-stage-$$"; rm -rf -- "$SERVICE_STAGE"; mkdir -p -- "$SERVICE_STAGE"; chmod 700 "$SERVICE_STAGE"
-    touch "$SERVICE_STAGE/down"; chmod 600 "$SERVICE_STAGE/down"; render_service_run "$SERVICE_STAGE/run"
-    run mv -T -- "$SERVICE_STAGE" "$service_dir"; SERVICE_STAGE=""
+    if is_true "$DRY_RUN"; then
+      log "would atomically publish project-owned runit service at $service_dir"
+    else
+      SERVICE_STAGE="$DEPLOY_ROOT/.service-stage-$$"; rm -rf -- "$SERVICE_STAGE"; mkdir -p -- "$SERVICE_STAGE"; chmod 700 "$SERVICE_STAGE"
+      touch "$SERVICE_STAGE/down"; chmod 600 "$SERVICE_STAGE/down"; render_service_run "$SERVICE_STAGE/run"
+      mv -T -- "$SERVICE_STAGE" "$service_dir"; SERVICE_STAGE=""
+    fi
   else
     run touch "$service_dir/down"; run chmod 600 "$service_dir/down"
     run_tmp="$service_dir/.run.next.$$"
