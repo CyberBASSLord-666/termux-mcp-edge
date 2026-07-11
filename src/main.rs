@@ -256,6 +256,25 @@ mod tests {
     }
 
     #[test]
+    fn safe_roots_keep_distinct_directories_in_deterministic_order() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let mut expected = vec![
+            first.path().canonicalize().unwrap(),
+            second.path().canonicalize().unwrap(),
+        ];
+        expected.sort_unstable();
+
+        let anchored = anchor_safe_roots(vec![
+            second.path().to_path_buf(),
+            first.path().to_path_buf(),
+        ])
+        .unwrap();
+
+        assert_eq!(anchored, expected);
+    }
+
+    #[test]
     fn safe_roots_reject_missing_paths_without_disclosing_them() {
         let parent = tempfile::tempdir().unwrap();
         let missing = parent.path().join("private-missing-root");
