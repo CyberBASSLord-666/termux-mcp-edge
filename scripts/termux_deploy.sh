@@ -314,17 +314,27 @@ stop_service_confirmed() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" attempt output
   [[ -d "$service_dir" && ! -L "$service_dir" ]] || return 0
   if is_true "$TEST_MODE"; then
-    next_sequence_result "$TEST_STOP_SEQUENCE" TEST_STOP_INDEX || soft_error "unable to stop and confirm canonical service is down"
+    if ! next_sequence_result "$TEST_STOP_SEQUENCE" TEST_STOP_INDEX; then
+      soft_error "unable to stop and confirm canonical service is down"
+      return 1
+    fi
     return 0
   fi
-  command -v sv >/dev/null 2>&1 || soft_error "required command not found: sv"
-  run sv down "$service_dir" || soft_error "unable to request canonical service shutdown"
+  if ! command -v sv >/dev/null 2>&1; then
+    soft_error "required command not found: sv"
+    return 1
+  fi
+  if ! run sv down "$service_dir"; then
+    soft_error "unable to request canonical service shutdown"
+    return 1
+  fi
   for ((attempt=1; attempt<=STOP_ATTEMPTS; attempt++)); do
     output="$(sv status "$service_dir" 2>&1 || true)"
     [[ "$output" == down:* ]] && return 0
     sleep "$STOP_DELAY_SECONDS"
   done
   soft_error "canonical service did not reach the down state"
+  return 1
 }
 prepare_service_stopped() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" run_tmp
