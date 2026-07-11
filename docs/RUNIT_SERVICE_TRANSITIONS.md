@@ -32,7 +32,7 @@ On candidate failure or interruption, the manager:
 2. restores the exact prior release-link state;
 3. restores or removes the service directory, run file, and down marker to match the snapshot;
 4. removes the failed candidate release;
-5. restarts and probes the prior runtime when one existed.
+5. restarts and probes the prior runtime only when it was running before the operation.
 
 A failed initial installation therefore does not leave a newly visible service directory or run file behind.
 
