@@ -6,12 +6,16 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/package_android_artifact.sh"
+      - ".github/workflows/android-cross-compile.yml"
       - ".github/workflows/security.yml"
   pull_request:
     branches: [ main ]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/package_android_artifact.sh"
+      - ".github/workflows/android-cross-compile.yml"
       - ".github/workflows/security.yml"
   schedule:
     - cron: "17 9 * * 1"

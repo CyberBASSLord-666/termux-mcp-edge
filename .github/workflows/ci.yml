@@ -12,6 +12,7 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
+      - "docs/release-evidence-schema-v1.json"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [ main ]
@@ -24,6 +25,7 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
+      - "docs/release-evidence-schema-v1.json"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -73,8 +75,10 @@ jobs:
       - name: Tests
         run: cargo test --workspace --all-targets --all-features
 
-      - name: Termux deployment shell tests
+      - name: Shell contract tests
         run: |
+          bash tests/package_android_artifact_test.sh
           bash tests/termux_deploy_test.sh
           bash tests/termux_device_smoke_test.sh
+          bash tests/termux_release_validate_test.sh
           bash tests/setup_named_tunnel_test.sh

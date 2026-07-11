@@ -81,13 +81,15 @@ The release process should be reproducible from the tagged source using the docu
 3. Confirm README, security, operations, deployment, validation, and rollback documentation describe the actual candidate behavior.
 4. Merge only through the normal protected-main process with expected-head SHA validation.
 5. Wait for post-merge CI, security, and Android validation on the resulting `main` SHA.
-6. Download both posture-specific Android artifacts and verify filenames, executable identity, size, and SHA-256 checksums.
-7. Run the documented operator smoke test against the release candidate on a representative Termux device whenever device validation is required for the milestone.
+6. Download both posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
+7. Run the downloaded artifacts through the complete validator in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), retain its schema-versioned sanitized JSON evidence, and run the source-build/device gate in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md).
 8. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the validated `main` SHA.
-9. Publish the GitHub Release from that immutable tag and attach both binaries plus checksums.
+9. Publish the GitHub Release from that immutable tag and attach both binaries, manifests, and checksum sidecars.
 10. Re-open the release page and independently verify every asset, checksum, link, version, and recorded SHA.
 
 Do not publish a draft as final until every required artifact is attached and verified.
+
+The downloaded-artifact report's `releaseEligible` field must be true before publication. That requires non-fixture preflight, runtime, and deployment phases plus an operator-supplied passing sustained observation of at least 60 minutes. The report is review evidence, not an automated authorization to tag or publish.
 
 ## Installation, upgrade, and rollback guarantees
 

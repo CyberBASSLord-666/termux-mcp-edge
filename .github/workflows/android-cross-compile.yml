@@ -13,6 +13,8 @@ on:
       - "rust-toolchain.toml"
       - "src/**"
       - "scripts/cross_compile.sh"
+      - "scripts/package_android_artifact.sh"
+      - "scripts/termux_release_validate.sh"
       - ".github/workflows/android-cross-compile.yml"
 
 permissions:
@@ -42,6 +44,7 @@ jobs:
         # actions/checkout@v7.0.0 resolved 2026-07-10
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Install pinned Rust toolchain
@@ -71,11 +74,31 @@ jobs:
           BUILD_FEATURES: ${{ matrix.features }}
         run: ./scripts/cross_compile.sh
 
-      - name: Upload binary artifact
+      - name: Record exact artifact metadata
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact }}
+          BUILD_POSTURE: ${{ matrix.posture }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          version="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "termux-mcp-server") | .version')"
+          [[ -n "$version" && "$version" != null ]]
+          bash scripts/package_android_artifact.sh \
+            --binary target/aarch64-linux-android/release/termux-mcp-server \
+            --output-dir target/aarch64-linux-android/release-candidate \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$SOURCE_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --artifact-name "$ARTIFACT_NAME" \
+            --posture "$BUILD_POSTURE" \
+            --version "$version"
+
+      - name: Upload release-candidate bundle
         # actions/upload-artifact@v7.0.1 resolved 2026-07-10
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ matrix.artifact }}
-          path: target/aarch64-linux-android/release/termux-mcp-server
+          path: target/aarch64-linux-android/release-candidate/
           if-no-files-found: error
           retention-days: 3

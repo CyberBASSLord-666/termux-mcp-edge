@@ -74,6 +74,8 @@ For each released artifact:
 
 Run the automated AArch64 portion through [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md). A passing report must identify the exact commit and artifact digest and end with `TERMUX_MCP_DEVICE_RESULT=PASS`, `cleanup_complete=true`, and `final_status=PASS`. The harness does not waive the sustained-device observation in item 8.
 
+Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). A release requires a non-fixture `--phase all` JSON report that conforms to [`release-evidence-schema-v1.json`](release-evidence-schema-v1.json), reconciles the same exact commit and workflow runs with both manifests, verifies both feature postures and deployment recovery, and records an operator-supplied passing observation of at least 60 minutes.
+
 ## Current MCP Runtime Gate
 
 A change to the stable transport or staged tool registry must prove:

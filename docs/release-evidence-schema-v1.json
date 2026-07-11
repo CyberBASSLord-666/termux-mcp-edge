@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-evidence-schema-v1.json",
+  "title": "Termux MCP Edge release-candidate evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "validatorVersion",
+    "status",
+    "failureCode",
+    "releaseEligible",
+    "startedAt",
+    "completedAt",
+    "repository",
+    "environment",
+    "requestedPhase",
+    "artifacts",
+    "phases",
+    "results",
+    "sustainedObservation"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "pass"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "failureCode": {"const": null},
+          "environment": {
+            "properties": {"fixtureMode": {"const": false}}
+          },
+          "sustainedObservation": {
+            "properties": {
+              "status": {"enum": ["not_run", "pass"]}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"status": {"const": "fixture"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "failureCode": {"const": null},
+          "releaseEligible": {"const": false},
+          "environment": {
+            "properties": {"fixtureMode": {"const": true}}
+          },
+          "sustainedObservation": {
+            "properties": {
+              "status": {"enum": ["not_run", "pass"]}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"status": {"const": "fail"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "failureCode": {"type": "string"},
+          "releaseEligible": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"releaseEligible": {"const": true}},
+        "required": ["releaseEligible"]
+      },
+      "then": {
+        "properties": {
+          "status": {"const": "pass"},
+          "requestedPhase": {"const": "all"},
+          "environment": {
+            "properties": {"fixtureMode": {"const": false}}
+          },
+          "phases": {
+            "properties": {
+              "preflight": {"const": "pass"},
+              "runtime": {"const": "pass"},
+              "deployment": {"const": "pass"}
+            }
+          },
+          "sustainedObservation": {
+            "properties": {
+              "status": {"const": "pass"},
+              "minutes": {"minimum": 60},
+              "reasonCode": {"const": "stable"}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "validatorVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "status": {
+      "enum": ["pass", "fail", "fixture"]
+    },
+    "failureCode": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "releaseEligible": {
+      "type": "boolean"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "version", "ciRunId", "securityRunId", "androidRunId"],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "ciRunId": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "securityRunId": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "androidRunId": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["architecture", "fixtureMode", "tools"],
+      "properties": {
+        "architecture": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "fixtureMode": {
+          "type": "boolean"
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bash", "curl", "file", "jq"],
+          "properties": {
+            "bash": {"type": "string", "maxLength": 256},
+            "curl": {"type": "string", "maxLength": 256},
+            "file": {"type": "string", "maxLength": 256},
+            "jq": {"type": "string", "maxLength": 64}
+          }
+        }
+      }
+    },
+    "requestedPhase": {
+      "enum": ["preflight", "runtime", "deployment", "all"]
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default", "mcpRuntime", "baseline"],
+      "properties": {
+        "default": {"$ref": "#/$defs/artifact"},
+        "mcpRuntime": {"$ref": "#/$defs/artifact"},
+        "baseline": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/artifact"}
+          ]
+        }
+      }
+    },
+    "phases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preflight", "runtime", "deployment"],
+      "properties": {
+        "preflight": {"$ref": "#/$defs/phaseState"},
+        "runtime": {"$ref": "#/$defs/phaseState"},
+        "deployment": {"$ref": "#/$defs/phaseState"}
+      }
+    },
+    "results": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "check", "outcome", "code"],
+        "properties": {
+          "phase": {
+            "enum": ["preflight", "runtime", "deployment"]
+          },
+          "check": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$",
+            "maxLength": 96
+          },
+          "outcome": {
+            "enum": ["pass", "fail", "info"]
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$",
+            "maxLength": 96
+          }
+        }
+      }
+    },
+    "sustainedObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operatorSupplied", "status", "minutes", "reasonCode", "minimumMinutes"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {"status": {"const": "not_run"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "minutes": {"const": 0},
+              "reasonCode": {"const": "not_observed"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "pass"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "minutes": {"minimum": 60},
+              "reasonCode": {"const": "stable"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"status": {"const": "fail"}},
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "minutes": {"minimum": 1},
+              "reasonCode": {
+                "enum": [
+                  "battery_limit",
+                  "thermal_limit",
+                  "process_restriction",
+                  "network_instability",
+                  "operator_abort",
+                  "other"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "operatorSupplied": {
+          "const": true
+        },
+        "status": {
+          "enum": ["not_run", "pass", "fail"]
+        },
+        "minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10080
+        },
+        "reasonCode": {
+          "enum": [
+            "not_observed",
+            "stable",
+            "battery_limit",
+            "thermal_limit",
+            "process_restriction",
+            "network_instability",
+            "operator_abort",
+            "other"
+          ]
+        },
+        "minimumMinutes": {
+          "const": 60
+        }
+      }
+    }
+  },
+  "$defs": {
+    "phaseState": {
+      "enum": ["not_run", "running", "pass", "fail"]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes", "version", "elf"],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "version": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "elf": {
+          "type": ["string", "null"],
+          "enum": ["aarch64-android-elf", null]
+        }
+      }
+    }
+  }
+}

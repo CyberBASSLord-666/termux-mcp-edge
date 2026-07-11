@@ -162,6 +162,8 @@ The test suite covers the binary CLI contract, verified install, invalid operati
 
 Use [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) and `scripts/termux_device_smoke.sh` for the canonical automated no-clone exercise. It pins the fetched source to a required full commit SHA and covers the checks below in isolated real runit state. Preserve its mode-`0600` report with the exact CI and Android evidence.
 
+Use [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md) for downloaded default/`mcp-runtime` artifacts. Its deployment phase calls this same manager in unique test roots by default, requires explicit mutation confirmation, exercises failed-candidate and failed-rollback recovery, and emits a sanitized JSON result. Canonical production-root actions require a separate action-specific confirmation and never replace production configuration.
+
 1. Confirm the artifact corresponds to the intended exact commit or release.
 2. Verify its SHA-256 digest.
 3. Verify AArch64 Android-compatible ELF metadata.
