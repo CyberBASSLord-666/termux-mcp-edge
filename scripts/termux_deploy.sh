@@ -98,7 +98,7 @@ cleanup() {
     if stop_service_confirmed >/dev/null 2>&1; then
       restore_link_state >/dev/null 2>&1 || true
       restore_service_state >/dev/null 2>&1 || true
-      if ((CURRENT_BEFORE_PRESENT == 1)); then
+      if prior_runtime_was_running; then
         start_service >/dev/null 2>&1 || true
       fi
     else
@@ -280,16 +280,28 @@ capture_service_state() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
   SERVICE_DIR_BEFORE_PRESENT=0; SERVICE_RUN_BEFORE_PRESENT=0; SERVICE_DOWN_BEFORE_PRESENT=0; SERVICE_DIR_MODE_BEFORE="700"
   SERVICE_SNAPSHOT="$DEPLOY_ROOT/.service-snapshot-$$"
-  rm -rf -- "$SERVICE_SNAPSHOT"; mkdir -p -- "$SERVICE_SNAPSHOT"; chmod 700 "$SERVICE_SNAPSHOT"
+  if ! is_true "$DRY_RUN"; then
+    rm -rf -- "$SERVICE_SNAPSHOT"; mkdir -p -- "$SERVICE_SNAPSHOT"; chmod 700 "$SERVICE_SNAPSHOT"
+  fi
   if [[ -e "$service_dir" || -L "$service_dir" ]]; then
     [[ -d "$service_dir" && ! -L "$service_dir" ]] || fail "canonical service path must be a non-symlink directory"
     SERVICE_DIR_BEFORE_PRESENT=1; SERVICE_DIR_MODE_BEFORE="$(stat -c '%a' "$service_dir")"
     if [[ -e "$service_dir/run" || -L "$service_dir/run" ]]; then
       [[ -f "$service_dir/run" && ! -L "$service_dir/run" ]] || fail "canonical service run file must be a regular non-symlink file"
-      SERVICE_RUN_BEFORE_PRESENT=1; cp -p -- "$service_dir/run" "$SERVICE_SNAPSHOT/run"
+      SERVICE_RUN_BEFORE_PRESENT=1
+      if ! is_true "$DRY_RUN"; then cp -p -- "$service_dir/run" "$SERVICE_SNAPSHOT/run"; fi
     fi
-    [[ -e "$service_dir/down" ]] && SERVICE_DOWN_BEFORE_PRESENT=1
+    if [[ -e "$service_dir/down" || -L "$service_dir/down" ]]; then
+      [[ -f "$service_dir/down" && ! -L "$service_dir/down" ]] || fail "canonical service down marker must be a regular non-symlink file"
+      SERVICE_DOWN_BEFORE_PRESENT=1
+    fi
   fi
+}
+prior_runtime_was_running() {
+  ((CURRENT_BEFORE_PRESENT == 1
+    && SERVICE_DIR_BEFORE_PRESENT == 1
+    && SERVICE_RUN_BEFORE_PRESENT == 1
+    && SERVICE_DOWN_BEFORE_PRESENT == 0))
 }
 restore_service_state() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" temp
@@ -341,7 +353,7 @@ prepare_service_stopped() {
   if ((SERVICE_DIR_BEFORE_PRESENT == 0)); then
     SERVICE_STAGE="$DEPLOY_ROOT/.service-stage-$$"; rm -rf -- "$SERVICE_STAGE"; mkdir -p -- "$SERVICE_STAGE"; chmod 700 "$SERVICE_STAGE"
     touch "$SERVICE_STAGE/down"; chmod 600 "$SERVICE_STAGE/down"; render_service_run "$SERVICE_STAGE/run"
-    run mv -- "$SERVICE_STAGE" "$service_dir"; SERVICE_STAGE=""
+    run mv -T -- "$SERVICE_STAGE" "$service_dir"; SERVICE_STAGE=""
   else
     run touch "$service_dir/down"; run chmod 600 "$service_dir/down"
     run_tmp="$service_dir/.run.next.$$"
@@ -402,7 +414,7 @@ recover_failed_deployment() {
   RECOVERING=1
   stop_service_confirmed || return 1
   restore_link_state; restore_service_state; run rm -rf -- "$failed_release"
-  if ((CURRENT_BEFORE_PRESENT == 1)); then start_service; probe_runtime || return 1; fi
+  if prior_runtime_was_running; then start_service; probe_runtime || return 1; fi
   TRANSACTION_ACTIVE=0; RECOVERING=0
 }
 
@@ -418,19 +430,21 @@ deploy() {
   release_dir="$RELEASES_ROOT/$version"; [[ ! -e "$release_dir" && ! -L "$release_dir" ]] || fail "release already exists"
   STAGING_DIR="$RELEASES_ROOT/.staging-$version-$$"; run mkdir -p "$STAGING_DIR"; run chmod 700 "$STAGING_DIR"; run install -m 700 "$artifact" "$STAGING_DIR/$PROGRAM"
   if ! is_true "$DRY_RUN"; then printf '%s\n' "$version" >"$STAGING_DIR/VERSION"; chmod 600 "$STAGING_DIR/VERSION"; fi
-  run mv -- "$STAGING_DIR" "$release_dir"; STAGING_DIR=""; TRANSACTION_ACTIVE=1
+  run mv -T -- "$STAGING_DIR" "$release_dir"; STAGING_DIR=""; TRANSACTION_ACTIVE=1
   if ! stop_service_confirmed; then
-  run rm -rf -- "$release_dir"
-  TRANSACTION_ACTIVE=0
-  fail "deployment aborted because canonical service shutdown was not confirmed"
-fi
+    run rm -rf -- "$release_dir"
+    TRANSACTION_ACTIVE=0
+    fail "deployment aborted because canonical service shutdown was not confirmed"
+  fi
   prepare_service_stopped; activate_release "$release_dir"; start_service
   if ! probe_runtime; then
     log "$mode readiness validation failed; restoring the exact previous state"
     if recover_failed_deployment "$release_dir"; then fail "candidate failed readiness and was removed after recovery"; fi
     fail "candidate failed readiness and the prior release could not be recovered"
   fi
-  TRANSACTION_ACTIVE=0; rm -rf -- "$SERVICE_SNAPSHOT"; SERVICE_SNAPSHOT=""; log "$mode complete: $version"
+  TRANSACTION_ACTIVE=0
+  if ! is_true "$DRY_RUN"; then rm -rf -- "$SERVICE_SNAPSHOT"; fi
+  SERVICE_SNAPSHOT=""; log "$mode complete: $version"
 }
 rollback() {
   ensure_layout; validate_runtime_config; acquire_lock; capture_link_state; capture_service_state
@@ -443,11 +457,18 @@ rollback() {
     log "rollback target failed readiness; restoring the original release state"
     RECOVERING=1
     stop_service_confirmed || fail "rollback target failed readiness and shutdown could not be confirmed; current state was preserved"
-    restore_link_state; restore_service_state; start_service
-    if probe_runtime; then TRANSACTION_ACTIVE=0; fail "rollback target failed readiness and the original release was restored"; fi
-    fail "rollback target and original release both failed readiness"
+    restore_link_state; restore_service_state
+    if prior_runtime_was_running; then
+      start_service
+      if probe_runtime; then TRANSACTION_ACTIVE=0; fail "rollback target failed readiness and the original release was restored"; fi
+      fail "rollback target and original release both failed readiness"
+    fi
+    TRANSACTION_ACTIVE=0
+    fail "rollback target failed readiness and the original stopped service state was restored"
   fi
-  TRANSACTION_ACTIVE=0; rm -rf -- "$SERVICE_SNAPSHOT"; SERVICE_SNAPSHOT=""; log "rollback complete"
+  TRANSACTION_ACTIVE=0
+  if ! is_true "$DRY_RUN"; then rm -rf -- "$SERVICE_SNAPSHOT"; fi
+  SERVICE_SNAPSHOT=""; log "rollback complete"
 }
 status() {
   local current=none previous=none invalid=0
