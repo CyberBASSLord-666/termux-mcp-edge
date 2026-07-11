@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
                 config.transport.allowed_hosts.clone(),
                 config.transport.allowed_origins.clone(),
                 config.transport.allow_missing_origin,
-            ),
+            )?,
             file_tools,
         )
         .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
@@ -134,7 +134,6 @@ async fn main() -> anyhow::Result<()> {
             mcp_auth_policy,
             require_mcp_auth,
         ));
-
         app.merge(mcp_app)
     };
 
@@ -142,7 +141,6 @@ async fn main() -> anyhow::Result<()> {
     let _ = file_tools;
 
     info!("Listening on http://{}", display_addr);
-
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     axum::serve(listener, app)

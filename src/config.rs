@@ -9,6 +9,7 @@ use crate::request_limits::{
     MAX_CONFIGURED_BODY_BYTES, MAX_CONFIGURED_CONCURRENT_REQUESTS,
     MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS, MIN_CONFIGURED_BODY_BYTES,
 };
+use crate::transport_security::{normalize_host, normalize_origin};
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
 const EMPTY_STATIC_TOKEN_ERROR: &str =
@@ -99,18 +100,18 @@ impl AppConfig {
                 safe_roots: env_path_list("MCP__FILE__SAFE_ROOTS", &[DEFAULT_FILE_SAFE_ROOT]),
             },
             transport: TransportConfig {
-                allowed_hosts: env_string_list(
+                allowed_hosts: env_exact_string_list(
                     "MCP__TRANSPORT__ALLOWED_HOSTS",
                     &["localhost:8000", "127.0.0.1:8000", "[::1]:8000"],
-                ),
-                allowed_origins: env_string_list(
+                )?,
+                allowed_origins: env_exact_string_list(
                     "MCP__TRANSPORT__ALLOWED_ORIGINS",
                     &[
                         "http://localhost:8000",
                         "http://127.0.0.1:8000",
                         "http://[::1]:8000",
                     ],
-                ),
+                )?,
                 allow_missing_origin: env_bool("MCP__TRANSPORT__ALLOW_MISSING_ORIGIN", false)?,
                 max_concurrent_requests: env_usize(
                     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
@@ -213,6 +214,16 @@ fn env_string_list(name: &str, defaults: &[&str]) -> Vec<String> {
     }
 }
 
+fn env_exact_string_list(name: &str, defaults: &[&str]) -> anyhow::Result<Vec<String>> {
+    match env::var(name) {
+        Ok(value) => split_exact_env_list(name, &value),
+        Err(env::VarError::NotPresent) => Ok(defaults.iter().copied().map(str::to_owned).collect()),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("{name} must contain valid Unicode text")
+        }
+    }
+}
+
 fn env_path_list(name: &str, defaults: &[&str]) -> Vec<PathBuf> {
     env_string_list(name, defaults)
         .into_iter()
@@ -227,6 +238,14 @@ fn split_env_list(value: &str) -> Vec<String> {
         .filter(|item| !item.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+fn split_exact_env_list(name: &str, value: &str) -> anyhow::Result<Vec<String>> {
+    let items = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    if items.iter().any(String::is_empty) {
+        bail!("{name} must not contain empty list entries");
+    }
+    Ok(items)
 }
 
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
@@ -298,15 +317,13 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
     }
 
     for host in &transport.allowed_hosts {
-        let host = host.trim();
-        if host.is_empty() || host == "*" || host.contains('/') || host.contains(' ') {
+        if normalize_host(host).is_none() {
             bail!("MCP__TRANSPORT__ALLOWED_HOSTS contains an invalid host: {host}");
         }
     }
 
     for origin in &transport.allowed_origins {
-        let origin = origin.trim();
-        if !is_exact_http_origin(origin) {
+        if normalize_origin(origin).is_none() {
             bail!("MCP__TRANSPORT__ALLOWED_ORIGINS contains an invalid origin: {origin}");
         }
     }
@@ -331,24 +348,6 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
     }
 
     Ok(())
-}
-
-fn is_exact_http_origin(origin: &str) -> bool {
-    let authority = if let Some(authority) = origin.strip_prefix("http://") {
-        authority
-    } else if let Some(authority) = origin.strip_prefix("https://") {
-        authority
-    } else {
-        return false;
-    };
-
-    !authority.is_empty()
-        && !authority.contains('*')
-        && !authority.contains(' ')
-        && !authority.contains('/')
-        && !authority.contains('?')
-        && !authority.contains('#')
-        && !authority.contains('@')
 }
 
 #[cfg(test)]
@@ -495,6 +494,92 @@ mod tests {
     fn transport_security_config_accepts_exact_hosts_origins_and_safe_limits() {
         validate_transport_security(&transport_config())
             .expect("exact transport security allowlists and safe limits should validate");
+    }
+
+    #[test]
+    fn transport_security_config_uses_request_authority_contract() {
+        let accepted = [
+            ("LOCALHOST:8000", "HTTP://LOCALHOST:8000"),
+            ("127.0.0.1:8000", "http://127.0.0.1:8000"),
+            ("[0:0:0:0:0:0:0:1]:8000", "http://[0:0:0:0:0:0:0:1]:8000"),
+        ];
+        for (host, origin) in accepted {
+            let transport = TransportConfig {
+                allowed_hosts: vec![host.to_owned()],
+                allowed_origins: vec![origin.to_owned()],
+                ..transport_config()
+            };
+            validate_transport_security(&transport)
+                .unwrap_or_else(|error| panic!("accepted authority rejected: {error}"));
+        }
+
+        let rejected = [
+            "localhost\t:8000",
+            "localhost\n:8000",
+            "user@localhost:8000",
+            "localhost:0",
+            "localhost:65536",
+            "localhost:",
+            "::1",
+            "[::1",
+            "[::1]junk",
+        ];
+        for authority in rejected {
+            let transport = TransportConfig {
+                allowed_hosts: vec![authority.to_owned()],
+                ..transport_config()
+            };
+            validate_transport_security(&transport)
+                .expect_err("malformed configured host must fail startup");
+
+            let transport = TransportConfig {
+                allowed_origins: vec![format!("http://{authority}")],
+                ..transport_config()
+            };
+            validate_transport_security(&transport)
+                .expect_err("malformed configured origin must fail startup");
+        }
+    }
+
+    #[test]
+    fn exact_transport_list_parser_preserves_invalid_whitespace_for_validation() {
+        for value in [
+            " localhost:8000",
+            "localhost:8000 ",
+            "localhost:8000,\t127.0.0.1:8000",
+        ] {
+            let transport = TransportConfig {
+                allowed_hosts: split_exact_env_list("ALLOWED_HOSTS", value).unwrap(),
+                ..transport_config()
+            };
+
+            validate_transport_security(&transport)
+                .expect_err("configured authority whitespace must fail closed");
+        }
+
+        for value in [
+            " http://localhost:8000",
+            "http://localhost:8000 ",
+            "http://localhost:8000,\thttp://127.0.0.1:8000",
+        ] {
+            let transport = TransportConfig {
+                allowed_origins: split_exact_env_list("ALLOWED_ORIGINS", value).unwrap(),
+                ..transport_config()
+            };
+
+            validate_transport_security(&transport)
+                .expect_err("configured origin whitespace must fail closed");
+        }
+    }
+
+    #[test]
+    fn exact_transport_list_parser_rejects_empty_entries_instead_of_dropping_them() {
+        for value in ["", ",", "localhost:8000,", ",localhost:8000", "a,,b"] {
+            let error = split_exact_env_list("ALLOWED_HOSTS", value)
+                .expect_err("empty configured authority entries must fail closed");
+
+            assert!(error.to_string().contains("empty list entries"));
+        }
     }
 
     #[test]
