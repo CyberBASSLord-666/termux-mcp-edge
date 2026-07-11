@@ -9,7 +9,7 @@
 //! - Graceful shutdown under runit supervision
 //! - Single-binary deployment optimized for Android Termux
 
-use std::ffi::OsStr;
+use std::{ffi::OsStr, path::PathBuf};
 
 #[cfg(feature = "mcp-runtime")]
 use axum::{extract::DefaultBodyLimit, middleware};
@@ -88,10 +88,17 @@ async fn main() -> anyhow::Result<()> {
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
-    // Initialize filesystem tools once so startup validates configured safe roots.
-    // The optional staged MCP runtime reuses this instance for bounded safe-rooted
-    // listing, reads, dry-run previews, and explicitly requested writes.
-    let file_tools = FileSystemTools::new(config.file.safe_roots.clone());
+    // Anchor every configured jail root to an existing directory before any
+    // listener is opened. Termux storage permissions and mount availability can
+    // change independently of configuration; retaining an unresolved lexical
+    // path would make startup appear healthy without a trustworthy jail anchor.
+    let safe_roots = anchor_safe_roots(config.file.safe_roots.clone())?;
+    let safe_root_count = safe_roots.len();
+
+    // Initialize filesystem tools once so the optional staged MCP runtime reuses
+    // the exact anchored roots for bounded listing, reads, dry-run previews, and
+    // explicitly requested writes.
+    let file_tools = FileSystemTools::new(safe_roots);
 
     #[cfg(feature = "mcp-runtime")]
     let readiness_limits = Some(McpRequestLimitReadiness {
@@ -103,12 +110,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "mcp-runtime"))]
     let readiness_limits = None;
 
-    let readiness = build_readiness_response(
-        config.file.safe_roots.len(),
-        auth_posture_label,
-        readiness_limits,
-    );
-
+    let readiness = build_readiness_response(safe_root_count, auth_posture_label, readiness_limits);
     let app = Router::new()
         .route("/health", get(health_check))
         .route("/ready", get(readiness_check))
@@ -149,6 +151,33 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Server shutdown complete");
     Ok(())
+}
+
+fn anchor_safe_roots(safe_roots: Vec<PathBuf>) -> anyhow::Result<Vec<PathBuf>> {
+    if safe_roots.is_empty() {
+        anyhow::bail!("at least one filesystem safe root must be configured");
+    }
+
+    let mut anchored = Vec::with_capacity(safe_roots.len());
+    for (index, root) in safe_roots.into_iter().enumerate() {
+        let position = index + 1;
+        let canonical = root.canonicalize().map_err(|_| {
+            anyhow::anyhow!("configured filesystem safe root {position} cannot be resolved")
+        })?;
+        let metadata = std::fs::metadata(&canonical).map_err(|_| {
+            anyhow::anyhow!("configured filesystem safe root {position} cannot be inspected")
+        })?;
+
+        if !metadata.is_dir() {
+            anyhow::bail!("configured filesystem safe root {position} is not a directory");
+        }
+
+        anchored.push(canonical);
+    }
+
+    anchored.sort_unstable();
+    anchored.dedup();
+    Ok(anchored)
 }
 
 fn handle_cli() -> anyhow::Result<bool> {
@@ -205,4 +234,77 @@ async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_roots_anchor_existing_directories_and_deduplicate_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let expected = root.path().canonicalize().unwrap();
+
+        let anchored = anchor_safe_roots(vec![
+            root.path().to_path_buf(),
+            root.path().join("."),
+            root.path().to_path_buf(),
+        ])
+        .unwrap();
+
+        assert_eq!(anchored, vec![expected]);
+    }
+
+    #[test]
+    fn safe_roots_keep_distinct_directories_in_deterministic_order() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let mut expected = vec![
+            first.path().canonicalize().unwrap(),
+            second.path().canonicalize().unwrap(),
+        ];
+        expected.sort_unstable();
+
+        let anchored = anchor_safe_roots(vec![
+            second.path().to_path_buf(),
+            first.path().to_path_buf(),
+        ])
+        .unwrap();
+
+        assert_eq!(anchored, expected);
+    }
+
+    #[test]
+    fn safe_roots_reject_missing_paths_without_disclosing_them() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("private-missing-root");
+
+        let error = anchor_safe_roots(vec![missing.clone()]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("safe root 1 cannot be resolved"));
+        assert!(!message.contains(missing.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn safe_roots_reject_regular_files_without_disclosing_them() {
+        let parent = tempfile::tempdir().unwrap();
+        let file = parent.path().join("not-a-root.txt");
+        std::fs::write(&file, "not a directory").unwrap();
+
+        let error = anchor_safe_roots(vec![file.clone()]).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("safe root 1 is not a directory"));
+        assert!(!message.contains(file.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn safe_roots_reject_empty_configuration() {
+        let error = anchor_safe_roots(Vec::new()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "at least one filesystem safe root must be configured"
+        );
+    }
 }
