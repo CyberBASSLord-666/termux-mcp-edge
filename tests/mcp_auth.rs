@@ -25,7 +25,7 @@ fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Route
             .expect("test localhost policy must be valid"),
         file_tools,
     )
-        .route_layer(middleware::from_fn_with_state(policy, require_mcp_auth))
+    .route_layer(middleware::from_fn_with_state(policy, require_mcp_auth))
 }
 
 async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> Response {

@@ -516,11 +516,8 @@ mod tests {
     #[test]
     fn configured_server_port_must_be_between_one_and_65535() {
         for value in ["0", "65536", "-1", "not-a-port"] {
-            let error = load_from_os_values([(
-                "MCP__SERVER__PORT",
-                OsString::from(value),
-            )])
-            .expect_err("invalid or ephemeral listener ports must fail closed");
+            let error = load_from_os_values([("MCP__SERVER__PORT", OsString::from(value))])
+                .expect_err("invalid or ephemeral listener ports must fail closed");
 
             assert_eq!(
                 error.to_string(),
@@ -528,22 +525,16 @@ mod tests {
             );
         }
 
-        let config = load_from_os_values([(
-            "MCP__SERVER__PORT",
-            OsString::from(" 65535 "),
-        )])
-        .expect("highest stable TCP port should be accepted");
+        let config = load_from_os_values([("MCP__SERVER__PORT", OsString::from(" 65535 "))])
+            .expect("highest stable TCP port should be accepted");
         assert_eq!(config.server.port, 65535);
     }
 
     #[test]
     fn safe_root_list_rejects_empty_entries_without_trimming_paths() {
         for value in ["", ",", "/tmp/root,", ",/tmp/root", "/tmp/a,,/tmp/b"] {
-            let error = load_from_os_values([(
-                "MCP__FILE__SAFE_ROOTS",
-                OsString::from(value),
-            )])
-            .expect_err("empty safe-root entries must fail closed");
+            let error = load_from_os_values([("MCP__FILE__SAFE_ROOTS", OsString::from(value))])
+                .expect_err("empty safe-root entries must fail closed");
 
             assert_eq!(
                 error.to_string(),

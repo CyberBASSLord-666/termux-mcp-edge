@@ -31,15 +31,15 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
             .expect("test localhost policy must be valid"),
         file_tools,
     )
-        .layer(DefaultBodyLimit::max(max_body_bytes))
-        .route_layer(middleware::from_fn_with_state(
-            limits,
-            enforce_mcp_request_limits,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            McpAuthPolicy::static_bearer("expected-token").unwrap(),
-            require_mcp_auth,
-        ))
+    .layer(DefaultBodyLimit::max(max_body_bytes))
+    .route_layer(middleware::from_fn_with_state(
+        limits,
+        enforce_mcp_request_limits,
+    ))
+    .route_layer(middleware::from_fn_with_state(
+        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        require_mcp_auth,
+    ))
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {
