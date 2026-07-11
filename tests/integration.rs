@@ -1,15 +1,14 @@
 //! Integration tests for the current Termux MCP Edge runtime posture.
 
-use std::path::PathBuf;
-
 use termux_mcp_server::tools::{FileSystemTools, SystemTools};
 
 #[test]
-fn filesystem_tools_preserve_configured_safe_roots_without_transport_exposure() {
-    let root = PathBuf::from("/storage/emulated/0/Documents");
-    let tools = FileSystemTools::new(vec![root.clone()]);
+fn filesystem_tools_preserve_anchored_safe_roots_without_transport_exposure() {
+    let root = tempfile::tempdir().unwrap();
+    let anchored = root.path().canonicalize().unwrap();
+    let tools = FileSystemTools::new(vec![anchored.clone()]);
 
-    assert_eq!(tools.safe_roots(), &[root]);
+    assert_eq!(tools.safe_roots(), &[anchored]);
 }
 
 #[test]
