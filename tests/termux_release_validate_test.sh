@@ -588,6 +588,10 @@ jq -e '
   and .phases.preflight == "pass"
   and .phases.runtime == "not_run"
   and .phases.deployment == "pass"
+  and ([.results[].code] | index("default_install_baseline_succeeded") != null)
+  and ([.results[].code] | index("default_upgrade_candidate_succeeded") != null)
+  and ([.results[].code] | index("default_rollback_success_succeeded") != null)
+  and ([.results[].code] | index("default_uninstall_success_succeeded") != null)
   and ([.results[].code] | index("install_baseline_succeeded") != null)
   and ([.results[].code] | index("forced_candidate_failure_rejected_and_recovered") != null)
   and ([.results[].code] | index("upgrade_candidate_succeeded") != null)

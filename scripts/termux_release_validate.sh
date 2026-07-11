@@ -1151,6 +1151,20 @@ run_dedicated_deployment_cycle() {
   prepare_dedicated_deployment
   local baseline_release="$DEDICATED_DEPLOY_ROOT/releases/$BASELINE_VERSION"
   local candidate_release="$DEDICATED_DEPLOY_ROOT/releases/$EXPECTED_VERSION"
+
+  run_deploy_success default_install_baseline \
+    bash "$DEPLOY_SCRIPT" install --artifact "$BASELINE_PINNED_ARTIFACT" --version "$BASELINE_VERSION" --sha256 "$BASELINE_SHA256"
+  link_equals "$DEDICATED_DEPLOY_ROOT/current" "$baseline_release" || fail default_install_state_invalid
+  run_deploy_success default_upgrade_candidate \
+    bash "$DEPLOY_SCRIPT" upgrade --artifact "$DEFAULT_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$DEFAULT_SHA256"
+  link_equals "$DEDICATED_DEPLOY_ROOT/current" "$candidate_release" || fail default_upgrade_state_invalid
+  link_equals "$DEDICATED_DEPLOY_ROOT/previous" "$baseline_release" || fail default_upgrade_previous_invalid
+  run_deploy_success default_rollback_success bash "$DEPLOY_SCRIPT" rollback
+  link_equals "$DEDICATED_DEPLOY_ROOT/current" "$baseline_release" || fail default_rollback_state_invalid
+  run_deploy_success default_uninstall_success bash "$DEPLOY_SCRIPT" uninstall
+  [[ ! -e "$DEDICATED_DEPLOY_ROOT" && ! -e "$DEDICATED_SERVICE_ROOT/mcp_runtime" ]] || fail default_uninstall_state_invalid
+  [[ -f "$DEDICATED_CONFIG_ROOT/runtime.env" ]] || fail default_uninstall_config_not_preserved
+
   run_deploy_success install_baseline \
     bash "$DEPLOY_SCRIPT" install --artifact "$BASELINE_PINNED_ARTIFACT" --version "$BASELINE_VERSION" --sha256 "$BASELINE_SHA256"
   link_equals "$DEDICATED_DEPLOY_ROOT/current" "$baseline_release" || fail install_state_invalid

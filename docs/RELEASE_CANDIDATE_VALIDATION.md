@@ -158,7 +158,7 @@ bash scripts/termux_release_validate.sh \
   --confirm-deployment-mutation
 ```
 
-It uses the canonical `termux_deploy.sh` manager with unique deployment, configuration, service, and safe-root paths. On a real Termux device it starts a dedicated `runsvdir` and verifies:
+It uses the canonical `termux_deploy.sh` manager with unique deployment, configuration, service, and safe-root paths. On a real Termux device it starts a dedicated `runsvdir` and first installs, upgrades to, rolls back from, and uninstalls the default-posture artifact. It then verifies the `mcp-runtime` recovery cycle:
 
 1. baseline install;
 2. forced candidate-readiness failure and prior-runtime recovery;
