@@ -296,6 +296,7 @@ capture_service_state() {
       SERVICE_DOWN_BEFORE_PRESENT=1
     fi
   fi
+  return 0
 }
 prior_runtime_was_running() {
   ((CURRENT_BEFORE_PRESENT == 1
