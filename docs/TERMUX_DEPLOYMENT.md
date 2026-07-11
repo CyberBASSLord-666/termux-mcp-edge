@@ -160,6 +160,8 @@ The test suite covers the binary CLI contract, verified install, invalid operati
 
 ## On-device production gate
 
+Use [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) and `scripts/termux_device_smoke.sh` for the canonical automated no-clone exercise. It pins the fetched source to a required full commit SHA and covers the checks below in isolated real runit state. Preserve its mode-`0600` report with the exact CI and Android evidence.
+
 1. Confirm the artifact corresponds to the intended exact commit or release.
 2. Verify its SHA-256 digest.
 3. Verify AArch64 Android-compatible ELF metadata.

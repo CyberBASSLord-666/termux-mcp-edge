@@ -72,6 +72,8 @@ For each released artifact:
 7. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
 8. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions.
 
+Run the automated AArch64 portion through [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md). A passing report must identify the exact commit and artifact digest and end with `TERMUX_MCP_DEVICE_RESULT=PASS`, `cleanup_complete=true`, and `final_status=PASS`. The harness does not waive the sustained-device observation in item 8.
+
 ## Current MCP Runtime Gate
 
 A change to the stable transport or staged tool registry must prove:
