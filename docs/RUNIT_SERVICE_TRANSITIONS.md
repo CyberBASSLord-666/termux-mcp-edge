@@ -16,7 +16,7 @@ Initial installation builds a complete private service directory outside the run
 - an owner-only `down` marker that prevents automatic startup;
 - no logs, tokens, or generated environment values.
 
-The complete directory is then renamed into the service root. Runit cannot observe a partial `run` file or a service directory that is eligible for startup before activation is ready.
+The manager verifies that the deployment and service roots share a filesystem before the complete directory is renamed into the service root. It fails before candidate publication when an atomic rename cannot be guaranteed. Runit cannot observe a partial `run` file or a service directory that is eligible for startup before activation is ready.
 
 For an existing service, deployment first confirms the service is down, creates the `down` marker, writes a private temporary run file in the service directory, and atomically renames it over `run`.
 
