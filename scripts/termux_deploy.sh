@@ -367,6 +367,11 @@ stop_service_confirmed() {
     fi
     return 0
   fi
+  if is_true "$DRY_RUN"; then
+    require_command sv
+    log "would stop and confirm canonical service at $service_dir"
+    return 0
+  fi
   if ! command -v sv >/dev/null 2>&1; then
     soft_error "required command not found: sv"
     return 1
@@ -430,7 +435,16 @@ probe_url() {
   done
   return 1
 }
-probe_runtime() { if is_true "$TEST_MODE"; then next_test_probe_result; else probe_url "$HEALTH_URL" health && probe_url "$READY_URL" ready; fi; }
+probe_runtime() {
+  if is_true "$TEST_MODE"; then
+    next_test_probe_result
+  elif is_true "$DRY_RUN"; then
+    log "would probe candidate health and readiness"
+    return 0
+  else
+    probe_url "$HEALTH_URL" health && probe_url "$READY_URL" ready
+  fi
+}
 release_target_from_link() {
   local link="$1" raw candidate canonical
   [[ -L "$link" ]] || return 1; raw="$(readlink "$link")"; if [[ "$raw" == /* ]]; then candidate="$raw"; else candidate="$(dirname "$link")/$raw"; fi
