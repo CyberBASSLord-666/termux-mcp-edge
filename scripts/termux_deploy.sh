@@ -96,10 +96,12 @@ cleanup() {
     RECOVERING=1
     log "interrupted deployment; restoring pre-operation service and link state"
     if stop_service_confirmed >/dev/null 2>&1; then
-      restore_link_state >/dev/null 2>&1 || true
-      restore_service_state >/dev/null 2>&1 || true
-      if prior_runtime_was_running; then
-        start_service >/dev/null 2>&1 || true
+      if restore_link_state >/dev/null 2>&1 && restore_service_state >/dev/null 2>&1; then
+        if prior_runtime_was_running && ! start_service >/dev/null 2>&1; then
+          log "interrupted deployment recovery restored state but could not restart the prior runtime"
+        fi
+      else
+        log "interrupted deployment recovery could not restore the complete prior state; service remains stopped"
       fi
     else
       log "interrupted deployment recovery could not confirm service shutdown; preserving current state"
@@ -307,13 +309,25 @@ prior_runtime_was_running() {
 restore_service_state() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME" temp
   if ((SERVICE_DIR_BEFORE_PRESENT == 0)); then
-    run rm -rf -- "$service_dir"; return
+    run rm -rf -- "$service_dir" || return 1
+    return 0
   fi
-  run mkdir -p -- "$service_dir"; run chmod "$SERVICE_DIR_MODE_BEFORE" "$service_dir"
+  run mkdir -p -- "$service_dir" || return 1
+  run chmod "$SERVICE_DIR_MODE_BEFORE" "$service_dir" || return 1
   if ((SERVICE_RUN_BEFORE_PRESENT == 1)); then
-    temp="$service_dir/.run.restore.$$"; run install -m 700 "$SERVICE_SNAPSHOT/run" "$temp"; run mv -Tf -- "$temp" "$service_dir/run"
-  else run rm -f -- "$service_dir/run"; fi
-  if ((SERVICE_DOWN_BEFORE_PRESENT == 1)); then run touch "$service_dir/down"; run chmod 600 "$service_dir/down"; else run rm -f -- "$service_dir/down"; fi
+    temp="$service_dir/.run.restore.$$"
+    run install -m 700 "$SERVICE_SNAPSHOT/run" "$temp" || return 1
+    run mv -Tf -- "$temp" "$service_dir/run" || return 1
+  else
+    run rm -f -- "$service_dir/run" || return 1
+  fi
+  if ((SERVICE_DOWN_BEFORE_PRESENT == 1)); then
+    run touch "$service_dir/down" || return 1
+    run chmod 600 "$service_dir/down" || return 1
+  else
+    run rm -f -- "$service_dir/down" || return 1
+  fi
+  return 0
 }
 next_sequence_result() {
   local sequence="$1" index_name="$2" index result
@@ -367,9 +381,10 @@ prepare_service_stopped() {
 }
 start_service() {
   local service_dir="$SERVICE_ROOT/$SERVICE_NAME"
-  run rm -f -- "$service_dir/down"
+  run rm -f -- "$service_dir/down" || return 1
   is_true "$TEST_MODE" && return 0
-  require_command sv; run sv up "$service_dir"
+  require_command sv
+  run sv up "$service_dir"
 }
 
 next_test_probe_result() { next_sequence_result "$TEST_PROBE_SEQUENCE" TEST_PROBE_INDEX; }
@@ -396,8 +411,16 @@ validate_release_dir() {
   printf '%s\n' "$release_dir"
 }
 atomic_link() {
-  local target link; target="$(validate_release_dir "$1")"; link="$2"; validate_absolute_safe_path "$link" release_link
-  LINK_TMP="${link}.next.$$"; ! is_true "$DRY_RUN" && rm -f -- "$LINK_TMP"; run ln -s -- "$target" "$LINK_TMP"; run mv -Tf -- "$LINK_TMP" "$link"; LINK_TMP=""
+  local target link
+  target="$(validate_release_dir "$1")" || return 1
+  link="$2"
+  validate_absolute_safe_path "$link" release_link
+  LINK_TMP="${link}.next.$$"
+  if ! is_true "$DRY_RUN"; then rm -f -- "$LINK_TMP" || return 1; fi
+  run ln -s -- "$target" "$LINK_TMP" || return 1
+  run mv -Tf -- "$LINK_TMP" "$link" || return 1
+  LINK_TMP=""
+  return 0
 }
 remove_link() { run rm -f -- "$1"; }
 capture_link_state() {
@@ -406,8 +429,17 @@ capture_link_state() {
   if [[ -L "$DEPLOY_ROOT/previous" ]]; then PREVIOUS_BEFORE="$(release_target_from_link "$DEPLOY_ROOT/previous")" || fail "previous release link is invalid"; PREVIOUS_BEFORE_PRESENT=1; fi
 }
 restore_link_state() {
-  if ((CURRENT_BEFORE_PRESENT == 1)); then atomic_link "$CURRENT_BEFORE" "$DEPLOY_ROOT/current"; else remove_link "$DEPLOY_ROOT/current"; fi
-  if ((PREVIOUS_BEFORE_PRESENT == 1)); then atomic_link "$PREVIOUS_BEFORE" "$DEPLOY_ROOT/previous"; else remove_link "$DEPLOY_ROOT/previous"; fi
+  if ((CURRENT_BEFORE_PRESENT == 1)); then
+    atomic_link "$CURRENT_BEFORE" "$DEPLOY_ROOT/current" || return 1
+  else
+    remove_link "$DEPLOY_ROOT/current" || return 1
+  fi
+  if ((PREVIOUS_BEFORE_PRESENT == 1)); then
+    atomic_link "$PREVIOUS_BEFORE" "$DEPLOY_ROOT/previous" || return 1
+  else
+    remove_link "$DEPLOY_ROOT/previous" || return 1
+  fi
+  return 0
 }
 activate_release() {
   local release_dir; release_dir="$(validate_release_dir "$1")"
@@ -418,9 +450,16 @@ recover_failed_deployment() {
   local failed_release="$1"
   RECOVERING=1
   stop_service_confirmed || return 1
-  restore_link_state; restore_service_state; run rm -rf -- "$failed_release"
-  if prior_runtime_was_running; then start_service; probe_runtime || return 1; fi
-  TRANSACTION_ACTIVE=0; RECOVERING=0
+  restore_link_state || return 1
+  restore_service_state || return 1
+  run rm -rf -- "$failed_release" || return 1
+  if prior_runtime_was_running; then
+    start_service || return 1
+    probe_runtime || return 1
+  fi
+  TRANSACTION_ACTIVE=0
+  RECOVERING=0
+  return 0
 }
 
 deploy() {
