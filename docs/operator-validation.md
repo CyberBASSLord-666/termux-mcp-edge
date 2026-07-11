@@ -1,6 +1,6 @@
 # Operator runtime validation checklist
 
-This checklist gives advanced Termux MCP Edge operators a repeatable way to validate the staged runtime without expanding the MCP surface.
+This checklist gives advanced Termux MCP Edge operators a repeatable way to validate the stable MCP transport and staged tool authority without expanding the MCP surface.
 
 Use it after a local build, configuration change, release candidate, or manual dispatch/tag build when you need evidence that the runtime still matches the staged capability model.
 
@@ -45,6 +45,20 @@ Prove all of the following:
 - A correct `Authorization: Bearer ${MCP_TEST_TOKEN}` header reaches transport validation and MCP handling.
 - Authentication rejection happens before invalid Host/Origin or malformed JSON is processed.
 - `/health` and `/ready` remain available without credentials and return only coarse non-secret operational status.
+
+## Protocol and session checks
+
+Use the initialization sequence in [`VALIDATION.md`](VALIDATION.md) and prove all of the following:
+
+- POST requires `Content-Type: application/json` and explicit `Accept: application/json, text/event-stream`.
+- A schema-valid initialize request negotiates `2025-11-25` and returns one UUID `MCP-Session-Id`; invalid initialize params allocate no session.
+- Subsequent requests require the returned session ID and `MCP-Protocol-Version: 2025-11-25` in addition to normal bearer authentication.
+- Ping works while the session is pending, but discovery and invocation remain blocked until `notifications/initialized` receives HTTP 202 with no body.
+- Separate sessions do not share pending/active state.
+- A valid GET with `Accept: text/event-stream` returns the documented HTTP 405 and does not open an SSE stream.
+- DELETE returns HTTP 204, and later use of that identifier returns HTTP 404.
+- Missing lifecycle headers fail with HTTP 400; unknown, expired, terminated, malformed, or duplicate session headers fail without reflecting the presented value.
+- A process restart clears in-memory sessions; clients reconnect by sending initialize without a prior session header.
 
 Clear the temporary variable after validation:
 
@@ -129,6 +143,8 @@ Treat any of the following as a blocker for a staged runtime PR or release candi
 
 - Static-token mode permits unauthenticated `/mcp` discovery or invocation.
 - Authentication failures reveal token values or reach JSON-RPC/tool dispatch.
+- Initialization, media negotiation, protocol headers, or per-session lifecycle gating can be bypassed.
+- A notification/client response receives a JSON-RPC response body, or a batch array is accepted.
 - Discovery exposes a tool outside the staged baseline.
 - A read-only metadata tool exposes private identifiers, secrets, environment values, filesystem paths outside filesystem tools, process inventory, or command output.
 - Filesystem tools can escape configured safe roots or mutate without explicit `dry_run:false`.

@@ -4,21 +4,22 @@ Termux MCP Edge is a hardened Rust/Axum HTTP service for Android Termux deployme
 
 The project is designed for developers, advanced Termux operators, and power users who understand that MCP tools can affect local device state. Capabilities are introduced through explicit opt-in configuration, allowlists, bounded inputs and outputs, dry-run or preview behavior, tests, and audit coverage.
 
-The optional `mcp-runtime` feature wires a staged `/mcp` transport. In static-token mode, bearer authentication is enforced before resource-limit accounting, transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Authenticated requests must pass mobile-conscious concurrency, timeout, body-size, exact `Host`, and browser `Origin` checks.
+The optional `mcp-runtime` feature wires a stable MCP 2025-11-25 Streamable HTTP `/mcp` transport around the staged tool surface. In static-token mode, bearer authentication is enforced before resource-limit accounting, transport validation, JSON-RPC parsing, lifecycle handling, tool discovery, or tool invocation. Authenticated requests must pass mobile-conscious concurrency, timeout, body-size, exact `Host`, and browser `Origin` checks.
 
-The transport is currently a custom POST-only JSON-RPC stage that reports protocol version `2024-11-05`. It is not yet a complete stable MCP 2025-11-25 Streamable HTTP implementation; lifecycle, GET/SSE, media negotiation, protocol-version request headers, and session work is tracked by #199.
+The transport negotiates protocol version `2025-11-25`, issues bounded cryptographically random sessions, requires `notifications/initialized` before normal operations, enforces media and protocol headers, accepts one JSON-RPC request, notification, or response per POST, and supports explicit session termination. GET is implemented with the specification-permitted HTTP 405 response because this server does not initiate SSE streams or retain replay state.
 
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
 - **Package version:** `0.5.1`.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
-- **Optional MCP endpoint:** authenticated `POST /mcp` when built with `--features mcp-runtime`.
+- **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
 - **Filesystem surface:** bounded safe-rooted directory listing and UTF-8 reads; safe-rooted writes are payload-bounded, cancellation-safe, and dry-run by default. Descriptor-relative race hardening remains tracked by #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
+- **Session bounds:** 64 in-memory UUID sessions with a 30-minute idle expiry; client initialization metadata is validated but not retained.
 - **Default filesystem root:** `/data/data/com.termux/files/home/mcp-files`.
 - **Project service name:** `mcp_runtime`.
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
@@ -40,6 +41,23 @@ Authorization: Bearer <configured-token>
 ```
 
 Missing, malformed, oversized, or incorrect credentials receive HTTP 401 before MCP resource consumption or discovery. `/health` and `/ready` remain unauthenticated coarse operational probes.
+
+## MCP transport contract
+
+Every POST must use `Content-Type: application/json` and explicitly accept both response media types:
+
+```http
+Accept: application/json, text/event-stream
+```
+
+Start a session with an `initialize` request containing `protocolVersion`, `capabilities`, and `clientInfo`. The response negotiates `2025-11-25` and returns `MCP-Session-Id`. Every later POST, GET, or DELETE must include both:
+
+```http
+MCP-Protocol-Version: 2025-11-25
+MCP-Session-Id: <value returned by initialize>
+```
+
+Send `notifications/initialized` before discovery or invocation. Accepted notifications and client responses return HTTP 202 with no body. A valid GET with `Accept: text/event-stream` returns HTTP 405 because server-initiated SSE and resumption are not offered. DELETE terminates the session with HTTP 204; expired, terminated, or unknown session IDs return HTTP 404. Session IDs scope lifecycle state but never replace bearer authentication.
 
 Local unauthenticated development requires both:
 
@@ -129,7 +147,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 
 - Rust 2021 single binary.
 - Axum HTTP runtime.
-- Minimal internal staged JSON-RPC transport; no external MCP framework dependency.
+- Minimal internal stable MCP 2025-11-25 Streamable HTTP transport; no external MCP framework dependency and no optional SSE/replay subsystem.
 - `termux-services` / runit supervision.
 - Localhost-first networking with explicit authenticated remote-access posture.
 - Staged capability gates for higher-risk developer and power-user functionality.

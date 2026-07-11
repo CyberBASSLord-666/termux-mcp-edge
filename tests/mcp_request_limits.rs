@@ -11,7 +11,10 @@ use axum::{
 use serde_json::{json, Value};
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
-    mcp_transport,
+    mcp_transport::{
+        self, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
+        MCP_SESSION_ID_HEADER,
+    },
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
@@ -39,13 +42,29 @@ fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> 
     let mut builder = Request::post("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
-        .header(header::CONTENT_TYPE, "application/json");
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, MCP_POST_ACCEPT);
 
     if let Some(authorization) = authorization {
         builder = builder.header(header::AUTHORIZATION, authorization);
     }
 
     builder.body(body.into()).unwrap()
+}
+
+fn authenticated_json_request(body: Value, session_id: Option<&str>) -> Request<Body> {
+    let mut request = request(body.to_string(), Some("Bearer expected-token"));
+    if let Some(session_id) = session_id {
+        request.headers_mut().insert(
+            MCP_PROTOCOL_VERSION_HEADER,
+            header::HeaderValue::from_static(MCP_PROTOCOL_VERSION),
+        );
+        request.headers_mut().insert(
+            MCP_SESSION_ID_HEADER,
+            header::HeaderValue::try_from(session_id).unwrap(),
+        );
+    }
+    request
 }
 
 async fn response_json(response: Response) -> Value {
@@ -84,14 +103,54 @@ async fn authenticated_oversized_request_is_rejected_with_body_limit() {
 #[tokio::test]
 async fn authenticated_request_inside_limits_reaches_tool_discovery() {
     let app = protected_limited_router(8 * 1024);
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": "limit-test",
-        "method": "tools/list"
-    })
-    .to_string();
+    let initialize = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "limit-initialize",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "limit-tests", "version": "1.0.0"}
+                }
+            }),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(initialize.status(), StatusCode::OK);
+    let session_id = initialize
+        .headers()
+        .get(MCP_SESSION_ID_HEADER)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let initialized = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }),
+            Some(&session_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+
     let response = app
-        .oneshot(request(body, Some("Bearer expected-token")))
+        .oneshot(authenticated_json_request(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "limit-test",
+                "method": "tools/list"
+            }),
+            Some(&session_id),
+        ))
         .await
         .unwrap();
 

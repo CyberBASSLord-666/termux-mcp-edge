@@ -2,16 +2,13 @@
 
 mod support;
 
-use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
-    response::Response,
-    Router,
-};
+use axum::{http::StatusCode, response::Response, Router};
 use serde_json::{json, Map, Value};
-use support::{empty_test_file_tools, post_json_with_empty_root, response_json, test_router};
+use support::{
+    empty_test_file_tools, initialize_session, post_json_to_session, post_json_with_empty_root,
+    response_json, test_router,
+};
 use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
-use tower::ServiceExt;
 
 const NO_ARGUMENT_TOOLS: [&str; 3] = ["runtime_status", "platform_info", "android_status"];
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
@@ -33,17 +30,8 @@ fn tool_call(id: impl Into<Value>, name: &str, arguments: Option<Value>) -> Valu
 }
 
 async fn post_to_router(router: Router, request_body: Value) -> Response {
-    router
-        .oneshot(
-            Request::post("/mcp")
-                .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "http://localhost:8000")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(request_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
+    let session_id = initialize_session(&router).await;
+    post_json_to_session(router, &session_id, request_body).await
 }
 
 async fn assert_invalid_params(response: Response, expected_id: &Value, expected_data: &str) {

@@ -2,14 +2,12 @@
 
 mod support;
 
-use axum::{
-    body::{to_bytes, Body},
-    http::{header, Request, StatusCode},
-};
+use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{post_json, post_raw, response_json, test_router};
+use support::{
+    initialize_session, post_json, post_json_to_session, post_raw, response_json, test_router,
+};
 use termux_mcp_server::tools::FileSystemTools;
-use tower::ServiceExt;
 
 #[tokio::test]
 async fn valid_json_with_invalid_request_shapes_returns_invalid_request() {
@@ -96,7 +94,7 @@ async fn params_must_be_structured_before_method_dispatch() {
 }
 
 #[tokio::test]
-async fn initialized_and_unknown_notifications_return_no_content() {
+async fn initialized_and_unknown_notifications_return_accepted() {
     for method in ["notifications/initialized", "notifications/unknown"] {
         let response = post_json(json!({
             "jsonrpc":"2.0",
@@ -105,7 +103,7 @@ async fn initialized_and_unknown_notifications_return_no_content() {
         }))
         .await;
 
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert!(body.is_empty());
     }
@@ -129,19 +127,11 @@ async fn notification_shaped_tool_call_does_not_dispatch_or_mutate() {
         }
     });
 
-    let response = test_router(file_tools)
-        .oneshot(
-            Request::post("/mcp")
-                .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "http://localhost:8000")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+    let response = post_json_to_session(router, &session_id, body).await;
 
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert!(!target.exists());
 }
 

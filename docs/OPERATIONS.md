@@ -8,7 +8,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 
 - Rust single binary.
 - `GET /health` and `GET /ready` operational endpoints.
-- Optional authenticated `POST /mcp` staged transport.
+- Optional authenticated stable MCP 2025-11-25 `POST`, `GET`, and `DELETE /mcp` handling; GET returns 405 because SSE is not offered.
 - Authentication before concurrency, timeout, body-size, Host, Origin, parsing, discovery, and dispatch.
 - Four concurrent authenticated MCP requests by default.
 - Thirty-second request timeout by default.
@@ -82,21 +82,52 @@ curl -i -sS \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
   --data '{"jsonrpc":"2.0","id":0,"method":"tools/list"}' \
   http://127.0.0.1:8000/mcp
 
-curl -sS \
+MCP_RESPONSE_HEADERS="$(mktemp)"
+curl -sS -D "$MCP_RESPONSE_HEADERS" \
   -X POST \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
   -H 'Host: localhost:8000' \
   -H 'Origin: http://localhost:8000' \
   -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp
-unset MCP_TEST_TOKEN
+  -H 'Accept: application/json, text/event-stream' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-operations-check","version":"1.0.0"}}}' \
+  http://127.0.0.1:8000/mcp | jq -e '.result.protocolVersion == "2025-11-25"'
+MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$MCP_RESPONSE_HEADERS")"
+test -n "$MCP_SESSION_ID"
+
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  http://127.0.0.1:8000/mcp)" = 202
+
+curl -sS \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
+  --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 7'
+
+rm -f "$MCP_RESPONSE_HEADERS"
+unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS
 ```
 
 Do not enable shell tracing, echo token variables, or include credential-bearing commands in screenshots or issue text.
+
+Each process holds at most 64 sessions and expires them after 30 idle minutes. Missing required post-initialize protocol/session headers return HTTP 400; expired, terminated, malformed, or unknown sessions return HTTP 404; capacity exhaustion returns HTTP 503. A client should DELETE a finished session and initialize a new session after HTTP 404 or a server restart. Session IDs do not replace the bearer token.
 
 ## Request limits
 

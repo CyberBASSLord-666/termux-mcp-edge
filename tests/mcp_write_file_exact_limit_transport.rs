@@ -2,14 +2,12 @@
 
 mod support;
 
-use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
-};
+use axum::http::StatusCode;
 use serde_json::json;
-use support::{empty_test_file_tools, response_json, test_router};
+use support::{
+    empty_test_file_tools, initialize_session, post_json_to_session, response_json, test_router,
+};
 use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
-use tower::ServiceExt;
 
 const EXPECTED_DRY_RUN_RESPONSE: &str = "DRY-RUN";
 
@@ -19,31 +17,25 @@ async fn transport_write_file_allows_exact_default_limit_as_dry_run_preview() {
     let target = root.path().join("transport-exact-limit-dry-run.txt");
     let content = "x".repeat(DEFAULT_MAX_WRITE_BYTES);
 
-    let response = test_router(file_tools)
-        .oneshot(
-            Request::post("/mcp")
-                .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "http://localhost:8000")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": "exact-limit-dry-run",
-                        "method": "tools/call",
-                        "params": {
-                            "name": "write_file",
-                            "arguments": {
-                                "path": target.to_string_lossy(),
-                                "content": content
-                            }
-                        }
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+    let response = post_json_to_session(
+        router,
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "exact-limit-dry-run",
+            "method": "tools/call",
+            "params": {
+                "name": "write_file",
+                "arguments": {
+                    "path": target.to_string_lossy(),
+                    "content": content
+                }
+            }
+        }),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload = response_json(response).await;
@@ -75,32 +67,26 @@ async fn transport_write_file_allows_exact_default_limit_with_explicit_mutation(
     let content = "x".repeat(DEFAULT_MAX_WRITE_BYTES);
     let expected_response = format!("Wrote {DEFAULT_MAX_WRITE_BYTES} bytes");
 
-    let response = test_router(file_tools)
-        .oneshot(
-            Request::post("/mcp")
-                .header(header::HOST, "localhost:8000")
-                .header(header::ORIGIN, "http://localhost:8000")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": "exact-limit-mutation",
-                        "method": "tools/call",
-                        "params": {
-                            "name": "write_file",
-                            "arguments": {
-                                "path": target.to_string_lossy(),
-                                "content": content,
-                                "dry_run": false
-                            }
-                        }
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+    let response = post_json_to_session(
+        router,
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "exact-limit-mutation",
+            "method": "tools/call",
+            "params": {
+                "name": "write_file",
+                "arguments": {
+                    "path": target.to_string_lossy(),
+                    "content": content,
+                    "dry_run": false
+                }
+            }
+        }),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let payload = response_json(response).await;

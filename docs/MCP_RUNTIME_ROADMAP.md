@@ -8,9 +8,9 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes a staged custom POST-only transport that reports protocol version `2024-11-05`, validates exact `Host` and browser `Origin` values before handling `/mcp`, supports `initialize`, exposes `tools/list`, and adds deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, validates exact `Host` and browser `Origin` values before protocol handling, negotiates initialize state, scopes lifecycle to bounded UUID sessions, and exposes `tools/list` plus deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state.
 
-This stage is not a complete stable MCP 2025-11-25 Streamable HTTP implementation. Lifecycle state, GET/SSE behavior, media negotiation, the protocol-version request header, and the explicit session model remain tracked by #199.
+The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 
 The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. Command-policy and high-impact capability-token modules are inert policy scaffolding only. Android platform control, shell fallback, live command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact actions remain unavailable until their own power-user capability gates land.
 
@@ -99,18 +99,18 @@ Required gates:
 
 ## Protocol Completion Track: Stable MCP 2025-11-25
 
-Migrate the staged custom transport to the stable MCP 2025-11-25 lifecycle and Streamable HTTP contract without expanding the tool authority in the same change.
+Implement the stable MCP 2025-11-25 lifecycle and Streamable HTTP contract without expanding tool authority in the same change.
 
-Status: not complete; tracked by #199.
+Status: complete for the non-SSE Streamable HTTP posture. Optional server-initiated SSE, replay, and resumability remain unimplemented and must use a separate gate if later required.
 
 Required gates:
 
 - Initialization is the first client/server interaction and negotiated state gates normal operation.
-- The single MCP endpoint implements required POST and GET behavior, including JSON/SSE media negotiation.
+- The single MCP endpoint implements required POST and GET behavior, including explicit JSON/SSE media negotiation and the specification-permitted GET 405 response when SSE is unavailable.
 - Requests after initialization enforce the `MCP-Protocol-Version` header contract.
 - Notification HTTP behavior and JSON-RPC no-response semantics conform to the stable transport.
-- Session support is either deliberately omitted or implemented with secure opaque identifiers and explicit lifecycle rules.
-- Cancellation, shutdown, reconnect, and multiple-client behavior are covered.
+- Session support uses cryptographically random UUIDs, bounded capacity, idle expiry, independent lifecycle state, and explicit DELETE termination.
+- Cancellation notifications, timeout cleanup, shutdown/reset, 404 reinitialization, and multiple-client isolation are covered; there is no cross-request operation registry or SSE resumption state.
 - Existing authentication, Host/Origin, resource, tool-authorization, and audit boundaries remain intact.
 - Compatibility claims and operator validation cite the exact implemented protocol revision.
 

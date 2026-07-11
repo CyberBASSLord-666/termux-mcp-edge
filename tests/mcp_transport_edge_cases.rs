@@ -39,7 +39,7 @@ async fn valid_json_with_missing_method_returns_invalid_request_and_preserves_id
 }
 
 #[tokio::test]
-async fn invalid_tools_call_params_return_bounded_invalid_params_response() {
+async fn array_params_are_rejected_as_invalid_mcp_envelopes() {
     let response = post_json(json!({
         "jsonrpc": "2.0",
         "id": "bad-params",
@@ -51,8 +51,8 @@ async fn invalid_tools_call_params_return_bounded_invalid_params_response() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let payload = response_json(response).await;
     assert_eq!(payload["id"], "bad-params");
-    assert_eq!(payload["error"]["code"], -32602);
-    assert_eq!(payload["error"]["message"], "Invalid params");
+    assert_eq!(payload["error"]["code"], -32600);
+    assert_eq!(payload["error"]["message"], "Invalid Request");
 }
 
 #[tokio::test]
