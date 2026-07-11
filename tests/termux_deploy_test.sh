@@ -8,12 +8,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/termux_deploy.sh"
 
 fail_test() { printf 'assertion failed: %s\n' "$*" >&2; exit 1; }
-report_error() {
-  local status=$? line="${BASH_LINENO[0]:-unknown}" command="${BASH_COMMAND:-unknown}"
-  printf 'termux deployment test failed at line %s with status %s: %s\n' "$line" "$status" "$command" >&2
-  exit "$status"
-}
-trap report_error ERR
 assert_eq() { [[ "$1" == "$2" ]] || fail_test "expected $2, got $1"; }
 assert_fails() { if "$@" >/dev/null 2>&1; then fail_test "command unexpectedly succeeded: $*"; fi; }
 
@@ -79,21 +73,18 @@ head -n 1 "$SERVICE_DIR/run" | grep -Fx "#!$PREFIX/bin/sh"
 
 PWNED="$ROOT/config-was-executed"
 printf 'RUST_BACKTRACE=$(touch %s)\n' "$PWNED" >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-set +e
 "$SERVICE_DIR/run"
-run_status=$?
-set -e
-if ((run_status != 0)); then
-  printf 'generated service run exited with status %s; tracing failure\n' "$run_status" >&2
-  "$PREFIX/bin/sh" -x "$SERVICE_DIR/run" >&2 || true
-  fail_test "generated service run exited with status $run_status"
-fi
 [[ ! -e "$PWNED" ]]
 
 assert_fails bash "$SCRIPT" install --artifact "$ARTIFACT_100" --version 1.0.0 --sha256 "$SHA_100"
 assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0
 assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$BAD_SHA"
 assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 9.9.9 --sha256 "$SHA_110"
+
+ln -s "$ROOT/missing-down-target" "$SERVICE_DIR/down"
+assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"
+[[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0" ]]
+rm -f "$SERVICE_DIR/down"
 
 run_before_sha="$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')"
 current_before="$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")"
@@ -107,10 +98,14 @@ assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_RO
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
 [[ ! -e "$SERVICE_DIR/down" && -z "$(find "$SERVICE_DIR" -maxdepth 1 -name '.run.*' -print -quit)" ]]
 
-if TERMUX_MCP_TEST_PROBE_SEQUENCE=failure,success bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120" >/dev/null 2>&1; then fail_test "unhealthy upgrade unexpectedly succeeded"; fi
+touch "$SERVICE_DIR/down"; chmod 600 "$SERVICE_DIR/down"
+stopped_run_sha="$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')"
+if TERMUX_MCP_TEST_PROBE_SEQUENCE=failure bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120" >/dev/null 2>&1; then fail_test "unhealthy upgrade unexpectedly succeeded"; fi
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
-[[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0" && ! -e "$SERVICE_DIR/down" ]]
+assert_eq "$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')" "$stopped_run_sha"
+[[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0" && -f "$SERVICE_DIR/down" ]]
+rm -f "$SERVICE_DIR/down"
 
 if TERMUX_MCP_TEST_PROBE_SEQUENCE=failure,success bash "$SCRIPT" rollback >/dev/null 2>&1; then fail_test "unhealthy rollback unexpectedly succeeded"; fi
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
@@ -130,6 +125,9 @@ bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0"
 
 current_before="$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")"
+TERMUX_MCP_TEST_STOP_SEQUENCE=failure assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200" --dry-run
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$current_before"
+[[ -z "$(find "$TERMUX_MCP_DEPLOY_ROOT" -maxdepth 1 -name '.service-snapshot-*' -print -quit)" ]]
 bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200" --dry-run >/dev/null
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$current_before"
 [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/2.0.0" ]]
