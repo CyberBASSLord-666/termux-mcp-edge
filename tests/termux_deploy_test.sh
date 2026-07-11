@@ -50,7 +50,7 @@ configure_environment() {
   export TERMUX_MCP_CONFIG_ROOT="$HOME/.config/termux-mcp-edge"
   export TERMUX_MCP_SERVICE_ROOT="$PREFIX/var/service"
   export TERMUX_MCP_SERVICE_SHELL="$PREFIX/bin/sh"
-  export TERMUX_MCP_TEST_MODE=1 TERMUX_MCP_TEST_PROBE_SEQUENCE=success TERMUX_MCP_TEST_STOP_SEQUENCE=success
+  export TERMUX_MCP_TEST_MODE=1 TERMUX_MCP_TEST_PROBE_SEQUENCE=success TERMUX_MCP_TEST_STOP_SEQUENCE=success TERMUX_MCP_TEST_START_SEQUENCE=success
   unset TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT TERMUX_MCP_DRY_RUN
   mkdir -p "$HOME" "$PREFIX"; make_shell "$PREFIX"; make_config "$TERMUX_MCP_CONFIG_ROOT"
 }
@@ -163,6 +163,30 @@ assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version '../bad
   artifact="$ROOT/initial-dry-run-server"; make_artifact "$artifact" 3.0.0; sha="$(artifact_sha "$artifact")"
   bash "$SCRIPT" install --artifact "$artifact" --version 3.0.0 --sha256 "$sha" --dry-run >/dev/null
   [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT" && ! -e "$TERMUX_MCP_SERVICE_ROOT" ]]
+)
+
+if [[ -d /dev/shm && "$(stat -c '%d' "$ROOT")" != "$(stat -c '%d' /dev/shm)" ]]; then
+  (
+    configure_environment "$ROOT/cross-filesystem"
+    cross_prefix="/dev/shm/termux-mcp-edge-test-$$"
+    trap 'rm -rf -- "$cross_prefix"' EXIT
+    export PREFIX="$cross_prefix"
+    export TERMUX_MCP_SERVICE_ROOT="$PREFIX/var/service"
+    export TERMUX_MCP_SERVICE_SHELL="$PREFIX/bin/sh"
+    mkdir -p "$PREFIX"; make_shell "$PREFIX"
+    artifact="$ROOT/cross-filesystem-server"; make_artifact "$artifact" 3.0.0; sha="$(artifact_sha "$artifact")"
+    assert_fails bash "$SCRIPT" install --artifact "$artifact" --version 3.0.0 --sha256 "$sha"
+    [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/3.0.0" && ! -e "$TERMUX_MCP_SERVICE_ROOT/mcp_runtime" ]]
+  )
+fi
+
+(
+  configure_environment "$ROOT/initial-start-failure"
+  artifact="$ROOT/initial-start-failure-server"; make_artifact "$artifact" 3.0.0; sha="$(artifact_sha "$artifact")"
+  if TERMUX_MCP_TEST_START_SEQUENCE=failure bash "$SCRIPT" install --artifact "$artifact" --version 3.0.0 --sha256 "$sha" >/dev/null 2>&1; then fail_test "initial start failure unexpectedly succeeded"; fi
+  [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/current" && ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/3.0.0" ]]
+  [[ ! -e "$TERMUX_MCP_SERVICE_ROOT/mcp_runtime" ]]
+  [[ -z "$(find "$TERMUX_MCP_DEPLOY_ROOT" -maxdepth 1 \( -name '.service-*' -o -name '.staging-*' \) -print -quit)" ]]
 )
 
 (
