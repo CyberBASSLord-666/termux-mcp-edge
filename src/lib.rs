@@ -1,5 +1,7 @@
 //! Library exports for integration tests and downstream embedding.
 
+#[cfg(feature = "android-battery-status")]
+pub mod android_battery_status;
 pub mod android_status;
 pub mod audit;
 pub mod auth;
