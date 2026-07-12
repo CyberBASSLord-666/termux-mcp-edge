@@ -166,8 +166,8 @@ jobs:
             test -f "$root/termux-mcp-server"
             test -f "$root/SHA256SUMS"
             test -f "$root/artifact-manifest.json"
-            chmod 700 "$root/termux-mcp-server"
-            chmod 600 "$root/SHA256SUMS" "$root/artifact-manifest.json"
+            chmod 755 "$root/termux-mcp-server"
+            chmod 644 "$root/SHA256SUMS" "$root/artifact-manifest.json"
             (cd "$root" && sha256sum -c SHA256SUMS)
           done
           default_version="$(jq -r .version artifacts/default/artifact-manifest.json)"
@@ -247,13 +247,13 @@ jobs:
           docker image inspect "$TERMUX_IMAGE" --format '{{json .RepoDigests}}' | grep -F "$TERMUX_IMAGE_DIGEST"
           docker run --rm \
             --security-opt seccomp=unconfined \
-            -e TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64 \
-            -e TERMUX_MCP_TERMUX_IMAGE_DIGEST="$TERMUX_IMAGE_DIGEST" \
             -v "$GITHUB_WORKSPACE:/workspace:ro" \
             -v "$OUTPUT_ROOT:/output" \
             "$TERMUX_IMAGE" \
             bash -c "
               set -euo pipefail
+              export TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64
+              export TERMUX_MCP_TERMUX_IMAGE_DIGEST='$TERMUX_IMAGE_DIGEST'
               apt update >/dev/null
               apt install -y file jq >/dev/null
               bash /workspace/scripts/termux_emulated_gate.sh \\
