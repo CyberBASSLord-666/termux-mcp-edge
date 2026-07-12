@@ -82,14 +82,19 @@ The release process should be reproducible from the tagged source using the docu
 4. Merge only through the normal protected-main process with expected-head SHA validation.
 5. Wait for post-merge CI, security, and Android validation on the resulting `main` SHA.
 6. Download both posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
-7. Run the downloaded artifacts through the complete validator in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), retain its schema-versioned sanitized JSON evidence, and run the source-build/device gate in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md).
+7. Run the downloaded artifacts through the complete validator in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), retain its schema-versioned sanitized JSON evidence, and complete either the direct physical route or the strictly bounded inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md).
 8. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the validated `main` SHA.
 9. Publish the GitHub Release from that immutable tag and attach both binaries, manifests, and checksum sidecars.
 10. Re-open the release page and independently verify every asset, checksum, link, version, and recorded SHA.
 
 Do not publish a draft as final until every required artifact is attached and verified.
 
-The downloaded-artifact report's `releaseEligible` field must be true before publication. That requires non-fixture preflight, runtime, and deployment phases plus an operator-supplied passing sustained observation of at least 60 minutes. The report is review evidence, not an automated authorization to tag or publish.
+Before publication, one of two evidence routes must pass:
+
+- **Direct route:** the downloaded-artifact report's `releaseEligible` field is true after non-fixture preflight, runtime, deployment, and an operator-supplied passing physical observation of at least 60 minutes.
+- **Inherited route:** an earlier direct physical report remains applicable only after the exact candidate passes native ARM64 official-Termux emulation and `verify_observation_inheritance.sh` proves unchanged runtime source, dependencies, build inputs except the root version, deployment logic, and exact bridge artifact digests. Its report must set `releaseQualificationEligible: true` without a waived assertion.
+
+Both are review evidence, not automated authorization to tag or publish. An emulator alone never replaces device-specific battery, thermal, OEM process-management, or radio evidence.
 
 ## Installation, upgrade, and rollback guarantees
 
@@ -148,4 +153,4 @@ The following are hard blockers until reconciled:
 
 The v0.6.0 release-preparation lane reconciles the source package, lockfile, changelog, deployment examples, artifact names, and candidate record without creating a tag or GitHub Release. The historical `v0.1.0-baseline` tag and the validated exact-main v0.5.1 candidate are not retroactively declared production releases. Consequently, v0.6.0 has no authoritative previous public release: clean installation and uninstall are supported, while public rollback becomes available only after a later complete release is installed over v0.6.0.
 
-The pre-metadata v0.5.1 exact-main evidence authorizes preparation work but is not transferable to the changed v0.6.0 commit. Before publication, the final merged v0.6.0 `main` SHA must independently complete CI, Security, both Android postures, downloaded-bundle validation, and the required physical sustained observation. See [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md).
+The pre-metadata v0.5.1 exact-main evidence may qualify v0.6.0 only through the narrow inherited-observation verifier. Before publication, the final merged v0.6.0 `main` SHA must independently complete CI, Security, both Android postures, downloaded-bundle validation, native ARM64 official-Termux emulation, and exact bridge-digest equivalence. Any runtime, dependency, build, deployment, or bridge-digest change invalidates inheritance and requires a new direct physical observation. See [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md).

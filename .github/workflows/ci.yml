@@ -12,7 +12,8 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
-      - "docs/release-evidence-schema-v1.json"
+      - "docs/*release-evidence-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [ main ]
@@ -25,7 +26,8 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
-      - "docs/release-evidence-schema-v1.json"
+      - "docs/*release-evidence-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
@@ -80,5 +82,6 @@ jobs:
           bash tests/package_android_artifact_test.sh
           bash tests/termux_deploy_test.sh
           bash tests/termux_device_smoke_test.sh
+          bash tests/termux_emulated_gate_test.sh
           bash tests/termux_release_validate_test.sh
           bash tests/setup_named_tunnel_test.sh

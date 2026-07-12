@@ -1,0 +1,373 @@
+{
+  "schemaVersion": 1,
+  "validatorVersion": "1",
+  "status": "pass",
+  "failureCode": null,
+  "releaseEligible": true,
+  "startedAt": "2026-07-12T11:14:34Z",
+  "completedAt": "2026-07-12T11:15:09Z",
+  "repository": {
+    "commit": "fe5f7b80a8ff13c2e39951d16f37b2e37a10a36b",
+    "version": "0.5.1",
+    "ciRunId": "29170785770",
+    "securityRunId": "29170785817",
+    "androidRunId": "29170785764"
+  },
+  "environment": {
+    "architecture": "aarch64",
+    "fixtureMode": false,
+    "tools": {
+      "bash": "GNU bash, version 5.3.9(1)-release (aarch64-unknown-linux-android)",
+      "curl": "curl 8.21.0 (aarch64-unknown-linux-android) libcurl/8.21.0 OpenSSL/3.6.3 zlib/1.3.2 libssh2/1.11.1 nghttp2/1.69.0 ngtcp2/1.24.0 nghttp3/1.17.0",
+      "file": "file-5.48",
+      "jq": "jq-1.8.2"
+    }
+  },
+  "requestedPhase": "all",
+  "artifacts": {
+    "default": {
+      "sha256": "68ef2e7b30a62cacb665e73ccc41ff2e53762575de8bbfca59c57a5c7631ea61",
+      "bytes": 1628056,
+      "version": "0.5.1",
+      "elf": "aarch64-android-elf"
+    },
+    "mcpRuntime": {
+      "sha256": "90ebe53d59e7ca56d1fe616810ac074b954c73b41e64f0665a106acade07942f",
+      "bytes": 1969600,
+      "version": "0.5.1",
+      "elf": "aarch64-android-elf"
+    },
+    "baseline": {
+      "sha256": "09b345853f2b657b0bfa1920ebbb00324f100626551e737e1a7053ec919a379c",
+      "bytes": 1890672,
+      "version": "0.0.0-device-smoke.344788234adb",
+      "elf": "aarch64-android-elf"
+    }
+  },
+  "phases": {
+    "preflight": "pass",
+    "runtime": "pass",
+    "deployment": "pass"
+  },
+  "results": [
+    {
+      "phase": "preflight",
+      "check": "default_manifest",
+      "outcome": "pass",
+      "code": "artifact_manifest_verified"
+    },
+    {
+      "phase": "preflight",
+      "check": "default_artifact",
+      "outcome": "pass",
+      "code": "artifact_verified"
+    },
+    {
+      "phase": "preflight",
+      "check": "mcp_runtime_manifest",
+      "outcome": "pass",
+      "code": "artifact_manifest_verified"
+    },
+    {
+      "phase": "preflight",
+      "check": "mcp_runtime_artifact",
+      "outcome": "pass",
+      "code": "artifact_verified"
+    },
+    {
+      "phase": "preflight",
+      "check": "baseline_artifact",
+      "outcome": "pass",
+      "code": "artifact_verified"
+    },
+    {
+      "phase": "preflight",
+      "check": "metadata",
+      "outcome": "pass",
+      "code": "exact_metadata_supplied"
+    },
+    {
+      "phase": "runtime",
+      "check": "default_readiness",
+      "outcome": "pass",
+      "code": "default_posture_verified"
+    },
+    {
+      "phase": "runtime",
+      "check": "default_mcp_absent",
+      "outcome": "pass",
+      "code": "default_mcp_route_absent"
+    },
+    {
+      "phase": "runtime",
+      "check": "mcp_readiness",
+      "outcome": "pass",
+      "code": "mcp_posture_verified"
+    },
+    {
+      "phase": "runtime",
+      "check": "unauthenticated_rejection",
+      "outcome": "pass",
+      "code": "unauthenticated_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "authentication_before_transport",
+      "outcome": "pass",
+      "code": "authentication_precedes_transport_security"
+    },
+    {
+      "phase": "runtime",
+      "check": "disallowed_host",
+      "outcome": "pass",
+      "code": "disallowed_host_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "required_origin",
+      "outcome": "pass",
+      "code": "missing_origin_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "disallowed_origin",
+      "outcome": "pass",
+      "code": "disallowed_origin_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "initialize",
+      "outcome": "pass",
+      "code": "initialize_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "initialized_notification",
+      "outcome": "pass",
+      "code": "initialized_notification_accepted"
+    },
+    {
+      "phase": "runtime",
+      "check": "protocol_header_required",
+      "outcome": "pass",
+      "code": "protocol_header_enforced"
+    },
+    {
+      "phase": "runtime",
+      "check": "unknown_session",
+      "outcome": "pass",
+      "code": "unknown_session_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "tool_discovery",
+      "outcome": "pass",
+      "code": "tool_discovery_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "tool_allowlist",
+      "outcome": "pass",
+      "code": "exact_tool_allowlist"
+    },
+    {
+      "phase": "runtime",
+      "check": "high_impact_gates",
+      "outcome": "pass",
+      "code": "high_impact_status_read"
+    },
+    {
+      "phase": "runtime",
+      "check": "platform_info",
+      "outcome": "pass",
+      "code": "platform_info_read"
+    },
+    {
+      "phase": "runtime",
+      "check": "android_status",
+      "outcome": "pass",
+      "code": "android_status_read"
+    },
+    {
+      "phase": "runtime",
+      "check": "project_service_status",
+      "outcome": "pass",
+      "code": "project_service_status_read"
+    },
+    {
+      "phase": "runtime",
+      "check": "project_service_allowlist",
+      "outcome": "pass",
+      "code": "unsupported_project_service_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "metadata_tools",
+      "outcome": "pass",
+      "code": "read_only_metadata_verified"
+    },
+    {
+      "phase": "runtime",
+      "check": "list_directory",
+      "outcome": "pass",
+      "code": "list_directory_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "list_directory_repeat",
+      "outcome": "pass",
+      "code": "list_directory_repeat_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "list_contract",
+      "outcome": "pass",
+      "code": "deterministic_bounded_list"
+    },
+    {
+      "phase": "runtime",
+      "check": "read_file",
+      "outcome": "pass",
+      "code": "safe_root_read_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "read_response_bound",
+      "outcome": "pass",
+      "code": "read_response_bound_enforced"
+    },
+    {
+      "phase": "runtime",
+      "check": "write_dry_run",
+      "outcome": "pass",
+      "code": "write_dry_run_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "write_explicit",
+      "outcome": "pass",
+      "code": "write_explicit_succeeded"
+    },
+    {
+      "phase": "runtime",
+      "check": "outside_safe_root",
+      "outcome": "pass",
+      "code": "outside_safe_root_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "symlink_escape",
+      "outcome": "pass",
+      "code": "symlink_escape_rejected"
+    },
+    {
+      "phase": "runtime",
+      "check": "forbidden_high_impact",
+      "outcome": "pass",
+      "code": "high_impact_tool_unavailable"
+    },
+    {
+      "phase": "runtime",
+      "check": "authenticated_body_limit",
+      "outcome": "pass",
+      "code": "authenticated_body_limit_enforced"
+    },
+    {
+      "phase": "runtime",
+      "check": "authentication_ordering",
+      "outcome": "pass",
+      "code": "authentication_precedes_body_limit"
+    },
+    {
+      "phase": "runtime",
+      "check": "non_sse_get",
+      "outcome": "pass",
+      "code": "non_sse_get_documented"
+    },
+    {
+      "phase": "runtime",
+      "check": "session_delete",
+      "outcome": "pass",
+      "code": "session_deleted"
+    },
+    {
+      "phase": "runtime",
+      "check": "cleanup",
+      "outcome": "info",
+      "code": "isolated_runtime_cleanup_armed"
+    },
+    {
+      "phase": "deployment",
+      "check": "default_install_baseline",
+      "outcome": "pass",
+      "code": "default_install_baseline_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "default_upgrade_candidate",
+      "outcome": "pass",
+      "code": "default_upgrade_candidate_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "default_rollback_success",
+      "outcome": "pass",
+      "code": "default_rollback_success_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "default_uninstall_success",
+      "outcome": "pass",
+      "code": "default_uninstall_success_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "install_baseline",
+      "outcome": "pass",
+      "code": "install_baseline_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "forced_candidate_failure",
+      "outcome": "pass",
+      "code": "forced_candidate_failure_rejected_and_recovered"
+    },
+    {
+      "phase": "deployment",
+      "check": "upgrade_candidate",
+      "outcome": "pass",
+      "code": "upgrade_candidate_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "rollback_failure_recovery",
+      "outcome": "pass",
+      "code": "rollback_failure_recovery_rejected_and_recovered"
+    },
+    {
+      "phase": "deployment",
+      "check": "rollback_success",
+      "outcome": "pass",
+      "code": "rollback_success_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "uninstall_success",
+      "outcome": "pass",
+      "code": "uninstall_success_succeeded"
+    },
+    {
+      "phase": "deployment",
+      "check": "dedicated_cleanup",
+      "outcome": "info",
+      "code": "dedicated_cleanup_armed"
+    }
+  ],
+  "sustainedObservation": {
+    "operatorSupplied": true,
+    "status": "pass",
+    "minutes": 60,
+    "reasonCode": "stable",
+    "minimumMinutes": 60
+  }
+}

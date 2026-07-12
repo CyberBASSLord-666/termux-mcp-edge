@@ -7,6 +7,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "scripts/package_android_artifact.sh"
+      - "scripts/termux_emulated_gate.sh"
+      - "scripts/verify_observation_inheritance.sh"
+      - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/android-cross-compile.yml"
       - ".github/workflows/security.yml"
   pull_request:
@@ -15,6 +19,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "scripts/package_android_artifact.sh"
+      - "scripts/termux_emulated_gate.sh"
+      - "scripts/verify_observation_inheritance.sh"
+      - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/android-cross-compile.yml"
       - ".github/workflows/security.yml"
   schedule:

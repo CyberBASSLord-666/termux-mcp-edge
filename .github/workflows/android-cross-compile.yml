@@ -14,6 +14,11 @@ on:
       - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
+      - "scripts/termux_emulated_gate.sh"
+      - "scripts/verify_observation_inheritance.sh"
+      - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/android-cross-compile.yml"
   pull_request:
     branches: [ main ]
@@ -25,9 +30,15 @@ on:
       - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
+      - "scripts/termux_emulated_gate.sh"
+      - "scripts/verify_observation_inheritance.sh"
+      - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/android-cross-compile.yml"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -112,3 +123,203 @@ jobs:
           path: target/aarch64-linux-android/release-candidate/
           if-no-files-found: error
           retention-days: 3
+
+  termux-emulated:
+    name: Native ARM64 Termux emulation
+    needs: android-aarch64
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    env:
+      TERMUX_IMAGE: termux/termux-docker:aarch64@sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
+      TERMUX_IMAGE_DIGEST: sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
+    steps:
+      - name: Checkout exact source
+        # actions/checkout@v7.0.0 resolved 2026-07-10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download default artifact bundle
+        # actions/download-artifact@v8.0.0 resolved 2026-07-12
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: termux-mcp-server-aarch64-linux-android-default
+          path: artifacts/default
+
+      - name: Download MCP runtime artifact bundle
+        # actions/download-artifact@v8.0.0 resolved 2026-07-12
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: termux-mcp-server-aarch64-linux-android-mcp-runtime
+          path: artifacts/mcp-runtime
+
+      - name: Verify artifact staging
+        id: artifacts
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          for root in artifacts/default artifacts/mcp-runtime; do
+            test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3
+            test -f "$root/termux-mcp-server"
+            test -f "$root/SHA256SUMS"
+            test -f "$root/artifact-manifest.json"
+            chmod 755 "$root/termux-mcp-server"
+            chmod 644 "$root/SHA256SUMS" "$root/artifact-manifest.json"
+            (cd "$root" && sha256sum -c SHA256SUMS)
+          done
+          default_version="$(jq -r .version artifacts/default/artifact-manifest.json)"
+          mcp_version="$(jq -r .version artifacts/mcp-runtime/artifact-manifest.json)"
+          [[ "$default_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+          test "$mcp_version" = "$default_version"
+          printf 'version=%s\n' "$default_version" >>"$GITHUB_OUTPUT"
+
+      - name: Resolve exact companion workflow evidence
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&per_page=100"
+          ci_run_id=''
+          security_run_id=''
+          for attempt in $(seq 1 60); do
+            response="$(curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$api")"
+            ci_state="$(jq -r --arg sha "$SOURCE_SHA" '
+              [.workflow_runs[] | select(.name == "CI" and .head_sha == $sha)]
+              | sort_by(.run_started_at) | last
+              | if . == null then "missing" else (.status + ":" + (.conclusion // "pending") + ":" + (.id | tostring)) end
+            ' <<<"$response")"
+            security_state="$(jq -r --arg sha "$SOURCE_SHA" '
+              [.workflow_runs[] | select(.name == "Security" and .head_sha == $sha)]
+              | sort_by(.run_started_at) | last
+              | if . == null then "missing" else (.status + ":" + (.conclusion // "pending") + ":" + (.id | tostring)) end
+            ' <<<"$response")"
+            if [[ "$ci_state" == completed:success:* && "$security_state" == completed:success:* ]]; then
+              ci_run_id="${ci_state##*:}"
+              security_run_id="${security_state##*:}"
+              break
+            fi
+            if [[ "$ci_state" == completed:* && "$ci_state" != completed:success:* ]]; then
+              printf 'latest exact-head CI is not successful: %s\n' "$ci_state" >&2
+              exit 1
+            fi
+            if [[ "$security_state" == completed:* && "$security_state" != completed:success:* ]]; then
+              printf 'latest exact-head Security is not successful: %s\n' "$security_state" >&2
+              exit 1
+            fi
+            printf 'waiting for exact companion workflows (attempt %s/60): CI=%s Security=%s\n' \
+              "$attempt" "$ci_state" "$security_state"
+            sleep 5
+          done
+          [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$security_run_id" =~ ^[1-9][0-9]*$ ]]
+          printf 'ci_run_id=%s\n' "$ci_run_id" >>"$GITHUB_OUTPUT"
+          printf 'security_run_id=%s\n' "$security_run_id" >>"$GITHUB_OUTPUT"
+
+      - name: Prepare private evidence output
+        id: output
+        run: |
+          set -euo pipefail
+          output_root="$RUNNER_TEMP/termux-emulated-evidence"
+          mkdir -p "$output_root"
+          chmod 700 "$output_root"
+          sudo chown 1000:1000 "$output_root"
+          printf 'root=%s\n' "$output_root" >>"$GITHUB_OUTPUT"
+
+      - name: Run exact artifacts in official Termux environment
+        env:
+          CI_RUN_ID: ${{ steps.evidence.outputs.ci_run_id }}
+          SECURITY_RUN_ID: ${{ steps.evidence.outputs.security_run_id }}
+          EXPECTED_VERSION: ${{ steps.artifacts.outputs.version }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          OUTPUT_ROOT: ${{ steps.output.outputs.root }}
+        run: |
+          set -euo pipefail
+          docker pull "$TERMUX_IMAGE"
+          docker image inspect "$TERMUX_IMAGE" --format '{{json .RepoDigests}}' | grep -F "$TERMUX_IMAGE_DIGEST"
+          docker run --rm \
+            --security-opt seccomp=unconfined \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$OUTPUT_ROOT:/output" \
+            "$TERMUX_IMAGE" \
+            bash -c "
+              set -euo pipefail
+              export TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64
+              export TERMUX_MCP_TERMUX_IMAGE_DIGEST='$TERMUX_IMAGE_DIGEST'
+              apt update >/dev/null
+              apt install -y file jq >/dev/null
+              bash /workspace/scripts/termux_emulated_gate.sh \\
+                --default-dir /workspace/artifacts/default \\
+                --mcp-dir /workspace/artifacts/mcp-runtime \\
+                --expected-commit '$SOURCE_SHA' \\
+                --expected-version '$EXPECTED_VERSION' \\
+                --ci-run-id '$CI_RUN_ID' \\
+                --security-run-id '$SECURITY_RUN_ID' \\
+                --android-run-id '$GITHUB_RUN_ID' \\
+                --samples 256 \\
+                --output /output/termux-emulated-evidence.json
+            "
+
+      - name: Validate emulated evidence
+        env:
+          OUTPUT_ROOT: ${{ steps.output.outputs.root }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          sudo chown -R "$(id -u):$(id -g)" "$OUTPUT_ROOT"
+          chmod 700 "$OUTPUT_ROOT"
+          report="$OUTPUT_ROOT/termux-emulated-evidence.json"
+          test -f "$report"
+          test "$(stat -c %a "$report")" = 600
+          jq -e \
+            --arg commit "$SOURCE_SHA" \
+            --arg android "$GITHUB_RUN_ID" \
+            --arg digest "$TERMUX_IMAGE_DIGEST" '
+              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              and .candidate.commit == $commit
+              and .candidate.androidRunId == $android
+              and .environment.imageDigest == $digest
+              and .runtimeValidation.status == "pass"
+              and .stress.status == "pass" and .stress.samples == 256
+            ' "$report" >/dev/null
+          sha256sum "$report"
+
+          bash scripts/verify_observation_inheritance.sh \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --source-commit fe5f7b80a8ff13c2e39951d16f37b2e37a10a36b \
+            --source-report "$GITHUB_WORKSPACE/docs/release-evidence/v0.5.1-physical-fe5f7b80.json" \
+            --source-report-sha256 677796015065eb193ac78b2dd200de64efccb95a226837a4545c85021cb9283c \
+            --candidate-commit "$SOURCE_SHA" \
+            --emulated-report "$report" \
+            --bridge-commit a97e7cf2734ca3c997abc4e7d2aebaaa9fa856b9 \
+            --bridge-default-sha256 8fb1e89d942e5f925359eb22ea3321d6025baa83ee1da60fe58f1c62fe60dce1 \
+            --bridge-mcp-sha256 e4c68590c02c2861b18392d7fae2b7542f6610e4a52615aee76f66c06cc7358e \
+            --output "$OUTPUT_ROOT/termux-observation-inheritance.json"
+
+          jq -e \
+            --arg commit "$SOURCE_SHA" '
+              .status == "pass"
+              and .releaseQualificationEligible == true
+              and .candidate.commit == $commit
+              and .evidenceMode == "inherited_physical_observation"
+            ' "$OUTPUT_ROOT/termux-observation-inheritance.json" >/dev/null
+          sha256sum "$OUTPUT_ROOT/termux-observation-inheritance.json"
+
+      - name: Upload emulated evidence
+        # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: termux-mcp-emulated-evidence
+          path: |
+            ${{ steps.output.outputs.root }}/termux-emulated-evidence.json
+            ${{ steps.output.outputs.root }}/termux-observation-inheritance.json
+          if-no-files-found: error
+          retention-days: 14
