@@ -1,6 +1,6 @@
 # Production Readiness Checklist
 
-This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes the two supported compile-time postures: the optional runtime implements the stable MCP 2025-11-25 Streamable HTTP lifecycle around a deliberately staged tool surface, but protocol conformance does not make the remaining filesystem, deployment, configuration, packaging, or response-bound work broadly production-ready.
+This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes the two supported compile-time postures: the optional runtime implements the stable MCP 2025-11-25 Streamable HTTP lifecycle around a deliberately staged tool surface, while release readiness still depends on the exact-candidate filesystem, deployment, configuration, packaging, recovery, and physical-device evidence below.
 
 ## Supported Compile-Time Postures
 

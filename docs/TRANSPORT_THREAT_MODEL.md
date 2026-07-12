@@ -92,10 +92,7 @@ Current controls:
 - streaming request-body ceiling and early oversized `Content-Length` rejection;
 - bounded file reads, write payloads, directory depth, and entry count.
 
-Remaining work:
-
-- #206 must add deterministic filesystem response-byte budgets and avoid duplicate large content in MCP results;
-- any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
+Deterministic filesystem response-byte budgets and single-content serialization landed through #206. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
 
 ### Filesystem escape and mutation
 
@@ -109,7 +106,7 @@ Current controls:
 - bounded deterministic UTF-8 reads and directory traversal;
 - dry-run-by-default writes, explicit `dry_run:false`, payload limits, descriptor-relative mode-0600 temporary files, file sync, atomic rename, and parent-directory sync.
 
-The focused remediation and regression evidence are tracked in #200, #206, and #203 respectively. Any future filesystem expansion must preserve these descriptor, response, and deployment boundaries.
+The focused remediation and regression evidence landed through #200, #206, and #203 respectively. Any future filesystem expansion must preserve these descriptor, response, and deployment boundaries.
 
 ### Schema confusion and response reflection
 
