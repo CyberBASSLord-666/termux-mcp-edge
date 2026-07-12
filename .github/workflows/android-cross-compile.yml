@@ -230,8 +230,8 @@ jobs:
           set -euo pipefail
           output_root="$RUNNER_TEMP/termux-emulated-evidence"
           mkdir -p "$output_root"
-          sudo chown 1000:1000 "$output_root"
           chmod 700 "$output_root"
+          sudo chown 1000:1000 "$output_root"
           printf 'root=%s\n' "$output_root" >>"$GITHUB_OUTPUT"
 
       - name: Run exact artifacts in official Termux environment
