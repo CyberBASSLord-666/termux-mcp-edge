@@ -243,6 +243,8 @@ A supplied failed observation makes the validator exit nonzero with `sustained_o
 
 `releaseEligible` becomes true only for a non-fixture `--phase all` report with every phase passing and a valid passing sustained observation. This field is evidence for maintainer review; it does not publish or authorize a release.
 
+The canonical report intentionally models only a direct observation. A metadata-only descendant may instead use the separate inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). That route requires the earlier direct `releaseEligible: true` report, exact candidate runtime validation, native ARM64 official-Termux stress evidence, unchanged runtime/dependency/deployment inputs, and exact bridge artifact digests. It does not alter or relabel a `not_run` canonical report.
+
 ## Failure and cleanup
 
 Any missing confirmation, digest mismatch, wrong architecture or version, feature-posture mismatch, failed runtime assertion, deployment recovery failure, interruption, or unconfirmed cleanup produces a nonzero exit and a fixed failure code.

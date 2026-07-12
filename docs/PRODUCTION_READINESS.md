@@ -70,11 +70,11 @@ For each released artifact:
 5. Confirm runit state, `GET /health`, and `GET /ready`.
 6. For the `mcp-runtime` artifact, prove unauthenticated rejection, authenticated discovery, representative allowed/denied tool calls, request-limit behavior, and filesystem boundaries.
 7. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
-8. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions.
+8. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions, either directly for the candidate or through a strictly verified inherited observation when runtime/deployment inputs and exact bridge artifact digests are unchanged.
 
-Run the automated AArch64 portion through [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md). A passing report must identify the exact commit and artifact digest and end with `TERMUX_MCP_DEVICE_RESULT=PASS`, `cleanup_complete=true`, and `final_status=PASS`. The harness does not waive the sustained-device observation in item 8.
+Run exact downloaded artifacts through the native ARM64 official-Termux gate in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). For behavior-changing candidates, also run [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) directly on hardware. A metadata-only descendant may inherit an already completed physical observation only when the repository verifier proves every source, dependency, deployment, bridge-digest, and emulation condition without exception.
 
-Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). A release requires a non-fixture `--phase all` JSON report that conforms to [`release-evidence-schema-v1.json`](release-evidence-schema-v1.json), reconciles the same exact commit and workflow runs with both manifests, verifies both feature postures and deployment recovery, and records an operator-supplied passing observation of at least 60 minutes.
+Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). The exact commit must have either a direct non-fixture `releaseEligible: true` report or a passing inherited-observation report conforming to [`release-observation-inheritance-schema-v1.json`](release-observation-inheritance-schema-v1.json), backed by the direct source report and a passing exact-candidate [`emulated-release-evidence-schema-v1.json`](emulated-release-evidence-schema-v1.json) report.
 
 ## Current MCP Runtime Gate
 

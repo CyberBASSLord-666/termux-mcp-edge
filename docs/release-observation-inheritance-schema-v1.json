@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-observation-inheritance-schema-v1.json",
+  "title": "Termux MCP Edge inherited physical-observation qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "verifierVersion", "status", "failureCode", "releaseQualificationEligible", "createdAt", "evidenceMode", "sourceObservation", "bridge", "candidate", "equivalence"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "verifierVersion": {"const": "1"},
+    "status": {"const": "pass"},
+    "failureCode": {"const": null},
+    "releaseQualificationEligible": {"const": true},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "evidenceMode": {"const": "inherited_physical_observation"},
+    "sourceObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "version", "reportSha256", "operatorSupplied", "physicalDevice", "status", "minutes", "reasonCode"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/commit"},
+        "version": {"$ref": "#/$defs/version"},
+        "reportSha256": {"$ref": "#/$defs/digest"},
+        "operatorSupplied": {"const": true},
+        "physicalDevice": {"const": true},
+        "status": {"const": "pass"},
+        "minutes": {"type": "integer", "minimum": 60, "maximum": 10080},
+        "reasonCode": {"const": "stable"}
+      }
+    },
+    "bridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "defaultArtifactSha256", "mcpRuntimeArtifactSha256"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/commit"},
+        "defaultArtifactSha256": {"$ref": "#/$defs/digest"},
+        "mcpRuntimeArtifactSha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "version", "ciRunId", "securityRunId", "androidRunId", "defaultArtifact", "mcpRuntimeArtifact", "emulatedReportSha256"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/commit"},
+        "version": {"$ref": "#/$defs/version"},
+        "ciRunId": {"$ref": "#/$defs/runId"},
+        "securityRunId": {"$ref": "#/$defs/runId"},
+        "androidRunId": {"$ref": "#/$defs/runId"},
+        "defaultArtifact": {"$ref": "#/$defs/artifact"},
+        "mcpRuntimeArtifact": {"$ref": "#/$defs/artifact"},
+        "emulatedReportSha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "equivalence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtimeSourceUnchanged", "dependencyGraphUnchanged", "buildInputsUnchangedExceptRootVersion", "deploymentLogicUnchanged", "candidateArtifactsMatchBridge", "officialTermuxNativeArm64GatePassed", "termuxImageDigest", "stressSamples", "stressRequests"],
+      "properties": {
+        "runtimeSourceUnchanged": {"const": true},
+        "dependencyGraphUnchanged": {"const": true},
+        "buildInputsUnchangedExceptRootVersion": {"const": true},
+        "deploymentLogicUnchanged": {"const": true},
+        "candidateArtifactsMatchBridge": {"const": true},
+        "officialTermuxNativeArm64GatePassed": {"const": true},
+        "termuxImageDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "stressSamples": {"type": "integer", "minimum": 32, "maximum": 4096},
+        "stressRequests": {"type": "integer", "minimum": 98}
+      }
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "runId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/digest"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    }
+  }
+}

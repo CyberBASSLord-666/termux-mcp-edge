@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-No unreleased changes.
+- Added exact downloaded-artifact execution in the pinned official Termux environment on native ARM64 CI, including canonical runtime validation, a 256-sample MCP stress pass, sanitized schema-versioned evidence, and a fail-closed physical-observation inheritance verifier for metadata-only descendants with unchanged runtime, dependency, build, deployment, and bridge-digest inputs.
 
 ## 2026-07-12 — v0.6.0 Production-Readiness and Stable MCP Release Candidate
 
