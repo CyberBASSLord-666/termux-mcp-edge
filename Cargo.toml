@@ -13,8 +13,8 @@ categories = ["command-line-utilities", "network-programming"]
 
 [features]
 default = []
-mcp-runtime = ["dep:rustix"]
 android-battery-status = []
+mcp-runtime = ["dep:rustix", "android-battery-status"]
 
 [dependencies]
 axum = "0.8"
