@@ -49,15 +49,15 @@ chmod 600 "$TOKEN_FILE"
 
 cat >"$CONFIG" <<EOF
 EXPECTED_COMMIT=<full-40-character-main-commit>
-EXPECTED_VERSION=0.5.1
+EXPECTED_VERSION=0.6.0
 DEFAULT_ARTIFACT=$HOME/artifacts/default/termux-mcp-server
 DEFAULT_SHA256=<64-lowercase-hex>
 DEFAULT_MANIFEST=$HOME/artifacts/default/artifact-manifest.json
 MCP_ARTIFACT=$HOME/artifacts/mcp-runtime/termux-mcp-server
 MCP_SHA256=<64-lowercase-hex>
 MCP_MANIFEST=$HOME/artifacts/mcp-runtime/artifact-manifest.json
-BASELINE_ARTIFACT=$HOME/artifacts/termux-mcp-server-v0.5.0-aarch64-linux-android-mcp-runtime
-BASELINE_VERSION=0.5.0
+BASELINE_ARTIFACT=$HOME/artifacts/termux-mcp-server-v0.5.1-aarch64-linux-android-mcp-runtime
+BASELINE_VERSION=0.5.1
 BASELINE_SHA256=<64-lowercase-hex>
 AUTH_TOKEN_FILE=$TOKEN_FILE
 SAFE_ROOT=$HOME/mcp-release-validation

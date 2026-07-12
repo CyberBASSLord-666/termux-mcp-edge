@@ -14,7 +14,7 @@ The repository uses one active implementation lane at a time. Release preparatio
 
 The package version in `Cargo.toml`, the current release entry in `CHANGELOG.md`, the Git tag, and the GitHub Release title must agree.
 
-Release tags use `vMAJOR.MINOR.PATCH`, for example `v0.5.1`.
+Release tags use `vMAJOR.MINOR.PATCH`, for example `v0.6.0`.
 
 A release tag must:
 
@@ -146,4 +146,6 @@ The following are hard blockers until reconciled:
 
 ## Current repository posture
 
-At the time this policy was introduced, `Cargo.toml` reported version `0.5.1` while the repository's historical tag posture did not establish a matching production release. This document does not retroactively declare any existing tag or artifact authoritative. A future release-preparation change must reconcile the current package/changelog state with a new validated tag and GitHub Release without rewriting historical tags.
+The v0.6.0 release-preparation lane reconciles the source package, lockfile, changelog, deployment examples, artifact names, and candidate record without creating a tag or GitHub Release. The historical `v0.1.0-baseline` tag and the validated exact-main v0.5.1 candidate are not retroactively declared production releases. Consequently, v0.6.0 has no authoritative previous public release: clean installation and uninstall are supported, while public rollback becomes available only after a later complete release is installed over v0.6.0.
+
+The pre-metadata v0.5.1 exact-main evidence authorizes preparation work but is not transferable to the changed v0.6.0 commit. Before publication, the final merged v0.6.0 `main` SHA must independently complete CI, Security, both Android postures, downloaded-bundle validation, and the required physical sustained observation. See [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md).

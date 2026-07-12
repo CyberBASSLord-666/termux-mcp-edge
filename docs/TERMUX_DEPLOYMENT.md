@@ -71,7 +71,7 @@ SHA-256 verification is required by default. An advanced operator may explicitly
 ```bash
 scripts/termux_deploy.sh install \
   --artifact "$ARTIFACT" \
-  --version 0.5.1 \
+  --version 0.6.0 \
   --sha256 "$ARTIFACT_SHA256"
 ```
 
@@ -174,3 +174,5 @@ Use [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md) for dow
 8. Run authenticated MCP discovery and representative allowed and denied calls.
 9. Exercise rollback and restoration behavior.
 10. Preserve the prior known-good release until sustained device validation is complete under realistic battery, thermal, and process-restriction conditions.
+
+For the first governed public release, v0.6.0 has no authoritative prior public release to roll back to. The exact-main v0.5.1 candidate recorded in [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md) is internal upgrade/recovery validation evidence, not a published installation source. A clean v0.6.0 installation can be uninstalled, but it cannot use `rollback` until a second complete release has been installed through this manager.

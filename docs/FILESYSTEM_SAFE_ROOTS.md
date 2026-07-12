@@ -32,6 +32,6 @@ done
 
 Use the actual configured roots rather than copying the example paths. After deployment, confirm that the service remains up and that `/ready` reports the expected distinct safe-root count.
 
-## Remaining boundary work
+## Live-operation boundary
 
-Startup anchoring prevents unresolved lexical roots from entering the production jail. It does not replace the descriptor-relative, race-resistant operation design tracked in issue #200. Filesystem reads, listings, temporary-file creation, and replacement must still migrate away from pathname re-resolution to close concurrent symlink and directory-swap races.
+Startup anchoring prevents unresolved lexical roots from entering the production jail. Live reads, listings, metadata lookup, temporary-file creation, cleanup, replacement, and parent sync additionally remain descriptor-relative after anchoring, with component-by-component no-follow resolution. The #200 regression suite covers concurrent exchanges both before and after parent descriptors are opened; future filesystem changes must preserve that capability boundary rather than reintroducing pathname re-resolution.

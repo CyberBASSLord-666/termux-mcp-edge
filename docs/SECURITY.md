@@ -90,7 +90,7 @@ The MCP transport uses explicit limits intended for a supervised mobile process:
 
 Values outside these ranges fail startup validation. Concurrency saturation fails fast with HTTP 503 and `Retry-After: 1`. Request timeout returns HTTP 504. Request bodies over the configured ceiling return HTTP 413. All limit responses use non-sensitive JSON and `Cache-Control: no-store`.
 
-The body ceiling is implemented with Axum's streaming extractor limit rather than a second full body buffer. This keeps peak memory usage predictable on Termux. The request timeout covers body extraction and dispatch; write-side temporary-file handling must remain cancellation-safe before timeout enforcement is considered production-ready.
+The body ceiling is implemented with Axum's streaming extractor limit rather than a second full body buffer. This keeps peak memory usage predictable on Termux. The request timeout covers body extraction and dispatch; write-side temporary-file handling is cancellation-safe and regression-tested so timed-out writes do not strand staging files.
 
 ## Filesystem and Tool Safety Rules
 

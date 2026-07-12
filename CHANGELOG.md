@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+No unreleased changes.
+
+## 2026-07-12 — v0.6.0 Production-Readiness and Stable MCP Release Candidate
+
 - Added exact-source Android artifact manifests/checksum sidecars and an offline downloaded-release-candidate validator with literal private configuration, default and `mcp-runtime` provenance/digest/ELF/version posture checks, explicit runtime/deployment mutation confirmations, isolated protocol and recovery exercises, action-specific production-root confirmations, deterministic failure/interruption/redaction fixtures, a versioned sanitized JSON schema, and a 60-minute operator observation contract.
 - Added a reusable no-clone, exact-commit AArch64 Termux production-gate harness with native artifact verification, isolated real-runit install/upgrade/rollback/uninstall, failed-readiness recovery, authenticated stable-MCP lifecycle and allowlist checks, safe-root allowed/denied calls, dry-run and mode-`0600` writes, request-limit ordering, private reports, cleanup, CI contract coverage, and operator documentation.
 - Replaced canonicalize-then-use filesystem I/O with safe-root descriptor anchoring and component-by-component no-follow operations; directory enumeration, reads, temporary-file cleanup, atomic rename, file sync, and parent sync now remain descriptor-relative, with deterministic pre-open and post-open symlink/directory exchange regression tests.

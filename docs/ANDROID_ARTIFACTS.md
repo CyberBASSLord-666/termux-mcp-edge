@@ -9,6 +9,13 @@ The workflow builds two isolated feature postures:
 
 Artifact names are part of the release evidence. Do not rename either artifact to a generic Android name or substitute one posture for the other.
 
+The workflow names above identify expiring validation bundles. Durable v0.6.0 GitHub Release assets, if publication is separately approved after final exact-main validation, must use:
+
+- `termux-mcp-server-v0.6.0-aarch64-linux-android-default`;
+- `termux-mcp-server-v0.6.0-aarch64-linux-android-mcp-runtime`.
+
+Each durable binary must be accompanied by its checksum/manifest material. A workflow bundle must not be presented as the durable release asset merely because its internal executable has the expected digest.
+
 Each downloaded workflow artifact is a three-file bundle:
 
 - `termux-mcp-server`: the posture-specific executable;

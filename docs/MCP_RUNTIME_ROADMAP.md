@@ -81,7 +81,7 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, payload limits, explicit write controls, and non-sensitive audit counter coverage.
 
-Status: exposed behind the staged runtime gate. The surface includes deterministic response-bounded directory listing, bounded UTF-8 reads, default-dry-run writes, explicit crash-durable writes, and non-sensitive audit counters. Live operations are anchored to opened safe-root descriptors, reject symlink components, and retain the same descriptor through enumeration, read, temporary-file creation, rename, cleanup, and parent sync. The response-bound work landed through #206; descriptor-relative race hardening is tracked through #200.
+Status: exposed behind the staged runtime gate. The surface includes deterministic response-bounded directory listing, bounded UTF-8 reads, default-dry-run writes, explicit crash-durable writes, and non-sensitive audit counters. Live operations are anchored to opened safe-root descriptors, reject symlink components, and retain the same descriptor through enumeration, read, temporary-file creation, rename, cleanup, and parent sync. The response-bound work landed through #206 and descriptor-relative race hardening landed through #200.
 
 Required gates:
 
