@@ -70,7 +70,7 @@ Each invocation has these fixed ceilings:
 
 | Resource | Limit |
 |---|---:|
-| Wall-clock time | 5 seconds |
+| Normal wall-clock budget | 5 seconds, including a reserved cleanup window |
 | Standard output | 16 KiB |
 | Standard error | 4 KiB |
 | Arguments | 0 |
@@ -78,7 +78,7 @@ Each invocation has these fixed ceilings:
 | Inherited environment | Cleared |
 | Working directory | Fixed `/` |
 
-One cancellation-safe supervisor concurrently observes the direct child, both output streams, caller cancellation, and a single end-to-end deadline. The provider starts as the leader of an isolated process group. Crossing either byte ceiling terminates the whole group immediately; timeout, wait/read failure, client cancellation, and successful completion also close both pipes, terminate any remaining descendants, and synchronously reap the direct child within the original five-second wall-clock ceiling. A bounded final portion of that ceiling is reserved for cleanup. Simultaneous terminal events use stable precedence: cancellation, deadline, stdout, stderr, then child completion. No reader task or unbounded drain/join can outlive the invocation.
+One cancellation-safe supervisor concurrently observes the direct child, both output streams, caller cancellation, and one absolute normal-operation budget. The provider starts as the leader of an isolated process group. Crossing either byte ceiling terminates the whole group immediately; timeout, wait/read failure, client cancellation, and successful completion also close both pipes, terminate any remaining descendants, and synchronously reap the direct child. A final portion of the five-second budget is reserved for cleanup. If confirmed reaping exhausts that reserve, cleanup authority takes precedence over latency: the original success, timeout, overflow, or cancellation result is replaced by `battery_api_wait_failed`, and the independently owned supervisor does not finish until the direct child is collected or the OS wait operation itself fails. Simultaneous terminal events use stable precedence: cancellation, deadline, stdout, stderr, then child completion. No reader task or unbounded pipe drain/join can outlive the invocation.
 
 Process output is parsed only after a successful exit and complete bounded reads. It is never included in an error response or audit counter.
 
@@ -107,7 +107,7 @@ The existing in-memory aggregate audit counters record only the stable tool name
 
 ## Validation
 
-Repository tests cover strict parsing, field redaction, type/range rejection, exact and over-limit output, repeated endless stdout/stderr, deterministic overflow-before-timeout behavior, pipe-holding descendants, process-group termination, caller cancellation, synchronous direct-child reaping, supervisor/task accumulation, timeout, non-zero exit, invalid UTF-8, missing API executable, compile/runtime gate truth tables, discovery, direct invocation, error shape, and audit counts.
+Repository tests cover strict parsing, field redaction, type/range rejection, exact and over-limit output, repeated endless stdout/stderr, deterministic overflow-before-timeout behavior, pipe-holding descendants, process-group termination, caller cancellation, synchronous direct-child reaping, forced cleanup-reserve exhaustion across timeout/stdout/stderr/cancellation paths, supervisor/task accumulation, namespace-safe process liveness checks, non-zero exit, invalid UTF-8, missing API executable, compile/runtime gate truth tables, discovery, direct invocation, error shape, and audit counts.
 
 The Android workflow builds a separate `android-battery-status` AArch64 artifact and executes it in the pinned official Termux image on a native ARM64 runner. That gate installs a temporary fixed-path API fixture and proves enabled and disabled discovery, fixed-working-directory/no-argument/environment-cleared execution, normalization/redaction, immediate endless-output rejection, stdout/stderr pipe-holder cleanup, client-cancellation cleanup, process-group termination, stable provider failure, and continued absence of device-control, command, and high-impact tools. Its v2 evidence is strict and sanitized. This automated gate does not claim battery, OEM thermal-management, mobile-radio, or Android background-process behavior on physical hardware; release evidence classifies those separately without requiring a long observation for every development PR.
 

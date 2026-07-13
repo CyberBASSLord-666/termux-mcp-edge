@@ -74,8 +74,8 @@ Optional battery scope:
 - Separate `android-battery-status` compile-time feature, which includes `mcp-runtime`
 - Separate `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` runtime opt-in, defaulting to disabled
 - Direct execution of one fixed absolute Termux:API program with zero arguments, null stdin, and a cleared inherited environment
-- Five-second end-to-end deadline, 16 KiB stdout limit, and 4 KiB stderr limit
-- Single cancellation-safe supervisor with isolated process-group termination, immediate overflow handling, bounded pipe completion, and direct-child reaping
+- Five-second normal-operation budget with a reserved cleanup window, 16 KiB stdout limit, and 4 KiB stderr limit
+- Single cancellation-safe supervisor with isolated process-group termination, immediate overflow handling, bounded pipe completion, and authoritative direct-child reaping; cleanup-reserve exhaustion overrides every primary result with a stable wait failure
 - Strict normalized battery-field allowlist with unknown fields, technology/vendor text, identifiers, raw output, and stderr discarded
 - Hidden discovery while disabled and stable non-sensitive errors for disabled or unavailable states
 - Aggregate allowed/denied audit counters using stable reason codes only

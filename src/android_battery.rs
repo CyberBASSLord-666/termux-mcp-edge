@@ -7,6 +7,8 @@
 
 use std::{io::ErrorKind, path::PathBuf, process::Stdio, time::Duration};
 
+#[cfg(test)]
+use rustix::process::test_kill_process;
 use rustix::process::{kill_process_group, Pid, Signal};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -104,6 +106,8 @@ pub struct AndroidBatteryClient {
     timeout: Duration,
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
+    #[cfg(test)]
+    forced_cleanup_delay: Duration,
 }
 
 impl AndroidBatteryClient {
@@ -113,6 +117,8 @@ impl AndroidBatteryClient {
             timeout: BATTERY_STATUS_TIMEOUT,
             max_stdout_bytes: MAX_BATTERY_STDOUT_BYTES,
             max_stderr_bytes: MAX_BATTERY_STDERR_BYTES,
+            #[cfg(test)]
+            forced_cleanup_delay: Duration::ZERO,
         }
     }
 
@@ -172,6 +178,8 @@ impl AndroidBatteryClient {
                 max_stderr_bytes: self.max_stderr_bytes,
                 operation_deadline,
                 final_deadline,
+                #[cfg(test)]
+                forced_cleanup_delay: self.forced_cleanup_delay,
             },
             cancellation_receiver,
         ));
@@ -194,7 +202,14 @@ impl AndroidBatteryClient {
             timeout,
             max_stdout_bytes,
             max_stderr_bytes,
+            forced_cleanup_delay: Duration::ZERO,
         }
+    }
+
+    #[cfg(test)]
+    fn with_forced_cleanup_delay(mut self, delay: Duration) -> Self {
+        self.forced_cleanup_delay = delay;
+        self
     }
 }
 
@@ -263,6 +278,13 @@ enum SupervisorTerminal {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupOutcome {
+    ReapedWithinDeadline,
+    ReapedAfterDeadline,
+    ReapFailed,
+}
+
 struct SpawnedBatteryProcess {
     child: Child,
     process_group: ProcessGroupGuard,
@@ -275,6 +297,8 @@ struct SupervisorBounds {
     max_stderr_bytes: usize,
     operation_deadline: Instant,
     final_deadline: Instant,
+    #[cfg(test)]
+    forced_cleanup_delay: Duration,
 }
 
 async fn supervise_process(
@@ -363,17 +387,19 @@ async fn supervise_process(
     };
 
     // Leaving the block above drops both reader futures and closes their pipes.
-    // Kill the whole isolated process group, synchronously reap the direct child
-    // when possible, and never await cleanup past the original final deadline.
-    let cleanup_complete =
-        terminate_process_group_and_reap(&mut child, &mut process_group, bounds.final_deadline)
-            .await;
+    // Kill the whole isolated process group and synchronously reap the direct
+    // child. If the reserved cleanup window is exhausted, reaping takes priority
+    // over returning the primary result; the supervisor reports a stable wait
+    // failure only after the direct child is reaped (or wait itself fails).
+    let cleanup_outcome =
+        terminate_process_group_and_reap(&mut child, &mut process_group, &bounds).await;
+
+    if cleanup_outcome != CleanupOutcome::ReapedWithinDeadline {
+        return Err(AndroidBatteryError::WaitFailed);
+    }
 
     match terminal {
         SupervisorTerminal::Complete(stdout) => {
-            if !cleanup_complete {
-                return Err(AndroidBatteryError::WaitFailed);
-            }
             let stdout = String::from_utf8(stdout).map_err(|_| AndroidBatteryError::InvalidUtf8)?;
             parse_battery_status(&stdout)
         }
@@ -385,22 +411,49 @@ async fn supervise_process(
 async fn terminate_process_group_and_reap(
     child: &mut Child,
     process_group: &mut ProcessGroupGuard,
-    final_deadline: Instant,
-) -> bool {
+    bounds: &SupervisorBounds,
+) -> CleanupOutcome {
     process_group.terminate();
 
+    // Test-only delay injection happens after process-group termination so the
+    // regression forces late reap confirmation without modeling delayed cleanup.
+    #[cfg(test)]
+    if !bounds.forced_cleanup_delay.is_zero() {
+        tokio::time::sleep(bounds.forced_cleanup_delay).await;
+    }
+
+    let final_deadline = bounds.final_deadline;
+    let mut within_deadline = Instant::now() <= final_deadline;
     let reaped = match child.try_wait() {
         Ok(Some(_)) => true,
         Ok(None) | Err(_) => {
             let _ = child.start_kill();
-            matches!(timeout_at(final_deadline, child.wait()).await, Ok(Ok(_)))
+            match timeout_at(final_deadline, child.wait()).await {
+                Ok(Ok(_)) => true,
+                Ok(Err(_)) => false,
+                Err(_) => {
+                    within_deadline = false;
+                    // The operation deadline is no longer authoritative once it
+                    // conflicts with synchronous child reaping. SIGKILL has already
+                    // been sent to the isolated process group, both pipes are closed,
+                    // and this independently owned supervisor remains responsible for
+                    // the direct child until wait confirms collection.
+                    child.wait().await.is_ok()
+                }
+            }
         }
     };
 
     if reaped {
         process_group.disarm();
+        if within_deadline && Instant::now() <= final_deadline {
+            CleanupOutcome::ReapedWithinDeadline
+        } else {
+            CleanupOutcome::ReapedAfterDeadline
+        }
+    } else {
+        CleanupOutcome::ReapFailed
     }
-    reaped
 }
 
 async fn read_bounded(
@@ -576,11 +629,7 @@ fn optional_integer(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::{Path, PathBuf},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
     use serde_json::json;
     use tempfile::TempDir;
@@ -630,13 +679,19 @@ mod tests {
         .expect("provider did not publish its process identifier")
     }
 
-    fn process_path(pid: u32) -> PathBuf {
-        Path::new("/proc").join(pid.to_string())
+    fn process_exists(pid: u32) -> bool {
+        let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+            return false;
+        };
+        match test_kill_process(pid) {
+            Ok(()) => true,
+            Err(error) => error != rustix::io::Errno::SRCH,
+        }
     }
 
     async fn assert_process_gone(pid: u32) {
         tokio::time::timeout(Duration::from_secs(2), async {
-            while process_path(pid).exists() {
+            while process_exists(pid) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
@@ -862,6 +917,94 @@ mod tests {
             assert_process_gone(direct_pid).await;
             assert_process_gone(descendant_pid).await;
             assert_no_active_supervisors().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_reserve_exhaustion_overrides_each_primary_failure_after_reaping() {
+        let _test_guard = ANDROID_BATTERY_TEST_LOCK.lock().await;
+
+        for terminal in ["timeout", "stdout", "stderr"] {
+            for iteration in 0..4 {
+                let directory = tempfile::tempdir().unwrap();
+                let direct_pid_path = directory.path().join("direct-pid");
+                let direct_pid_text = direct_pid_path.to_string_lossy();
+                assert!(!direct_pid_text.contains('\''));
+                let body = match terminal {
+                    "timeout" => "/bin/sleep 30",
+                    "stdout" => "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
+                    "stderr" => "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' >&2; done",
+                    _ => unreachable!(),
+                };
+                let script = format!(
+                    "printf '%s\\n' \"$$\" >'{direct_pid_text}'\n\
+                     {body}"
+                );
+                let client = executable_script_in(&directory, &script, Duration::from_millis(120))
+                    .with_forced_cleanup_delay(Duration::from_millis(160));
+
+                let started_at = Instant::now();
+                assert_eq!(
+                    client.collect().await.unwrap_err(),
+                    AndroidBatteryError::WaitFailed,
+                    "terminal {terminal}, iteration {iteration}"
+                );
+                assert!(
+                    started_at.elapsed() >= Duration::from_millis(150),
+                    "late cleanup was not exercised for {terminal}, iteration {iteration}"
+                );
+
+                let direct_pid = read_pid_file(&direct_pid_path).await;
+                assert_process_gone(direct_pid).await;
+                assert_no_active_supervisors().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_cannot_detach_cleanup_after_reserve_exhaustion() {
+        let _test_guard = ANDROID_BATTERY_TEST_LOCK.lock().await;
+
+        for iteration in 0..4 {
+            let directory = tempfile::tempdir().unwrap();
+            let direct_pid_path = directory.path().join("direct-pid");
+            let descendant_pid_path = directory.path().join("descendant-pid");
+            let direct_pid_text = direct_pid_path.to_string_lossy();
+            let descendant_pid_text = descendant_pid_path.to_string_lossy();
+            assert!(!direct_pid_text.contains('\''));
+            assert!(!descendant_pid_text.contains('\''));
+            let script = format!(
+                "printf '%s\\n' \"$$\" >'{direct_pid_text}'\n\
+                 /bin/sleep 30 >/dev/null 2>&1 &\n\
+                 printf '%s\\n' \"$!\" >'{descendant_pid_text}'\n\
+                 wait"
+            );
+            let client = executable_script_in(&directory, &script, Duration::from_secs(1))
+                .with_forced_cleanup_delay(Duration::from_millis(1_100));
+            let task = tokio::spawn(async move { client.collect().await });
+            let direct_pid = read_pid_file(&direct_pid_path).await;
+            let descendant_pid = read_pid_file(&descendant_pid_path).await;
+
+            let cancelled_at = Instant::now();
+            task.abort();
+            assert!(
+                task.await.unwrap_err().is_cancelled(),
+                "iteration {iteration}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(
+                ACTIVE_BATTERY_SUPERVISORS.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "cancelled caller detached its supervisor in iteration {iteration}"
+            );
+
+            assert_process_gone(direct_pid).await;
+            assert_process_gone(descendant_pid).await;
+            assert_no_active_supervisors().await;
+            assert!(
+                cancelled_at.elapsed() >= Duration::from_millis(1_000),
+                "forced late cancellation cleanup was not exercised in iteration {iteration}"
+            );
         }
     }
 
