@@ -11,7 +11,7 @@ The staged MCP route requires the configured static bearer token before JSON-RPC
 
 The route is a custom POST-only transport that reports protocol version `2024-11-05`; it is not yet a complete stable MCP 2025-11-25 Streamable HTTP implementation. Protocol completion and descriptor-relative filesystem race hardening remain release-readiness requirements.
 
-Current staged tools remain limited to `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. Android platform control, shell access, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact controls are not supported runtime surfaces.
+The baseline staged tools remain limited to `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. A separately built and explicitly enabled posture may add bounded read-only `android_battery_status`; its fixed executable, zero-argument, cleared-environment, timeout/output, normalization, redaction, and audit contract is defined in `docs/ANDROID_BATTERY_STATUS.md`. Android platform control, shell access, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact controls are not supported runtime surfaces.
 
 ## Reporting Security Issues
 

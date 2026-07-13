@@ -12,7 +12,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 
-The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. Command-policy and high-impact capability-token modules are inert policy scaffolding only. Android platform control, shell fallback, live command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact actions remain unavailable until their own power-user capability gates land.
+The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. A separate `android-battery-status` compile feature plus disabled-by-default runtime flag exposes bounded read-only Termux:API battery telemetry without Android control. Command-policy and high-impact capability-token modules are inert policy scaffolding only. Android platform control, shell fallback, live arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact actions remain unavailable until their own power-user capability gates land.
 
 ## Capability-Gate Philosophy
 
@@ -118,7 +118,7 @@ Required gates:
 
 Restore Android platform tools only after explicit feature gates and operational documentation. Read-only `android_status` metadata is already complete and does not authorize this stage.
 
-Status: not started for control-oriented Android/platform tools.
+Status: read-only `android_battery_status` is implemented behind independent compile-time and runtime gates. Control-oriented Android/platform tools are not started.
 
 Required gates:
 
@@ -128,6 +128,8 @@ Required gates:
 - No shell fallback unless separately reviewed and authorized.
 - Operator-facing documentation that clearly distinguishes read-only status from device-control actions.
 - Capability and audit policy appropriate to each Android data/control family.
+
+Battery telemetry satisfies this stage only for its read-only data family: fixed executable, no caller arguments, cleared environment, bounded normal operation/output, strict field normalization, disabled discovery, stable error codes, aggregate audit coverage, a cancellation-safe process-group supervisor with authoritative late-reap failure handling, and native ARM64 official-Termux cleanup validation. It does not satisfy or authorize any future Android control family.
 
 ## Stage 7: Command Execution and High-Impact Tooling
 

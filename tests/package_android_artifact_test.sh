@@ -82,6 +82,17 @@ MCP_BUNDLE="$ROOT/output/mcp"
 run_package "$BINARY" "$MCP_BUNDLE" termux-mcp-server-aarch64-linux-android-mcp-runtime mcp-runtime >/dev/null
 jq -e '.posture == "mcp-runtime" and .features == ["mcp-runtime"]' "$MCP_BUNDLE/artifact-manifest.json" >/dev/null
 
+BATTERY_BUNDLE="$ROOT/output/android-battery-status"
+run_package \
+  "$BINARY" \
+  "$BATTERY_BUNDLE" \
+  termux-mcp-server-aarch64-linux-android-android-battery-status \
+  android-battery-status >/dev/null
+jq -e '
+  .posture == "android-battery-status"
+  and .features == ["android-battery-status"]
+' "$BATTERY_BUNDLE/artifact-manifest.json" >/dev/null
+
 LINKER_ONLY="$ROOT/linker-only-candidate"
 printf '%s\n' '#!/usr/bin/env bash' '# linker-only' 'exit 0' >"$LINKER_ONLY"
 chmod 700 "$LINKER_ONLY"

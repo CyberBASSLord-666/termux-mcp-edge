@@ -15,6 +15,8 @@ use std::{ffi::OsStr, path::PathBuf};
 use axum::{extract::DefaultBodyLimit, middleware};
 use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
+use termux_mcp_server::health::McpRequestLimitReadiness;
+#[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
@@ -22,7 +24,7 @@ use termux_mcp_server::{
 };
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
-    health::{build_readiness_response, McpRequestLimitReadiness, ReadinessResponse},
+    health::{build_readiness_response, ReadinessResponse},
     tools::FileSystemTools,
 };
 use tokio::signal;
@@ -126,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
                 config.transport.allow_missing_origin,
             )?,
             file_tools,
+            config.android.battery_status_enabled,
         )
         .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
         .route_layer(middleware::from_fn_with_state(

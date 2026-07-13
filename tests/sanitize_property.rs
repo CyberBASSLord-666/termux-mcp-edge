@@ -1,5 +1,7 @@
 //! Property coverage for filesystem safe-root acceptance and rejection.
 
+#![cfg(all(unix, feature = "mcp-runtime"))]
+
 use proptest::prelude::*;
 use termux_mcp_server::{error::AppError, tools::FileSystemTools};
 

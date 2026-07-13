@@ -37,6 +37,7 @@ pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
+        false,
     )
 }
 

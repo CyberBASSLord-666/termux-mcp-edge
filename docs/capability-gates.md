@@ -14,11 +14,15 @@ Enabled staged tools:
 - `read_file`
 - `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`
 
+Separately gated read-only tool:
+
+- `android_battery_status` only in an `android-battery-status` build with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`
+
 Current audit visibility is aggregate and in-memory. The staged runtime exposes backend-neutral `auditCounters` through `runtime_status` for the currently wired status and filesystem surfaces. These counters are intentionally not retained request logs and store only stable tool names, gate names, modes, reason codes, and allowed or denied counts.
 
 Still disabled:
 
-- Android platform control beyond read-only allowlisted status metadata
+- Android platform control beyond read-only allowlisted status and optional battery telemetry
 - Shell and command execution
 - Global process listing and arbitrary service inspection
 - Service mutation or control
@@ -55,9 +59,9 @@ Required coverage:
 
 ## Gate 2: Android read-only status
 
-Status: implemented for read-only allowlisted Android/Termux status metadata.
+Status: implemented for static read-only allowlisted Android/Termux status metadata and separately gated read-only battery telemetry. Android control remains disabled.
 
-Current scope:
+Baseline `android_status` scope:
 
 - Explicitly allowlisted Android/Termux status fields useful for local diagnostics
 - Read-only values only
@@ -65,11 +69,24 @@ Current scope:
 - No Android API access or control surface
 - No shell fallback
 
+Optional battery scope:
+
+- Separate `android-battery-status` compile-time feature, which includes `mcp-runtime`
+- Separate `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` runtime opt-in, defaulting to disabled
+- Direct execution of one fixed absolute Termux:API program with zero arguments, null stdin, and a cleared inherited environment
+- Five-second normal-operation budget with a reserved cleanup window, 16 KiB stdout limit, and 4 KiB stderr limit
+- Single cancellation-safe supervisor with isolated process-group termination, immediate overflow handling, bounded pipe completion, and authoritative direct-child reaping; cleanup-reserve exhaustion overrides every primary result with a stable wait failure
+- Strict normalized battery-field allowlist with unknown fields, technology/vendor text, identifiers, raw output, and stderr discarded
+- Hidden discovery while disabled and stable non-sensitive errors for disabled or unavailable states
+- Aggregate allowed/denied audit counters using stable reason codes only
+- Native ARM64 official-Termux execution with a fixed-path API fixture, endless-output, pipe-holder, and client-cancellation cleanup checks in CI
+
 Denied:
 
 - Contacts, SMS, notifications, accounts, location, camera, microphone, accessibility state, installed package inventory, persistent device IDs, and user secrets
 - Shell fallback
 - Any mutation or device-control action
+- Caller-selected commands, arguments, executable paths, environment, timeouts, or output limits
 
 Required before any future expansion:
 
@@ -77,6 +94,7 @@ Required before any future expansion:
 - Tests proving denied fields are absent
 - Runtime status metadata distinguishing read-only status from Android control
 - No new dependency unless Security passes exact-head audit
+- Exact-head native ARM64 validation of every separately built Android posture
 
 ## Gate 3: project-owned service state
 

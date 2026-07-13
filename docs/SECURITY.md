@@ -2,10 +2,11 @@
 
 ## Current Security Posture
 
-Termux MCP Edge has two deliberate compile-time postures:
+Termux MCP Edge has three deliberate compile-time postures:
 
 - The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
 - The optional `mcp-runtime` feature additionally exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its narrowly scoped staged tool registry.
+- The optional `android-battery-status` feature includes `mcp-runtime` and permits a separately runtime-gated read-only battery tool.
 
 The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 because optional server-initiated SSE, replay, and resumption are not implemented.
 
@@ -20,6 +21,8 @@ The optional runtime is not a broad host-control surface. After authentication, 
 - `list_directory`
 - `read_file`
 - `write_file`
+
+An `android-battery-status` build may additionally expose `android_battery_status` only when `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`. The runtime flag defaults to disabled and is rejected if the compile feature is absent. The provider directly executes one fixed Termux:API program with no arguments, null stdin, a cleared inherited environment, a five-second normal-operation budget with a reserved cleanup window, and hard stdout/stderr ceilings. A single cancellation-safe supervisor isolates the provider process group, terminates it immediately on overflow or cancellation, closes both pipes, and synchronously reaps the direct child. If reaping misses the reserve, the stable wait-failure result becomes authoritative and the supervisor remains responsible until collection. It returns only normalized allowlisted fields and never reflects technology/vendor strings, identifiers, raw output, stderr, paths, or environment values.
 
 Android platform control, shell fallback, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and other high-impact controls remain disabled.
 
@@ -55,6 +58,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `POST`, `GET`, `DELETE /mcp` stable transport | Disabled | Bearer-authenticated, resource-bounded, except explicit loopback development mode; GET returns 405 without SSE |
 | `runtime_status` / `platform_info` | Disabled | Read-only |
 | `android_status` | Disabled | Read-only allowlisted metadata |
+| `android_battery_status` | Disabled | Available only in the `android-battery-status` build with explicit runtime opt-in; bounded read-only telemetry |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
 | `list_directory` | Disabled | Bounded and safe-rooted |
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
@@ -109,6 +113,8 @@ Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not d
 `list_directory`, `read_file`, and `write_file` are payload bounded. Directory results are deterministic, capped at 4,096 entries and a 256 KiB full response, and explicitly report truncation. Reads accept at most 1 MiB of valid UTF-8 while the full response is capped at 1,114,112 bytes; file content is emitted once rather than duplicated into the summary. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation. Explicit writes create an exclusive mode-0600 temporary file in the opened destination directory, sync its contents, rename relative to that same descriptor, and sync the parent directory. Cancellation before rename leaves descriptor-relative cleanup armed; after a successful rename the parent sync defines the crash-durability boundary.
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
+
+The battery provider is not a general command runner. Callers cannot choose its executable, arguments, stdin, environment, timeout, output limit, or parsed fields. Disabled, unavailable, timeout, overflow, process, and parsing failures return stable reason codes without process paths, exit details, or raw output. The tool does not grant Android device-control authority.
 
 ## Audit Counter Privacy
 

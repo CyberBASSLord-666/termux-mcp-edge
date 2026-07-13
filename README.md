@@ -14,7 +14,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
-- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
+- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`; an `android-battery-status` build may additionally expose `android_battery_status` after explicit runtime opt-in.
 - **Filesystem surface:** deterministic bounded directory listing and UTF-8 reads; writes are descriptor-relative, payload-bounded, cancellation-safe, crash-durable, and dry-run by default. Deterministic pre-open and post-open exchange tests preserve the no-follow race-hardening delivered through #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
@@ -25,7 +25,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
 - **Named tunnels:** explicit, non-overwriting Cloudflare Tunnel setup with strict hostname validation and hermetic failure-path tests.
 
-Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, network mutation, and high-impact actions remain unavailable until their separate capability gates are implemented and validated.
+Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, network mutation, and high-impact actions remain unavailable. The optional battery tool is bounded read-only telemetry and does not authorize any of those surfaces.
 
 ## Security and authentication
 
@@ -102,6 +102,19 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live list/read/write operations walk from an opened safe-root descriptor with no-follow semantics for every descendant instead of authorizing one pathname and using it later.
 
+## Optional Android battery telemetry
+
+Battery telemetry requires a separately compiled and separately enabled posture:
+
+```bash
+cargo build --release --features android-battery-status
+export MCP__ANDROID__BATTERY_STATUS_ENABLED=true
+```
+
+The feature includes `mcp-runtime`. Startup rejects the runtime flag when the feature is absent. With the flag unset or `false`, `android_battery_status` is hidden from discovery. With both gates enabled, the server directly invokes only the fixed Termux:API `termux-battery-status` executable with no arguments, no stdin, no inherited environment, a five-second normal-operation budget with a reserved cleanup window, and independent 16 KiB/4 KiB stdout/stderr limits. A cancellation-safe supervisor isolates and terminates the complete provider process group on overflow, timeout, request cancellation, or completion and reaps the direct child without unbounded reader joins. If reaping exhausts the reserved window, a stable wait failure overrides the primary result and the supervisor remains responsible until the child is collected. Only normalized allowlisted battery fields are returned; technology/vendor strings, identifiers, raw output, stderr, paths, and environment values are discarded.
+
+See [`docs/ANDROID_BATTERY_STATUS.md`](docs/ANDROID_BATTERY_STATUS.md) for prerequisites, field units, failure reason codes, audit behavior, and validation evidence.
+
 ## Build and validate
 
 Run the exact CI gates:
@@ -112,11 +125,12 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 ```
 
-Build both supported postures:
+Build all supported postures:
 
 ```bash
 cargo build --release
 cargo build --release --features mcp-runtime
+cargo build --release --features android-battery-status
 ```
 
 The binary exposes deployment-facing metadata without requiring runtime configuration:
@@ -141,7 +155,7 @@ Before a release declaration, run the no-clone exact-commit AArch64 device gate 
 
 Validate the exact downloaded default and `mcp-runtime` Android candidates separately through [`docs/RELEASE_CANDIDATE_VALIDATION.md`](docs/RELEASE_CANDIDATE_VALIDATION.md). Each workflow bundle includes an exact-source manifest and checksum sidecar; the offline validator reconciles those with the supplied commit/run metadata and feature postures before any listener or service mutation, requires explicit confirmation for runtime/deployment phases, and emits only versioned sanitized JSON evidence.
 
-The Android workflow additionally executes both exact bundles in the pinned official Termux container on a native ARM64 runner. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines that gate and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
+The Android workflow additionally executes the default, `mcp-runtime`, and opt-in battery postures in the pinned official Termux container on a native ARM64 runner. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated gates, the evidence-only classification used when runtime changes require later physical release evidence, and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
 
 Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticated MCP, audit-counter, filesystem, Android-status, service-status, and capability-boundary checks.
 
@@ -155,6 +169,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [MCP runtime validation plan](docs/MCP_RESTORATION_VALIDATION.md)
 - [MCP runtime roadmap](docs/MCP_RUNTIME_ROADMAP.md)
 - [Android artifact contract](docs/ANDROID_ARTIFACTS.md)
+- [Android battery status tool](docs/ANDROID_BATTERY_STATUS.md)
 - [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)
 - [Downloaded release-candidate validation](docs/RELEASE_CANDIDATE_VALIDATION.md)
 - [Native ARM64 Termux emulated release gate](docs/EMULATED_RELEASE_GATE.md)

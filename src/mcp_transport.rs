@@ -14,6 +14,8 @@ use axum::{
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
+#[cfg(feature = "android-battery-status")]
+use crate::android_battery::AndroidBatteryClient;
 use crate::{
     android_status::collect_android_status,
     audit::{
@@ -43,11 +45,12 @@ const TEXT_EVENT_STREAM: &str = "text/event-stream";
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const PLATFORM_INFO_TOOL: &str = "platform_info";
 const ANDROID_STATUS_TOOL: &str = "android_status";
+const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
 const WRITE_FILE_TOOL: &str = "write_file";
-const AVAILABLE_TOOLS: [&str; 7] = [
+const BASE_AVAILABLE_TOOLS: [&str; 7] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
@@ -62,6 +65,7 @@ const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
 const RUNTIME_STATUS_GATE: &str = "runtime_metadata";
 const PLATFORM_INFO_GATE: &str = "platform_metadata";
 const ANDROID_STATUS_GATE: &str = "android_read_only_status";
+const ANDROID_BATTERY_STATUS_GATE: &str = "android_battery_status";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
 const FILESYSTEM_READ_GATE: &str = "filesystem_read";
 const FILESYSTEM_WRITE_GATE: &str = "filesystem_write";
@@ -72,6 +76,13 @@ const PLATFORM_INFO_ALLOWED: &str = "read_only_platform_metadata";
 const PLATFORM_INFO_ARGUMENTS_DENIED: &str = "arguments_not_supported";
 const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
 const ANDROID_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
+#[cfg(feature = "android-battery-status")]
+const ANDROID_BATTERY_STATUS_ALLOWED: &str = "battery_status_read";
+const ANDROID_BATTERY_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
+#[cfg(not(feature = "android-battery-status"))]
+const ANDROID_BATTERY_STATUS_FEATURE_DISABLED: &str = "battery_feature_not_compiled";
+#[cfg(feature = "android-battery-status")]
+const ANDROID_BATTERY_STATUS_RUNTIME_DISABLED: &str = "battery_runtime_disabled";
 const PROJECT_SERVICE_STATUS_ALLOWED: &str = "allowlisted_project_service";
 const PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS: &str = "missing_service_name";
 const PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS: &str = "invalid_service_arguments";
@@ -102,6 +113,45 @@ struct McpTransportState {
     file_tools: FileSystemTools,
     audit_counters: SharedAuditCounters,
     sessions: McpSessionStore,
+    android_battery_status_enabled: bool,
+    #[cfg(feature = "android-battery-status")]
+    android_battery_client: AndroidBatteryClient,
+}
+
+impl McpTransportState {
+    fn new(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        android_battery_status_enabled: bool,
+    ) -> Self {
+        Self {
+            security_policy,
+            file_tools,
+            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
+            sessions: McpSessionStore::new(),
+            android_battery_status_enabled: android_battery_status_enabled
+                && cfg!(feature = "android-battery-status"),
+            #[cfg(feature = "android-battery-status")]
+            android_battery_client: AndroidBatteryClient::termux(),
+        }
+    }
+
+    #[cfg(all(test, feature = "android-battery-status"))]
+    fn with_android_battery_client(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        android_battery_status_enabled: bool,
+        android_battery_client: AndroidBatteryClient,
+    ) -> Self {
+        Self {
+            security_policy,
+            file_tools,
+            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
+            sessions: McpSessionStore::new(),
+            android_battery_status_enabled,
+            android_battery_client,
+        }
+    }
 }
 
 enum SessionRequestError {
@@ -205,15 +255,22 @@ struct WriteFileArguments {
 /// command execution, and high-impact actions remain unavailable until later
 /// independently validated stages.
 #[rustfmt::skip]
-pub fn router(security_policy: TransportSecurityPolicy, file_tools: FileSystemTools) -> Router {
+pub fn router(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+) -> Router {
+    router_from_state(McpTransportState::new(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+    ))
+}
+
+fn router_from_state(state: McpTransportState) -> Router {
     Router::new()
         .route("/mcp", any(handle_mcp_request))
-        .with_state(McpTransportState {
-            security_policy,
-            file_tools,
-            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
-            sessions: McpSessionStore::new(),
-        })
+        .with_state(state)
 }
 
 async fn handle_mcp_request(
@@ -317,7 +374,7 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
             }
 
             match method.as_str() {
-                "tools/list" => tools_list_response(Some(id)),
+                "tools/list" => tools_list_response(Some(id), state),
                 "tools/call" => handle_tool_call(Some(id), params, state).await,
                 _ => method_not_available(
                     Some(id),
@@ -781,10 +838,8 @@ fn server_not_initialized(id: Option<Value>) -> Response {
 }
 
 #[rustfmt::skip]
-fn tools_list_response(id: Option<Value>) -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
+fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response {
+    let mut body = json!({
             "jsonrpc": "2.0",
             "id": id.unwrap_or(Value::Null),
             "result": {
@@ -895,9 +950,24 @@ fn tools_list_response(id: Option<Value>) -> Response {
                     },
                 ],
             },
-        })),
-    )
-        .into_response()
+        });
+
+    if state.android_battery_status_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": ANDROID_BATTERY_STATUS_TOOL,
+                "description": "Return bounded read-only battery and thermal telemetry through the explicitly enabled Termux:API gate.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 #[rustfmt::skip]
@@ -917,18 +987,7 @@ async fn handle_tool_call(
     };
 
     match call.name.as_str() {
-        RUNTIME_STATUS_TOOL => handle_no_argument_tool_call(
-            id,
-            call.arguments,
-            &state.audit_counters,
-            NoArgumentToolContract {
-                tool_name: RUNTIME_STATUS_TOOL,
-                gate_name: RUNTIME_STATUS_GATE,
-                allowed_reason: RUNTIME_STATUS_ALLOWED,
-                denied_reason: RUNTIME_STATUS_ARGUMENTS_DENIED,
-                response_builder: runtime_status_response,
-            },
-        ),
+        RUNTIME_STATUS_TOOL => handle_runtime_status_call(id, call.arguments, state),
         PLATFORM_INFO_TOOL => handle_no_argument_tool_call(
             id,
             call.arguments,
@@ -953,6 +1012,9 @@ async fn handle_tool_call(
                 response_builder: android_status_response,
             },
         ),
+        ANDROID_BATTERY_STATUS_TOOL => {
+            handle_android_battery_status_call(id, call.arguments, state).await
+        }
         PROJECT_SERVICE_STATUS_TOOL => {
             project_service_status_response(
                 id,
@@ -987,10 +1049,102 @@ async fn handle_tool_call(
             )
             .await
         }
-        _ => method_not_available(
-            id,
-            "Only runtime_status, platform_info, android_status, project_service_status, list_directory, read_file, and write_file are available in this staged runtime.",
-        ),
+        _ => method_not_available(id, "The requested tool is not available in this runtime posture."),
+    }
+}
+
+fn handle_runtime_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            RUNTIME_STATUS_TOOL,
+            RUNTIME_STATUS_GATE,
+            RUNTIME_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    record_read_only_allowed(
+        &state.audit_counters,
+        RUNTIME_STATUS_TOOL,
+        RUNTIME_STATUS_GATE,
+        RUNTIME_STATUS_ALLOWED,
+    );
+    runtime_status_response(
+        id,
+        &state.audit_counters,
+        state.android_battery_status_enabled,
+    )
+}
+
+async fn handle_android_battery_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_BATTERY_STATUS_TOOL,
+            ANDROID_BATTERY_STATUS_GATE,
+            ANDROID_BATTERY_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    #[cfg(not(feature = "android-battery-status"))]
+    {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_BATTERY_STATUS_TOOL,
+            ANDROID_BATTERY_STATUS_GATE,
+            ANDROID_BATTERY_STATUS_FEATURE_DISABLED,
+        );
+        tool_error_result(id, ANDROID_BATTERY_STATUS_FEATURE_DISABLED)
+    }
+
+    #[cfg(feature = "android-battery-status")]
+    {
+        if !state.android_battery_status_enabled {
+            record_read_only_denied(
+                &state.audit_counters,
+                ANDROID_BATTERY_STATUS_TOOL,
+                ANDROID_BATTERY_STATUS_GATE,
+                ANDROID_BATTERY_STATUS_RUNTIME_DISABLED,
+            );
+            return tool_error_result(id, ANDROID_BATTERY_STATUS_RUNTIME_DISABLED);
+        }
+
+        match state.android_battery_client.collect().await {
+            Ok(status) => {
+                record_read_only_allowed(
+                    &state.audit_counters,
+                    ANDROID_BATTERY_STATUS_TOOL,
+                    ANDROID_BATTERY_STATUS_GATE,
+                    ANDROID_BATTERY_STATUS_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "android_battery_status: bounded read-only Termux:API telemetry collected."
+                        .to_owned(),
+                    json!(status),
+                )
+            }
+            Err(error) => {
+                let reason_code = error.reason_code();
+                record_read_only_denied(
+                    &state.audit_counters,
+                    ANDROID_BATTERY_STATUS_TOOL,
+                    ANDROID_BATTERY_STATUS_GATE,
+                    reason_code,
+                );
+                tool_error_result(id, reason_code)
+            }
+        }
     }
 }
 
@@ -1019,9 +1173,27 @@ fn handle_no_argument_tool_call(
     (contract.response_builder)(id, audit_counters)
 }
 
+fn available_tools(android_battery_status_enabled: bool) -> Vec<&'static str> {
+    let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
+    if android_battery_status_enabled {
+        tools.push(ANDROID_BATTERY_STATUS_TOOL);
+    }
+    tools
+}
+
 #[rustfmt::skip]
-fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounters) -> Response {
+fn runtime_status_response(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    android_battery_status_enabled: bool,
+) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
+    let available_tools = available_tools(android_battery_status_enabled);
+    let android_platform_mode = if android_battery_status_enabled {
+        "read_only_battery_telemetry"
+    } else {
+        "disabled"
+    };
 
     (
         StatusCode::OK,
@@ -1032,7 +1204,11 @@ fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounte
                 "content": [
                     {
                         "type": "text",
-                        "text": "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, tools=runtime-status-platform-info-android-status-project-service-status-directory-listing-read-file-and-default-dry-run-write-file, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_platform=disabled, command_execution=disabled",
+                        "text": format!(
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_device_control=disabled, command_execution=disabled",
+                            android_platform_mode,
+                            android_platform_mode,
+                        ),
                     },
                 ],
                 "structuredContent": {
@@ -1041,7 +1217,7 @@ fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounte
                     "transport": "streamable_http_2025_11_25",
                     "sessionManagement": "bounded_uuid_idle_expiry",
                     "serverSentEvents": false,
-                    "availableTools": AVAILABLE_TOOLS,
+                    "availableTools": available_tools,
                     "platformInfo": true,
                     "platformInfoMode": "read_only_non_sensitive_metadata",
                     "androidStatus": true,
@@ -1052,7 +1228,11 @@ fn runtime_status_response(id: Option<Value>, audit_counters: &SharedAuditCounte
                     "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
-                    "androidPlatformTools": false,
+                    "androidPlatformTools": android_battery_status_enabled,
+                    "androidPlatformToolMode": android_platform_mode,
+                    "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
+                    "androidBatteryStatusEnabled": android_battery_status_enabled,
+                    "androidDeviceControl": false,
                     "commandExecution": false,
                     "highImpactTools": false,
                     "auditCounters": audit_counters_snapshot,
@@ -1512,6 +1692,31 @@ fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Resp
     result_response(result_body(id, text, structured_content))
 }
 
+#[rustfmt::skip]
+fn tool_error_result(id: Option<Value>, reason_code: &'static str) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": format!("android_battery_status unavailable: {reason_code}"),
+                    },
+                ],
+                "structuredContent": {
+                    "error": "android_battery_status_unavailable",
+                    "reasonCode": reason_code,
+                },
+                "isError": true
+            },
+        })),
+    )
+        .into_response()
+}
+
 fn bounded_ok_result(
     id: Option<Value>,
     text: String,
@@ -1873,5 +2078,142 @@ mod tests {
         assert_eq!(filesystem_write_mode(false), AuditMode::Mutating);
         assert_eq!(filesystem_write_allowed_reason(true), FILESYSTEM_DRY_RUN_ALLOWED);
         assert_eq!(filesystem_write_allowed_reason(false), FILESYSTEM_WRITE_ALLOWED);
+    }
+
+    #[cfg(feature = "android-battery-status")]
+    #[tokio::test]
+    async fn enabled_battery_tool_returns_allowlisted_telemetry_and_audits_success() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+
+        use axum::body::to_bytes;
+
+        let _test_guard = crate::android_battery::ANDROID_BATTERY_TEST_LOCK
+            .lock()
+            .await;
+
+        let program_root = tempfile::tempdir().unwrap();
+        let program = program_root.path().join("battery-status");
+        fs::write(
+            &program,
+            concat!(
+                "#!/bin/sh\n",
+                "set -eu\n",
+                "test \"$#\" -eq 0\n",
+                "printf '%s' '{\"percentage\":73,\"temperature\":30.5,\"status\":\"DISCHARGING\",\"android_id\":\"redacted\"}'\n",
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = AndroidBatteryClient::with_program_and_limits(
+            program,
+            Duration::from_secs(1),
+            crate::android_battery::MAX_BATTERY_STDOUT_BYTES,
+            crate::android_battery::MAX_BATTERY_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::with_android_battery_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            true,
+            client,
+        );
+
+        let response = handle_android_battery_status_call(
+            Some(json!("battery-success")),
+            ToolArguments::Present(json!({})),
+            &state,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], false);
+        assert_eq!(payload["result"]["structuredContent"]["percentage"], 73);
+        assert_eq!(
+            payload["result"]["structuredContent"]["temperature_celsius"],
+            30.5
+        );
+        assert!(payload["result"]["structuredContent"]
+            .get("android_id")
+            .is_none());
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[ANDROID_BATTERY_STATUS_TOOL].allowed, 1);
+        assert_eq!(
+            counters.by_reason_code[ANDROID_BATTERY_STATUS_ALLOWED].allowed,
+            1
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        let names = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&ANDROID_BATTERY_STATUS_TOOL));
+    }
+
+    #[cfg(feature = "android-battery-status")]
+    #[tokio::test]
+    async fn disabled_battery_tool_is_hidden_and_returns_stable_audited_error() {
+        use std::time::Duration;
+
+        use axum::body::to_bytes;
+
+        let program_root = tempfile::tempdir().unwrap();
+        let client = AndroidBatteryClient::with_program_and_limits(
+            program_root.path().join("must-not-run"),
+            Duration::from_secs(1),
+            crate::android_battery::MAX_BATTERY_STDOUT_BYTES,
+            crate::android_battery::MAX_BATTERY_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::with_android_battery_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            false,
+            client,
+        );
+
+        let response = handle_android_battery_status_call(
+            Some(json!("battery-disabled")),
+            ToolArguments::Omitted,
+            &state,
+        )
+        .await;
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["reasonCode"],
+            ANDROID_BATTERY_STATUS_RUNTIME_DISABLED
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != ANDROID_BATTERY_STATUS_TOOL));
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[ANDROID_BATTERY_STATUS_TOOL].denied, 1);
+        assert_eq!(
+            counters.by_reason_code[ANDROID_BATTERY_STATUS_RUNTIME_DISABLED].denied,
+            1
+        );
     }
 }

@@ -23,6 +23,7 @@ const REMOTE_UNAUTHENTICATED_ERROR: &str =
 pub struct AppConfig {
     pub server: ServerConfig,
     pub auth: AuthConfig,
+    pub android: AndroidConfig,
     pub file: FileConfig,
     pub transport: TransportConfig,
 }
@@ -66,6 +67,12 @@ pub struct FileConfig {
     pub safe_roots: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AndroidConfig {
+    /// Explicit runtime opt-in for the separately feature-gated battery tool.
+    pub battery_status_enabled: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     /// Allowed HTTP Host header values for staged MCP transport routes.
@@ -100,6 +107,13 @@ impl AppConfig {
                 allow_unauthenticated_localhost_only: env_bool(
                     &read_variable,
                     "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+                    false,
+                )?,
+            },
+            android: AndroidConfig {
+                battery_status_enabled: env_bool(
+                    &read_variable,
+                    "MCP__ANDROID__BATTERY_STATUS_ENABLED",
                     false,
                 )?,
             },
@@ -149,6 +163,7 @@ impl AppConfig {
         };
 
         validate_file_safe_roots(&config.file)?;
+        validate_android_capabilities(&config.android)?;
         validate_transport_security(&config.transport)?;
         Ok(config)
     }
@@ -347,6 +362,15 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_android_capabilities(android: &AndroidConfig) -> anyhow::Result<()> {
+    if android.battery_status_enabled && !cfg!(feature = "android-battery-status") {
+        bail!(
+            "MCP__ANDROID__BATTERY_STATUS_ENABLED requires a binary built with the android-battery-status feature"
+        );
+    }
+    Ok(())
+}
+
 fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()> {
     if transport.allowed_hosts.is_empty() {
         bail!("MCP__TRANSPORT__ALLOWED_HOSTS must contain at least one exact host");
@@ -420,6 +444,9 @@ mod tests {
                 static_token: static_token.map(str::to_owned),
                 allow_unauthenticated_localhost_only: allow_localhost_only,
             },
+            android: AndroidConfig {
+                battery_status_enabled: false,
+            },
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             },
@@ -471,10 +498,42 @@ mod tests {
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8000);
         assert_eq!(config.auth.static_token, None);
+        assert!(!config.android.battery_status_enabled);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
         );
+    }
+
+    #[test]
+    fn android_battery_status_requires_compile_and_runtime_opt_in() {
+        let config = load_from_os_values([]).unwrap();
+        assert!(!config.android.battery_status_enabled);
+
+        let configured = load_from_os_values([(
+            "MCP__ANDROID__BATTERY_STATUS_ENABLED",
+            OsString::from("true"),
+        )]);
+        if cfg!(feature = "android-battery-status") {
+            assert!(configured.unwrap().android.battery_status_enabled);
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__ANDROID__BATTERY_STATUS_ENABLED requires a binary built with the android-battery-status feature"
+            );
+        }
+    }
+
+    #[test]
+    fn android_battery_status_rejects_invalid_runtime_flag() {
+        let error = load_from_os_values([(
+            "MCP__ANDROID__BATTERY_STATUS_ENABLED",
+            OsString::from("sometimes"),
+        )])
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("MCP__ANDROID__BATTERY_STATUS_ENABLED must be a boolean value"));
     }
 
     #[cfg(unix)]
@@ -488,6 +547,7 @@ mod tests {
             "MCP__FILE__SAFE_ROOTS",
             "MCP__SERVER__PORT",
             "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+            "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",

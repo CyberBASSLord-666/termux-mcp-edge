@@ -1,18 +1,18 @@
 # Production Readiness Checklist
 
-This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes the two supported compile-time postures: the optional runtime implements the stable MCP 2025-11-25 Streamable HTTP lifecycle around a deliberately staged tool surface, while release readiness still depends on the exact-candidate filesystem, deployment, configuration, packaging, recovery, and physical-device evidence below.
+This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes three supported compile-time postures: the optional runtime implements the stable MCP 2025-11-25 Streamable HTTP lifecycle around a deliberately staged tool surface, and the battery feature adds one separately runtime-gated read-only tool. Release readiness still depends on the exact-candidate filesystem, deployment, configuration, packaging, recovery, and applicable physical-device evidence below.
 
 ## Supported Compile-Time Postures
 
-| Surface | Default build | `mcp-runtime` build |
-| --- | --- | --- |
-| `GET /health` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response |
-| `GET /ready` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, includes non-sensitive request-limit metadata |
-| `POST`, `GET`, `DELETE /mcp` | Not compiled | Authenticated, resource-bounded stable 2025-11-25 transport; GET deliberately returns 405 because SSE is not offered |
-| MCP tools | None | `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, `write_file` |
-| Android control, shell, command execution, arbitrary service control, and other high-impact actions | Disabled | Disabled |
+| Surface | Default build | `mcp-runtime` build | `android-battery-status` build |
+| --- | --- | --- | --- |
+| `GET /health` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response |
+| `GET /ready` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, includes non-sensitive request-limit metadata | Same as `mcp-runtime` |
+| `POST`, `GET`, `DELETE /mcp` | Not compiled | Authenticated, resource-bounded stable 2025-11-25 transport; GET deliberately returns 405 because SSE is not offered | Same transport; feature includes `mcp-runtime` |
+| MCP tools | None | Seven baseline tools | Seven baseline tools; `android_battery_status` appears only after explicit runtime opt-in |
+| Android control, shell, arbitrary command execution, arbitrary service control, and other high-impact actions | Disabled | Disabled | Disabled |
 
-Both postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
+All postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
 
 The `mcp-runtime` build negotiates protocol version `2025-11-25`, validates initialize metadata, issues cryptographically random bounded sessions, gates normal operations on `notifications/initialized`, enforces POST media negotiation and the subsequent-request protocol/session headers, accepts compliant client notifications and responses with HTTP 202, and supports DELETE termination. The stable specification permits GET to return HTTP 405 when server-initiated SSE is not offered; this runtime therefore has no SSE, replay buffer, or resumability state.
 
@@ -26,7 +26,7 @@ The confirmed implementation lanes have focused merge evidence:
 - #205/#218: reconciled package licensing/metadata and minimized dependency features;
 - #206: deterministic response byte/cardinality bounds and happy/boundary coverage.
 
-Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, both Android artifacts are retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
+Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, every published Android posture is retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
 
 ## Required Pull Request Gate
 
@@ -34,7 +34,7 @@ Every implementation pull request must satisfy all applicable items:
 
 1. The diff is focused on one tracked concern and is based on current `main`.
 2. Exact-head CI passes formatting, all-target/all-feature Clippy with warnings denied, the full all-feature test suite, and Termux deployment shell tests.
-3. Exact-head Android validation passes for both the default and `mcp-runtime` AArch64 postures when Rust source, toolchain, dependencies, cross-compilation, or device artifacts can change.
+3. Exact-head Android validation passes for the default, `mcp-runtime`, and battery AArch64 postures when Rust source, toolchain, dependencies, cross-compilation, or device artifacts can change.
 4. Exact-head Security passes when Cargo metadata, `Cargo.lock`, or the Security workflow changes.
 5. Dependency alerts are reviewed after dependency changes.
 6. All actionable review threads are resolved and the head SHA has not changed since validation.
@@ -54,12 +54,14 @@ cargo test --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 cargo build --release
 cargo build --release --features mcp-runtime
+cargo build --release --features android-battery-status
 ```
 
-For Android, require both posture-specific artifacts described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md):
+For Android, require all posture-specific artifacts described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md):
 
 - `termux-mcp-server-aarch64-linux-android-default`;
-- `termux-mcp-server-aarch64-linux-android-mcp-runtime`.
+- `termux-mcp-server-aarch64-linux-android-mcp-runtime`;
+- `termux-mcp-server-aarch64-linux-android-android-battery-status`.
 
 For each released artifact:
 
@@ -69,8 +71,9 @@ For each released artifact:
 4. Confirm private non-symlink `runtime.env` configuration and the intended authentication posture.
 5. Confirm runit state, `GET /health`, and `GET /ready`.
 6. For the `mcp-runtime` artifact, prove unauthenticated rejection, authenticated discovery, representative allowed/denied tool calls, request-limit behavior, and filesystem boundaries.
-7. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
-8. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions, either directly for the candidate or through a strictly verified inherited observation when runtime/deployment inputs and exact bridge artifact digests are unchanged.
+7. For the battery artifact, prove disabled-default discovery and enabled fixed-path, zero-argument, cleared-environment, bounded, normalized, redacted, audited behavior without enabling device control or command execution. Exercise immediate endless-output rejection, isolated process-group termination, pipe-holding descendant cleanup, caller cancellation, authoritative direct-child reaping, and cleanup-reserve exhaustion precedence through repository and native ARM64 Termux gates.
+8. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
+9. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions, either directly for the candidate or through a strictly verified inherited observation when runtime/deployment inputs and exact bridge artifact digests are unchanged.
 
 Run exact downloaded artifacts through the native ARM64 official-Termux gate in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). For behavior-changing candidates, also run [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) directly on hardware. A metadata-only descendant may inherit an already completed physical observation only when the repository verifier proves every source, dependency, deployment, bridge-digest, and emulation condition without exception.
 
@@ -90,7 +93,7 @@ A change to the stable transport or staged tool registry must prove:
 - notifications and client responses receive HTTP 202 with no body, batches remain rejected, and GET returns the documented 405 without creating SSE/replay state;
 - notification-shaped tool calls cannot dispatch or mutate state;
 - unauthenticated callers cannot discover or invoke tools;
-- discovery lists only the current seven-tool allowlist;
+- discovery lists exactly seven baseline tools, or exactly eight only when the battery compile/runtime gates are both enabled;
 - every tool call enforces its advertised closed input schema, including the omitted-or-empty contract for no-argument tools;
 - filesystem tools remain safe-rooted, bounded, and dry-run-first for writes;
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
