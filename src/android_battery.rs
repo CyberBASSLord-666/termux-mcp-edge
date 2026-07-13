@@ -5,33 +5,21 @@
 //! output is read concurrently behind hard byte ceilings before a strict
 //! allowlist parser constructs the public response.
 
-use std::{io::ErrorKind, path::PathBuf, process::Stdio, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
-#[cfg(test)]
-use rustix::process::test_kill_process;
-use rustix::process::{kill_process_group, Pid, Signal};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::{Child, ChildStderr, ChildStdout, Command},
-    sync::oneshot,
-    time::{sleep_until, timeout_at, Instant},
-};
+
+use crate::android_provider::{AndroidProviderError, BoundedAndroidProvider};
+
+#[cfg(test)]
+pub(crate) use crate::android_provider::ANDROID_PROVIDER_TEST_LOCK as ANDROID_BATTERY_TEST_LOCK;
 
 pub const TERMUX_BATTERY_STATUS_PROGRAM: &str =
     "/data/data/com.termux/files/usr/bin/termux-battery-status";
 pub const BATTERY_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_BATTERY_STDOUT_BYTES: usize = 16 * 1024;
 pub const MAX_BATTERY_STDERR_BYTES: usize = 4 * 1024;
-const MAX_PROCESS_CLEANUP_RESERVE: Duration = Duration::from_millis(250);
-
-#[cfg(test)]
-pub(crate) static ANDROID_BATTERY_TEST_LOCK: tokio::sync::Mutex<()> =
-    tokio::sync::Mutex::const_new(());
-#[cfg(test)]
-static ACTIVE_BATTERY_SUPERVISORS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
 
 const MAX_STATUS_LABEL_BYTES: usize = 32;
 const MIN_TEMPERATURE_CELSIUS: f64 = -100.0;
@@ -100,94 +88,41 @@ impl AndroidBatteryError {
     }
 }
 
+impl From<AndroidProviderError> for AndroidBatteryError {
+    fn from(error: AndroidProviderError) -> Self {
+        match error {
+            AndroidProviderError::ProgramUnavailable => Self::ApiUnavailable,
+            AndroidProviderError::SpawnFailed => Self::SpawnFailed,
+            AndroidProviderError::WaitFailed => Self::WaitFailed,
+            AndroidProviderError::TimedOut => Self::TimedOut,
+            AndroidProviderError::StdoutLimitExceeded => Self::StdoutLimitExceeded,
+            AndroidProviderError::StderrLimitExceeded => Self::StderrLimitExceeded,
+            AndroidProviderError::ProgramFailed => Self::ApiFailed,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AndroidBatteryClient {
-    program: PathBuf,
-    timeout: Duration,
-    max_stdout_bytes: usize,
-    max_stderr_bytes: usize,
-    #[cfg(test)]
-    forced_cleanup_delay: Duration,
+    provider: BoundedAndroidProvider,
 }
 
 impl AndroidBatteryClient {
     pub fn termux() -> Self {
         Self {
-            program: PathBuf::from(TERMUX_BATTERY_STATUS_PROGRAM),
-            timeout: BATTERY_STATUS_TIMEOUT,
-            max_stdout_bytes: MAX_BATTERY_STDOUT_BYTES,
-            max_stderr_bytes: MAX_BATTERY_STDERR_BYTES,
-            #[cfg(test)]
-            forced_cleanup_delay: Duration::ZERO,
+            provider: BoundedAndroidProvider::new(
+                PathBuf::from(TERMUX_BATTERY_STATUS_PROGRAM),
+                BATTERY_STATUS_TIMEOUT,
+                MAX_BATTERY_STDOUT_BYTES,
+                MAX_BATTERY_STDERR_BYTES,
+            ),
         }
     }
 
     pub async fn collect(&self) -> Result<AndroidBatteryStatus, AndroidBatteryError> {
-        let started_at = Instant::now();
-        let final_deadline = started_at + self.timeout;
-        let cleanup_reserve = (self.timeout / 4).min(MAX_PROCESS_CLEANUP_RESERVE);
-        let operation_deadline = final_deadline - cleanup_reserve;
-
-        let mut command = Command::new(&self.program);
-        command
-            .env_clear()
-            .current_dir("/")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-
-        let mut child = command.spawn().map_err(|error| {
-            if error.kind() == ErrorKind::NotFound {
-                AndroidBatteryError::ApiUnavailable
-            } else {
-                AndroidBatteryError::SpawnFailed
-            }
-        })?;
-
-        let process_group = child
-            .id()
-            .and_then(|pid| i32::try_from(pid).ok())
-            .and_then(Pid::from_raw)
-            .map(ProcessGroupGuard::new)
-            .ok_or(AndroidBatteryError::SpawnFailed)?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(AndroidBatteryError::SpawnFailed)?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or(AndroidBatteryError::SpawnFailed)?;
-
-        // The sender exists only to make dropping this `collect` future observable to
-        // the independently owned supervisor. A cancelled caller therefore cannot
-        // detach a provider process or leave a reader task behind.
-        let (cancellation_sender, cancellation_receiver) = oneshot::channel();
-        let supervisor = tokio::spawn(supervise_process(
-            SpawnedBatteryProcess {
-                child,
-                process_group,
-                stdout,
-                stderr,
-            },
-            SupervisorBounds {
-                max_stdout_bytes: self.max_stdout_bytes,
-                max_stderr_bytes: self.max_stderr_bytes,
-                operation_deadline,
-                final_deadline,
-                #[cfg(test)]
-                forced_cleanup_delay: self.forced_cleanup_delay,
-            },
-            cancellation_receiver,
-        ));
-        let result = supervisor
-            .await
-            .map_err(|_| AndroidBatteryError::WaitFailed)?;
-        drop(cancellation_sender);
-        result
+        let stdout = self.provider.collect_stdout().await?;
+        let stdout = String::from_utf8(stdout).map_err(|_| AndroidBatteryError::InvalidUtf8)?;
+        parse_battery_status(&stdout)
     }
 
     #[cfg(test)]
@@ -198,17 +133,18 @@ impl AndroidBatteryClient {
         max_stderr_bytes: usize,
     ) -> Self {
         Self {
-            program,
-            timeout,
-            max_stdout_bytes,
-            max_stderr_bytes,
-            forced_cleanup_delay: Duration::ZERO,
+            provider: BoundedAndroidProvider::new(
+                program,
+                timeout,
+                max_stdout_bytes,
+                max_stderr_bytes,
+            ),
         }
     }
 
     #[cfg(test)]
     fn with_forced_cleanup_delay(mut self, delay: Duration) -> Self {
-        self.forced_cleanup_delay = delay;
+        self.provider = self.provider.with_forced_cleanup_delay(delay);
         self
     }
 }
@@ -216,267 +152,6 @@ impl AndroidBatteryClient {
 impl Default for AndroidBatteryClient {
     fn default() -> Self {
         Self::termux()
-    }
-}
-
-struct ProcessGroupGuard {
-    process_group: Pid,
-    armed: bool,
-}
-
-impl ProcessGroupGuard {
-    fn new(process_group: Pid) -> Self {
-        Self {
-            process_group,
-            armed: true,
-        }
-    }
-
-    fn terminate(&self) {
-        let _ = kill_process_group(self.process_group, Signal::KILL);
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ProcessGroupGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.terminate();
-        }
-    }
-}
-
-#[cfg(test)]
-struct ActiveSupervisorGuard;
-
-#[cfg(test)]
-impl ActiveSupervisorGuard {
-    fn new() -> Self {
-        ACTIVE_BATTERY_SUPERVISORS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for ActiveSupervisorGuard {
-    fn drop(&mut self) {
-        ACTIVE_BATTERY_SUPERVISORS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-enum BoundedRead {
-    Complete(Vec<u8>),
-    LimitExceeded,
-}
-
-enum SupervisorTerminal {
-    Complete(Vec<u8>),
-    Failure(AndroidBatteryError),
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CleanupOutcome {
-    ReapedWithinDeadline,
-    ReapedAfterDeadline,
-    ReapFailed,
-}
-
-struct SpawnedBatteryProcess {
-    child: Child,
-    process_group: ProcessGroupGuard,
-    stdout: ChildStdout,
-    stderr: ChildStderr,
-}
-
-struct SupervisorBounds {
-    max_stdout_bytes: usize,
-    max_stderr_bytes: usize,
-    operation_deadline: Instant,
-    final_deadline: Instant,
-    #[cfg(test)]
-    forced_cleanup_delay: Duration,
-}
-
-async fn supervise_process(
-    process: SpawnedBatteryProcess,
-    bounds: SupervisorBounds,
-    mut cancellation: oneshot::Receiver<()>,
-) -> Result<AndroidBatteryStatus, AndroidBatteryError> {
-    #[cfg(test)]
-    let _active_supervisor = ActiveSupervisorGuard::new();
-
-    let SpawnedBatteryProcess {
-        mut child,
-        mut process_group,
-        stdout,
-        stderr,
-    } = process;
-
-    let terminal = {
-        let stdout_read = read_bounded(stdout, bounds.max_stdout_bytes);
-        let stderr_read = read_bounded(stderr, bounds.max_stderr_bytes);
-        let child_wait = child.wait();
-        let deadline = sleep_until(bounds.operation_deadline);
-        tokio::pin!(stdout_read, stderr_read, child_wait, deadline);
-
-        let mut stdout_bytes = None;
-        let mut stderr_complete = false;
-        let mut child_succeeded = false;
-
-        loop {
-            if child_succeeded && stdout_bytes.is_some() && stderr_complete {
-                break SupervisorTerminal::Complete(
-                    stdout_bytes
-                        .take()
-                        .expect("stdout completion checked before extraction"),
-                );
-            }
-
-            // Stable simultaneous-event precedence is cancellation, total-time
-            // exhaustion, stdout, stderr, then direct-child completion. The
-            // deadline comes before I/O so a continuously ready pipe cannot starve
-            // the end-to-end wall-clock bound.
-            tokio::select! {
-                biased;
-
-                _ = &mut cancellation => {
-                    break SupervisorTerminal::Cancelled;
-                }
-                _ = &mut deadline => {
-                    break SupervisorTerminal::Failure(AndroidBatteryError::TimedOut);
-                }
-                stdout = &mut stdout_read, if stdout_bytes.is_none() => {
-                    match stdout {
-                        Ok(BoundedRead::Complete(bytes)) => stdout_bytes = Some(bytes),
-                        Ok(BoundedRead::LimitExceeded) => {
-                            break SupervisorTerminal::Failure(
-                                AndroidBatteryError::StdoutLimitExceeded,
-                            );
-                        }
-                        Err(error) => break SupervisorTerminal::Failure(error),
-                    }
-                }
-                stderr = &mut stderr_read, if !stderr_complete => {
-                    match stderr {
-                        Ok(BoundedRead::Complete(_)) => stderr_complete = true,
-                        Ok(BoundedRead::LimitExceeded) => {
-                            break SupervisorTerminal::Failure(
-                                AndroidBatteryError::StderrLimitExceeded,
-                            );
-                        }
-                        Err(error) => break SupervisorTerminal::Failure(error),
-                    }
-                }
-                status = &mut child_wait, if !child_succeeded => {
-                    match status {
-                        Ok(status) if status.success() => child_succeeded = true,
-                        Ok(_) => {
-                            break SupervisorTerminal::Failure(AndroidBatteryError::ApiFailed);
-                        }
-                        Err(_) => {
-                            break SupervisorTerminal::Failure(AndroidBatteryError::WaitFailed);
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    // Leaving the block above drops both reader futures and closes their pipes.
-    // Kill the whole isolated process group and synchronously reap the direct
-    // child. If the reserved cleanup window is exhausted, reaping takes priority
-    // over returning the primary result; the supervisor reports a stable wait
-    // failure only after the direct child is reaped (or wait itself fails).
-    let cleanup_outcome =
-        terminate_process_group_and_reap(&mut child, &mut process_group, &bounds).await;
-
-    if cleanup_outcome != CleanupOutcome::ReapedWithinDeadline {
-        return Err(AndroidBatteryError::WaitFailed);
-    }
-
-    match terminal {
-        SupervisorTerminal::Complete(stdout) => {
-            let stdout = String::from_utf8(stdout).map_err(|_| AndroidBatteryError::InvalidUtf8)?;
-            parse_battery_status(&stdout)
-        }
-        SupervisorTerminal::Failure(error) => Err(error),
-        SupervisorTerminal::Cancelled => Err(AndroidBatteryError::WaitFailed),
-    }
-}
-
-async fn terminate_process_group_and_reap(
-    child: &mut Child,
-    process_group: &mut ProcessGroupGuard,
-    bounds: &SupervisorBounds,
-) -> CleanupOutcome {
-    process_group.terminate();
-
-    // Test-only delay injection happens after process-group termination so the
-    // regression forces late reap confirmation without modeling delayed cleanup.
-    #[cfg(test)]
-    if !bounds.forced_cleanup_delay.is_zero() {
-        tokio::time::sleep(bounds.forced_cleanup_delay).await;
-    }
-
-    let final_deadline = bounds.final_deadline;
-    let mut within_deadline = Instant::now() <= final_deadline;
-    let reaped = match child.try_wait() {
-        Ok(Some(_)) => true,
-        Ok(None) | Err(_) => {
-            let _ = child.start_kill();
-            match timeout_at(final_deadline, child.wait()).await {
-                Ok(Ok(_)) => true,
-                Ok(Err(_)) => false,
-                Err(_) => {
-                    within_deadline = false;
-                    // The operation deadline is no longer authoritative once it
-                    // conflicts with synchronous child reaping. SIGKILL has already
-                    // been sent to the isolated process group, both pipes are closed,
-                    // and this independently owned supervisor remains responsible for
-                    // the direct child until wait confirms collection.
-                    child.wait().await.is_ok()
-                }
-            }
-        }
-    };
-
-    if reaped {
-        process_group.disarm();
-        if within_deadline && Instant::now() <= final_deadline {
-            CleanupOutcome::ReapedWithinDeadline
-        } else {
-            CleanupOutcome::ReapedAfterDeadline
-        }
-    } else {
-        CleanupOutcome::ReapFailed
-    }
-}
-
-async fn read_bounded(
-    mut reader: impl AsyncRead + Unpin + Send + 'static,
-    limit: usize,
-) -> Result<BoundedRead, AndroidBatteryError> {
-    let mut bytes = Vec::with_capacity(limit);
-    let mut chunk = [0_u8; 4 * 1024];
-
-    loop {
-        let read = reader
-            .read(&mut chunk)
-            .await
-            .map_err(|_| AndroidBatteryError::WaitFailed)?;
-        if read == 0 {
-            return Ok(BoundedRead::Complete(bytes));
-        }
-
-        let remaining = limit.saturating_sub(bytes.len());
-        if read > remaining {
-            return Ok(BoundedRead::LimitExceeded);
-        }
-        bytes.extend_from_slice(&chunk[..read]);
     }
 }
 
@@ -631,10 +306,13 @@ fn optional_integer(
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+    use rustix::process::{test_kill_process, Pid};
     use serde_json::json;
     use tempfile::TempDir;
+    use tokio::time::Instant;
 
     use super::*;
+    use crate::android_provider::active_supervisor_count;
 
     fn executable_script_in(
         directory: &TempDir,
@@ -701,7 +379,7 @@ mod tests {
 
     async fn assert_no_active_supervisors() {
         tokio::time::timeout(Duration::from_secs(2), async {
-            while ACTIVE_BATTERY_SUPERVISORS.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            while active_supervisor_count() != 0 {
                 tokio::task::yield_now().await;
             }
         })
@@ -993,7 +671,7 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(
-                ACTIVE_BATTERY_SUPERVISORS.load(std::sync::atomic::Ordering::SeqCst),
+                active_supervisor_count(),
                 1,
                 "cancelled caller detached its supervisor in iteration {iteration}"
             );

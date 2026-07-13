@@ -14,7 +14,7 @@ The image supplies the Termux private-directory layout, Bionic runtime, Android 
 
 ## Exact-artifact coverage
 
-The emulated job starts only after the default, `mcp-runtime`, and `android-battery-status` Android build postures complete. It downloads the bundles produced by the same workflow run and verifies:
+The emulated job starts only after the default, `mcp-runtime`, `android-battery-status`, and `android-volume-status` Android build postures complete. It downloads the bundles produced by the same workflow run and verifies:
 
 - exact three-file bundle layout;
 - checksum sidecars;
@@ -24,8 +24,9 @@ The emulated job starts only after the default, `mcp-runtime`, and `android-batt
 - `mcp-runtime` authentication, Host/Origin ordering, initialization, notification semantics, protocol/session headers, exact tool allowlist, representative allowed and denied calls, safe-root confinement, symlink denial, request bounds, and session deletion;
 - 256 additional high-frequency native samples covering stable PID, health, readiness, tool discovery, disabled high-impact gates, and complete session lifecycle.
 - the battery artifact's exact manifest/digest/version/ELF posture, disabled-default discovery, enabled fixed-program invocation, zero arguments, cleared inherited environment, normalized field allowlist, sensitive-field redaction, prompt endless stdout/stderr rejection, isolated process-group termination, stdout/stderr pipe-holding descendant cleanup, caller-cancellation cleanup, stable API failure, audit-visible gate state, and continued absence of Android control, command execution, and high-impact tools.
+- the volume artifact's exact manifest/digest/version/ELF posture, disabled-default discovery, fixed zero-argument `termux-volume` invocation, cleared inherited environment, exact six-stream parsing, canonical ordering, unknown-field rejection without reflection, prompt endless stdout/stderr rejection, the shared supervisor's process-group/pipe-holder/caller-cancellation cleanup, stable API failure, audit-visible gate state, and continued absence of volume mutation, Android control, command execution, and high-impact tools.
 
-The canonical runtime validator remains authoritative for detailed protocol checks. The baseline wrapper emits a sanitized report conforming to [`emulated-release-evidence-schema-v1.json`](emulated-release-evidence-schema-v1.json), and the battery wrapper emits a separate report conforming to [`android-battery-emulated-evidence-schema-v2.json`](android-battery-emulated-evidence-schema-v2.json). Battery schema v2 adds explicit process-supervisor and cancellation attestations; v1 is retained for historical evidence only. Neither report sets the canonical validator's direct-observation `releaseEligible` field.
+The canonical runtime validator remains authoritative for detailed protocol checks. The baseline wrapper emits a sanitized report conforming to [`emulated-release-evidence-schema-v1.json`](emulated-release-evidence-schema-v1.json), the battery wrapper emits [`android-battery-emulated-evidence-schema-v2.json`](android-battery-emulated-evidence-schema-v2.json), and the volume wrapper emits [`android-volume-emulated-evidence-schema-v1.json`](android-volume-emulated-evidence-schema-v1.json). Battery schema v2 adds explicit process-supervisor and cancellation attestations; battery v1 is retained for historical evidence only. No feature-emulation report sets the canonical validator's direct-observation `releaseEligible` field.
 
 ## Development qualification versus release observation
 
@@ -38,7 +39,7 @@ The classifier itself always sets `releaseQualificationEligible:false`. It canno
 
 ## Physical-observation inheritance
 
-An emulator cannot establish battery, thermal, OEM process-management, or mobile-radio behavior. Those properties may be inherited from an already completed physical observation only when [`verify_observation_inheritance.sh`](../scripts/verify_observation_inheritance.sh) proves every condition below:
+An emulator cannot establish battery, thermal, OEM process-management, device audio-policy, or mobile-radio behavior. Those properties may be inherited from an already completed physical observation only when [`verify_observation_inheritance.sh`](../scripts/verify_observation_inheritance.sh) proves every condition below:
 
 1. The source report is sanitized, schema-valid, non-fixture, fully passing, physically observed for at least 60 minutes, and identified by an expected SHA-256 digest.
 2. The source commit is an ancestor of a previously qualified bridge commit, and the candidate is a descendant of that bridge.

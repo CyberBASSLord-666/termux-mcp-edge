@@ -165,6 +165,8 @@ Authenticated discovery currently exposes:
 
 An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the eighth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
 
+An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the eighth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
+
 The runtime does not expose Android platform control, arbitrary shell or command execution, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or high-impact controls.
 
 Filesystem read responses have explicit mobile-oriented ceilings:
@@ -201,9 +203,9 @@ Do not manually repoint release links outside the project releases directory. Pr
 ## Release process
 
 1. Run format, workspace/all-target/all-feature Clippy, workspace/all-target/all-feature tests, and deployment shell tests.
-2. Build the default, `mcp-runtime`, and `android-battery-status` release postures.
+2. Build the default, `mcp-runtime`, `android-battery-status`, and `android-volume-status` release postures.
 3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
-4. Cross-compile and validate all three Android postures, including native ARM64 official-Termux execution.
+4. Cross-compile and validate all four Android postures, including native ARM64 official-Termux execution.
 5. Record and verify each posture-specific artifact's SHA-256 digest.
 6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.

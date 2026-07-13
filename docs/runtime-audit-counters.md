@@ -14,7 +14,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `read_file`
 - `write_file`
 
-When the separately compiled and runtime-enabled battery posture is active, the same counter path also records `android_battery_status`. Disabled direct calls and provider failures are denied decisions; successful normalized reads are allowed decisions. No raw Termux:API output is retained.
+When either separately compiled and runtime-enabled Android provider posture is active, the same counter path also records `android_battery_status` or `android_volume_status`. Disabled direct calls and provider failures are denied decisions; successful normalized reads are allowed decisions. No raw Termux:API output is retained.
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
@@ -156,6 +156,19 @@ Current runtime/status/filesystem examples include:
 - `battery_output_invalid_utf8`
 - `battery_output_invalid_json`
 - `battery_output_invalid_field`
+- `volume_status_read`
+- `volume_feature_not_compiled`
+- `volume_runtime_disabled`
+- `volume_api_unavailable`
+- `volume_api_spawn_failed`
+- `volume_api_wait_failed`
+- `volume_api_timeout`
+- `volume_stdout_limit_exceeded`
+- `volume_stderr_limit_exceeded`
+- `volume_api_failed`
+- `volume_output_invalid_utf8`
+- `volume_output_invalid_json`
+- `volume_output_invalid_field`
 
 Capability-token evaluation examples include:
 

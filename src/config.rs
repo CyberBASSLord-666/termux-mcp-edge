@@ -71,6 +71,8 @@ pub struct FileConfig {
 pub struct AndroidConfig {
     /// Explicit runtime opt-in for the separately feature-gated battery tool.
     pub battery_status_enabled: bool,
+    /// Explicit runtime opt-in for the separately feature-gated volume tool.
+    pub volume_status_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +116,11 @@ impl AppConfig {
                 battery_status_enabled: env_bool(
                     &read_variable,
                     "MCP__ANDROID__BATTERY_STATUS_ENABLED",
+                    false,
+                )?,
+                volume_status_enabled: env_bool(
+                    &read_variable,
+                    "MCP__ANDROID__VOLUME_STATUS_ENABLED",
                     false,
                 )?,
             },
@@ -368,6 +375,11 @@ fn validate_android_capabilities(android: &AndroidConfig) -> anyhow::Result<()> 
             "MCP__ANDROID__BATTERY_STATUS_ENABLED requires a binary built with the android-battery-status feature"
         );
     }
+    if android.volume_status_enabled && !cfg!(feature = "android-volume-status") {
+        bail!(
+            "MCP__ANDROID__VOLUME_STATUS_ENABLED requires a binary built with the android-volume-status feature"
+        );
+    }
     Ok(())
 }
 
@@ -446,6 +458,7 @@ mod tests {
             },
             android: AndroidConfig {
                 battery_status_enabled: false,
+                volume_status_enabled: false,
             },
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
@@ -499,6 +512,7 @@ mod tests {
         assert_eq!(config.server.port, 8000);
         assert_eq!(config.auth.static_token, None);
         assert!(!config.android.battery_status_enabled);
+        assert!(!config.android.volume_status_enabled);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
@@ -536,6 +550,37 @@ mod tests {
             .starts_with("MCP__ANDROID__BATTERY_STATUS_ENABLED must be a boolean value"));
     }
 
+    #[test]
+    fn android_volume_status_requires_compile_and_runtime_opt_in() {
+        let config = load_from_os_values([]).unwrap();
+        assert!(!config.android.volume_status_enabled);
+
+        let configured = load_from_os_values([(
+            "MCP__ANDROID__VOLUME_STATUS_ENABLED",
+            OsString::from("true"),
+        )]);
+        if cfg!(feature = "android-volume-status") {
+            assert!(configured.unwrap().android.volume_status_enabled);
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__ANDROID__VOLUME_STATUS_ENABLED requires a binary built with the android-volume-status feature"
+            );
+        }
+    }
+
+    #[test]
+    fn android_volume_status_rejects_invalid_runtime_flag() {
+        let error = load_from_os_values([(
+            "MCP__ANDROID__VOLUME_STATUS_ENABLED",
+            OsString::from("sometimes"),
+        )])
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("MCP__ANDROID__VOLUME_STATUS_ENABLED must be a boolean value"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn present_non_unicode_security_environment_values_fail_closed() {
@@ -548,6 +593,7 @@ mod tests {
             "MCP__SERVER__PORT",
             "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
+            "MCP__ANDROID__VOLUME_STATUS_ENABLED",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",

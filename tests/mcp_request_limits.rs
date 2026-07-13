@@ -31,6 +31,7 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
             .expect("test localhost policy must be valid"),
         file_tools,
         false,
+        false,
     )
     .layer(DefaultBodyLimit::max(max_body_bytes))
     .route_layer(middleware::from_fn_with_state(

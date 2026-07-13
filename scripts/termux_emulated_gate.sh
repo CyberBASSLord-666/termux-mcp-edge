@@ -386,6 +386,8 @@ for sample in $(seq 1 "$SAMPLES"); do
       and .result.structuredContent.androidPlatformTools == false
       and .result.structuredContent.androidBatteryStatusCompiled == false
       and .result.structuredContent.androidBatteryStatusEnabled == false
+      and .result.structuredContent.androidVolumeStatusCompiled == false
+      and .result.structuredContent.androidVolumeStatusEnabled == false
       and .result.structuredContent.androidDeviceControl == false
       and .result.structuredContent.highImpactTools == false
     ' "$BODY_FILE" >/dev/null || fail stress_high_impact_gate_invalid
@@ -399,6 +401,14 @@ for sample in $(seq 1 "$SAMPLES"); do
       and .result.structuredContent.error == "android_battery_status_unavailable"
       and .result.structuredContent.reasonCode == "battery_feature_not_compiled"
     ' "$BODY_FILE" >/dev/null || fail stress_battery_uncompiled_contract_invalid
+
+    post_mcp '{"jsonrpc":"2.0","id":"volume-uncompiled","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' "$SESSION_ID"
+    [[ "$MCP_STATUS" == 200 ]] || fail stress_volume_uncompiled_status_invalid
+    jq -e '
+      .result.isError == true
+      and .result.structuredContent.error == "android_volume_status_unavailable"
+      and .result.structuredContent.reasonCode == "volume_feature_not_compiled"
+    ' "$BODY_FILE" >/dev/null || fail stress_volume_uncompiled_contract_invalid
   fi
 done
 

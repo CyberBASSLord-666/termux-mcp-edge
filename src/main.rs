@@ -129,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
             )?,
             file_tools,
             config.android.battery_status_enabled,
+            config.android.volume_status_enabled,
         )
         .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
         .route_layer(middleware::from_fn_with_state(

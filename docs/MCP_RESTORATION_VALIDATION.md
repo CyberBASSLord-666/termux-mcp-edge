@@ -27,9 +27,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo build --release
 cargo build --release --features mcp-runtime
+cargo build --release --features android-battery-status
+cargo build --release --features android-volume-status
 ```
 
-CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for both the default and `mcp-runtime` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
+CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, and `android-volume-status` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
 
 ## Dependency gate
 

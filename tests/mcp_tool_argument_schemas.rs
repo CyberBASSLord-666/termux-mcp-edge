@@ -10,11 +10,12 @@ use support::{
 };
 use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
-const NO_ARGUMENT_TOOLS: [&str; 4] = [
+const NO_ARGUMENT_TOOLS: [&str; 5] = [
     "runtime_status",
     "platform_info",
     "android_status",
     "android_battery_status",
+    "android_volume_status",
 ];
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
 const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised input schema.";
