@@ -78,7 +78,9 @@ Each invocation has these fixed ceilings:
 | Inherited environment | Cleared |
 | Working directory | Fixed `/` |
 
-Standard output and error are drained concurrently behind independent byte ceilings. The child is killed on timeout or wait failure and is configured for kill-on-drop cancellation safety. Process output is parsed only after a successful exit and is never included in an error response or audit counter.
+One cancellation-safe supervisor concurrently observes the direct child, both output streams, caller cancellation, and a single end-to-end deadline. The provider starts as the leader of an isolated process group. Crossing either byte ceiling terminates the whole group immediately; timeout, wait/read failure, client cancellation, and successful completion also close both pipes, terminate any remaining descendants, and synchronously reap the direct child within the original five-second wall-clock ceiling. A bounded final portion of that ceiling is reserved for cleanup. Simultaneous terminal events use stable precedence: cancellation, deadline, stdout, stderr, then child completion. No reader task or unbounded drain/join can outlive the invocation.
+
+Process output is parsed only after a successful exit and complete bounded reads. It is never included in an error response or audit counter.
 
 ## Stable failure contract
 
@@ -105,8 +107,8 @@ The existing in-memory aggregate audit counters record only the stable tool name
 
 ## Validation
 
-Repository tests cover strict parsing, field redaction, type/range rejection, exact and over-limit output, concurrent stdout/stderr draining, timeout, non-zero exit, invalid UTF-8, missing API executable, compile/runtime gate truth tables, discovery, direct invocation, error shape, and audit counts.
+Repository tests cover strict parsing, field redaction, type/range rejection, exact and over-limit output, repeated endless stdout/stderr, deterministic overflow-before-timeout behavior, pipe-holding descendants, process-group termination, caller cancellation, synchronous direct-child reaping, supervisor/task accumulation, timeout, non-zero exit, invalid UTF-8, missing API executable, compile/runtime gate truth tables, discovery, direct invocation, error shape, and audit counts.
 
-The Android workflow builds a separate `android-battery-status` AArch64 artifact and executes it in the pinned official Termux image on a native ARM64 runner. That gate installs a temporary fixed-path API fixture and proves enabled and disabled discovery, fixed-working-directory/no-argument/environment-cleared execution, normalization/redaction, output overflow rejection, stable provider failure, and continued absence of device-control, command, and high-impact tools. This automated gate does not claim battery, OEM thermal-management, mobile-radio, or Android background-process behavior on physical hardware; release evidence classifies those separately without requiring a long observation for every development PR.
+The Android workflow builds a separate `android-battery-status` AArch64 artifact and executes it in the pinned official Termux image on a native ARM64 runner. That gate installs a temporary fixed-path API fixture and proves enabled and disabled discovery, fixed-working-directory/no-argument/environment-cleared execution, normalization/redaction, immediate endless-output rejection, stdout/stderr pipe-holder cleanup, client-cancellation cleanup, process-group termination, stable provider failure, and continued absence of device-control, command, and high-impact tools. Its v2 evidence is strict and sanitized. This automated gate does not claim battery, OEM thermal-management, mobile-radio, or Android background-process behavior on physical hardware; release evidence classifies those separately without requiring a long observation for every development PR.
 
 Sensors, location, contacts, SMS, notifications, UI automation, accessibility automation, logcat, camera, microphone, package/service/network mutation, `rish`, and arbitrary command execution are explicitly outside this tool's scope.

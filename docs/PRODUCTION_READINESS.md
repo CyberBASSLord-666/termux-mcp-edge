@@ -71,7 +71,7 @@ For each released artifact:
 4. Confirm private non-symlink `runtime.env` configuration and the intended authentication posture.
 5. Confirm runit state, `GET /health`, and `GET /ready`.
 6. For the `mcp-runtime` artifact, prove unauthenticated rejection, authenticated discovery, representative allowed/denied tool calls, request-limit behavior, and filesystem boundaries.
-7. For the battery artifact, prove disabled-default discovery and enabled fixed-path, zero-argument, cleared-environment, bounded, normalized, redacted, audited behavior without enabling device control or command execution.
+7. For the battery artifact, prove disabled-default discovery and enabled fixed-path, zero-argument, cleared-environment, bounded, normalized, redacted, audited behavior without enabling device control or command execution. Exercise immediate endless-output rejection, isolated process-group termination, pipe-holding descendant cleanup, caller cancellation, and bounded direct-child reaping in the native ARM64 Termux gate.
 8. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
 9. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions, either directly for the candidate or through a strictly verified inherited observation when runtime/deployment inputs and exact bridge artifact digests are unchanged.
 

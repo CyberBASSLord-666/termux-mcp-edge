@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/android-battery-emulated-evidence-schema-v2.json",
+  "title": "Termux MCP Android battery native emulation evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateVersion",
+    "status",
+    "failureCode",
+    "releaseQualificationEligible",
+    "startedAt",
+    "completedAt",
+    "candidate",
+    "environment",
+    "validation"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "gateVersion": { "const": "2" },
+    "status": { "const": "pass" },
+    "failureCode": { "type": "null" },
+    "releaseQualificationEligible": { "const": false },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "validation": { "$ref": "#/$defs/validation" }
+  },
+  "$defs": {
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "version",
+        "ciRunId",
+        "securityRunId",
+        "androidRunId",
+        "artifact"
+      ],
+      "properties": {
+        "commit": { "$ref": "#/$defs/sha1" },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "ciRunId": { "$ref": "#/$defs/runId" },
+        "securityRunId": { "$ref": "#/$defs/runId" },
+        "androidRunId": { "$ref": "#/$defs/runId" },
+        "artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "executionMode",
+        "image",
+        "imageDigest",
+        "androidLinker"
+      ],
+      "properties": {
+        "architecture": { "enum": ["aarch64", "arm64"] },
+        "executionMode": { "const": "official-termux-docker-native-arm64" },
+        "image": { "const": "termux/termux-docker:aarch64" },
+        "imageDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "androidLinker": { "const": true }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "requests",
+        "exactArtifact",
+        "compileGate",
+        "runtimeDefaultDisabled",
+        "disabledDiscovery",
+        "fixedProgram",
+        "fixedWorkingDirectory",
+        "noArguments",
+        "inheritedEnvironmentCleared",
+        "normalizedAllowlist",
+        "sensitiveFieldsRedacted",
+        "boundedOutput",
+        "immediateOverflowTermination",
+        "processGroupIsolation",
+        "pipeHoldingDescendantCleanup",
+        "callerCancellationCleanup",
+        "boundedSupervisorCleanup",
+        "stableErrors",
+        "androidDeviceControlDisabled",
+        "commandExecutionDisabled",
+        "highImpactToolsDisabled"
+      ],
+      "properties": {
+        "status": { "const": "pass" },
+        "requests": { "type": "integer", "minimum": 18 },
+        "exactArtifact": { "const": true },
+        "compileGate": { "const": true },
+        "runtimeDefaultDisabled": { "const": true },
+        "disabledDiscovery": { "const": true },
+        "fixedProgram": { "const": true },
+        "fixedWorkingDirectory": { "const": true },
+        "noArguments": { "const": true },
+        "inheritedEnvironmentCleared": { "const": true },
+        "normalizedAllowlist": { "const": true },
+        "sensitiveFieldsRedacted": { "const": true },
+        "boundedOutput": { "const": true },
+        "immediateOverflowTermination": { "const": true },
+        "processGroupIsolation": { "const": true },
+        "pipeHoldingDescendantCleanup": { "const": true },
+        "callerCancellationCleanup": { "const": true },
+        "boundedSupervisorCleanup": { "const": true },
+        "stableErrors": { "const": true },
+        "androidDeviceControlDisabled": { "const": true },
+        "commandExecutionDisabled": { "const": true },
+        "highImpactToolsDisabled": { "const": true }
+      }
+    }
+  }
+}

@@ -143,9 +143,10 @@ Expected enabled evidence:
 - The response contains only documented normalized fields and units; it contains no `technology`, vendor string, identifier, path, environment value, raw output, or stderr.
 - Non-empty arguments return JSON-RPC `-32602`.
 - Provider failures use stable `battery_*` reason codes and do not reveal process details.
+- Endless stdout/stderr, a descendant retaining either pipe, and a disconnected caller all terminate within the same fixed deadline, leave no provider process-group survivor, and do not accumulate background supervisors.
 - Successful and denied calls increment only the documented aggregate audit labels.
 
-The native ARM64 official-Termux CI gate performs these automated process/transport checks with a fixed-path fixture. A physical release check, when required by the observation classifier, is for battery/OEM/Android behavior only; routine feature PRs do not require an operator to repeat a 60-minute idle window.
+The native ARM64 official-Termux CI gate performs these automated process/transport checks with a fixed-path fixture and publishes strict v2 battery evidence. A physical release check, when required by the observation classifier, is for battery/OEM/Android behavior only; routine feature PRs do not require an operator to repeat a 60-minute idle window.
 
 ## Capability-token boundary checks
 

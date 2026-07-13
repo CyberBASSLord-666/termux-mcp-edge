@@ -22,7 +22,7 @@ The optional runtime is not a broad host-control surface. After authentication, 
 - `read_file`
 - `write_file`
 
-An `android-battery-status` build may additionally expose `android_battery_status` only when `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`. The runtime flag defaults to disabled and is rejected if the compile feature is absent. The provider directly executes one fixed Termux:API program with no arguments, null stdin, a cleared inherited environment, a five-second timeout, and hard stdout/stderr ceilings. It returns only normalized allowlisted fields and never reflects technology/vendor strings, identifiers, raw output, stderr, paths, or environment values.
+An `android-battery-status` build may additionally expose `android_battery_status` only when `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`. The runtime flag defaults to disabled and is rejected if the compile feature is absent. The provider directly executes one fixed Termux:API program with no arguments, null stdin, a cleared inherited environment, a five-second end-to-end deadline, and hard stdout/stderr ceilings. A single cancellation-safe supervisor isolates the provider process group, terminates it immediately on overflow or cancellation, closes both pipes, and bounds direct-child reaping by the same deadline. It returns only normalized allowlisted fields and never reflects technology/vendor strings, identifiers, raw output, stderr, paths, or environment values.
 
 Android platform control, shell fallback, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and other high-impact controls remain disabled.
 

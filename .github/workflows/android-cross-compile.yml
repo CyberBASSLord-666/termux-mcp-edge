@@ -19,7 +19,7 @@ on:
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
-      - "docs/android-battery-emulated-evidence-schema-v1.json"
+      - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
@@ -39,7 +39,7 @@ on:
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
-      - "docs/android-battery-emulated-evidence-schema-v1.json"
+      - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
@@ -328,7 +328,7 @@ jobs:
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
             --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
@@ -339,6 +339,11 @@ jobs:
               and .validation.fixedWorkingDirectory == true
               and .validation.inheritedEnvironmentCleared == true
               and .validation.boundedOutput == true
+              and .validation.immediateOverflowTermination == true
+              and .validation.processGroupIsolation == true
+              and .validation.pipeHoldingDescendantCleanup == true
+              and .validation.callerCancellationCleanup == true
+              and .validation.boundedSupervisorCleanup == true
               and .validation.androidDeviceControlDisabled == true
             ' "$battery_report" >/dev/null
           sha256sum "$battery_report"

@@ -7,13 +7,14 @@
 
 use std::{io::ErrorKind, path::PathBuf, process::Stdio, time::Duration};
 
+use rustix::process::{kill_process_group, Pid, Signal};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
-    process::Command,
-    task::JoinHandle,
-    time::timeout,
+    process::{Child, ChildStderr, ChildStdout, Command},
+    sync::oneshot,
+    time::{sleep_until, timeout_at, Instant},
 };
 
 pub const TERMUX_BATTERY_STATUS_PROGRAM: &str =
@@ -21,10 +22,14 @@ pub const TERMUX_BATTERY_STATUS_PROGRAM: &str =
 pub const BATTERY_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_BATTERY_STDOUT_BYTES: usize = 16 * 1024;
 pub const MAX_BATTERY_STDERR_BYTES: usize = 4 * 1024;
+const MAX_PROCESS_CLEANUP_RESERVE: Duration = Duration::from_millis(250);
 
 #[cfg(test)]
 pub(crate) static ANDROID_BATTERY_TEST_LOCK: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
+#[cfg(test)]
+static ACTIVE_BATTERY_SUPERVISORS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 const MAX_STATUS_LABEL_BYTES: usize = 32;
 const MIN_TEMPERATURE_CELSIUS: f64 = -100.0;
@@ -112,6 +117,11 @@ impl AndroidBatteryClient {
     }
 
     pub async fn collect(&self) -> Result<AndroidBatteryStatus, AndroidBatteryError> {
+        let started_at = Instant::now();
+        let final_deadline = started_at + self.timeout;
+        let cleanup_reserve = (self.timeout / 4).min(MAX_PROCESS_CLEANUP_RESERVE);
+        let operation_deadline = final_deadline - cleanup_reserve;
+
         let mut command = Command::new(&self.program);
         command
             .env_clear()
@@ -119,6 +129,7 @@ impl AndroidBatteryClient {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
 
         let mut child = command.spawn().map_err(|error| {
@@ -129,6 +140,13 @@ impl AndroidBatteryClient {
             }
         })?;
 
+        let process_group = child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(Pid::from_raw)
+            .map(ProcessGroupGuard::new)
+            .ok_or(AndroidBatteryError::SpawnFailed)?;
+
         let stdout = child
             .stdout
             .take()
@@ -137,43 +155,31 @@ impl AndroidBatteryClient {
             .stderr
             .take()
             .ok_or(AndroidBatteryError::SpawnFailed)?;
-        let stdout_task = spawn_bounded_read(stdout, self.max_stdout_bytes);
-        let stderr_task = spawn_bounded_read(stderr, self.max_stderr_bytes);
 
-        let wait_result = timeout(self.timeout, child.wait()).await;
-        let timed_out = wait_result.is_err();
-        let wait_failed = matches!(&wait_result, Ok(Err(_)));
-        if timed_out || wait_failed {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-
-        let stdout = join_bounded_read(stdout_task).await?;
-        let stderr = join_bounded_read(stderr_task).await?;
-
-        if timed_out {
-            return Err(AndroidBatteryError::TimedOut);
-        }
-        if wait_failed {
-            return Err(AndroidBatteryError::WaitFailed);
-        }
-        if stdout.limit_exceeded {
-            return Err(AndroidBatteryError::StdoutLimitExceeded);
-        }
-        if stderr.limit_exceeded {
-            return Err(AndroidBatteryError::StderrLimitExceeded);
-        }
-
-        let status = wait_result
-            .expect("timeout result checked")
+        // The sender exists only to make dropping this `collect` future observable to
+        // the independently owned supervisor. A cancelled caller therefore cannot
+        // detach a provider process or leave a reader task behind.
+        let (cancellation_sender, cancellation_receiver) = oneshot::channel();
+        let supervisor = tokio::spawn(supervise_process(
+            SpawnedBatteryProcess {
+                child,
+                process_group,
+                stdout,
+                stderr,
+            },
+            SupervisorBounds {
+                max_stdout_bytes: self.max_stdout_bytes,
+                max_stderr_bytes: self.max_stderr_bytes,
+                operation_deadline,
+                final_deadline,
+            },
+            cancellation_receiver,
+        ));
+        let result = supervisor
+            .await
             .map_err(|_| AndroidBatteryError::WaitFailed)?;
-        if !status.success() {
-            return Err(AndroidBatteryError::ApiFailed);
-        }
-
-        let stdout =
-            String::from_utf8(stdout.bytes).map_err(|_| AndroidBatteryError::InvalidUtf8)?;
-        parse_battery_status(&stdout)
+        drop(cancellation_sender);
+        result
     }
 
     #[cfg(test)]
@@ -198,48 +204,227 @@ impl Default for AndroidBatteryClient {
     }
 }
 
-struct BoundedRead {
-    bytes: Vec<u8>,
-    limit_exceeded: bool,
+struct ProcessGroupGuard {
+    process_group: Pid,
+    armed: bool,
 }
 
-fn spawn_bounded_read(
-    mut reader: impl AsyncRead + Unpin + Send + 'static,
-    limit: usize,
-) -> JoinHandle<Result<BoundedRead, AndroidBatteryError>> {
-    tokio::spawn(async move {
-        let mut bytes = Vec::with_capacity(limit);
-        let mut chunk = [0_u8; 4 * 1024];
-        let mut limit_exceeded = false;
+impl ProcessGroupGuard {
+    fn new(process_group: Pid) -> Self {
+        Self {
+            process_group,
+            armed: true,
+        }
+    }
+
+    fn terminate(&self) {
+        let _ = kill_process_group(self.process_group, Signal::KILL);
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.terminate();
+        }
+    }
+}
+
+#[cfg(test)]
+struct ActiveSupervisorGuard;
+
+#[cfg(test)]
+impl ActiveSupervisorGuard {
+    fn new() -> Self {
+        ACTIVE_BATTERY_SUPERVISORS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActiveSupervisorGuard {
+    fn drop(&mut self) {
+        ACTIVE_BATTERY_SUPERVISORS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+enum BoundedRead {
+    Complete(Vec<u8>),
+    LimitExceeded,
+}
+
+enum SupervisorTerminal {
+    Complete(Vec<u8>),
+    Failure(AndroidBatteryError),
+    Cancelled,
+}
+
+struct SpawnedBatteryProcess {
+    child: Child,
+    process_group: ProcessGroupGuard,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+}
+
+struct SupervisorBounds {
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+    operation_deadline: Instant,
+    final_deadline: Instant,
+}
+
+async fn supervise_process(
+    process: SpawnedBatteryProcess,
+    bounds: SupervisorBounds,
+    mut cancellation: oneshot::Receiver<()>,
+) -> Result<AndroidBatteryStatus, AndroidBatteryError> {
+    #[cfg(test)]
+    let _active_supervisor = ActiveSupervisorGuard::new();
+
+    let SpawnedBatteryProcess {
+        mut child,
+        mut process_group,
+        stdout,
+        stderr,
+    } = process;
+
+    let terminal = {
+        let stdout_read = read_bounded(stdout, bounds.max_stdout_bytes);
+        let stderr_read = read_bounded(stderr, bounds.max_stderr_bytes);
+        let child_wait = child.wait();
+        let deadline = sleep_until(bounds.operation_deadline);
+        tokio::pin!(stdout_read, stderr_read, child_wait, deadline);
+
+        let mut stdout_bytes = None;
+        let mut stderr_complete = false;
+        let mut child_succeeded = false;
 
         loop {
-            let read = reader
-                .read(&mut chunk)
-                .await
-                .map_err(|_| AndroidBatteryError::WaitFailed)?;
-            if read == 0 {
-                break;
+            if child_succeeded && stdout_bytes.is_some() && stderr_complete {
+                break SupervisorTerminal::Complete(
+                    stdout_bytes
+                        .take()
+                        .expect("stdout completion checked before extraction"),
+                );
             }
 
-            let remaining = limit.saturating_sub(bytes.len());
-            let retained = remaining.min(read);
-            bytes.extend_from_slice(&chunk[..retained]);
-            if retained < read {
-                limit_exceeded = true;
+            // Stable simultaneous-event precedence is cancellation, total-time
+            // exhaustion, stdout, stderr, then direct-child completion. The
+            // deadline comes before I/O so a continuously ready pipe cannot starve
+            // the end-to-end wall-clock bound.
+            tokio::select! {
+                biased;
+
+                _ = &mut cancellation => {
+                    break SupervisorTerminal::Cancelled;
+                }
+                _ = &mut deadline => {
+                    break SupervisorTerminal::Failure(AndroidBatteryError::TimedOut);
+                }
+                stdout = &mut stdout_read, if stdout_bytes.is_none() => {
+                    match stdout {
+                        Ok(BoundedRead::Complete(bytes)) => stdout_bytes = Some(bytes),
+                        Ok(BoundedRead::LimitExceeded) => {
+                            break SupervisorTerminal::Failure(
+                                AndroidBatteryError::StdoutLimitExceeded,
+                            );
+                        }
+                        Err(error) => break SupervisorTerminal::Failure(error),
+                    }
+                }
+                stderr = &mut stderr_read, if !stderr_complete => {
+                    match stderr {
+                        Ok(BoundedRead::Complete(_)) => stderr_complete = true,
+                        Ok(BoundedRead::LimitExceeded) => {
+                            break SupervisorTerminal::Failure(
+                                AndroidBatteryError::StderrLimitExceeded,
+                            );
+                        }
+                        Err(error) => break SupervisorTerminal::Failure(error),
+                    }
+                }
+                status = &mut child_wait, if !child_succeeded => {
+                    match status {
+                        Ok(status) if status.success() => child_succeeded = true,
+                        Ok(_) => {
+                            break SupervisorTerminal::Failure(AndroidBatteryError::ApiFailed);
+                        }
+                        Err(_) => {
+                            break SupervisorTerminal::Failure(AndroidBatteryError::WaitFailed);
+                        }
+                    }
+                }
             }
         }
+    };
 
-        Ok(BoundedRead {
-            bytes,
-            limit_exceeded,
-        })
-    })
+    // Leaving the block above drops both reader futures and closes their pipes.
+    // Kill the whole isolated process group, synchronously reap the direct child
+    // when possible, and never await cleanup past the original final deadline.
+    let cleanup_complete =
+        terminate_process_group_and_reap(&mut child, &mut process_group, bounds.final_deadline)
+            .await;
+
+    match terminal {
+        SupervisorTerminal::Complete(stdout) => {
+            if !cleanup_complete {
+                return Err(AndroidBatteryError::WaitFailed);
+            }
+            let stdout = String::from_utf8(stdout).map_err(|_| AndroidBatteryError::InvalidUtf8)?;
+            parse_battery_status(&stdout)
+        }
+        SupervisorTerminal::Failure(error) => Err(error),
+        SupervisorTerminal::Cancelled => Err(AndroidBatteryError::WaitFailed),
+    }
 }
 
-async fn join_bounded_read(
-    task: JoinHandle<Result<BoundedRead, AndroidBatteryError>>,
+async fn terminate_process_group_and_reap(
+    child: &mut Child,
+    process_group: &mut ProcessGroupGuard,
+    final_deadline: Instant,
+) -> bool {
+    process_group.terminate();
+
+    let reaped = match child.try_wait() {
+        Ok(Some(_)) => true,
+        Ok(None) | Err(_) => {
+            let _ = child.start_kill();
+            matches!(timeout_at(final_deadline, child.wait()).await, Ok(Ok(_)))
+        }
+    };
+
+    if reaped {
+        process_group.disarm();
+    }
+    reaped
+}
+
+async fn read_bounded(
+    mut reader: impl AsyncRead + Unpin + Send + 'static,
+    limit: usize,
 ) -> Result<BoundedRead, AndroidBatteryError> {
-    task.await.map_err(|_| AndroidBatteryError::WaitFailed)?
+    let mut bytes = Vec::with_capacity(limit);
+    let mut chunk = [0_u8; 4 * 1024];
+
+    loop {
+        let read = reader
+            .read(&mut chunk)
+            .await
+            .map_err(|_| AndroidBatteryError::WaitFailed)?;
+        if read == 0 {
+            return Ok(BoundedRead::Complete(bytes));
+        }
+
+        let remaining = limit.saturating_sub(bytes.len());
+        if read > remaining {
+            return Ok(BoundedRead::LimitExceeded);
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
 }
 
 fn parse_battery_status(input: &str) -> Result<AndroidBatteryStatus, AndroidBatteryError> {
@@ -391,24 +576,36 @@ fn optional_integer(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+    };
 
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
 
-    fn executable_script(script: &str, timeout: Duration) -> (TempDir, AndroidBatteryClient) {
-        let directory = tempfile::tempdir().unwrap();
+    fn executable_script_in(
+        directory: &TempDir,
+        script: &str,
+        timeout: Duration,
+    ) -> AndroidBatteryClient {
         let program = directory.path().join("battery-status");
         fs::write(&program, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let client = AndroidBatteryClient::with_program_and_limits(
+        AndroidBatteryClient::with_program_and_limits(
             program,
             timeout,
             MAX_BATTERY_STDOUT_BYTES,
             MAX_BATTERY_STDERR_BYTES,
-        );
+        )
+    }
+
+    fn executable_script(script: &str, timeout: Duration) -> (TempDir, AndroidBatteryClient) {
+        let directory = tempfile::tempdir().unwrap();
+        let client = executable_script_in(&directory, script, timeout);
         (directory, client)
     }
 
@@ -416,6 +613,45 @@ mod tests {
         assert!(!stdout.contains('\''));
         assert!(!stderr.contains('\''));
         format!("printf '%s' '{stdout}'\nprintf '%s' '{stderr}' >&2")
+    }
+
+    async fn read_pid_file(path: &Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(value) = fs::read_to_string(path) {
+                    if let Ok(pid) = value.trim().parse() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("provider did not publish its process identifier")
+    }
+
+    fn process_path(pid: u32) -> PathBuf {
+        Path::new("/proc").join(pid.to_string())
+    }
+
+    async fn assert_process_gone(pid: u32) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while process_path(pid).exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("provider process {pid} survived bounded cleanup"));
+    }
+
+    async fn assert_no_active_supervisors() {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while ACTIVE_BATTERY_SUPERVISORS.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("battery supervisor task did not finish bounded cleanup");
     }
 
     #[test]
@@ -522,6 +758,111 @@ mod tests {
             client.collect().await.unwrap_err(),
             AndroidBatteryError::StderrLimitExceeded
         );
+    }
+
+    #[tokio::test]
+    async fn endless_output_fails_promptly_and_does_not_accumulate_supervisors() {
+        let _test_guard = ANDROID_BATTERY_TEST_LOCK.lock().await;
+        let cases = [
+            (
+                "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
+                AndroidBatteryError::StdoutLimitExceeded,
+            ),
+            (
+                "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' >&2; done",
+                AndroidBatteryError::StderrLimitExceeded,
+            ),
+        ];
+
+        for (script, expected) in cases {
+            for _ in 0..8 {
+                let (_directory, client) = executable_script(script, Duration::from_secs(2));
+                let started_at = Instant::now();
+                assert_eq!(client.collect().await.unwrap_err(), expected);
+                assert!(
+                    started_at.elapsed() < Duration::from_secs(1),
+                    "endless output reached the timeout instead of the byte ceiling"
+                );
+                assert_no_active_supervisors().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pipe_holding_descendants_are_killed_without_unbounded_reader_joins() {
+        let _test_guard = ANDROID_BATTERY_TEST_LOCK.lock().await;
+
+        for held_stream in ["stdout", "stderr"] {
+            for iteration in 0..4 {
+                let directory = tempfile::tempdir().unwrap();
+                let direct_pid_path = directory.path().join("direct-pid");
+                let descendant_pid_path = directory.path().join("descendant-pid");
+                let direct_pid_text = direct_pid_path.to_string_lossy();
+                let descendant_pid_text = descendant_pid_path.to_string_lossy();
+                assert!(!direct_pid_text.contains('\''));
+                assert!(!descendant_pid_text.contains('\''));
+                let redirection = if held_stream == "stdout" {
+                    "2>/dev/null"
+                } else {
+                    ">/dev/null"
+                };
+                let script = format!(
+                    "printf '%s\\n' \"$$\" >'{direct_pid_text}'\n\
+                     /bin/sleep 30 {redirection} &\n\
+                     printf '%s\\n' \"$!\" >'{descendant_pid_text}'\n\
+                     printf '%s' '{{\"percentage\":50}}'\n\
+                     exit 0"
+                );
+                let client = executable_script_in(&directory, &script, Duration::from_millis(400));
+                let started_at = Instant::now();
+                assert_eq!(
+                    client.collect().await.unwrap_err(),
+                    AndroidBatteryError::TimedOut,
+                    "held stream {held_stream}, iteration {iteration}"
+                );
+                assert!(started_at.elapsed() < Duration::from_secs(1));
+
+                let direct_pid = read_pid_file(&direct_pid_path).await;
+                let descendant_pid = read_pid_file(&descendant_pid_path).await;
+                assert_process_gone(direct_pid).await;
+                assert_process_gone(descendant_pid).await;
+                assert_no_active_supervisors().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_kills_and_reaps_each_process_group() {
+        let _test_guard = ANDROID_BATTERY_TEST_LOCK.lock().await;
+
+        for iteration in 0..8 {
+            let directory = tempfile::tempdir().unwrap();
+            let direct_pid_path = directory.path().join("direct-pid");
+            let descendant_pid_path = directory.path().join("descendant-pid");
+            let direct_pid_text = direct_pid_path.to_string_lossy();
+            let descendant_pid_text = descendant_pid_path.to_string_lossy();
+            assert!(!direct_pid_text.contains('\''));
+            assert!(!descendant_pid_text.contains('\''));
+            let script = format!(
+                "printf '%s\\n' \"$$\" >'{direct_pid_text}'\n\
+                 /bin/sleep 30 >/dev/null 2>&1 &\n\
+                 printf '%s\\n' \"$!\" >'{descendant_pid_text}'\n\
+                 wait"
+            );
+            let client = executable_script_in(&directory, &script, Duration::from_secs(2));
+            let task = tokio::spawn(async move { client.collect().await });
+            let direct_pid = read_pid_file(&direct_pid_path).await;
+            let descendant_pid = read_pid_file(&descendant_pid_path).await;
+
+            task.abort();
+            assert!(
+                task.await.unwrap_err().is_cancelled(),
+                "iteration {iteration}"
+            );
+            assert_process_gone(direct_pid).await;
+            assert_process_gone(descendant_pid).await;
+            assert_no_active_supervisors().await;
+        }
     }
 
     #[tokio::test]

@@ -241,7 +241,7 @@ BUILD_FEATURES=mcp-runtime \
   ./scripts/cross_compile.sh
 ```
 
-The `Android Cross Compile` workflow validates all three postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific default, `mcp-runtime`, and `android-battery-status` artifacts before treating a release run that publishes the optional feature as complete. Verify their commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
+The `Android Cross Compile` workflow validates all three postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific default, `mcp-runtime`, and `android-battery-status` artifacts before treating a release run that publishes the optional feature as complete. Verify their commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md). Battery evidence schema v2 additionally requires prompt endless-output rejection plus process-group, pipe-holder, client-cancellation, and bounded-supervisor cleanup attestations.
 
 ## MCP Runtime Gate
 

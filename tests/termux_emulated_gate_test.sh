@@ -56,7 +56,9 @@ jq -e '
 ' "$ROOT/docs/emulated-release-evidence-schema-v1.json" >/dev/null
 
 jq -e '
-  .properties.releaseQualificationEligible.const == false
+  .properties.schemaVersion.const == 2
+  and .properties.gateVersion.const == "2"
+  and .properties.releaseQualificationEligible.const == false
   and .properties.environment."$ref" == "#/$defs/environment"
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
@@ -64,8 +66,13 @@ jq -e '
   and ."$defs".validation.properties.fixedWorkingDirectory.const == true
   and ."$defs".validation.properties.inheritedEnvironmentCleared.const == true
   and ."$defs".validation.properties.boundedOutput.const == true
+  and ."$defs".validation.properties.immediateOverflowTermination.const == true
+  and ."$defs".validation.properties.processGroupIsolation.const == true
+  and ."$defs".validation.properties.pipeHoldingDescendantCleanup.const == true
+  and ."$defs".validation.properties.callerCancellationCleanup.const == true
+  and ."$defs".validation.properties.boundedSupervisorCleanup.const == true
   and ."$defs".validation.properties.androidDeviceControlDisabled.const == true
-' "$ROOT/docs/android-battery-emulated-evidence-schema-v1.json" >/dev/null
+' "$ROOT/docs/android-battery-emulated-evidence-schema-v2.json" >/dev/null
 
 jq -e '
   .properties.releaseQualificationEligible.const == false

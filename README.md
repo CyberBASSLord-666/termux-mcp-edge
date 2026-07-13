@@ -111,7 +111,7 @@ cargo build --release --features android-battery-status
 export MCP__ANDROID__BATTERY_STATUS_ENABLED=true
 ```
 
-The feature includes `mcp-runtime`. Startup rejects the runtime flag when the feature is absent. With the flag unset or `false`, `android_battery_status` is hidden from discovery. With both gates enabled, the server directly invokes only the fixed Termux:API `termux-battery-status` executable with no arguments, no stdin, no inherited environment, a five-second timeout, and independent 16 KiB/4 KiB stdout/stderr limits. Only normalized allowlisted battery fields are returned; technology/vendor strings, identifiers, raw output, stderr, paths, and environment values are discarded.
+The feature includes `mcp-runtime`. Startup rejects the runtime flag when the feature is absent. With the flag unset or `false`, `android_battery_status` is hidden from discovery. With both gates enabled, the server directly invokes only the fixed Termux:API `termux-battery-status` executable with no arguments, no stdin, no inherited environment, a five-second end-to-end deadline, and independent 16 KiB/4 KiB stdout/stderr limits. A cancellation-safe supervisor isolates and terminates the complete provider process group on overflow, timeout, request cancellation, or completion and reaps the direct child without unbounded reader joins. Only normalized allowlisted battery fields are returned; technology/vendor strings, identifiers, raw output, stderr, paths, and environment values are discarded.
 
 See [`docs/ANDROID_BATTERY_STATUS.md`](docs/ANDROID_BATTERY_STATUS.md) for prerequisites, field units, failure reason codes, audit behavior, and validation evidence.
 

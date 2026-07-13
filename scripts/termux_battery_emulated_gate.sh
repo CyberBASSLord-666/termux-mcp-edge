@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-GATE_VERSION=1
+GATE_VERSION=2
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
 DEFAULT_PORT=18767
 
@@ -22,6 +22,8 @@ SERVER_PID=''
 SESSION_ID=''
 BATTERY_PROGRAM=''
 BATTERY_PROGRAM_CREATED=false
+BATTERY_DIRECT_PID_FILE=''
+BATTERY_DESCENDANT_PID_FILE=''
 REQUEST_COUNT=0
 MCP_STATUS=''
 
@@ -157,6 +159,8 @@ SERVER_LOG="$WORK_ROOT/server.log"
 BODY_FILE="$WORK_ROOT/body.json"
 HEADER_FILE="$WORK_ROOT/headers.txt"
 REQUEST_FILE="$WORK_ROOT/request.json"
+BATTERY_DIRECT_PID_FILE="$WORK_ROOT/battery-direct.pid"
+BATTERY_DESCENDANT_PID_FILE="$WORK_ROOT/battery-descendant.pid"
 mkdir -m 700 "$SAFE_ROOT"
 
 MCP_TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
@@ -195,6 +199,71 @@ while ((i < 16385)); do
   printf x
   i=$((i + 1))
 done
+EOF
+  chmod 700 "$next"
+  install -m 700 "$next" "$BATTERY_PROGRAM"
+  rm -f -- "$next"
+}
+
+write_endless_output_fixture() {
+  local stream="$1" next="$WORK_ROOT/battery-endless.next" redirection=''
+  case "$stream" in
+    stdout) redirection='' ;;
+    stderr) redirection='>&2' ;;
+    *) fail endless_stream_invalid ;;
+  esac
+  rm -f -- "$BATTERY_DIRECT_PID_FILE" "$BATTERY_DESCENDANT_PID_FILE"
+  cat >"$next" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+[[ "\$#" -eq 0 ]]
+[[ "\$PWD" == / ]]
+printf '%s\n' "\$\$" >'$BATTERY_DIRECT_PID_FILE'
+while :; do
+  printf '%s' xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx $redirection
+done
+EOF
+  chmod 700 "$next"
+  install -m 700 "$next" "$BATTERY_PROGRAM"
+  rm -f -- "$next"
+}
+
+write_pipe_holding_descendant_fixture() {
+  local stream="$1" next="$WORK_ROOT/battery-pipe-holder.next" redirection=''
+  case "$stream" in
+    stdout) redirection='2>/dev/null' ;;
+    stderr) redirection='>/dev/null' ;;
+    *) fail pipe_holder_stream_invalid ;;
+  esac
+  rm -f -- "$BATTERY_DIRECT_PID_FILE" "$BATTERY_DESCENDANT_PID_FILE"
+  cat >"$next" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+[[ "\$#" -eq 0 ]]
+[[ "\$PWD" == / ]]
+printf '%s\n' "\$\$" >'$BATTERY_DIRECT_PID_FILE'
+$PREFIX/bin/sleep 30 $redirection &
+printf '%s\n' "\$!" >'$BATTERY_DESCENDANT_PID_FILE'
+printf '%s' '{"percentage":50}'
+exit 0
+EOF
+  chmod 700 "$next"
+  install -m 700 "$next" "$BATTERY_PROGRAM"
+  rm -f -- "$next"
+}
+
+write_cancellation_fixture() {
+  local next="$WORK_ROOT/battery-cancellation.next"
+  rm -f -- "$BATTERY_DIRECT_PID_FILE" "$BATTERY_DESCENDANT_PID_FILE"
+  cat >"$next" <<EOF
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+[[ "\$#" -eq 0 ]]
+[[ "\$PWD" == / ]]
+printf '%s\n' "\$\$" >'$BATTERY_DIRECT_PID_FILE'
+$PREFIX/bin/sleep 30 >/dev/null 2>&1 &
+printf '%s\n' "\$!" >'$BATTERY_DESCENDANT_PID_FILE'
+wait
 EOF
   chmod 700 "$next"
   install -m 700 "$next" "$BATTERY_PROGRAM"
@@ -256,7 +325,7 @@ stop_server() {
 }
 
 post_mcp() {
-  local payload="$1" session="${2:-}"
+  local payload="$1" session="${2:-}" max_time="${3:-10}"
   printf '%s' "$payload" >"$REQUEST_FILE"
   local -a headers=(
     -H "Authorization: Bearer $MCP_TOKEN"
@@ -268,9 +337,53 @@ post_mcp() {
   if [[ -n "$session" ]]; then
     headers+=( -H "MCP-Session-Id: $session" -H 'MCP-Protocol-Version: 2025-11-25' )
   fi
-  MCP_STATUS="$(curl_local --silent --show-error --output "$BODY_FILE" --write-out '%{http_code}' \
+  MCP_STATUS="$(curl_local --silent --show-error --max-time "$max_time" --output "$BODY_FILE" --write-out '%{http_code}' \
     "${headers[@]}" --data-binary "@$REQUEST_FILE" "http://127.0.0.1:$PORT/mcp")"
   REQUEST_COUNT=$((REQUEST_COUNT + 1))
+}
+
+cancel_mcp_request() {
+  printf '%s' '{"jsonrpc":"2.0","id":"cancelled-battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' >"$REQUEST_FILE"
+  local curl_rc
+  set +e
+  curl_local --silent --show-error --max-time 1 --output "$BODY_FILE" \
+    -H "Authorization: Bearer $MCP_TOKEN" \
+    -H "Host: localhost:$PORT" \
+    -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H "MCP-Session-Id: $SESSION_ID" \
+    -H 'MCP-Protocol-Version: 2025-11-25' \
+    --data-binary "@$REQUEST_FILE" "http://127.0.0.1:$PORT/mcp"
+  curl_rc=$?
+  set -e
+  REQUEST_COUNT=$((REQUEST_COUNT + 1))
+  [[ "$curl_rc" == 28 ]] || fail cancellation_request_not_aborted
+}
+
+read_fixture_pid() {
+  local path="$1" reason="$2" attempt value=''
+  for attempt in $(seq 1 200); do
+    if [[ -s "$path" ]]; then
+      value="$(cat "$path")"
+      [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "${reason}_invalid"
+      printf '%s\n' "$value"
+      return 0
+    fi
+    sleep 0.01
+  done
+  fail "${reason}_missing"
+}
+
+assert_process_gone() {
+  local pid="$1" reason="$2" attempt
+  for attempt in $(seq 1 200); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.01
+  done
+  fail "${reason}_survived"
 }
 
 initialize_session() {
@@ -370,6 +483,41 @@ jq -e '
   and .result.structuredContent.reasonCode == "battery_stdout_limit_exceeded"
 ' "$BODY_FILE" >/dev/null || fail overflow_contract_invalid
 
+for stream in stdout stderr; do
+  write_endless_output_fixture "$stream"
+  payload="$(jq -cn --arg id "endless-$stream" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"android_battery_status",arguments:{}}}')"
+  post_mcp "$payload" "$SESSION_ID" 2
+  [[ "$MCP_STATUS" == 200 ]] || fail "endless_${stream}_http_invalid"
+  jq -e --arg reason "battery_${stream}_limit_exceeded" '
+    .result.isError == true
+    and .result.structuredContent.reasonCode == $reason
+  ' "$BODY_FILE" >/dev/null || fail "endless_${stream}_contract_invalid"
+  direct_pid="$(read_fixture_pid "$BATTERY_DIRECT_PID_FILE" "endless_${stream}_direct_pid")"
+  assert_process_gone "$direct_pid" "endless_${stream}_direct_process"
+done
+
+for stream in stdout stderr; do
+  write_pipe_holding_descendant_fixture "$stream"
+  payload="$(jq -cn --arg id "pipe-holder-$stream" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"android_battery_status",arguments:{}}}')"
+  post_mcp "$payload" "$SESSION_ID" 7
+  [[ "$MCP_STATUS" == 200 ]] || fail "pipe_holder_${stream}_http_invalid"
+  jq -e '
+    .result.isError == true
+    and .result.structuredContent.reasonCode == "battery_api_timeout"
+  ' "$BODY_FILE" >/dev/null || fail "pipe_holder_${stream}_contract_invalid"
+  direct_pid="$(read_fixture_pid "$BATTERY_DIRECT_PID_FILE" "pipe_holder_${stream}_direct_pid")"
+  descendant_pid="$(read_fixture_pid "$BATTERY_DESCENDANT_PID_FILE" "pipe_holder_${stream}_descendant_pid")"
+  assert_process_gone "$direct_pid" "pipe_holder_${stream}_direct_process"
+  assert_process_gone "$descendant_pid" "pipe_holder_${stream}_descendant_process"
+done
+
+write_cancellation_fixture
+cancel_mcp_request
+direct_pid="$(read_fixture_pid "$BATTERY_DIRECT_PID_FILE" cancellation_direct_pid)"
+descendant_pid="$(read_fixture_pid "$BATTERY_DESCENDANT_PID_FILE" cancellation_descendant_pid)"
+assert_process_gone "$direct_pid" cancellation_direct_process
+assert_process_gone "$descendant_pid" cancellation_descendant_process
+
 write_failure_fixture
 post_mcp '{"jsonrpc":"2.0","id":"failed","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail api_failure_http_invalid
@@ -431,7 +579,7 @@ jq -n \
   --arg image_digest "$IMAGE_DIGEST" \
   --argjson requests "$REQUEST_COUNT" '
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     gateVersion: $gate_version,
     status: "pass",
     failureCode: null,
@@ -467,6 +615,11 @@ jq -n \
       normalizedAllowlist: true,
       sensitiveFieldsRedacted: true,
       boundedOutput: true,
+      immediateOverflowTermination: true,
+      processGroupIsolation: true,
+      pipeHoldingDescendantCleanup: true,
+      callerCancellationCleanup: true,
+      boundedSupervisorCleanup: true,
       stableErrors: true,
       androidDeviceControlDisabled: true,
       commandExecutionDisabled: true,
@@ -476,7 +629,7 @@ jq -n \
 chmod 600 "$REPORT_NEXT" || fail report_mode_failed
 
 jq -e '
-  .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+  .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
   and .failureCode == null and .releaseQualificationEligible == false
   and .environment.executionMode == "official-termux-docker-native-arm64"
   and .environment.androidLinker == true

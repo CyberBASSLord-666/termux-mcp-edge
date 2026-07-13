@@ -129,7 +129,7 @@ Required gates:
 - Operator-facing documentation that clearly distinguishes read-only status from device-control actions.
 - Capability and audit policy appropriate to each Android data/control family.
 
-Battery telemetry satisfies this stage only for its read-only data family: fixed executable, no caller arguments, cleared environment, bounded time/output, strict field normalization, disabled discovery, stable error codes, aggregate audit coverage, and native ARM64 official-Termux validation. It does not satisfy or authorize any future Android control family.
+Battery telemetry satisfies this stage only for its read-only data family: fixed executable, no caller arguments, cleared environment, bounded time/output, strict field normalization, disabled discovery, stable error codes, aggregate audit coverage, a cancellation-safe process-group supervisor, and native ARM64 official-Termux cleanup validation. It does not satisfy or authorize any future Android control family.
 
 ## Stage 7: Command Execution and High-Impact Tooling
 
