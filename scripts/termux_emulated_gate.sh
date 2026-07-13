@@ -384,8 +384,21 @@ for sample in $(seq 1 "$SAMPLES"); do
     jq -e '
       .result.structuredContent.commandExecution == false
       and .result.structuredContent.androidPlatformTools == false
+      and .result.structuredContent.androidBatteryStatusCompiled == false
+      and .result.structuredContent.androidBatteryStatusEnabled == false
+      and .result.structuredContent.androidDeviceControl == false
       and .result.structuredContent.highImpactTools == false
     ' "$BODY_FILE" >/dev/null || fail stress_high_impact_gate_invalid
+  fi
+
+  if ((sample == 1)); then
+    post_mcp '{"jsonrpc":"2.0","id":"battery-uncompiled","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
+    [[ "$MCP_STATUS" == 200 ]] || fail stress_battery_uncompiled_status_invalid
+    jq -e '
+      .result.isError == true
+      and .result.structuredContent.error == "android_battery_status_unavailable"
+      and .result.structuredContent.reasonCode == "battery_feature_not_compiled"
+    ' "$BODY_FILE" >/dev/null || fail stress_battery_uncompiled_contract_invalid
   fi
 done
 

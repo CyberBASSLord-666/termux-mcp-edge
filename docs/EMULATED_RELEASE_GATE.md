@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Android workflow executes both exact downloaded release-candidate postures in the official [`termux/termux-docker`](https://github.com/termux/termux-docker) environment on a native GitHub-hosted ARM64 runner. This closes the gap between cross-compilation and executable Android/Termux behavior without asking an operator to repeat long idle observation windows after non-runtime changes.
+The Android workflow executes all exact downloaded release-candidate postures in the official [`termux/termux-docker`](https://github.com/termux/termux-docker) environment on a native GitHub-hosted ARM64 runner. This closes the gap between cross-compilation and executable Android/Termux behavior without asking an operator to repeat long idle observation windows during ordinary feature development.
 
 The gate uses the immutable image reference:
 
@@ -14,7 +14,7 @@ The image supplies the Termux private-directory layout, Bionic runtime, Android 
 
 ## Exact-artifact coverage
 
-The emulated job starts only after both Android build postures complete. It downloads the bundles produced by the same workflow run and verifies:
+The emulated job starts only after the default, `mcp-runtime`, and `android-battery-status` Android build postures complete. It downloads the bundles produced by the same workflow run and verifies:
 
 - exact three-file bundle layout;
 - checksum sidecars;
@@ -23,8 +23,18 @@ The emulated job starts only after both Android build postures complete. It down
 - default posture readiness and absence of `/mcp`;
 - `mcp-runtime` authentication, Host/Origin ordering, initialization, notification semantics, protocol/session headers, exact tool allowlist, representative allowed and denied calls, safe-root confinement, symlink denial, request bounds, and session deletion;
 - 256 additional high-frequency native samples covering stable PID, health, readiness, tool discovery, disabled high-impact gates, and complete session lifecycle.
+- the battery artifact's exact manifest/digest/version/ELF posture, disabled-default discovery, enabled fixed-program invocation, zero arguments, cleared inherited environment, normalized field allowlist, sensitive-field redaction, output overflow rejection, stable API failure, audit-visible gate state, and continued absence of Android control, command execution, and high-impact tools.
 
-The canonical runtime validator remains authoritative for detailed protocol checks. The emulated wrapper emits a separate sanitized report conforming to [`emulated-release-evidence-schema-v1.json`](emulated-release-evidence-schema-v1.json). It does not set the canonical validator's direct-observation `releaseEligible` field.
+The canonical runtime validator remains authoritative for detailed protocol checks. The baseline wrapper emits a sanitized report conforming to [`emulated-release-evidence-schema-v1.json`](emulated-release-evidence-schema-v1.json), and the battery wrapper emits a separate report conforming to [`android-battery-emulated-evidence-schema-v1.json`](android-battery-emulated-evidence-schema-v1.json). Neither report sets the canonical validator's direct-observation `releaseEligible` field.
+
+## Development qualification versus release observation
+
+Native Termux emulation is a required CI check for runtime-changing pull requests. A runtime change is not a CI failure merely because an older physical-device observation cannot be reused. After emulation passes, [`classify_observation_requirement.sh`](../scripts/classify_observation_requirement.sh) emits a sanitized report conforming to [`release-observation-requirement-schema-v1.json`](release-observation-requirement-schema-v1.json):
+
+- `observation_inheritance_candidate` means protected runtime/deployment and normalized Cargo inputs still match the physical source. The separate inheritance verifier must still prove ancestry, exact artifact digests, and every other release condition before release eligibility can become true.
+- `physical_observation_required` means runtime/deployment or Cargo/dependency inputs changed. Development CI passes when the exact artifacts and all automated gates pass, but `releaseQualificationEligible` remains false and a later release process must obtain new direct physical evidence.
+
+The classifier itself always sets `releaseQualificationEligible:false`. It cannot waive, synthesize, or inherit a physical result.
 
 ## Physical-observation inheritance
 
@@ -35,7 +45,7 @@ An emulator cannot establish battery, thermal, OEM process-management, or mobile
 3. `src/**`, `build.rs`, `.cargo/**`, the Rust toolchain pin, cross-compilation script, artifact packager, deployment manager, device gate, canonical validator, and direct-evidence schema are unchanged from the physically observed source.
 4. `Cargo.toml` and `Cargo.lock` are structurally identical after removing only the root package version.
 5. Exact candidate default and `mcp-runtime` binary digests match the independently qualified bridge digests.
-6. Exact-head CI and Security pass, both Android artifacts pass, and the native ARM64 official-Termux emulation report passes.
+6. Exact-head CI and Security pass, every candidate Android build posture passes, the default and `mcp-runtime` digests match the qualified bridge, and the native ARM64 official-Termux emulation report passes.
 
 The verifier emits a sanitized report conforming to [`release-observation-inheritance-schema-v1.json`](release-observation-inheritance-schema-v1.json). `releaseQualificationEligible: true` means the combined direct physical source evidence and exact candidate evidence satisfy this narrow inheritance route. It is review evidence, not permission to tag or publish.
 
@@ -50,7 +60,7 @@ Observation inheritance is forbidden when any of these changes:
 - either exact bridge artifact digest;
 - the required Termux image digest or native ARM64 execution posture.
 
-Such a candidate requires a new direct physical observation. A failed or missing emulator result also blocks inheritance.
+Such a candidate requires a new direct physical observation before release qualification, but does not require a user to run a 60-minute observation merely to validate or merge a development PR. A failed or missing emulator result still fails CI and blocks both classification routes.
 
 ## v0.6.0 inheritance source
 

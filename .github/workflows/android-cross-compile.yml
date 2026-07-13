@@ -15,8 +15,12 @@ on:
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
       - "scripts/termux_emulated_gate.sh"
+      - "scripts/termux_battery_emulated_gate.sh"
+      - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/android-battery-emulated-evidence-schema-v1.json"
+      - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/android-cross-compile.yml"
@@ -31,8 +35,12 @@ on:
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
       - "scripts/termux_emulated_gate.sh"
+      - "scripts/termux_battery_emulated_gate.sh"
+      - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/android-battery-emulated-evidence-schema-v1.json"
+      - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/android-cross-compile.yml"
@@ -60,6 +68,9 @@ jobs:
           - posture: mcp-runtime
             features: mcp-runtime
             artifact: termux-mcp-server-aarch64-linux-android-mcp-runtime
+          - posture: android-battery-status
+            features: android-battery-status
+            artifact: termux-mcp-server-aarch64-linux-android-android-battery-status
     steps:
       - name: Checkout
         # actions/checkout@v7.0.0 resolved 2026-07-10
@@ -155,13 +166,20 @@ jobs:
           name: termux-mcp-server-aarch64-linux-android-mcp-runtime
           path: artifacts/mcp-runtime
 
+      - name: Download Android battery artifact bundle
+        # actions/download-artifact@v8.0.0 resolved 2026-07-12
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: termux-mcp-server-aarch64-linux-android-android-battery-status
+          path: artifacts/android-battery-status
+
       - name: Verify artifact staging
         id: artifacts
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          for root in artifacts/default artifacts/mcp-runtime; do
+          for root in artifacts/default artifacts/mcp-runtime artifacts/android-battery-status; do
             test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3
             test -f "$root/termux-mcp-server"
             test -f "$root/SHA256SUMS"
@@ -172,8 +190,10 @@ jobs:
           done
           default_version="$(jq -r .version artifacts/default/artifact-manifest.json)"
           mcp_version="$(jq -r .version artifacts/mcp-runtime/artifact-manifest.json)"
+          battery_version="$(jq -r .version artifacts/android-battery-status/artifact-manifest.json)"
           [[ "$default_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
           test "$mcp_version" = "$default_version"
+          test "$battery_version" = "$default_version"
           printf 'version=%s\n' "$default_version" >>"$GITHUB_OUTPUT"
 
       - name: Resolve exact companion workflow evidence
@@ -266,6 +286,15 @@ jobs:
                 --android-run-id '$GITHUB_RUN_ID' \\
                 --samples 256 \\
                 --output /output/termux-emulated-evidence.json
+
+              bash /workspace/scripts/termux_battery_emulated_gate.sh \\
+                --artifact-dir /workspace/artifacts/android-battery-status \\
+                --expected-commit '$SOURCE_SHA' \\
+                --expected-version '$EXPECTED_VERSION' \\
+                --ci-run-id '$CI_RUN_ID' \\
+                --security-run-id '$SECURITY_RUN_ID' \\
+                --android-run-id '$GITHUB_RUN_ID' \\
+                --output /output/termux-battery-emulated-evidence.json
             "
 
       - name: Validate emulated evidence
@@ -277,8 +306,11 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" "$OUTPUT_ROOT"
           chmod 700 "$OUTPUT_ROOT"
           report="$OUTPUT_ROOT/termux-emulated-evidence.json"
+          battery_report="$OUTPUT_ROOT/termux-battery-emulated-evidence.json"
           test -f "$report"
+          test -f "$battery_report"
           test "$(stat -c %a "$report")" = 600
+          test "$(stat -c %a "$battery_report")" = 600
           jq -e \
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
@@ -292,26 +324,71 @@ jobs:
             ' "$report" >/dev/null
           sha256sum "$report"
 
-          bash scripts/verify_observation_inheritance.sh \
+          jq -e \
+            --arg commit "$SOURCE_SHA" \
+            --arg android "$GITHUB_RUN_ID" \
+            --arg digest "$TERMUX_IMAGE_DIGEST" '
+              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              and .releaseQualificationEligible == false
+              and .candidate.commit == $commit
+              and .candidate.androidRunId == $android
+              and .environment.imageDigest == $digest
+              and .validation.status == "pass"
+              and .validation.runtimeDefaultDisabled == true
+              and .validation.fixedProgram == true
+              and .validation.fixedWorkingDirectory == true
+              and .validation.inheritedEnvironmentCleared == true
+              and .validation.boundedOutput == true
+              and .validation.androidDeviceControlDisabled == true
+            ' "$battery_report" >/dev/null
+          sha256sum "$battery_report"
+
+          requirement_report="$OUTPUT_ROOT/termux-observation-requirement.json"
+          bash scripts/classify_observation_requirement.sh \
             --repository-root "$GITHUB_WORKSPACE" \
             --source-commit fe5f7b80a8ff13c2e39951d16f37b2e37a10a36b \
-            --source-report "$GITHUB_WORKSPACE/docs/release-evidence/v0.5.1-physical-fe5f7b80.json" \
-            --source-report-sha256 677796015065eb193ac78b2dd200de64efccb95a226837a4545c85021cb9283c \
             --candidate-commit "$SOURCE_SHA" \
             --emulated-report "$report" \
-            --bridge-commit a97e7cf2734ca3c997abc4e7d2aebaaa9fa856b9 \
-            --bridge-default-sha256 8fb1e89d942e5f925359eb22ea3321d6025baa83ee1da60fe58f1c62fe60dce1 \
-            --bridge-mcp-sha256 e4c68590c02c2861b18392d7fae2b7542f6610e4a52615aee76f66c06cc7358e \
-            --output "$OUTPUT_ROOT/termux-observation-inheritance.json"
+            --output "$requirement_report"
 
           jq -e \
             --arg commit "$SOURCE_SHA" '
               .status == "pass"
-              and .releaseQualificationEligible == true
+              and .releaseQualificationEligible == false
               and .candidate.commit == $commit
-              and .evidenceMode == "inherited_physical_observation"
-            ' "$OUTPUT_ROOT/termux-observation-inheritance.json" >/dev/null
-          sha256sum "$OUTPUT_ROOT/termux-observation-inheritance.json"
+              and .emulation.status == "pass"
+            ' "$requirement_report" >/dev/null
+          sha256sum "$requirement_report"
+
+          if jq -e '.inheritanceCandidate == true' "$requirement_report" >/dev/null; then
+            bash scripts/verify_observation_inheritance.sh \
+              --repository-root "$GITHUB_WORKSPACE" \
+              --source-commit fe5f7b80a8ff13c2e39951d16f37b2e37a10a36b \
+              --source-report "$GITHUB_WORKSPACE/docs/release-evidence/v0.5.1-physical-fe5f7b80.json" \
+              --source-report-sha256 677796015065eb193ac78b2dd200de64efccb95a226837a4545c85021cb9283c \
+              --candidate-commit "$SOURCE_SHA" \
+              --emulated-report "$report" \
+              --bridge-commit a97e7cf2734ca3c997abc4e7d2aebaaa9fa856b9 \
+              --bridge-default-sha256 8fb1e89d942e5f925359eb22ea3321d6025baa83ee1da60fe58f1c62fe60dce1 \
+              --bridge-mcp-sha256 e4c68590c02c2861b18392d7fae2b7542f6610e4a52615aee76f66c06cc7358e \
+              --output "$OUTPUT_ROOT/termux-observation-inheritance.json"
+
+            jq -e \
+              --arg commit "$SOURCE_SHA" '
+                .status == "pass"
+                and .releaseQualificationEligible == true
+                and .candidate.commit == $commit
+                and .evidenceMode == "inherited_physical_observation"
+              ' "$OUTPUT_ROOT/termux-observation-inheritance.json" >/dev/null
+            sha256sum "$OUTPUT_ROOT/termux-observation-inheritance.json"
+          else
+            jq -e '
+              .evidenceMode == "physical_observation_required"
+              and .nextGate == "direct_physical_device_observation"
+              and (.changedInputClasses | length) >= 1
+            ' "$requirement_report" >/dev/null
+            test ! -e "$OUTPUT_ROOT/termux-observation-inheritance.json"
+          fi
 
       - name: Upload emulated evidence
         # actions/upload-artifact@v7.0.1 resolved 2026-07-10
@@ -320,6 +397,8 @@ jobs:
           name: termux-mcp-emulated-evidence
           path: |
             ${{ steps.output.outputs.root }}/termux-emulated-evidence.json
+            ${{ steps.output.outputs.root }}/termux-battery-emulated-evidence.json
+            ${{ steps.output.outputs.root }}/termux-observation-requirement.json
             ${{ steps.output.outputs.root }}/termux-observation-inheritance.json
           if-no-files-found: error
           retention-days: 14

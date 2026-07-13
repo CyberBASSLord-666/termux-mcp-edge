@@ -4,6 +4,8 @@ mod support;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
+#[cfg(not(feature = "android-battery-status"))]
+use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
 use support::{post_json_with_empty_root, response_json};
 
 const DENIED_ANDROID_PLATFORM_TOKENS: [&str; 22] = [
@@ -131,6 +133,60 @@ async fn platform_info_metadata_stays_non_sensitive() {
     }
 
     assert_no_denied_android_platform_tokens(structured);
+}
+
+#[cfg(not(feature = "android-battery-status"))]
+#[tokio::test]
+async fn battery_tool_fails_closed_when_the_compile_feature_is_absent() {
+    let (_root, file_tools) = empty_test_file_tools();
+    let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+    let response = post_json_to_session(
+        router.clone(),
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "battery-feature-disabled",
+            "method": "tools/call",
+            "params": {
+                "name": "android_battery_status",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["result"]["isError"], true);
+    assert_eq!(
+        body["result"]["structuredContent"]["reasonCode"],
+        "battery_feature_not_compiled"
+    );
+
+    let runtime = post_json_to_session(
+        router,
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "battery-feature-disabled-runtime",
+            "method": "tools/call",
+            "params": {"name": "runtime_status", "arguments": {}}
+        }),
+    )
+    .await;
+    let runtime = response_json(runtime).await;
+    let structured = &runtime["result"]["structuredContent"];
+    assert_eq!(structured["androidBatteryStatusCompiled"], false);
+    assert_eq!(structured["androidBatteryStatusEnabled"], false);
+    assert_eq!(
+        structured["auditCounters"]["by_tool"]["android_battery_status"]["denied"],
+        1
+    );
+    assert_eq!(
+        structured["auditCounters"]["by_reason_code"]["battery_feature_not_compiled"]["denied"],
+        1
+    );
 }
 
 fn assert_no_denied_android_platform_tokens(value: &Value) {

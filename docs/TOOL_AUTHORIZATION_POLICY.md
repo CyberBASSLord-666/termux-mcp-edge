@@ -8,7 +8,7 @@ The default build exposes operational health/readiness endpoints only. The optio
 
 In static-token mode, `/mcp` requires `Authorization: Bearer <configured-token>` before JSON-RPC parsing, discovery, or invocation. Explicit unauthenticated development mode is allowed only when startup validation confirms a loopback bind.
 
-The current staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. No Android control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
+The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. An `android-battery-status` build may additionally register `android_battery_status` only after the runtime battery flag is explicitly enabled. No Android control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
 
 ## Default Deny Rule
 
@@ -41,6 +41,8 @@ Rules:
 - Must enforce a narrow allowlist or safe root.
 - Must reject path traversal, symlink escape, broad Android shared storage, credentials, and token material.
 - Must include coverage for allowed and rejected reads.
+
+`android_battery_status` is Class 1 only under its documented constraints: authenticated transport, separate compile/runtime opt-in, one fixed absolute Termux:API executable, no caller arguments or inherited environment, bounded time and output, a strict normalized field allowlist, disabled discovery, stable non-sensitive failures, and aggregate audit coverage. Expanding it to caller-selected commands, additional Android APIs, identifiers, broad device data, or mutation changes the risk class and requires a separate gate.
 
 ### Class 2: mutating bounded tools
 

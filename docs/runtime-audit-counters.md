@@ -14,6 +14,8 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `read_file`
 - `write_file`
 
+When the separately compiled and runtime-enabled battery posture is active, the same counter path also records `android_battery_status`. Disabled direct calls and provider failures are denied decisions; successful normalized reads are allowed decisions. No raw Termux:API output is retained.
+
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
 Filesystem tools remain governed by safe-root validation, bounded reads, and dry-run-by-default writes. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, file contents, or caller-provided values.
@@ -141,6 +143,19 @@ Current runtime/status/filesystem examples include:
 - `read_byte_limit_exceeded`
 - `write_byte_limit_exceeded`
 - `filesystem_operation_failed`
+- `battery_status_read`
+- `battery_feature_not_compiled`
+- `battery_runtime_disabled`
+- `battery_api_unavailable`
+- `battery_api_spawn_failed`
+- `battery_api_wait_failed`
+- `battery_api_timeout`
+- `battery_stdout_limit_exceeded`
+- `battery_stderr_limit_exceeded`
+- `battery_api_failed`
+- `battery_output_invalid_utf8`
+- `battery_output_invalid_json`
+- `battery_output_invalid_field`
 
 Capability-token evaluation examples include:
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added the opt-in `android_battery_status` MCP tool behind independent `android-battery-status` compile and `MCP__ANDROID__BATTERY_STATUS_ENABLED` runtime gates, with a fixed absolute Termux:API executable, zero caller arguments, cleared environment, null stdin, five-second timeout, independent output limits, strict normalized field allowlisting, stable redacted failures, hidden disabled discovery, and aggregate audit coverage.
+- Added a third exact Android artifact posture and native ARM64 official-Termux battery validation covering compile/runtime gates, fixed-path execution, no arguments, environment clearing, field/identifier redaction, output overflow, provider failure, and continued absence of Android control, command execution, and high-impact tools.
+- Added schema-versioned observation-requirement classification so runtime-changing development candidates can pass complete automated CI while remaining explicitly ineligible to inherit old physical-device evidence; only protected-input-equivalent candidates proceed to the existing fail-closed inheritance verifier.
 - Added exact downloaded-artifact execution in the pinned official Termux environment on native ARM64 CI, including canonical runtime validation, a 256-sample MCP stress pass, sanitized schema-versioned evidence, and a fail-closed physical-observation inheritance verifier for metadata-only descendants with unchanged runtime, dependency, build, deployment, and bridge-digest inputs.
 
 ## 2026-07-12 — v0.6.0 Production-Readiness and Stable MCP Release Candidate

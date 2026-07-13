@@ -51,6 +51,14 @@ chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 
 The file must be a regular non-symlink file, owner-readable, and inaccessible to group and other users. Blank lines and comments are allowed. Entries use literal `NAME=value` syntax and are limited to `MCP__*`, `RUST_LOG`, and `RUST_BACKTRACE`.
 
+An artifact built with `--features android-battery-status` may opt into its read-only battery tool by adding this literal entry after the official Termux:API prerequisites are installed:
+
+```text
+MCP__ANDROID__BATTERY_STATUS_ENABLED=true
+```
+
+Do not add that setting to a default or `mcp-runtime`-only artifact: startup intentionally fails when the runtime flag is true but the compile-time battery feature is absent. See [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
+
 Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
 
 ## Validate the candidate

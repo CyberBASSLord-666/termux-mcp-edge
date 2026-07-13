@@ -10,7 +10,7 @@ The expected posture is narrow and fail-closed:
 
 - In static-token mode, the complete `/mcp` route requires the configured bearer token before transport validation, JSON-RPC parsing, discovery, or invocation.
 - Explicit unauthenticated development mode is accepted only when startup validates a loopback bind.
-- `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file` are the only staged MCP tools currently expected in authenticated discovery.
+- `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status` is expected only when both of its compile-time and runtime gates are enabled.
 - `write_file` remains dry-run by default and must require explicit `dry_run:false` plus safe-root validation before mutation.
 - Filesystem reads, listings, and writes remain bounded to configured safe roots.
 - `project_service_status` remains limited to explicitly allowlisted project-owned logical services.
@@ -21,7 +21,7 @@ The expected posture is narrow and fail-closed:
 
 Before validating behavior, confirm the operator configuration is deliberately narrow:
 
-1. Build with the intended feature set, normally `--features mcp-runtime` for staged MCP validation.
+1. Build with the intended feature set: normally `--features mcp-runtime`, or `--features android-battery-status` only when validating the battery posture.
 2. Use a strong static bearer token for any deployment that is not explicitly loopback-development only.
 3. Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600`; do not echo the token or use shell tracing while it is loaded.
 4. Use localhost-only unauthenticated mode only when the server is bound to a loopback address and not exposed through a tunnel, LAN listener, or reverse proxy.
@@ -71,7 +71,7 @@ unset MCP_TEST_TOKEN
 A valid runtime discovery pass proves presence and absence:
 
 - An unauthenticated caller receives no tool list in static-token mode.
-- An authenticated `tools/list` call includes the current staged tools listed above.
+- An authenticated `tools/list` call includes the seven baseline tools. The battery tool is absent by default and appears as the eighth tool only in an explicitly enabled battery posture.
 - `tools/list` does not include command execution, Android control, process listing, service mutation, package management, arbitrary network mutation, environment inspection, or token-management tools.
 - Tool descriptions and schemas continue to communicate safe-root, read-only, dry-run, and allowlist boundaries where applicable.
 
@@ -125,6 +125,28 @@ Expected evidence:
 - It does not expose contacts, SMS, notifications, accounts, location, camera, microphone, accessibility state, installed package inventory, persistent device identifiers, user secrets, shell fallback, or device-control actions.
 - Read-only Android status must not be treated as completion of the Android platform-control gate.
 
+## Optional Android battery checks
+
+Use the dedicated procedure in [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md). Prove both gate states rather than leaving the runtime enabled after one successful call.
+
+Expected disabled evidence:
+
+- A normal `mcp-runtime` build reports `androidBatteryStatusCompiled:false`, hides the tool, and returns `battery_feature_not_compiled` for a direct invocation.
+- An `android-battery-status` build with the runtime flag absent or `false` reports compiled but disabled, hides the tool, and returns `battery_runtime_disabled` for a direct invocation.
+- In both cases `androidDeviceControl`, command execution, and high-impact tools remain false.
+
+Expected enabled evidence:
+
+- Startup uses the `android-battery-status` build and `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`.
+- `tools/list` advertises the closed empty-object schema for `android_battery_status`.
+- The fixed Termux:API executable exists and a call completes within five seconds.
+- The response contains only documented normalized fields and units; it contains no `technology`, vendor string, identifier, path, environment value, raw output, or stderr.
+- Non-empty arguments return JSON-RPC `-32602`.
+- Provider failures use stable `battery_*` reason codes and do not reveal process details.
+- Successful and denied calls increment only the documented aggregate audit labels.
+
+The native ARM64 official-Termux CI gate performs these automated process/transport checks with a fixed-path fixture. A physical release check, when required by the observation classifier, is for battery/OEM/Android behavior only; routine feature PRs do not require an operator to repeat a 60-minute idle window.
+
 ## Capability-token boundary checks
 
 Capability-token primitives are currently inert policy scaffolding for future high-impact gates. They are separate from the static bearer token used to authenticate the MCP transport.
@@ -147,6 +169,7 @@ Treat any of the following as a blocker for a staged runtime PR or release candi
 - A notification/client response receives a JSON-RPC response body, or a batch array is accepted.
 - Discovery exposes a tool outside the staged baseline.
 - A read-only metadata tool exposes private identifiers, secrets, environment values, filesystem paths outside filesystem tools, process inventory, or command output.
+- The battery tool is discovered without both opt-ins, accepts caller-selected process inputs, exceeds its fixed time/output ceilings, or reflects a dropped upstream field.
 - Filesystem tools can escape configured safe roots or mutate without explicit `dry_run:false`.
 - Audit counters serialize raw caller values or high-cardinality private metadata.
 - Capability-token primitives become a live high-impact authorization surface without a separate focused gate.

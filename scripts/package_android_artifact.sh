@@ -8,7 +8,8 @@ usage() {
   cat <<'EOF'
 Usage: package_android_artifact.sh \
   --binary FILE --output-dir DIR --repository OWNER/REPO --commit SHA \
-  --workflow-run-id ID --artifact-name NAME --posture default|mcp-runtime \
+  --workflow-run-id ID --artifact-name NAME \
+  --posture default|mcp-runtime|android-battery-status \
   --version VERSION
 EOF
 }
@@ -74,6 +75,10 @@ case "$POSTURE" in
   mcp-runtime)
     expected_artifact_name=termux-mcp-server-aarch64-linux-android-mcp-runtime
     features='["mcp-runtime"]'
+    ;;
+  android-battery-status)
+    expected_artifact_name=termux-mcp-server-aarch64-linux-android-android-battery-status
+    features='["android-battery-status"]'
     ;;
   *) fail posture_invalid ;;
 esac

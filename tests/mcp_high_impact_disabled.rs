@@ -69,6 +69,12 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     let structured = &payload["result"]["structuredContent"];
 
     assert_eq!(structured["androidPlatformTools"], false);
+    assert_eq!(
+        structured["androidBatteryStatusCompiled"],
+        cfg!(feature = "android-battery-status")
+    );
+    assert_eq!(structured["androidBatteryStatusEnabled"], false);
+    assert_eq!(structured["androidDeviceControl"], false);
     assert_eq!(structured["commandExecution"], false);
     assert_eq!(structured["highImpactTools"], false);
 
@@ -77,6 +83,7 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
         .unwrap()
         .to_ascii_lowercase();
     assert!(text.contains("android_platform=disabled"));
+    assert!(text.contains("android_battery_status=disabled"));
     assert!(text.contains("command_execution=disabled"));
 }
 

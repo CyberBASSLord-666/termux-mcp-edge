@@ -96,6 +96,8 @@ async fn runtime_status_keeps_final_high_impact_stage_closed() {
     let structured = &body["result"]["structuredContent"];
 
     assert_eq!(structured["androidPlatformTools"], false);
+    assert_eq!(structured["androidBatteryStatusEnabled"], false);
+    assert_eq!(structured["androidDeviceControl"], false);
     assert_eq!(structured["commandExecution"], false);
     assert_eq!(structured["highImpactTools"], false);
 }

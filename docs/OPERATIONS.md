@@ -163,6 +163,8 @@ Authenticated discovery currently exposes:
 6. `read_file` — bounded safe-rooted UTF-8 reads.
 7. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
 
+An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the eighth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
+
 The runtime does not expose Android platform control, arbitrary shell or command execution, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or high-impact controls.
 
 Filesystem read responses have explicit mobile-oriented ceilings:
@@ -199,9 +201,9 @@ Do not manually repoint release links outside the project releases directory. Pr
 ## Release process
 
 1. Run format, workspace/all-target/all-feature Clippy, workspace/all-target/all-feature tests, and deployment shell tests.
-2. Build both default and `mcp-runtime` release postures.
+2. Build the default, `mcp-runtime`, and `android-battery-status` release postures.
 3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
-4. Cross-compile and validate both the default and `mcp-runtime` Android postures.
+4. Cross-compile and validate all three Android postures, including native ARM64 official-Termux execution.
 5. Record and verify each posture-specific artifact's SHA-256 digest.
 6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.
