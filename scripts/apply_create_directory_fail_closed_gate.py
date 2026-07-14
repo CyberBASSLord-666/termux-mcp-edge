@@ -83,12 +83,20 @@ async fn handle_create_directory_call_with_gate(
 )
 
 replace_once(
-    '''    let dry_run = args.dry_run.unwrap_or(true);
-    let mode = filesystem_write_mode(dry_run);
-    let success_text = if dry_run {
+    '''        return bounded_payload_too_large(
+            id,
+            "Directory creation response exceeds the staged response byte limit.",
+            MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+        );
+    }
+    match file_tools.create_directory(args.path, Some(dry_run)).await {
 ''',
-    '''    let dry_run = args.dry_run.unwrap_or(true);
-    let mode = filesystem_write_mode(dry_run);
+    '''        return bounded_payload_too_large(
+            id,
+            "Directory creation response exceeds the staged response byte limit.",
+            MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+        );
+    }
     if !dry_run && !mutation_authorized {
         record_filesystem_denied(
             audit_counters,
@@ -104,10 +112,18 @@ replace_once(
             FILESYSTEM_CREATE_MUTATION_DISABLED,
         );
     }
-    let success_text = if dry_run {
+    match file_tools.create_directory(args.path, Some(dry_run)).await {
 ''',
 )
 
+replace_once(
+    '"description": "Create one safe-rooted directory with fixed mode 0700. Defaults to dry-run; mutation requires explicit dry_run=false.",',
+    '"description": "Validate one safe-rooted directory creation in dry-run mode. Live mutation is unavailable until the request-scoped authorization gate is implemented.",',
+)
+replace_once(
+    '"description": "Defaults to true. Set explicitly to false to create exactly one directory.",',
+    '"description": "Defaults to true. Explicit false requests are rejected while the mutation authorization gate is closed.",',
+)
 replace_once(
     'filesystem=create-directory-list-metadata-read-search-and-dry-run-write-file',
     'filesystem=create-directory-dry-run-only-list-metadata-read-search-and-dry-run-write-file',
