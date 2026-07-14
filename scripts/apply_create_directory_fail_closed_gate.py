@@ -171,7 +171,7 @@ new_test = insert_after + '''
         .unwrap();
         assert_eq!(payload["result"]["isError"], true);
         assert_eq!(
-            payload["result"]["structuredContent"]["reason"],
+            payload["result"]["structuredContent"]["reasonCode"],
             FILESYSTEM_CREATE_MUTATION_DISABLED
         );
         assert!(!destination.exists());
