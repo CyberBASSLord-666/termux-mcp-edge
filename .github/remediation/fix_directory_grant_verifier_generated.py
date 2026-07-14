@@ -13,9 +13,38 @@ def replace_once(path: Path, old: str, new: str) -> None:
 auth = Path("src/auth.rs")
 replace_once(
     auth,
+    '''use crate::{
+    config::{AuthConfig, AuthPosture},
+    directory_grant::{
+        has_directory_grant_header, take_directory_grant_authorization,
+        DirectoryGrantAuthorization,
+    },
+};
+''',
+    '''use crate::config::{AuthConfig, AuthPosture};
+#[cfg(feature = "mcp-runtime")]
+use crate::directory_grant::{
+    has_directory_grant_header, take_directory_grant_authorization,
+    DirectoryGrantAuthorization,
+};
+''',
+)
+replace_once(
+    auth,
+    '''        McpAuthPolicy::UnauthenticatedLocalhostOnly => {
+            if has_directory_grant_header(request.headers()) {
+''',
+    '''        McpAuthPolicy::UnauthenticatedLocalhostOnly => {
+            #[cfg(feature = "mcp-runtime")]
+            if has_directory_grant_header(request.headers()) {
+''',
+)
+replace_once(
+    auth,
     '''                let grant = match take_directory_grant_authorization(request.headers_mut()) {
 ''',
-    '''                let grant: Option<DirectoryGrantAuthorization> =
+    '''                #[cfg(feature = "mcp-runtime")]
+                let grant: Option<DirectoryGrantAuthorization> =
                     match take_directory_grant_authorization(request.headers_mut()) {
 ''',
 )
@@ -44,7 +73,36 @@ replace_once(
     auth,
     '''                if let Some(grant): Option<DirectoryGrantAuthorization> = grant {
 ''',
-    '''                if let Some(grant) = grant {
+    '''                #[cfg(feature = "mcp-runtime")]
+                if let Some(grant) = grant {
+''',
+)
+replace_once(
+    auth,
+    '''fn authorization_context_response(
+''',
+    '''#[cfg(feature = "mcp-runtime")]
+fn authorization_context_response(
+''',
+)
+replace_once(
+    auth,
+    '''    #[tokio::test]
+    async fn grant_context_requires_authentication_and_is_removed_before_dispatch() {
+''',
+    '''    #[cfg(feature = "mcp-runtime")]
+    #[tokio::test]
+    async fn grant_context_requires_authentication_and_is_removed_before_dispatch() {
+''',
+)
+replace_once(
+    auth,
+    '''    #[tokio::test]
+    async fn bearer_authentication_precedes_grant_context_validation() {
+''',
+    '''    #[cfg(feature = "mcp-runtime")]
+    #[tokio::test]
+    async fn bearer_authentication_precedes_grant_context_validation() {
 ''',
 )
 
