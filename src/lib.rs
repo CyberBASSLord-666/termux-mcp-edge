@@ -2,7 +2,11 @@
 
 #[cfg(feature = "android-battery-status")]
 pub mod android_battery;
+#[cfg(any(feature = "android-battery-status", feature = "android-volume-status"))]
+mod android_provider;
 pub mod android_status;
+#[cfg(feature = "android-volume-status")]
+pub mod android_volume;
 pub mod audit;
 pub mod auth;
 pub mod capability_token;

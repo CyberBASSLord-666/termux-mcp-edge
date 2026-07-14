@@ -93,6 +93,17 @@ jq -e '
   and .features == ["android-battery-status"]
 ' "$BATTERY_BUNDLE/artifact-manifest.json" >/dev/null
 
+VOLUME_BUNDLE="$ROOT/output/android-volume-status"
+run_package \
+  "$BINARY" \
+  "$VOLUME_BUNDLE" \
+  termux-mcp-server-aarch64-linux-android-android-volume-status \
+  android-volume-status >/dev/null
+jq -e '
+  .posture == "android-volume-status"
+  and .features == ["android-volume-status"]
+' "$VOLUME_BUNDLE/artifact-manifest.json" >/dev/null
+
 LINKER_ONLY="$ROOT/linker-only-candidate"
 printf '%s\n' '#!/usr/bin/env bash' '# linker-only' 'exit 0' >"$LINKER_ONLY"
 chmod 700 "$LINKER_ONLY"

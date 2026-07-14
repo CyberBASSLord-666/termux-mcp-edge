@@ -17,12 +17,13 @@ Enabled staged tools:
 Separately gated read-only tool:
 
 - `android_battery_status` only in an `android-battery-status` build with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`
+- `android_volume_status` only in an `android-volume-status` build with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true`
 
 Current audit visibility is aggregate and in-memory. The staged runtime exposes backend-neutral `auditCounters` through `runtime_status` for the currently wired status and filesystem surfaces. These counters are intentionally not retained request logs and store only stable tool names, gate names, modes, reason codes, and allowed or denied counts.
 
 Still disabled:
 
-- Android platform control beyond read-only allowlisted status and optional battery telemetry
+- Android platform or audio control beyond read-only allowlisted status and optional battery/volume telemetry
 - Shell and command execution
 - Global process listing and arbitrary service inspection
 - Service mutation or control
@@ -59,7 +60,7 @@ Required coverage:
 
 ## Gate 2: Android read-only status
 
-Status: implemented for static read-only allowlisted Android/Termux status metadata and separately gated read-only battery telemetry. Android control remains disabled.
+Status: implemented for static read-only allowlisted Android/Termux status metadata and separately gated read-only battery and volume telemetry. Android and audio control remain disabled.
 
 Baseline `android_status` scope:
 
@@ -81,11 +82,23 @@ Optional battery scope:
 - Aggregate allowed/denied audit counters using stable reason codes only
 - Native ARM64 official-Termux execution with a fixed-path API fixture, endless-output, pipe-holder, and client-cancellation cleanup checks in CI
 
+Optional volume scope:
+
+- Separate `android-volume-status` compile-time feature, which includes `mcp-runtime`
+- Separate `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` runtime opt-in, defaulting to disabled
+- Direct execution of only `/data/data/com.termux/files/usr/bin/termux-volume` with zero arguments, null stdin, fixed `/` working directory, and a cleared inherited environment
+- Five-second normal-operation budget with a reserved cleanup window, 8 KiB stdout limit, and 4 KiB stderr limit
+- The same cancellation-safe provider supervisor, process-group isolation, immediate overflow termination, pipe completion, and authoritative direct-child reaping used by battery telemetry
+- Exact six-stream and exact-field parser with integer/range validation and canonical `alarm`, `call`, `music`, `notification`, `ring`, `system` output order
+- Rejection rather than reflection of unknown, duplicate, missing, extra, malformed, or range-invalid upstream data
+- Hidden discovery while disabled, stable non-sensitive failures, and aggregate allowed/denied audit counters
+- Native ARM64 official-Termux execution with fixed-path, strict-normalization, overflow, pipe-holder, and client-cancellation cleanup checks in CI
+
 Denied:
 
 - Contacts, SMS, notifications, accounts, location, camera, microphone, accessibility state, installed package inventory, persistent device IDs, and user secrets
 - Shell fallback
-- Any mutation or device-control action
+- Any mutation, including volume setting, or device-control action
 - Caller-selected commands, arguments, executable paths, environment, timeouts, or output limits
 
 Required before any future expansion:

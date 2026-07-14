@@ -16,10 +16,12 @@ on:
       - "scripts/termux_release_validate.sh"
       - "scripts/termux_emulated_gate.sh"
       - "scripts/termux_battery_emulated_gate.sh"
+      - "scripts/termux_volume_emulated_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
+      - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
@@ -36,10 +38,12 @@ on:
       - "scripts/termux_release_validate.sh"
       - "scripts/termux_emulated_gate.sh"
       - "scripts/termux_battery_emulated_gate.sh"
+      - "scripts/termux_volume_emulated_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
+      - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
@@ -71,6 +75,9 @@ jobs:
           - posture: android-battery-status
             features: android-battery-status
             artifact: termux-mcp-server-aarch64-linux-android-android-battery-status
+          - posture: android-volume-status
+            features: android-volume-status
+            artifact: termux-mcp-server-aarch64-linux-android-android-volume-status
     steps:
       - name: Checkout
         # actions/checkout@v7.0.0 resolved 2026-07-10
@@ -173,13 +180,20 @@ jobs:
           name: termux-mcp-server-aarch64-linux-android-android-battery-status
           path: artifacts/android-battery-status
 
+      - name: Download Android volume artifact bundle
+        # actions/download-artifact@v8.0.0 resolved 2026-07-12
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: termux-mcp-server-aarch64-linux-android-android-volume-status
+          path: artifacts/android-volume-status
+
       - name: Verify artifact staging
         id: artifacts
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          for root in artifacts/default artifacts/mcp-runtime artifacts/android-battery-status; do
+          for root in artifacts/default artifacts/mcp-runtime artifacts/android-battery-status artifacts/android-volume-status; do
             test "$(find "$root" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3
             test -f "$root/termux-mcp-server"
             test -f "$root/SHA256SUMS"
@@ -191,9 +205,11 @@ jobs:
           default_version="$(jq -r .version artifacts/default/artifact-manifest.json)"
           mcp_version="$(jq -r .version artifacts/mcp-runtime/artifact-manifest.json)"
           battery_version="$(jq -r .version artifacts/android-battery-status/artifact-manifest.json)"
+          volume_version="$(jq -r .version artifacts/android-volume-status/artifact-manifest.json)"
           [[ "$default_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
           test "$mcp_version" = "$default_version"
           test "$battery_version" = "$default_version"
+          test "$volume_version" = "$default_version"
           printf 'version=%s\n' "$default_version" >>"$GITHUB_OUTPUT"
 
       - name: Resolve exact companion workflow evidence
@@ -295,6 +311,15 @@ jobs:
                 --security-run-id '$SECURITY_RUN_ID' \\
                 --android-run-id '$GITHUB_RUN_ID' \\
                 --output /output/termux-battery-emulated-evidence.json
+
+              bash /workspace/scripts/termux_volume_emulated_gate.sh \\
+                --artifact-dir /workspace/artifacts/android-volume-status \\
+                --expected-commit '$SOURCE_SHA' \\
+                --expected-version '$EXPECTED_VERSION' \\
+                --ci-run-id '$CI_RUN_ID' \\
+                --security-run-id '$SECURITY_RUN_ID' \\
+                --android-run-id '$GITHUB_RUN_ID' \\
+                --output /output/termux-volume-emulated-evidence.json
             "
 
       - name: Validate emulated evidence
@@ -307,10 +332,13 @@ jobs:
           chmod 700 "$OUTPUT_ROOT"
           report="$OUTPUT_ROOT/termux-emulated-evidence.json"
           battery_report="$OUTPUT_ROOT/termux-battery-emulated-evidence.json"
+          volume_report="$OUTPUT_ROOT/termux-volume-emulated-evidence.json"
           test -f "$report"
           test -f "$battery_report"
+          test -f "$volume_report"
           test "$(stat -c %a "$report")" = 600
           test "$(stat -c %a "$battery_report")" = 600
+          test "$(stat -c %a "$volume_report")" = 600
           jq -e \
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
@@ -347,6 +375,34 @@ jobs:
               and .validation.androidDeviceControlDisabled == true
             ' "$battery_report" >/dev/null
           sha256sum "$battery_report"
+
+          jq -e \
+            --arg commit "$SOURCE_SHA" \
+            --arg android "$GITHUB_RUN_ID" \
+            --arg digest "$TERMUX_IMAGE_DIGEST" '
+              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              and .releaseQualificationEligible == false
+              and .candidate.commit == $commit
+              and .candidate.androidRunId == $android
+              and .environment.imageDigest == $digest
+              and .validation.status == "pass"
+              and .validation.runtimeDefaultDisabled == true
+              and .validation.fixedProgram == true
+              and .validation.fixedWorkingDirectory == true
+              and .validation.noArguments == true
+              and .validation.inheritedEnvironmentCleared == true
+              and .validation.normalizedAllowlist == true
+              and .validation.canonicalStreamOrdering == true
+              and .validation.unrecognizedFieldsRejected == true
+              and .validation.boundedOutput == true
+              and .validation.immediateOverflowTermination == true
+              and .validation.processGroupIsolation == true
+              and .validation.pipeHoldingDescendantCleanup == true
+              and .validation.callerCancellationCleanup == true
+              and .validation.boundedSupervisorCleanup == true
+              and .validation.androidDeviceControlDisabled == true
+            ' "$volume_report" >/dev/null
+          sha256sum "$volume_report"
 
           requirement_report="$OUTPUT_ROOT/termux-observation-requirement.json"
           bash scripts/classify_observation_requirement.sh \
@@ -403,6 +459,7 @@ jobs:
           path: |
             ${{ steps.output.outputs.root }}/termux-emulated-evidence.json
             ${{ steps.output.outputs.root }}/termux-battery-emulated-evidence.json
+            ${{ steps.output.outputs.root }}/termux-volume-emulated-evidence.json
             ${{ steps.output.outputs.root }}/termux-observation-requirement.json
             ${{ steps.output.outputs.root }}/termux-observation-inheritance.json
           if-no-files-found: error

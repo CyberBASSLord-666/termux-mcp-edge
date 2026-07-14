@@ -2,16 +2,18 @@
 
 ## Supported Runtime Scope
 
-The supported runtime line has two explicit compile-time postures:
+The supported runtime line has four explicit compile-time postures:
 
 - The default build exposes operational health/readiness endpoints only.
 - The optional `mcp-runtime` build exposes the staged `/mcp` transport and its documented allowlisted tool set.
+- The optional `android-battery-status` build includes `mcp-runtime` and can expose one separately runtime-gated read-only battery tool.
+- The optional `android-volume-status` build includes `mcp-runtime` and can expose one separately runtime-gated read-only volume-status tool.
 
 The staged MCP route requires the configured static bearer token before JSON-RPC parsing, tool discovery, or tool invocation. The only exception is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
 
-The route is a custom POST-only transport that reports protocol version `2024-11-05`; it is not yet a complete stable MCP 2025-11-25 Streamable HTTP implementation. Protocol completion and descriptor-relative filesystem race hardening remain release-readiness requirements.
+The route implements the stable MCP 2025-11-25 Streamable HTTP lifecycle with bounded sessions, initialization gating, POST/GET/DELETE handling, and the specification-permitted HTTP 405 response for GET because server-initiated SSE and replay are not offered.
 
-The baseline staged tools remain limited to `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. A separately built and explicitly enabled posture may add bounded read-only `android_battery_status`; its fixed executable, zero-argument, cleared-environment, timeout/output, normalization, redaction, and audit contract is defined in `docs/ANDROID_BATTERY_STATUS.md`. Android platform control, shell access, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact controls are not supported runtime surfaces.
+The baseline staged tools remain limited to `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. Separately built and explicitly enabled postures may add bounded read-only `android_battery_status` or `android_volume_status`; their fixed-executable, zero-argument, cleared-environment, timeout/output, strict parsing, process-supervision, and audit contracts are defined in `docs/ANDROID_BATTERY_STATUS.md` and `docs/ANDROID_VOLUME_STATUS.md`. Android platform or volume control, shell access, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact controls are not supported runtime surfaces.
 
 ## Reporting Security Issues
 

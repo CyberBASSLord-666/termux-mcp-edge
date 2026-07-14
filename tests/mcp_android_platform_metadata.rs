@@ -4,7 +4,10 @@ mod support;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
-#[cfg(not(feature = "android-battery-status"))]
+#[cfg(any(
+    not(feature = "android-battery-status"),
+    not(feature = "android-volume-status")
+))]
 use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
 use support::{post_json_with_empty_root, response_json};
 
@@ -185,6 +188,60 @@ async fn battery_tool_fails_closed_when_the_compile_feature_is_absent() {
     );
     assert_eq!(
         structured["auditCounters"]["by_reason_code"]["battery_feature_not_compiled"]["denied"],
+        1
+    );
+}
+
+#[cfg(not(feature = "android-volume-status"))]
+#[tokio::test]
+async fn volume_tool_fails_closed_when_the_compile_feature_is_absent() {
+    let (_root, file_tools) = empty_test_file_tools();
+    let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+    let response = post_json_to_session(
+        router.clone(),
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "volume-feature-disabled",
+            "method": "tools/call",
+            "params": {
+                "name": "android_volume_status",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["result"]["isError"], true);
+    assert_eq!(
+        body["result"]["structuredContent"]["reasonCode"],
+        "volume_feature_not_compiled"
+    );
+
+    let runtime = post_json_to_session(
+        router,
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "volume-feature-disabled-runtime",
+            "method": "tools/call",
+            "params": {"name": "runtime_status", "arguments": {}}
+        }),
+    )
+    .await;
+    let runtime = response_json(runtime).await;
+    let structured = &runtime["result"]["structuredContent"];
+    assert_eq!(structured["androidVolumeStatusCompiled"], false);
+    assert_eq!(structured["androidVolumeStatusEnabled"], false);
+    assert_eq!(
+        structured["auditCounters"]["by_tool"]["android_volume_status"]["denied"],
+        1
+    );
+    assert_eq!(
+        structured["auditCounters"]["by_reason_code"]["volume_feature_not_compiled"]["denied"],
         1
     );
 }

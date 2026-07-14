@@ -18,7 +18,7 @@ The device operator must install and configure the official Termux:API add-on an
 /data/data/com.termux/files/usr/bin/termux-battery-status
 ```
 
-The server executes that exact absolute path directly. It supplies no arguments or stdin, clears the inherited environment, fixes the child working directory to `/`, and does not invoke a shell or search `PATH`. The upstream executable may itself be a Termux-provided wrapper; the server never constructs shell text or accepts a caller-selected command.
+The server executes that exact absolute path directly. It supplies no arguments, attaches stdin to `/dev/null`, clears the inherited environment, fixes the child working directory to `/`, and does not invoke a shell or search `PATH`. The upstream executable may itself be a Termux-provided wrapper; the server never constructs shell text or accepts a caller-selected command.
 
 Build and enable the posture explicitly:
 

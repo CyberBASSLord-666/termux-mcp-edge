@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 
 #[cfg(feature = "android-battery-status")]
 use crate::android_battery::AndroidBatteryClient;
+#[cfg(feature = "android-volume-status")]
+use crate::android_volume::AndroidVolumeClient;
 use crate::{
     android_status::collect_android_status,
     audit::{
@@ -46,6 +48,7 @@ const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const PLATFORM_INFO_TOOL: &str = "platform_info";
 const ANDROID_STATUS_TOOL: &str = "android_status";
 const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
+const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
@@ -66,6 +69,7 @@ const RUNTIME_STATUS_GATE: &str = "runtime_metadata";
 const PLATFORM_INFO_GATE: &str = "platform_metadata";
 const ANDROID_STATUS_GATE: &str = "android_read_only_status";
 const ANDROID_BATTERY_STATUS_GATE: &str = "android_battery_status";
+const ANDROID_VOLUME_STATUS_GATE: &str = "android_volume_status";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
 const FILESYSTEM_READ_GATE: &str = "filesystem_read";
 const FILESYSTEM_WRITE_GATE: &str = "filesystem_write";
@@ -83,6 +87,13 @@ const ANDROID_BATTERY_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_no
 const ANDROID_BATTERY_STATUS_FEATURE_DISABLED: &str = "battery_feature_not_compiled";
 #[cfg(feature = "android-battery-status")]
 const ANDROID_BATTERY_STATUS_RUNTIME_DISABLED: &str = "battery_runtime_disabled";
+#[cfg(feature = "android-volume-status")]
+const ANDROID_VOLUME_STATUS_ALLOWED: &str = "volume_status_read";
+const ANDROID_VOLUME_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
+#[cfg(not(feature = "android-volume-status"))]
+const ANDROID_VOLUME_STATUS_FEATURE_DISABLED: &str = "volume_feature_not_compiled";
+#[cfg(feature = "android-volume-status")]
+const ANDROID_VOLUME_STATUS_RUNTIME_DISABLED: &str = "volume_runtime_disabled";
 const PROJECT_SERVICE_STATUS_ALLOWED: &str = "allowlisted_project_service";
 const PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS: &str = "missing_service_name";
 const PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS: &str = "invalid_service_arguments";
@@ -114,8 +125,11 @@ struct McpTransportState {
     audit_counters: SharedAuditCounters,
     sessions: McpSessionStore,
     android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
+    #[cfg(feature = "android-volume-status")]
+    android_volume_client: AndroidVolumeClient,
 }
 
 impl McpTransportState {
@@ -123,6 +137,7 @@ impl McpTransportState {
         security_policy: TransportSecurityPolicy,
         file_tools: FileSystemTools,
         android_battery_status_enabled: bool,
+        android_volume_status_enabled: bool,
     ) -> Self {
         Self {
             security_policy,
@@ -131,8 +146,12 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             android_battery_status_enabled: android_battery_status_enabled
                 && cfg!(feature = "android-battery-status"),
+            android_volume_status_enabled: android_volume_status_enabled
+                && cfg!(feature = "android-volume-status"),
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
+            #[cfg(feature = "android-volume-status")]
+            android_volume_client: AndroidVolumeClient::termux(),
         }
     }
 
@@ -149,7 +168,30 @@ impl McpTransportState {
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
             android_battery_status_enabled,
+            android_volume_status_enabled: false,
             android_battery_client,
+            #[cfg(feature = "android-volume-status")]
+            android_volume_client: AndroidVolumeClient::termux(),
+        }
+    }
+
+    #[cfg(all(test, feature = "android-volume-status"))]
+    fn with_android_volume_client(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        android_volume_status_enabled: bool,
+        android_volume_client: AndroidVolumeClient,
+    ) -> Self {
+        Self {
+            security_policy,
+            file_tools,
+            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
+            sessions: McpSessionStore::new(),
+            android_battery_status_enabled: false,
+            android_volume_status_enabled,
+            #[cfg(feature = "android-battery-status")]
+            android_battery_client: AndroidBatteryClient::termux(),
+            android_volume_client,
         }
     }
 }
@@ -259,11 +301,13 @@ pub fn router(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
 ) -> Router {
     router_from_state(McpTransportState::new(
         security_policy,
         file_tools,
         android_battery_status_enabled,
+        android_volume_status_enabled,
     ))
 }
 
@@ -967,6 +1011,21 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             }));
     }
 
+    if state.android_volume_status_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": ANDROID_VOLUME_STATUS_TOOL,
+                "description": "Return normalized read-only Android audio-stream volume levels through the explicitly enabled Termux:API gate.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -1014,6 +1073,9 @@ async fn handle_tool_call(
         ),
         ANDROID_BATTERY_STATUS_TOOL => {
             handle_android_battery_status_call(id, call.arguments, state).await
+        }
+        ANDROID_VOLUME_STATUS_TOOL => {
+            handle_android_volume_status_call(id, call.arguments, state).await
         }
         PROJECT_SERVICE_STATUS_TOOL => {
             project_service_status_response(
@@ -1078,6 +1140,7 @@ fn handle_runtime_status_call(
         id,
         &state.audit_counters,
         state.android_battery_status_enabled,
+        state.android_volume_status_enabled,
     )
 }
 
@@ -1104,7 +1167,12 @@ async fn handle_android_battery_status_call(
             ANDROID_BATTERY_STATUS_GATE,
             ANDROID_BATTERY_STATUS_FEATURE_DISABLED,
         );
-        tool_error_result(id, ANDROID_BATTERY_STATUS_FEATURE_DISABLED)
+        android_provider_tool_error_result(
+            id,
+            ANDROID_BATTERY_STATUS_TOOL,
+            "android_battery_status_unavailable",
+            ANDROID_BATTERY_STATUS_FEATURE_DISABLED,
+        )
     }
 
     #[cfg(feature = "android-battery-status")]
@@ -1116,7 +1184,12 @@ async fn handle_android_battery_status_call(
                 ANDROID_BATTERY_STATUS_GATE,
                 ANDROID_BATTERY_STATUS_RUNTIME_DISABLED,
             );
-            return tool_error_result(id, ANDROID_BATTERY_STATUS_RUNTIME_DISABLED);
+            return android_provider_tool_error_result(
+                id,
+                ANDROID_BATTERY_STATUS_TOOL,
+                "android_battery_status_unavailable",
+                ANDROID_BATTERY_STATUS_RUNTIME_DISABLED,
+            );
         }
 
         match state.android_battery_client.collect().await {
@@ -1142,7 +1215,94 @@ async fn handle_android_battery_status_call(
                     ANDROID_BATTERY_STATUS_GATE,
                     reason_code,
                 );
-                tool_error_result(id, reason_code)
+                android_provider_tool_error_result(
+                    id,
+                    ANDROID_BATTERY_STATUS_TOOL,
+                    "android_battery_status_unavailable",
+                    reason_code,
+                )
+            }
+        }
+    }
+}
+
+async fn handle_android_volume_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_VOLUME_STATUS_TOOL,
+            ANDROID_VOLUME_STATUS_GATE,
+            ANDROID_VOLUME_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    #[cfg(not(feature = "android-volume-status"))]
+    {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_VOLUME_STATUS_TOOL,
+            ANDROID_VOLUME_STATUS_GATE,
+            ANDROID_VOLUME_STATUS_FEATURE_DISABLED,
+        );
+        android_provider_tool_error_result(
+            id,
+            ANDROID_VOLUME_STATUS_TOOL,
+            "android_volume_status_unavailable",
+            ANDROID_VOLUME_STATUS_FEATURE_DISABLED,
+        )
+    }
+
+    #[cfg(feature = "android-volume-status")]
+    {
+        if !state.android_volume_status_enabled {
+            record_read_only_denied(
+                &state.audit_counters,
+                ANDROID_VOLUME_STATUS_TOOL,
+                ANDROID_VOLUME_STATUS_GATE,
+                ANDROID_VOLUME_STATUS_RUNTIME_DISABLED,
+            );
+            return android_provider_tool_error_result(
+                id,
+                ANDROID_VOLUME_STATUS_TOOL,
+                "android_volume_status_unavailable",
+                ANDROID_VOLUME_STATUS_RUNTIME_DISABLED,
+            );
+        }
+
+        match state.android_volume_client.collect().await {
+            Ok(status) => {
+                record_read_only_allowed(
+                    &state.audit_counters,
+                    ANDROID_VOLUME_STATUS_TOOL,
+                    ANDROID_VOLUME_STATUS_GATE,
+                    ANDROID_VOLUME_STATUS_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "android_volume_status: bounded read-only Termux:API telemetry collected."
+                        .to_owned(),
+                    json!(status),
+                )
+            }
+            Err(error) => {
+                let reason_code = error.reason_code();
+                record_read_only_denied(
+                    &state.audit_counters,
+                    ANDROID_VOLUME_STATUS_TOOL,
+                    ANDROID_VOLUME_STATUS_GATE,
+                    reason_code,
+                );
+                android_provider_tool_error_result(
+                    id,
+                    ANDROID_VOLUME_STATUS_TOOL,
+                    "android_volume_status_unavailable",
+                    reason_code,
+                )
             }
         }
     }
@@ -1173,10 +1333,16 @@ fn handle_no_argument_tool_call(
     (contract.response_builder)(id, audit_counters)
 }
 
-fn available_tools(android_battery_status_enabled: bool) -> Vec<&'static str> {
+fn available_tools(
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+) -> Vec<&'static str> {
     let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
     if android_battery_status_enabled {
         tools.push(ANDROID_BATTERY_STATUS_TOOL);
+    }
+    if android_volume_status_enabled {
+        tools.push(ANDROID_VOLUME_STATUS_TOOL);
     }
     tools
 }
@@ -1186,13 +1352,31 @@ fn runtime_status_response(
     id: Option<Value>,
     audit_counters: &SharedAuditCounters,
     android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
 ) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
-    let available_tools = available_tools(android_battery_status_enabled);
-    let android_platform_mode = if android_battery_status_enabled {
+    let available_tools = available_tools(
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+    );
+    let battery_mode = if android_battery_status_enabled {
         "read_only_battery_telemetry"
     } else {
         "disabled"
+    };
+    let volume_mode = if android_volume_status_enabled {
+        "read_only_volume_telemetry"
+    } else {
+        "disabled"
+    };
+    let android_platform_mode = match (
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+    ) {
+        (true, true) => "read_only_battery_and_volume_telemetry",
+        (true, false) => "read_only_battery_telemetry",
+        (false, true) => "read_only_volume_telemetry",
+        (false, false) => "disabled",
     };
 
     (
@@ -1205,9 +1389,10 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_device_control=disabled, command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_device_control=disabled, command_execution=disabled",
                             android_platform_mode,
-                            android_platform_mode,
+                            battery_mode,
+                            volume_mode,
                         ),
                     },
                 ],
@@ -1228,10 +1413,12 @@ fn runtime_status_response(
                     "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
-                    "androidPlatformTools": android_battery_status_enabled,
+                    "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled,
                     "androidPlatformToolMode": android_platform_mode,
                     "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
                     "androidBatteryStatusEnabled": android_battery_status_enabled,
+                    "androidVolumeStatusCompiled": cfg!(feature = "android-volume-status"),
+                    "androidVolumeStatusEnabled": android_volume_status_enabled,
                     "androidDeviceControl": false,
                     "commandExecution": false,
                     "highImpactTools": false,
@@ -1693,7 +1880,12 @@ fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Resp
 }
 
 #[rustfmt::skip]
-fn tool_error_result(id: Option<Value>, reason_code: &'static str) -> Response {
+fn android_provider_tool_error_result(
+    id: Option<Value>,
+    tool_name: &'static str,
+    error_name: &'static str,
+    reason_code: &'static str,
+) -> Response {
     (
         StatusCode::OK,
         Json(json!({
@@ -1703,11 +1895,11 @@ fn tool_error_result(id: Option<Value>, reason_code: &'static str) -> Response {
                 "content": [
                     {
                         "type": "text",
-                        "text": format!("android_battery_status unavailable: {reason_code}"),
+                        "text": format!("{tool_name} unavailable: {reason_code}"),
                     },
                 ],
                 "structuredContent": {
-                    "error": "android_battery_status_unavailable",
+                    "error": error_name,
                     "reasonCode": reason_code,
                 },
                 "isError": true
@@ -1959,6 +2151,70 @@ fn current_unix_seconds() -> u64 {
 #[rustfmt::skip]
 mod tests {
     use super::*;
+
+    #[cfg(all(
+        feature = "android-battery-status",
+        feature = "android-volume-status"
+    ))]
+    #[tokio::test]
+    async fn combined_read_only_android_posture_is_deterministic() {
+        use axum::body::to_bytes;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            true,
+            true,
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            tools["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "runtime_status",
+                "platform_info",
+                "android_status",
+                "project_service_status",
+                "list_directory",
+                "read_file",
+                "write_file",
+                "android_battery_status",
+                "android_volume_status",
+            ]
+        );
+
+        let runtime = runtime_status_response(
+            Some(json!("runtime")),
+            &state.audit_counters,
+            state.android_battery_status_enabled,
+            state.android_volume_status_enabled,
+        );
+        let runtime: Value = serde_json::from_slice(
+            &to_bytes(runtime.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidPlatformToolMode"],
+            "read_only_battery_and_volume_telemetry"
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["availableTools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            9
+        );
+    }
 
     #[test]
     fn read_only_audit_recorder_counts_allowed_status_call() {
@@ -2213,6 +2469,144 @@ mod tests {
         assert_eq!(counters.by_tool[ANDROID_BATTERY_STATUS_TOOL].denied, 1);
         assert_eq!(
             counters.by_reason_code[ANDROID_BATTERY_STATUS_RUNTIME_DISABLED].denied,
+            1
+        );
+    }
+
+    #[cfg(feature = "android-volume-status")]
+    #[tokio::test]
+    async fn enabled_volume_tool_returns_canonical_streams_and_audits_success() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+
+        use axum::body::to_bytes;
+
+        let _test_guard = crate::android_provider::ANDROID_PROVIDER_TEST_LOCK
+            .lock()
+            .await;
+        let program_root = tempfile::tempdir().unwrap();
+        let program = program_root.path().join("volume-status");
+        fs::write(
+            &program,
+            concat!(
+                "#!/bin/sh\n",
+                "set -eu\n",
+                "test \"$#\" -eq 0\n",
+                "printf '%s' '[{\"stream\":\"system\",\"volume\":2,\"max_volume\":7},{\"stream\":\"alarm\",\"volume\":4,\"max_volume\":7},{\"stream\":\"call\",\"volume\":1,\"max_volume\":5},{\"stream\":\"notification\",\"volume\":3,\"max_volume\":7},{\"stream\":\"ring\",\"volume\":6,\"max_volume\":7},{\"stream\":\"music\",\"volume\":5,\"max_volume\":15}]'\n",
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = AndroidVolumeClient::with_program_and_limits(
+            program,
+            Duration::from_secs(1),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::with_android_volume_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            true,
+            client,
+        );
+
+        let response = handle_android_volume_status_call(
+            Some(json!("volume-success")),
+            ToolArguments::Present(json!({})),
+            &state,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["streams"][0]["stream"],
+            "alarm"
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["streams"][2]["maxVolume"],
+            15
+        );
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[ANDROID_VOLUME_STATUS_TOOL].allowed, 1);
+        assert_eq!(
+            counters.by_reason_code[ANDROID_VOLUME_STATUS_ALLOWED].allowed,
+            1
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == ANDROID_VOLUME_STATUS_TOOL));
+    }
+
+    #[cfg(feature = "android-volume-status")]
+    #[tokio::test]
+    async fn disabled_volume_tool_is_hidden_and_returns_stable_audited_error() {
+        use std::time::Duration;
+
+        use axum::body::to_bytes;
+
+        let program_root = tempfile::tempdir().unwrap();
+        let client = AndroidVolumeClient::with_program_and_limits(
+            program_root.path().join("must-not-run"),
+            Duration::from_secs(1),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::with_android_volume_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            false,
+            client,
+        );
+
+        let response = handle_android_volume_status_call(
+            Some(json!("volume-disabled")),
+            ToolArguments::Omitted,
+            &state,
+        )
+        .await;
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["error"],
+            "android_volume_status_unavailable"
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["reasonCode"],
+            ANDROID_VOLUME_STATUS_RUNTIME_DISABLED
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != ANDROID_VOLUME_STATUS_TOOL));
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[ANDROID_VOLUME_STATUS_TOOL].denied, 1);
+        assert_eq!(
+            counters.by_reason_code[ANDROID_VOLUME_STATUS_RUNTIME_DISABLED].denied,
             1
         );
     }

@@ -10,7 +10,7 @@ The expected posture is narrow and fail-closed:
 
 - In static-token mode, the complete `/mcp` route requires the configured bearer token before transport validation, JSON-RPC parsing, discovery, or invocation.
 - Explicit unauthenticated development mode is accepted only when startup validates a loopback bind.
-- `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status` is expected only when both of its compile-time and runtime gates are enabled.
+- `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status` and `android_volume_status` are expected only when their respective compile-time and runtime gates are enabled.
 - `write_file` remains dry-run by default and must require explicit `dry_run:false` plus safe-root validation before mutation.
 - Filesystem reads, listings, and writes remain bounded to configured safe roots.
 - `project_service_status` remains limited to explicitly allowlisted project-owned logical services.
@@ -21,7 +21,7 @@ The expected posture is narrow and fail-closed:
 
 Before validating behavior, confirm the operator configuration is deliberately narrow:
 
-1. Build with the intended feature set: normally `--features mcp-runtime`, or `--features android-battery-status` only when validating the battery posture.
+1. Build with the intended feature set: normally `--features mcp-runtime`, `--features android-battery-status` for battery validation, or `--features android-volume-status` for volume validation.
 2. Use a strong static bearer token for any deployment that is not explicitly loopback-development only.
 3. Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600`; do not echo the token or use shell tracing while it is loaded.
 4. Use localhost-only unauthenticated mode only when the server is bound to a loopback address and not exposed through a tunnel, LAN listener, or reverse proxy.
@@ -71,7 +71,7 @@ unset MCP_TEST_TOKEN
 A valid runtime discovery pass proves presence and absence:
 
 - An unauthenticated caller receives no tool list in static-token mode.
-- An authenticated `tools/list` call includes the seven baseline tools. The battery tool is absent by default and appears as the eighth tool only in an explicitly enabled battery posture.
+- An authenticated `tools/list` call includes the seven baseline tools. Battery and volume tools are absent by default; either appears as an eighth tool only in its explicitly enabled posture, and an all-feature test build may expose both as tools eight and nine when both runtime flags are enabled.
 - `tools/list` does not include command execution, Android control, process listing, service mutation, package management, arbitrary network mutation, environment inspection, or token-management tools.
 - Tool descriptions and schemas continue to communicate safe-root, read-only, dry-run, and allowlist boundaries where applicable.
 
@@ -148,6 +148,29 @@ Expected enabled evidence:
 
 The native ARM64 official-Termux CI gate performs these automated process/transport checks with a fixed-path fixture and publishes strict v2 battery evidence. A physical release check, when required by the observation classifier, is for battery/OEM/Android behavior only; routine feature PRs do not require an operator to repeat a 60-minute idle window.
 
+## Optional Android volume checks
+
+Use [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md) and prove both gate states.
+
+Expected disabled evidence:
+
+- A normal `mcp-runtime` build reports `androidVolumeStatusCompiled:false`, hides the tool, and returns `volume_feature_not_compiled` for direct invocation.
+- An `android-volume-status` build with its runtime flag absent or `false` reports compiled but disabled, hides the tool, and returns `volume_runtime_disabled`.
+- `androidDeviceControl`, command execution, and high-impact tools remain false.
+
+Expected enabled evidence:
+
+- Startup uses the `android-volume-status` build and `MCP__ANDROID__VOLUME_STATUS_ENABLED=true`.
+- `tools/list` advertises a closed empty-object schema for `android_volume_status`.
+- A call invokes only the fixed `termux-volume` zero-argument status mode and completes within five seconds.
+- `structuredContent.streams` contains exactly `alarm`, `call`, `music`, `notification`, `ring`, and `system` in that order, with integer `volume` and `maxVolume` values in range.
+- Extra, unknown, duplicate, missing, non-integer, or range-invalid provider data fails with a stable `volume_*` reason and is not reflected.
+- Non-empty caller arguments return JSON-RPC `-32602` and cannot select the upstream command's volume-setting mode.
+- Output overflow, pipe-holding descendants, and disconnected callers leave no provider process-group survivor or detached supervisor.
+- Successful and denied calls increment only documented stable aggregate audit labels.
+
+The native ARM64 official-Termux workflow automates these checks and publishes strict v1 volume evidence. Physical-device audio-policy or OEM behavior remains separate release evidence when applicable; routine feature development does not require a long idle observation.
+
 ## Capability-token boundary checks
 
 Capability-token primitives are currently inert policy scaffolding for future high-impact gates. They are separate from the static bearer token used to authenticate the MCP transport.
@@ -171,6 +194,7 @@ Treat any of the following as a blocker for a staged runtime PR or release candi
 - Discovery exposes a tool outside the staged baseline.
 - A read-only metadata tool exposes private identifiers, secrets, environment values, filesystem paths outside filesystem tools, process inventory, or command output.
 - The battery tool is discovered without both opt-ins, accepts caller-selected process inputs, exceeds its fixed time/output ceilings, or reflects a dropped upstream field.
+- The volume tool is discovered without both opt-ins, accepts any argument, reaches volume mutation, returns a non-canonical/partial stream set, exceeds its fixed bounds, or reflects unrecognized upstream data.
 - Filesystem tools can escape configured safe roots or mutate without explicit `dry_run:false`.
 - Audit counters serialize raw caller values or high-cardinality private metadata.
 - Capability-token primitives become a live high-impact authorization surface without a separate focused gate.

@@ -15,6 +15,7 @@ categories = ["command-line-utilities", "network-programming"]
 default = []
 mcp-runtime = ["dep:rustix"]
 android-battery-status = ["mcp-runtime", "tokio/process", "rustix/process"]
+android-volume-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 
 [dependencies]
 axum = "0.8"

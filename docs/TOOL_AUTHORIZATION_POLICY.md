@@ -8,7 +8,7 @@ The default build exposes operational health/readiness endpoints only. The optio
 
 In static-token mode, `/mcp` requires `Authorization: Bearer <configured-token>` before JSON-RPC parsing, discovery, or invocation. Explicit unauthenticated development mode is allowed only when startup validation confirms a loopback bind.
 
-The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. An `android-battery-status` build may additionally register `android_battery_status` only after the runtime battery flag is explicitly enabled. No Android control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
+The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. Independent `android-battery-status` and `android-volume-status` builds may additionally register their single read-only tool only after the corresponding runtime flag is explicitly enabled. No Android or audio control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
 
 ## Default Deny Rule
 
@@ -43,6 +43,8 @@ Rules:
 - Must include coverage for allowed and rejected reads.
 
 `android_battery_status` is Class 1 only under its documented constraints: authenticated transport, separate compile/runtime opt-in, one fixed absolute Termux:API executable, no caller arguments or inherited environment, bounded time and output, a strict normalized field allowlist, disabled discovery, stable non-sensitive failures, and aggregate audit coverage. Expanding it to caller-selected commands, additional Android APIs, identifiers, broad device data, or mutation changes the risk class and requires a separate gate.
+
+`android_volume_status` is Class 1 only under its documented constraints: independent compile/runtime opt-in, fixed zero-argument `termux-volume` status execution, cleared environment, bounded time/output, exact six-stream parsing, canonical output, disabled discovery, stable failures, the shared hardened provider supervisor, and aggregate audit coverage. Passing any argument, selecting a stream/level, or otherwise reaching volume mutation changes the risk class and requires a separate high-impact gate.
 
 ### Class 2: mutating bounded tools
 

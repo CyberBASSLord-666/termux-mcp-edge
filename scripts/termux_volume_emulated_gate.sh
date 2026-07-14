@@ -3,9 +3,9 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-GATE_VERSION=2
+GATE_VERSION=1
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
-DEFAULT_PORT=18767
+DEFAULT_PORT=18768
 
 ARTIFACT_DIR=''
 EXPECTED_COMMIT=''
@@ -20,22 +20,22 @@ STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 WORK_ROOT=''
 SERVER_PID=''
 SESSION_ID=''
-BATTERY_PROGRAM=''
-BATTERY_PROGRAM_CREATED=false
-BATTERY_DIRECT_PID_FILE=''
-BATTERY_DESCENDANT_PID_FILE=''
+VOLUME_PROGRAM=''
+VOLUME_PROGRAM_CREATED=false
+VOLUME_DIRECT_PID_FILE=''
+VOLUME_DESCENDANT_PID_FILE=''
 REQUEST_COUNT=0
 MCP_STATUS=''
 
-log() { printf '[termux-battery-emulated] %s\n' "$*"; }
+log() { printf '[termux-volume-emulated] %s\n' "$*"; }
 fail() {
-  printf 'TERMUX_MCP_BATTERY_EMULATED_RESULT=FAIL reason=%s\n' "$*" >&2
+  printf 'TERMUX_MCP_VOLUME_EMULATED_RESULT=FAIL reason=%s\n' "$*" >&2
   exit 1
 }
 
 usage() {
   cat <<'EOF'
-Usage: termux_battery_emulated_gate.sh \
+Usage: termux_volume_emulated_gate.sh \
   --artifact-dir DIR \
   --expected-commit SHA \
   --expected-version VERSION \
@@ -45,7 +45,7 @@ Usage: termux_battery_emulated_gate.sh \
   --output REPORT.json \
   [--port PORT]
 
-Run an exact android-battery-status artifact natively in the pinned official
+Run an exact android-volume-status artifact natively in the pinned official
 ARM64 Termux environment. A temporary fixed-path Termux:API fixture validates
 the compile gate, runtime gate, process boundary, output bounds, normalization,
 audit-visible error contract, and disabled discovery without Android hardware.
@@ -61,8 +61,8 @@ cleanup() {
   fi
   SERVER_PID=''
   unset MCP_TOKEN SESSION_ID 2>/dev/null || true
-  if [[ "$BATTERY_PROGRAM_CREATED" == true && -n "$BATTERY_PROGRAM" && "$BATTERY_PROGRAM" == /data/data/com.termux/files/usr/bin/termux-battery-status ]]; then
-    rm -f -- "$BATTERY_PROGRAM" >/dev/null 2>&1 || status=1
+  if [[ "$VOLUME_PROGRAM_CREATED" == true && -n "$VOLUME_PROGRAM" && "$VOLUME_PROGRAM" == /data/data/com.termux/files/usr/bin/termux-volume ]]; then
+    rm -f -- "$VOLUME_PROGRAM" >/dev/null 2>&1 || status=1
   fi
   [[ -z "$WORK_ROOT" ]] || rm -rf -- "$WORK_ROOT" >/dev/null 2>&1 || status=1
   exit "$status"
@@ -127,9 +127,9 @@ jq -e \
     and .repository == "CyberBASSLord-666/termux-mcp-edge"
     and .commit == $commit
     and .workflowRunId == $run_id
-    and .artifactName == "termux-mcp-server-aarch64-linux-android-android-battery-status"
-    and .posture == "android-battery-status"
-    and .features == ["android-battery-status"]
+    and .artifactName == "termux-mcp-server-aarch64-linux-android-android-volume-status"
+    and .posture == "android-volume-status"
+    and .features == ["android-volume-status"]
     and .target == "aarch64-linux-android"
     and .fileName == "termux-mcp-server"
     and .version == $version
@@ -153,27 +153,27 @@ OUTPUT_PARENT="$(dirname "$OUTPUT_REPORT")"
 [[ "$(stat -c %a "$OUTPUT_PARENT")" == 700 ]] || fail output_parent_not_private
 [[ ! -e "$OUTPUT_REPORT" && ! -L "$OUTPUT_REPORT" ]] || fail output_already_exists
 
-WORK_ROOT="$(mktemp -d "$HOME/.termux-mcp-battery-gate.XXXXXX")" || fail work_root_create_failed
+WORK_ROOT="$(mktemp -d "$HOME/.termux-mcp-volume-gate.XXXXXX")" || fail work_root_create_failed
 chmod 700 "$WORK_ROOT"
 SAFE_ROOT="$WORK_ROOT/safe-root"
 SERVER_LOG="$WORK_ROOT/server.log"
 BODY_FILE="$WORK_ROOT/body.json"
 HEADER_FILE="$WORK_ROOT/headers.txt"
 REQUEST_FILE="$WORK_ROOT/request.json"
-BATTERY_DIRECT_PID_FILE="$WORK_ROOT/battery-direct.pid"
-BATTERY_DESCENDANT_PID_FILE="$WORK_ROOT/battery-descendant.pid"
+VOLUME_DIRECT_PID_FILE="$WORK_ROOT/volume-direct.pid"
+VOLUME_DESCENDANT_PID_FILE="$WORK_ROOT/volume-descendant.pid"
 mkdir -m 700 "$SAFE_ROOT"
 
 MCP_TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
 [[ "$MCP_TOKEN" =~ ^[0-9a-f]{64}$ ]] || fail token_generation_failed
 
-BATTERY_PROGRAM="$PREFIX/bin/termux-battery-status"
-[[ "$BATTERY_PROGRAM" == /data/data/com.termux/files/usr/bin/termux-battery-status ]] || fail battery_program_path_invalid
-[[ ! -e "$BATTERY_PROGRAM" && ! -L "$BATTERY_PROGRAM" ]] || fail battery_program_already_present
-BATTERY_PROGRAM_CREATED=true
+VOLUME_PROGRAM="$PREFIX/bin/termux-volume"
+[[ "$VOLUME_PROGRAM" == /data/data/com.termux/files/usr/bin/termux-volume ]] || fail volume_program_path_invalid
+[[ ! -e "$VOLUME_PROGRAM" && ! -L "$VOLUME_PROGRAM" ]] || fail volume_program_already_present
+VOLUME_PROGRAM_CREATED=true
 
 write_success_fixture() {
-  local next="$WORK_ROOT/battery-success.next"
+  local next="$WORK_ROOT/volume-success.next"
   cat >"$next" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
@@ -181,99 +181,113 @@ set -euo pipefail
 [[ "$PWD" == / ]]
 [[ "$(/data/data/com.termux/files/usr/bin/readlink /proc/self/fd/0)" == /dev/null ]]
 [[ -z "${MCP__AUTH__STATIC_TOKEN+x}" ]]
-[[ -z "${MCP__ANDROID__BATTERY_STATUS_ENABLED+x}" ]]
-printf '%s' '{"present":true,"technology":"vendor-private","health":"GOOD","plugged":"PLUGGED_USB","status":"CHARGING","temperature":31.2,"voltage":4210,"current":123456,"current_average":120000,"percentage":87,"level":87,"scale":100,"charge_counter":4100000,"energy":17000000,"cycle":234,"android_id":"private-identifier"}'
+[[ -z "${MCP__ANDROID__VOLUME_STATUS_ENABLED+x}" ]]
+printf '%s' '[{"stream":"system","volume":2,"max_volume":7},{"stream":"notification","volume":3,"max_volume":7},{"stream":"alarm","volume":4,"max_volume":7},{"stream":"music","volume":5,"max_volume":15},{"stream":"call","volume":1,"max_volume":5},{"stream":"ring","volume":6,"max_volume":7}]'
 EOF
   chmod 700 "$next"
-  install -m 700 "$next" "$BATTERY_PROGRAM"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
+  rm -f -- "$next"
+}
+
+write_unrecognized_field_fixture() {
+  local next="$WORK_ROOT/volume-unrecognized-field.next"
+  cat >"$next" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+[[ "$#" -eq 0 ]]
+[[ "$PWD" == / ]]
+printf '%s' '[{"stream":"alarm","volume":4,"max_volume":7,"device_id":"private-identifier"},{"stream":"call","volume":1,"max_volume":5},{"stream":"music","volume":5,"max_volume":15},{"stream":"notification","volume":3,"max_volume":7},{"stream":"ring","volume":6,"max_volume":7},{"stream":"system","volume":2,"max_volume":7}]'
+EOF
+  chmod 700 "$next"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
   rm -f -- "$next"
 }
 
 write_overflow_fixture() {
-  local next="$WORK_ROOT/battery-overflow.next"
+  local next="$WORK_ROOT/volume-overflow.next"
   cat >"$next" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 [[ "$#" -eq 0 ]]
 [[ "$PWD" == / ]]
 i=0
-while ((i < 16385)); do
+while ((i < 8193)); do
   printf x
   i=$((i + 1))
 done
 EOF
   chmod 700 "$next"
-  install -m 700 "$next" "$BATTERY_PROGRAM"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
   rm -f -- "$next"
 }
 
 write_endless_output_fixture() {
-  local stream="$1" next="$WORK_ROOT/battery-endless.next" redirection=''
+  local stream="$1" next="$WORK_ROOT/volume-endless.next" redirection=''
   case "$stream" in
     stdout) redirection='' ;;
     stderr) redirection='>&2' ;;
     *) fail endless_stream_invalid ;;
   esac
-  rm -f -- "$BATTERY_DIRECT_PID_FILE" "$BATTERY_DESCENDANT_PID_FILE"
+  rm -f -- "$VOLUME_DIRECT_PID_FILE" "$VOLUME_DESCENDANT_PID_FILE"
   cat >"$next" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 [[ "\$#" -eq 0 ]]
 [[ "\$PWD" == / ]]
-printf '%s\n' "\$\$" >'$BATTERY_DIRECT_PID_FILE'
+printf '%s\n' "\$\$" >'$VOLUME_DIRECT_PID_FILE'
 while :; do
   printf '%s' xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx $redirection
 done
 EOF
   chmod 700 "$next"
-  install -m 700 "$next" "$BATTERY_PROGRAM"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
   rm -f -- "$next"
 }
 
 write_pipe_holding_descendant_fixture() {
-  local stream="$1" next="$WORK_ROOT/battery-pipe-holder.next" redirection=''
+  local stream="$1" next="$WORK_ROOT/volume-pipe-holder.next" redirection=''
   case "$stream" in
     stdout) redirection='2>/dev/null' ;;
     stderr) redirection='>/dev/null' ;;
     *) fail pipe_holder_stream_invalid ;;
   esac
-  rm -f -- "$BATTERY_DIRECT_PID_FILE" "$BATTERY_DESCENDANT_PID_FILE"
+  rm -f -- "$VOLUME_DIRECT_PID_FILE" "$VOLUME_DESCENDANT_PID_FILE"
   cat >"$next" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 [[ "\$#" -eq 0 ]]
 [[ "\$PWD" == / ]]
-printf '%s\n' "\$\$" >'$BATTERY_DIRECT_PID_FILE'
+printf '%s\n' "\$\$" >'$VOLUME_DIRECT_PID_FILE'
 $PREFIX/bin/sleep 30 $redirection &
-printf '%s\n' "\$!" >'$BATTERY_DESCENDANT_PID_FILE'
+printf '%s\n' "\$!" >'$VOLUME_DESCENDANT_PID_FILE'
 printf '%s' '{"percentage":50}'
 exit 0
 EOF
   chmod 700 "$next"
-  install -m 700 "$next" "$BATTERY_PROGRAM"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
   rm -f -- "$next"
 }
 
 write_cancellation_fixture() {
-  local next="$WORK_ROOT/battery-cancellation.next"
-  rm -f -- "$BATTERY_DIRECT_PID_FILE" "$BATTERY_DESCENDANT_PID_FILE"
+  local next="$WORK_ROOT/volume-cancellation.next"
+  rm -f -- "$VOLUME_DIRECT_PID_FILE" "$VOLUME_DESCENDANT_PID_FILE"
   cat >"$next" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 [[ "\$#" -eq 0 ]]
 [[ "\$PWD" == / ]]
-printf '%s\n' "\$\$" >'$BATTERY_DIRECT_PID_FILE'
+printf '%s\n' "\$\$" >'$VOLUME_DIRECT_PID_FILE'
 $PREFIX/bin/sleep 30 >/dev/null 2>&1 &
-printf '%s\n' "\$!" >'$BATTERY_DESCENDANT_PID_FILE'
+printf '%s\n' "\$!" >'$VOLUME_DESCENDANT_PID_FILE'
 wait
 EOF
   chmod 700 "$next"
-  install -m 700 "$next" "$BATTERY_PROGRAM"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
   rm -f -- "$next"
 }
 
 write_failure_fixture() {
-  local next="$WORK_ROOT/battery-failure.next"
+  local next="$WORK_ROOT/volume-failure.next"
   cat >"$next" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
@@ -282,7 +296,7 @@ set -euo pipefail
 exit 7
 EOF
   chmod 700 "$next"
-  install -m 700 "$next" "$BATTERY_PROGRAM"
+  install -m 700 "$next" "$VOLUME_PROGRAM"
   rm -f -- "$next"
 }
 
@@ -294,7 +308,7 @@ start_server() {
   local enabled="$1"
   MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
   MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
-  MCP__ANDROID__BATTERY_STATUS_ENABLED="$enabled" \
+  MCP__ANDROID__VOLUME_STATUS_ENABLED="$enabled" \
   MCP__SERVER__HOST=127.0.0.1 \
   MCP__SERVER__PORT="$PORT" \
   MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT" \
@@ -345,7 +359,7 @@ post_mcp() {
 }
 
 cancel_mcp_request() {
-  printf '%s' '{"jsonrpc":"2.0","id":"cancelled-battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' >"$REQUEST_FILE"
+  printf '%s' '{"jsonrpc":"2.0","id":"cancelled-volume","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' >"$REQUEST_FILE"
   local curl_rc
   set +e
   curl_local --silent --show-error --max-time 1 --output "$BODY_FILE" \
@@ -389,7 +403,7 @@ assert_process_gone() {
 }
 
 initialize_session() {
-  printf '%s' '{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-battery-emulated-gate","version":"1"}}}' >"$REQUEST_FILE"
+  printf '%s' '{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-volume-emulated-gate","version":"1"}}}' >"$REQUEST_FILE"
   MCP_STATUS="$(curl_local --silent --show-error --dump-header "$HEADER_FILE" --output "$BODY_FILE" --write-out '%{http_code}' \
     -H "Authorization: Bearer $MCP_TOKEN" \
     -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
@@ -407,7 +421,7 @@ initialize_session() {
   [[ "$MCP_STATUS" == 202 && ! -s "$BODY_FILE" ]] || fail initialized_notification_invalid
 }
 
-log 'validating enabled battery posture'
+log 'validating enabled volume posture'
 write_success_fixture
 start_server true
 initialize_session
@@ -423,9 +437,9 @@ jq -e '
     "list_directory",
     "read_file",
     "write_file",
-    "android_battery_status"
+    "android_volume_status"
   ]
-  and (.result.tools[] | select(.name == "android_battery_status") | .inputSchema)
+  and (.result.tools[] | select(.name == "android_volume_status") | .inputSchema)
       == {"type":"object","properties":{},"additionalProperties":false}
 ' "$BODY_FILE" >/dev/null || fail enabled_tool_discovery_invalid
 
@@ -433,103 +447,96 @@ post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name"
 [[ "$MCP_STATUS" == 200 ]] || fail runtime_status_http_invalid
 jq -e '
   .result.structuredContent.androidPlatformTools == true
-  and .result.structuredContent.androidPlatformToolMode == "read_only_battery_telemetry"
-  and .result.structuredContent.androidBatteryStatusCompiled == true
-  and .result.structuredContent.androidBatteryStatusEnabled == true
+  and .result.structuredContent.androidPlatformToolMode == "read_only_volume_telemetry"
+  and .result.structuredContent.androidVolumeStatusCompiled == true
+  and .result.structuredContent.androidVolumeStatusEnabled == true
   and .result.structuredContent.androidDeviceControl == false
   and .result.structuredContent.commandExecution == false
   and .result.structuredContent.highImpactTools == false
 ' "$BODY_FILE" >/dev/null || fail runtime_status_gate_invalid
 
-post_mcp '{"jsonrpc":"2.0","id":"battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
-[[ "$MCP_STATUS" == 200 ]] || fail battery_status_http_invalid
+post_mcp '{"jsonrpc":"2.0","id":"volume","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail volume_status_http_invalid
 jq -e '
   .result.isError == false
-  and (.result.structuredContent | keys) == [
-    "charge_counter_microamp_hours",
-    "current_average_microamps",
-    "current_microamps",
-    "cycle_count",
-    "energy_nanowatt_hours",
-    "health",
-    "level",
-    "percentage",
-    "plugged",
-    "present",
-    "scale",
-    "status",
-    "temperature_celsius",
-    "voltage_millivolts"
-  ]
-  and .result.structuredContent.present == true
-  and .result.structuredContent.percentage == 87
-  and .result.structuredContent.temperature_celsius == 31.2
-  and .result.structuredContent.voltage_millivolts == 4210
-  and .result.structuredContent.current_microamps == 123456
-  and .result.structuredContent.cycle_count == 234
-' "$BODY_FILE" >/dev/null || fail battery_normalization_invalid
-if grep -Fq -e vendor-private -e private-identifier "$BODY_FILE"; then
-  fail battery_output_not_redacted
+  and (.result.structuredContent | keys) == ["streams"]
+  and [.result.structuredContent.streams[].stream]
+      == ["alarm","call","music","notification","ring","system"]
+  and (.result.structuredContent.streams | length) == 6
+  and ([.result.structuredContent.streams[] | keys] | all(. == ["maxVolume","stream","volume"]))
+  and .result.structuredContent.streams[0] == {stream:"alarm",volume:4,maxVolume:7}
+  and .result.structuredContent.streams[2] == {stream:"music",volume:5,maxVolume:15}
+' "$BODY_FILE" >/dev/null || fail volume_normalization_invalid
+
+write_unrecognized_field_fixture
+post_mcp '{"jsonrpc":"2.0","id":"unrecognized-field","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail unrecognized_field_http_invalid
+jq -e '
+  .result.isError == true
+  and .result.structuredContent.reasonCode == "volume_output_invalid_field"
+' "$BODY_FILE" >/dev/null || fail unrecognized_field_contract_invalid
+if grep -Fq private-identifier "$BODY_FILE"; then
+  fail unrecognized_field_value_reflected
 fi
 
-post_mcp '{"jsonrpc":"2.0","id":"invalid","method":"tools/call","params":{"name":"android_battery_status","arguments":{"unexpected":true}}}' "$SESSION_ID"
+post_mcp '{"jsonrpc":"2.0","id":"invalid","method":"tools/call","params":{"name":"android_volume_status","arguments":{"unexpected":true}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 400 ]] || fail invalid_arguments_http_invalid
 jq -e '.error.code == -32602 and (.result | not)' "$BODY_FILE" >/dev/null || fail invalid_arguments_contract_invalid
 
 write_overflow_fixture
-post_mcp '{"jsonrpc":"2.0","id":"overflow","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
+post_mcp '{"jsonrpc":"2.0","id":"overflow","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail overflow_http_invalid
 jq -e '
   .result.isError == true
-  and .result.structuredContent.error == "android_battery_status_unavailable"
-  and .result.structuredContent.reasonCode == "battery_stdout_limit_exceeded"
+  and .result.structuredContent.error == "android_volume_status_unavailable"
+  and .result.structuredContent.reasonCode == "volume_stdout_limit_exceeded"
 ' "$BODY_FILE" >/dev/null || fail overflow_contract_invalid
 
 for stream in stdout stderr; do
   write_endless_output_fixture "$stream"
-  payload="$(jq -cn --arg id "endless-$stream" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"android_battery_status",arguments:{}}}')"
+  payload="$(jq -cn --arg id "endless-$stream" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"android_volume_status",arguments:{}}}')"
   post_mcp "$payload" "$SESSION_ID" 2
   [[ "$MCP_STATUS" == 200 ]] || fail "endless_${stream}_http_invalid"
-  jq -e --arg reason "battery_${stream}_limit_exceeded" '
+  jq -e --arg reason "volume_${stream}_limit_exceeded" '
     .result.isError == true
     and .result.structuredContent.reasonCode == $reason
   ' "$BODY_FILE" >/dev/null || fail "endless_${stream}_contract_invalid"
-  direct_pid="$(read_fixture_pid "$BATTERY_DIRECT_PID_FILE" "endless_${stream}_direct_pid")"
+  direct_pid="$(read_fixture_pid "$VOLUME_DIRECT_PID_FILE" "endless_${stream}_direct_pid")"
   assert_process_gone "$direct_pid" "endless_${stream}_direct_process"
 done
 
 for stream in stdout stderr; do
   write_pipe_holding_descendant_fixture "$stream"
-  payload="$(jq -cn --arg id "pipe-holder-$stream" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"android_battery_status",arguments:{}}}')"
+  payload="$(jq -cn --arg id "pipe-holder-$stream" '{jsonrpc:"2.0",id:$id,method:"tools/call",params:{name:"android_volume_status",arguments:{}}}')"
   post_mcp "$payload" "$SESSION_ID" 7
   [[ "$MCP_STATUS" == 200 ]] || fail "pipe_holder_${stream}_http_invalid"
   jq -e '
     .result.isError == true
-    and .result.structuredContent.reasonCode == "battery_api_timeout"
+    and .result.structuredContent.reasonCode == "volume_api_timeout"
   ' "$BODY_FILE" >/dev/null || fail "pipe_holder_${stream}_contract_invalid"
-  direct_pid="$(read_fixture_pid "$BATTERY_DIRECT_PID_FILE" "pipe_holder_${stream}_direct_pid")"
-  descendant_pid="$(read_fixture_pid "$BATTERY_DESCENDANT_PID_FILE" "pipe_holder_${stream}_descendant_pid")"
+  direct_pid="$(read_fixture_pid "$VOLUME_DIRECT_PID_FILE" "pipe_holder_${stream}_direct_pid")"
+  descendant_pid="$(read_fixture_pid "$VOLUME_DESCENDANT_PID_FILE" "pipe_holder_${stream}_descendant_pid")"
   assert_process_gone "$direct_pid" "pipe_holder_${stream}_direct_process"
   assert_process_gone "$descendant_pid" "pipe_holder_${stream}_descendant_process"
 done
 
 write_cancellation_fixture
 cancel_mcp_request
-direct_pid="$(read_fixture_pid "$BATTERY_DIRECT_PID_FILE" cancellation_direct_pid)"
-descendant_pid="$(read_fixture_pid "$BATTERY_DESCENDANT_PID_FILE" cancellation_descendant_pid)"
+direct_pid="$(read_fixture_pid "$VOLUME_DIRECT_PID_FILE" cancellation_direct_pid)"
+descendant_pid="$(read_fixture_pid "$VOLUME_DESCENDANT_PID_FILE" cancellation_descendant_pid)"
 assert_process_gone "$direct_pid" cancellation_direct_process
 assert_process_gone "$descendant_pid" cancellation_descendant_process
 
 write_failure_fixture
-post_mcp '{"jsonrpc":"2.0","id":"failed","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
+post_mcp '{"jsonrpc":"2.0","id":"failed","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail api_failure_http_invalid
 jq -e '
   .result.isError == true
-  and .result.structuredContent.reasonCode == "battery_api_failed"
+  and .result.structuredContent.reasonCode == "volume_api_failed"
 ' "$BODY_FILE" >/dev/null || fail api_failure_contract_invalid
 stop_server
 
-log 'validating disabled battery posture'
+log 'validating disabled volume posture'
 write_success_fixture
 start_server false
 initialize_session
@@ -550,21 +557,21 @@ jq -e '
 post_mcp '{"jsonrpc":"2.0","id":"runtime-disabled","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
 jq -e '
   .result.structuredContent.androidPlatformTools == false
-  and .result.structuredContent.androidBatteryStatusCompiled == true
-  and .result.structuredContent.androidBatteryStatusEnabled == false
+  and .result.structuredContent.androidVolumeStatusCompiled == true
+  and .result.structuredContent.androidVolumeStatusEnabled == false
   and .result.structuredContent.androidDeviceControl == false
 ' "$BODY_FILE" >/dev/null || fail disabled_runtime_status_invalid
 
-post_mcp '{"jsonrpc":"2.0","id":"battery-disabled","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
+post_mcp '{"jsonrpc":"2.0","id":"volume-disabled","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail disabled_call_http_invalid
 jq -e '
   .result.isError == true
-  and .result.structuredContent.reasonCode == "battery_runtime_disabled"
+  and .result.structuredContent.reasonCode == "volume_runtime_disabled"
 ' "$BODY_FILE" >/dev/null || fail disabled_call_contract_invalid
 stop_server
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-REPORT_NEXT="$WORK_ROOT/battery-emulated-evidence.json"
+REPORT_NEXT="$WORK_ROOT/volume-emulated-evidence.json"
 jq -n \
   --arg gate_version "$GATE_VERSION" \
   --arg started_at "$STARTED_AT" \
@@ -581,7 +588,7 @@ jq -n \
   --arg image_digest "$IMAGE_DIGEST" \
   --argjson requests "$REQUEST_COUNT" '
   {
-    schemaVersion: 2,
+    schemaVersion: 1,
     gateVersion: $gate_version,
     status: "pass",
     failureCode: null,
@@ -615,7 +622,8 @@ jq -n \
       noArguments: true,
       inheritedEnvironmentCleared: true,
       normalizedAllowlist: true,
-      sensitiveFieldsRedacted: true,
+      canonicalStreamOrdering: true,
+      unrecognizedFieldsRejected: true,
       boundedOutput: true,
       immediateOverflowTermination: true,
       processGroupIsolation: true,
@@ -631,7 +639,7 @@ jq -n \
 chmod 600 "$REPORT_NEXT" || fail report_mode_failed
 
 jq -e '
-  .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
+  .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
   and .failureCode == null and .releaseQualificationEligible == false
   and .environment.executionMode == "official-termux-docker-native-arm64"
   and .environment.androidLinker == true
@@ -646,4 +654,4 @@ install -m 600 "$REPORT_NEXT" "$OUTPUT_REPORT" || fail report_publication_failed
 REPORT_SHA="$(sha256sum "$OUTPUT_REPORT" | awk '{print $1}')"
 log "report_sha256=$REPORT_SHA"
 log "report=$OUTPUT_REPORT"
-printf 'TERMUX_MCP_BATTERY_EMULATED_RESULT=PASS\n'
+printf 'TERMUX_MCP_VOLUME_EMULATED_RESULT=PASS\n'
