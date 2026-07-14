@@ -180,7 +180,7 @@ jobs:
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/mcp_transport.rs scripts/apply_create_directory_fail_closed_gate.py .github/workflows/ci.yml
+          git add src/mcp_transport.rs tests/mcp_tool_argument_schemas.rs scripts/apply_create_directory_fail_closed_gate.py .github/workflows/ci.yml
           git diff --cached --check
           git commit -m "fix: fail closed create-directory mutation pending grants"
           git push origin "HEAD:$EXPECTED_BRANCH"
