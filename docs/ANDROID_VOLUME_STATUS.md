@@ -20,7 +20,7 @@ Install and configure the official Termux:API add-on and its Termux package so t
 /data/data/com.termux/files/usr/bin/termux-volume
 ```
 
-The server executes that exact absolute path directly. It supplies no arguments or stdin, clears the inherited environment, fixes the child working directory to `/`, and neither invokes a shell nor searches `PATH`. The upstream executable may itself be a Termux-provided wrapper; the server never constructs shell text or accepts a caller-selected command.
+The server executes that exact absolute path directly. It supplies no arguments, attaches stdin to `/dev/null`, clears the inherited environment, fixes the child working directory to `/`, and neither invokes a shell nor searches `PATH`. The upstream executable may itself be a Termux-provided wrapper; the server never constructs shell text or accepts a caller-selected command.
 
 Build and enable the posture explicitly:
 

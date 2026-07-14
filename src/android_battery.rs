@@ -115,7 +115,8 @@ impl AndroidBatteryClient {
                 BATTERY_STATUS_TIMEOUT,
                 MAX_BATTERY_STDOUT_BYTES,
                 MAX_BATTERY_STDERR_BYTES,
-            ),
+            )
+            .expect("fixed battery provider timeout must reserve cleanup time"),
         }
     }
 
@@ -138,7 +139,8 @@ impl AndroidBatteryClient {
                 timeout,
                 max_stdout_bytes,
                 max_stderr_bytes,
-            ),
+            )
+            .expect("test battery provider timeout must reserve cleanup time"),
         }
     }
 
@@ -452,6 +454,7 @@ mod tests {
         let script = r#"
             test "$#" -eq 0
             test "$PWD" = /
+            test "$(/usr/bin/readlink /proc/self/fd/0)" = /dev/null
             printf '%s' '{"percentage":42,"status":"DISCHARGING"}'
         "#;
         let (_directory, client) = executable_script(script, Duration::from_secs(1));

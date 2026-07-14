@@ -15,7 +15,9 @@ use tokio::{
     time::{sleep_until, timeout_at, Instant},
 };
 
+const MIN_PROCESS_CLEANUP_RESERVE: Duration = Duration::from_millis(1);
 const MAX_PROCESS_CLEANUP_RESERVE: Duration = Duration::from_millis(250);
+const MIN_PROVIDER_TIMEOUT: Duration = Duration::from_millis(4);
 
 #[cfg(test)]
 pub(crate) static ANDROID_PROVIDER_TEST_LOCK: tokio::sync::Mutex<()> =
@@ -35,6 +37,11 @@ pub(crate) enum AndroidProviderError {
     ProgramFailed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AndroidProviderConfigError {
+    TimeoutTooShort,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct BoundedAndroidProvider {
     program: PathBuf,
@@ -51,21 +58,28 @@ impl BoundedAndroidProvider {
         timeout: Duration,
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, AndroidProviderConfigError> {
+        if timeout < MIN_PROVIDER_TIMEOUT {
+            return Err(AndroidProviderConfigError::TimeoutTooShort);
+        }
+
+        Ok(Self {
             program,
             timeout,
             max_stdout_bytes,
             max_stderr_bytes,
             #[cfg(test)]
             forced_cleanup_delay: Duration::ZERO,
-        }
+        })
     }
 
     pub(crate) async fn collect_stdout(&self) -> Result<Vec<u8>, AndroidProviderError> {
         let started_at = Instant::now();
         let final_deadline = started_at + self.timeout;
-        let cleanup_reserve = (self.timeout / 4).min(MAX_PROCESS_CLEANUP_RESERVE);
+        // Construction rejects timeouts whose quarter-budget would round below
+        // one millisecond, so cleanup always owns a real nonzero reserve.
+        let cleanup_reserve = (self.timeout / 4)
+            .clamp(MIN_PROCESS_CLEANUP_RESERVE, MAX_PROCESS_CLEANUP_RESERVE);
         let operation_deadline = final_deadline - cleanup_reserve;
 
         let mut command = Command::new(&self.program);
@@ -408,8 +422,32 @@ mod tests {
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         (
             directory,
-            BoundedAndroidProvider::new(program, timeout, 1024, 1024),
+            BoundedAndroidProvider::new(program, timeout, 1024, 1024).unwrap(),
         )
+    }
+
+    #[test]
+    fn construction_rejects_timeouts_without_a_nonzero_cleanup_reserve() {
+        for timeout in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+            Duration::from_millis(3),
+        ] {
+            assert_eq!(
+                BoundedAndroidProvider::new(PathBuf::from("/provider"), timeout, 1, 1)
+                    .unwrap_err(),
+                AndroidProviderConfigError::TimeoutTooShort,
+            );
+        }
+
+        assert!(BoundedAndroidProvider::new(
+            PathBuf::from("/provider"),
+            MIN_PROVIDER_TIMEOUT,
+            1,
+            1,
+        )
+        .is_ok());
     }
 
     async fn wait_for_supervisor_count(expected: usize) {

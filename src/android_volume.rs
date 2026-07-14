@@ -90,7 +90,8 @@ impl AndroidVolumeClient {
                 VOLUME_STATUS_TIMEOUT,
                 MAX_VOLUME_STDOUT_BYTES,
                 MAX_VOLUME_STDERR_BYTES,
-            ),
+            )
+            .expect("fixed volume provider timeout must reserve cleanup time"),
         }
     }
 
@@ -113,7 +114,8 @@ impl AndroidVolumeClient {
                 timeout,
                 max_stdout_bytes,
                 max_stderr_bytes,
-            ),
+            )
+            .expect("test volume provider timeout must reserve cleanup time"),
         }
     }
 }
@@ -297,6 +299,7 @@ mod tests {
         let script = format!(
             "test \"$#\" -eq 0\n\
              test \"$PWD\" = /\n\
+             test \"$(/usr/bin/readlink /proc/self/fd/0)\" = /dev/null\n\
              test -z \"${{TERMUX_MCP_VOLUME_TEST_SECRET+x}}\"\n\
              printf '%s' '{status}'"
         );

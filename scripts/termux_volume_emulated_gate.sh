@@ -103,9 +103,10 @@ IMAGE_DIGEST="${TERMUX_MCP_TERMUX_IMAGE_DIGEST:-}"
 [[ "${HOME:-}" == /data/data/com.termux/files/home ]] || fail termux_home_invalid
 [[ -x /system/bin/linker64 ]] || fail android_linker_missing
 
-for command in awk bash cat chmod curl date dd dirname file find grep install jq kill mkdir mktemp realpath rm seq sha256sum sleep stat timeout uname wc; do
+for command in awk bash cat chmod curl date dd dirname file find grep install jq kill mkdir mktemp readlink realpath rm seq sha256sum sleep stat timeout uname wc; do
   command -v "$command" >/dev/null 2>&1 || fail "required_command_missing_$command"
 done
+[[ "$(command -v readlink)" == /data/data/com.termux/files/usr/bin/readlink ]] || fail readlink_path_invalid
 
 ARTIFACT="$ARTIFACT_DIR/termux-mcp-server"
 MANIFEST="$ARTIFACT_DIR/artifact-manifest.json"
@@ -178,6 +179,7 @@ write_success_fixture() {
 set -euo pipefail
 [[ "$#" -eq 0 ]]
 [[ "$PWD" == / ]]
+[[ "$(/data/data/com.termux/files/usr/bin/readlink /proc/self/fd/0)" == /dev/null ]]
 [[ -z "${MCP__AUTH__STATIC_TOKEN+x}" ]]
 [[ -z "${MCP__ANDROID__VOLUME_STATUS_ENABLED+x}" ]]
 printf '%s' '[{"stream":"system","volume":2,"max_volume":7},{"stream":"notification","volume":3,"max_volume":7},{"stream":"alarm","volume":4,"max_volume":7},{"stream":"music","volume":5,"max_volume":15},{"stream":"call","volume":1,"max_volume":5},{"stream":"ring","volume":6,"max_volume":7}]'
