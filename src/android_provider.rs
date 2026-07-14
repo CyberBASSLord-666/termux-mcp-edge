@@ -78,8 +78,8 @@ impl BoundedAndroidProvider {
         let final_deadline = started_at + self.timeout;
         // Construction rejects timeouts whose quarter-budget would round below
         // one millisecond, so cleanup always owns a real nonzero reserve.
-        let cleanup_reserve = (self.timeout / 4)
-            .clamp(MIN_PROCESS_CLEANUP_RESERVE, MAX_PROCESS_CLEANUP_RESERVE);
+        let cleanup_reserve =
+            (self.timeout / 4).clamp(MIN_PROCESS_CLEANUP_RESERVE, MAX_PROCESS_CLEANUP_RESERVE);
         let operation_deadline = final_deadline - cleanup_reserve;
 
         let mut command = Command::new(&self.program);
@@ -435,8 +435,7 @@ mod tests {
             Duration::from_millis(3),
         ] {
             assert_eq!(
-                BoundedAndroidProvider::new(PathBuf::from("/provider"), timeout, 1, 1)
-                    .unwrap_err(),
+                BoundedAndroidProvider::new(PathBuf::from("/provider"), timeout, 1, 1).unwrap_err(),
                 AndroidProviderConfigError::TimeoutTooShort,
             );
         }
