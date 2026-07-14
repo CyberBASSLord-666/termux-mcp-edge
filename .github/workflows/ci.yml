@@ -116,8 +116,35 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Clippy (default posture)
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (default posture diagnostic)
+        id: clippy_default
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/clippy-default.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish bounded default Clippy diagnostic
+        if: steps.clippy_default.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            printf 'Directory-grant verifier default Clippy diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
+            tail -n 220 /tmp/clippy-default.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
+            printf '```\n'
+          } > /tmp/clippy-default-diagnostic.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/clippy-default-diagnostic.md
+
+      - name: Enforce default Clippy result
+        if: steps.clippy_default.outputs.status != '0'
+        run: exit 1
 
       - name: Clippy (all features diagnostic)
         id: clippy_all
@@ -131,7 +158,7 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Publish bounded Clippy diagnostic
+      - name: Publish bounded all-features Clippy diagnostic
         if: steps.clippy_all.outputs.status != '0'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -140,7 +167,7 @@ jobs:
         run: |
           {
             printf 'Directory-grant verifier all-features Clippy diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
-            tail -n 180 /tmp/clippy-all-features.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
+            tail -n 220 /tmp/clippy-all-features.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
             printf '```\n'
           } > /tmp/clippy-diagnostic.md
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/clippy-diagnostic.md
@@ -173,7 +200,7 @@ jobs:
         run: |
           {
             printf 'Directory-grant verifier all-features test diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
-            tail -n 220 /tmp/tests-all-features.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
+            tail -n 240 /tmp/tests-all-features.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
             printf '```\n'
           } > /tmp/tests-diagnostic.md
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/tests-diagnostic.md
