@@ -886,7 +886,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -966,6 +966,22 @@ run_mcp_runtime_checks() {
       and ([$listing.entries[].path] == ([$listing.entries[].path] | sort))
   ' "$body" >/dev/null 2>&1 || fail list_response_contract_invalid
   record_result runtime list_contract pass deterministic_bounded_list
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"path-metadata","method":"tools/call","params":{"name":"path_metadata","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status path_metadata "$status" 200 safe_root_path_metadata_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail path_metadata_response_size_failed
+  ((bytes <= 16384)) || fail path_metadata_response_too_large
+  jq -e --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '
+    .result.structuredContent as $metadata
+    | ($metadata | keys) == ["kind","maxResponseBytes","modified","path","sizeBytes"]
+      and $metadata.path == $path
+      and $metadata.kind == "regular_file"
+      and $metadata.sizeBytes == 18
+      and ($metadata.modified | type) == "string"
+      and $metadata.maxResponseBytes == 16384
+  ' "$body" >/dev/null 2>&1 || fail path_metadata_contract_invalid
+  grep -Eq 'inode|device|uid|gid|mode|accessTime|validation-visible' "$body" && fail path_metadata_sensitive_field_reflected
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"

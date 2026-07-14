@@ -8,7 +8,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, validates exact `Host` and browser `Origin` values before protocol handling, negotiates initialize state, scopes lifecycle to bounded UUID sessions, and exposes `tools/list` plus deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, bounded safe-rooted UTF-8 file reads, descriptor-relative bounded literal text search, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, validates exact `Host` and browser `Origin` values before protocol handling, negotiates initialize state, scopes lifecycle to bounded UUID sessions, and exposes `tools/list` plus deterministic read-only `runtime_status`, non-sensitive read-only `platform_info`, read-only allowlisted `android_status`, safe-rooted directory listing, descriptor-relative single-object path metadata, bounded safe-rooted UTF-8 file reads, descriptor-relative bounded literal text search, default-dry-run safe-rooted file writes, and read-only allowlisted `project_service_status` for project-owned logical service state.
 
 The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 
@@ -81,13 +81,14 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, payload limits, explicit write controls, and non-sensitive audit counter coverage.
 
-Status: exposed behind the staged runtime gate. The surface includes deterministic response-bounded directory listing, bounded UTF-8 reads, bounded literal text-location search, default-dry-run writes, explicit crash-durable writes, and non-sensitive audit counters. Live operations are anchored to opened safe-root descriptors, reject or skip symlink components, and retain the same descriptor through enumeration, search/read, temporary-file creation, rename, cleanup, and parent sync. The response-bound work landed through #206, descriptor-relative race hardening through #200, and the bounded search surface through #240.
+Status: exposed behind the staged runtime gate. The surface includes deterministic response-bounded directory listing, bounded single-object metadata, bounded UTF-8 reads, bounded literal text-location search, default-dry-run writes, explicit crash-durable writes, and non-sensitive audit counters. Live operations are anchored to opened safe-root descriptors, reject or skip symlink components, and retain the exact descriptors through enumeration, metadata classification, search/read, temporary-file creation, rename, cleanup, and parent sync. The response-bound work landed through #206, descriptor-relative race hardening through #200, bounded search through #240, and bounded path metadata through #242.
 
 Required gates:
 
 - Safe-root traversal tests.
 - Symlink escape tests.
 - Read-only directory listing test.
+- Bounded path-metadata test with identifier and unsupported-type redaction.
 - Bounded read-file test.
 - Dry-run write test.
 - Explicit mutation write test with safe-root and payload constraints.

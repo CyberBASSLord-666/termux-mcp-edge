@@ -17,6 +17,12 @@ pub enum AppError {
     #[error("Search query does not satisfy the literal text-search contract")]
     InvalidSearchQuery,
 
+    #[error("Requested filesystem object does not exist")]
+    PathNotFound,
+
+    #[error("Requested filesystem object type is not supported")]
+    UnsupportedPathType,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -50,6 +56,14 @@ impl AppError {
             AppError::InvalidSearchQuery => (
                 StatusCode::BAD_REQUEST,
                 "Search query does not satisfy the literal text-search contract",
+            ),
+            AppError::PathNotFound => (
+                StatusCode::NOT_FOUND,
+                "Requested filesystem object does not exist",
+            ),
+            AppError::UnsupportedPathType => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Requested filesystem object type is not supported",
             ),
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -137,6 +151,20 @@ mod tests {
             (
                 StatusCode::BAD_REQUEST,
                 "Search query does not satisfy the literal text-search contract",
+            )
+        );
+        assert_eq!(
+            AppError::PathNotFound.public_response(),
+            (
+                StatusCode::NOT_FOUND,
+                "Requested filesystem object does not exist",
+            )
+        );
+        assert_eq!(
+            AppError::UnsupportedPathType.public_response(),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Requested filesystem object type is not supported",
             )
         );
     }

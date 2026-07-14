@@ -24,6 +24,7 @@ pub const MAX_LIST_ENTRIES: usize = 4_096;
 pub const MAX_LIST_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_READ_BYTES: usize = 1_048_576;
 pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
+pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
 pub const MIN_SEARCH_DEPTH: u32 = 1;
 pub const MAX_SEARCH_DEPTH: u32 = 5;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
@@ -179,7 +180,11 @@ impl FileSystemTools {
         }
 
         Ok(AnchoredPath {
-            display_path: root_path.join(relative_path),
+            display_path: if relative_path.as_os_str().is_empty() {
+                root_path.clone()
+            } else {
+                root_path.join(relative_path)
+            },
             root_path: root_path.clone(),
             relative_path: relative_path.to_path_buf(),
         })
@@ -469,6 +474,46 @@ impl FileSystemTools {
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.read.latency_seconds").record(duration);
         counter!("mcp.fs.read.bytes_total").increment(result.size as u64);
+
+        Ok(result)
+    }
+
+    pub async fn path_metadata(&self, path: String) -> Result<PathMetadataResult, AppError> {
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let result = tokio::task::spawn_blocking(move || {
+            let root_fd = open_root_directory(&anchored.root_path)?;
+            let target_fd = open_metadata_descriptor(root_fd, &anchored.relative_path)?;
+            let metadata = descriptor_fs::fstat(&target_fd).map_err(descriptor_error)?;
+            let file_type = FileType::from_raw_mode(metadata.st_mode);
+            let (kind, size_bytes) = if file_type.is_file() {
+                (
+                    PathMetadataKind::RegularFile,
+                    Some(u64::try_from(metadata.st_size).unwrap_or(0)),
+                )
+            } else if file_type.is_dir() {
+                (PathMetadataKind::Directory, None)
+            } else if file_type.is_symlink() {
+                return Err(path_rejected(
+                    anchored.display_path.to_string_lossy().as_ref(),
+                ));
+            } else {
+                return Err(AppError::UnsupportedPathType);
+            };
+
+            Ok::<_, AppError>(PathMetadataResult {
+                path: anchored.display_path.to_string_lossy().to_string(),
+                kind,
+                size_bytes,
+                modified: stat_modified_time(&metadata),
+                max_response_bytes: MAX_PATH_METADATA_RESPONSE_BYTES,
+            })
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.metadata.latency_seconds").record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.metadata.calls_total").increment(1);
 
         Ok(result)
     }
@@ -834,6 +879,62 @@ fn open_descendant_directory(
     Ok(directory)
 }
 
+fn open_metadata_descriptor(root_fd: OwnedFd, relative_path: &Path) -> Result<OwnedFd, AppError> {
+    if relative_path.as_os_str().is_empty() {
+        return Ok(root_fd);
+    }
+
+    let (parent_relative, file_name) = split_parent_and_name(relative_path)?;
+    let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
+    descriptor_fs::openat(
+        &parent_fd,
+        &file_name,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        if error == rustix::io::Errno::NOENT {
+            AppError::PathNotFound
+        } else {
+            descriptor_error(error)
+        }
+    })
+}
+
+fn open_metadata_parent_directory(
+    mut directory: OwnedFd,
+    relative_path: &Path,
+) -> Result<OwnedFd, AppError> {
+    for component in relative_path.components() {
+        let Component::Normal(name) = component else {
+            return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+        };
+        let child = descriptor_fs::openat(
+            &directory,
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::NOENT {
+                AppError::PathNotFound
+            } else {
+                descriptor_error(error)
+            }
+        })?;
+        let metadata = descriptor_fs::fstat(&child).map_err(descriptor_error)?;
+        let file_type = FileType::from_raw_mode(metadata.st_mode);
+        if file_type.is_symlink() {
+            return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+        }
+        if !file_type.is_dir() {
+            return Err(AppError::PathNotFound);
+        }
+        directory = child;
+    }
+    Ok(directory)
+}
+
 fn split_parent_and_name(relative_path: &Path) -> Result<(PathBuf, OsString), AppError> {
     let Some(name) = relative_path.file_name() else {
         return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
@@ -891,6 +992,23 @@ pub struct ReadFileResult {
     pub path: String,
     pub content: String,
     pub size: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathMetadataKind {
+    RegularFile,
+    Directory,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathMetadataResult {
+    pub path: String,
+    pub kind: PathMetadataKind,
+    pub size_bytes: Option<u64>,
+    pub modified: Option<String>,
+    pub max_response_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1216,6 +1334,129 @@ mod tests {
         assert_eq!(
             std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[tokio::test]
+    async fn path_metadata_reports_only_bounded_file_and_directory_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let file_path = root.path().join("visible.txt");
+        std::fs::write(&file_path, "five!").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let file = tools
+            .path_metadata(file_path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(file.path, file_path.to_string_lossy());
+        assert_eq!(file.kind, PathMetadataKind::RegularFile);
+        assert_eq!(file.size_bytes, Some(5));
+        assert_eq!(file.max_response_bytes, MAX_PATH_METADATA_RESPONSE_BYTES);
+        chrono::DateTime::parse_from_rfc3339(file.modified.as_deref().unwrap()).unwrap();
+
+        let empty_path = root.path().join("empty.txt");
+        std::fs::write(&empty_path, []).unwrap();
+        let empty = tools
+            .path_metadata(empty_path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(empty.kind, PathMetadataKind::RegularFile);
+        assert_eq!(empty.size_bytes, Some(0));
+
+        let directory = tools
+            .path_metadata(root.path().to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(directory.path, root.path().to_string_lossy());
+        assert_eq!(directory.kind, PathMetadataKind::Directory);
+        assert_eq!(directory.size_bytes, None);
+
+        let serialized = serde_json::to_value(file).unwrap();
+        assert_eq!(
+            serialized.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["kind", "maxResponseBytes", "modified", "path", "sizeBytes"]
+        );
+        for forbidden in ["inode", "device", "uid", "gid", "mode", "access", "five!"] {
+            assert!(!serialized
+                .to_string()
+                .to_ascii_lowercase()
+                .contains(forbidden));
+        }
+    }
+
+    #[tokio::test]
+    async fn path_metadata_rejects_outside_missing_symlink_and_socket_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&outside_file, "outside").unwrap();
+        symlink(&outside_file, root.path().join("link.txt")).unwrap();
+        let fifo_path = root.path().join("runtime.fifo");
+        let root_fd = open_root_directory(root.path()).unwrap();
+        descriptor_fs::mkfifoat(&root_fd, "runtime.fifo", Mode::RUSR | Mode::WUSR).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        assert!(matches!(
+            tools
+                .path_metadata(outside_file.to_string_lossy().to_string())
+                .await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools
+                .path_metadata(root.path().join("missing").to_string_lossy().to_string())
+                .await,
+            Err(AppError::PathNotFound)
+        ));
+        assert!(matches!(
+            tools
+                .path_metadata(
+                    root.path()
+                        .join("missing-parent")
+                        .join("child")
+                        .to_string_lossy()
+                        .to_string()
+                )
+                .await,
+            Err(AppError::PathNotFound)
+        ));
+        assert!(matches!(
+            tools
+                .path_metadata(root.path().join("link.txt").to_string_lossy().to_string())
+                .await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools
+                .path_metadata(fifo_path.to_string_lossy().to_string())
+                .await,
+            Err(AppError::UnsupportedPathType)
+        ));
+    }
+
+    #[test]
+    fn held_metadata_descriptor_prevents_final_object_exchange_redirection() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let child = root.path().join("child");
+        let parked = root.path().join("parked");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("target.txt"), "safe").unwrap();
+        std::fs::write(outside.path().join("target.txt"), "outside-secret").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let requested = child.join("target.txt");
+        let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
+        let root_fd = open_root_directory(&anchored.root_path).unwrap();
+        let target_fd = open_metadata_descriptor(root_fd, &anchored.relative_path).unwrap();
+
+        std::fs::rename(&child, &parked).unwrap();
+        symlink(outside.path(), &child).unwrap();
+
+        let metadata = descriptor_fs::fstat(&target_fd).unwrap();
+        assert_eq!(metadata.st_size, 4);
+        assert_eq!(
+            std::fs::read_to_string(parked.join("target.txt")).unwrap(),
+            "safe"
         );
     }
 

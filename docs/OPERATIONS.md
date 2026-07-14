@@ -121,7 +121,7 @@ curl -sS \
   -H 'MCP-Protocol-Version: 2025-11-25' \
   -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 8'
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 9'
 
 rm -f "$MCP_RESPONSE_HEADERS"
 unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS
@@ -160,21 +160,23 @@ Authenticated discovery currently exposes:
 3. `android_status` — read-only allowlisted Android/Termux status metadata.
 4. `project_service_status` — read-only allowlisted project service metadata for `mcp_runtime`.
 5. `list_directory` — bounded safe-rooted listing.
-6. `read_file` — bounded safe-rooted UTF-8 reads.
-7. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
-8. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
+6. `path_metadata` — bounded safe-rooted regular-file or directory metadata without content or host identifiers.
+7. `read_file` — bounded safe-rooted UTF-8 reads.
+8. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
+9. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
 
-An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the ninth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
+An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the tenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
 
-An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the ninth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
+An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the tenth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the eight baseline tools. It offers only the exact `server_version`, `server_help`, and `execution_boundary` profiles of the current server binary. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build can expose both providers and this fixed diagnostic tool only when all three runtime flags are explicitly enabled.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the nine baseline tools. It offers only the exact `server_version`, `server_help`, and `execution_boundary` profiles of the current server binary. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twelve tools only when all three runtime flags are explicitly enabled.
 
 The runtime does not expose Android platform control, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or high-impact controls.
 
 Filesystem read responses have explicit mobile-oriented ceilings:
 
 - `list_directory` returns at most 4,096 entries and at most 256 KiB for the complete JSON-RPC response. Entries are ordered deterministically by path before publication. `structuredContent.truncated` reports when either ceiling prevented a complete result and the response publishes both limits.
+- `path_metadata` returns exactly normalized path, regular-file/directory kind, nullable file size, nullable RFC 3339 modification time, and the fixed 16 KiB full-response ceiling. It does not return content, inode/device/UID/GID/mode/access-time data, link targets, or unsupported object types; see [`SAFE_ROOT_PATH_METADATA.md`](SAFE_ROOT_PATH_METADATA.md).
 - `read_file` reads at most 1 MiB of valid UTF-8 and caps the complete JSON-RPC response at 1,114,112 bytes. The file content appears once in `structuredContent.content`; the text content is a fixed-format byte-count summary. JSON escaping that would exceed the response ceiling is rejected with a bounded payload-too-large error.
 - `search_text` accepts one literal query of at most 256 UTF-8 bytes, examines at most 8,192 entries and 4,096 files through depth 5, reads at most 1 MiB per file and 8 MiB total, returns at most 256 path/line/byte-column matches, and caps the complete response at 256 KiB. It returns no file-content excerpt or query echo; see [`SAFE_ROOT_TEXT_SEARCH.md`](SAFE_ROOT_TEXT_SEARCH.md).
 

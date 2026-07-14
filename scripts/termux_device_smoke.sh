@@ -342,7 +342,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","search_text","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","path_metadata","read_file","search_text","write_file"]'
 
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -354,6 +354,21 @@ protocol_smoke() {
   assert_eq "${label}_list_directory_http" "$status" 200
   jq -e --arg expected "$SAFE_ROOT/visible.txt" '.result.structuredContent.entries | any(.path == $expected)' "$body" >/dev/null || fail "safe-root listing omitted the expected file"
   log "PASS ${label}_list_directory=expected-file"
+
+  payload="$(jq -cn --arg path "$SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"path-metadata","method":"tools/call","params":{"name":"path_metadata","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_path_metadata_http" "$status" 200
+  jq -e --arg expected "$SAFE_ROOT/visible.txt" '
+    .result.structuredContent as $metadata
+    | ($metadata | keys) == ["kind","maxResponseBytes","modified","path","sizeBytes"]
+      and $metadata.path == $expected
+      and $metadata.kind == "regular_file"
+      and $metadata.sizeBytes == 20
+      and ($metadata.modified | type) == "string"
+      and $metadata.maxResponseBytes == 16384
+  ' "$body" >/dev/null || fail "${label}_path_metadata_result JSON assertion failed"
+  grep -Eq 'inode|device|uid|gid|mode|accessTime|device-smoke-visible' "$body" && fail "metadata response reflected a denied field or file content"
+  log "PASS ${label}_path_metadata=valid"
 
   payload="$(jq -cn --arg path "$SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"read-file","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"

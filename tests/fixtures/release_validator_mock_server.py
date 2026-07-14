@@ -24,6 +24,7 @@ TOOLS = [
     "android_status",
     "project_service_status",
     "list_directory",
+    "path_metadata",
     "read_file",
     "search_text",
     "write_file",
@@ -387,6 +388,28 @@ class Handler(BaseHTTPRequestHandler):
                 result(
                     identifier,
                     {"path": str(target), "content": content, "size": len(content.encode())},
+                ),
+            )
+            return
+        if name == "path_metadata":
+            target = safe_path(str(arguments.get("path", "")))
+            if target is None or (not target.is_file() and not target.is_dir()):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Safe-root rejection."),
+                )
+                return
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "path": str(target),
+                        "kind": "directory" if target.is_dir() else "regular_file",
+                        "sizeBytes": None if target.is_dir() else target.stat().st_size,
+                        "modified": "2026-01-01T00:00:00+00:00",
+                        "maxResponseBytes": 16384,
+                    },
                 ),
             )
             return

@@ -11,6 +11,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `android_status`
 - `project_service_status`
 - `list_directory`
+- `path_metadata`
 - `read_file`
 - `search_text`
 - `write_file`
@@ -19,7 +20,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded reads/search, and dry-run-by-default writes. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, search queries, file contents, match data, or caller-provided values.
+Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search, and dry-run-by-default writes. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, filenames, metadata values, search queries, file contents, match data, or caller-provided values.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 

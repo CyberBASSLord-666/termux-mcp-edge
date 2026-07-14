@@ -435,6 +435,7 @@ jq -e '
     "android_status",
     "project_service_status",
     "list_directory",
+    "path_metadata",
     "read_file",
     "search_text",
     "write_file",
@@ -550,6 +551,7 @@ jq -e '
     "android_status",
     "project_service_status",
     "list_directory",
+    "path_metadata",
     "read_file",
     "search_text",
     "write_file"
