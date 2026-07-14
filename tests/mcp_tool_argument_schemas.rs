@@ -246,11 +246,23 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
         let response =
             post_to_router(router.clone(), tool_call(id, tool_name, Some(arguments))).await;
         assert_eq!(response.status(), StatusCode::OK, "valid call failed: {id}");
+        if id == "create-directory-full" {
+            let payload = response_json(response).await;
+            assert_eq!(payload["result"]["isError"], true);
+            assert_eq!(
+                payload["result"]["structuredContent"]["error"],
+                "filesystem_directory_create_unauthorized"
+            );
+            assert_eq!(
+                payload["result"]["structuredContent"]["reasonCode"],
+                "directory_mutation_authorization_unavailable"
+            );
+        }
     }
 
     assert!(!dry_run_target.exists());
     assert!(!directory_preview.exists());
-    assert!(directory_mutation.is_dir());
+    assert!(!directory_mutation.exists());
     assert_eq!(
         tokio::fs::read_to_string(&mutation_target).await.unwrap(),
         "explicit mutation"

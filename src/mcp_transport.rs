@@ -145,6 +145,7 @@ const FILESYSTEM_CREATE_ALLOWED: &str = "safe_root_directory_created";
 const FILESYSTEM_CREATE_EXISTS: &str = "filesystem_destination_exists";
 const FILESYSTEM_CREATE_PARENT_NOT_FOUND: &str = "filesystem_parent_not_found";
 const FILESYSTEM_CREATE_FAILED: &str = "filesystem_directory_create_failed";
+const FILESYSTEM_CREATE_MUTATION_DISABLED: &str = "directory_mutation_authorization_unavailable";
 const FILESYSTEM_READ_FAILED: &str = "filesystem_read_failed";
 const FILESYSTEM_DRY_RUN_ALLOWED: &str = "dry_run_preview";
 const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
@@ -164,6 +165,7 @@ struct McpTransportState {
     file_tools: FileSystemTools,
     audit_counters: SharedAuditCounters,
     sessions: McpSessionStore,
+    create_directory_mutation_enabled: bool,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
@@ -198,6 +200,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            create_directory_mutation_enabled: false,
             android_battery_status_enabled: android_battery_status_enabled
                 && cfg!(feature = "android-battery-status"),
             android_volume_status_enabled: android_volume_status_enabled
@@ -235,6 +238,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            create_directory_mutation_enabled: false,
             android_battery_status_enabled,
             android_volume_status_enabled: false,
             command_execution_enabled: false,
@@ -268,6 +272,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            create_directory_mutation_enabled: false,
             android_battery_status_enabled: false,
             android_volume_status_enabled,
             command_execution_enabled: false,
@@ -291,6 +296,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            create_directory_mutation_enabled: false,
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
             command_execution_enabled,
@@ -1072,7 +1078,7 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                     },
                     {
                         "name": CREATE_DIRECTORY_TOOL,
-                        "description": "Create one safe-rooted directory with fixed mode 0700. Defaults to dry-run; mutation requires explicit dry_run=false.",
+                        "description": "Validate one safe-rooted directory creation in dry-run mode. Live mutation is unavailable until the request-scoped authorization gate is implemented.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -1082,7 +1088,7 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                                 },
                                 "dry_run": {
                                     "type": "boolean",
-                                    "description": "Defaults to true. Set explicitly to false to create exactly one directory.",
+                                    "description": "Defaults to true. Explicit false requests are rejected while the mutation authorization gate is closed.",
                                 },
                             },
                             "required": ["path"],
@@ -1312,11 +1318,12 @@ async fn handle_tool_call(
             )
         }
         CREATE_DIRECTORY_TOOL => {
-            handle_create_directory_call(
+            handle_create_directory_call_with_gate(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
                 &state.audit_counters,
+                state.create_directory_mutation_enabled,
             )
             .await
         }
@@ -1790,7 +1797,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=create-directory-list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=create-directory-dry-run-only-list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -1812,7 +1819,9 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_dry_run_only_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "createDirectoryMutation": false,
+                    "createDirectoryMutationMode": "authorization_gate_closed",
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
                     "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled,
@@ -2295,11 +2304,12 @@ async fn handle_read_file_call(
 }
 
 #[rustfmt::skip]
-async fn handle_create_directory_call(
+async fn handle_create_directory_call_with_gate(
     id: Option<Value>,
     arguments: Option<Value>,
     file_tools: &FileSystemTools,
     audit_counters: &SharedAuditCounters,
+    mutation_authorized: bool,
 ) -> Response {
     let arguments = match arguments {
         Some(arguments) => arguments,
@@ -2360,6 +2370,21 @@ async fn handle_create_directory_call(
             id,
             "Directory creation response exceeds the staged response byte limit.",
             MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+        );
+    }
+    if !dry_run && !mutation_authorized {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            AuditMode::Mutating,
+            FILESYSTEM_CREATE_MUTATION_DISABLED,
+        );
+        return tool_error_result(
+            id,
+            CREATE_DIRECTORY_TOOL,
+            "filesystem_directory_create_unauthorized",
+            FILESYSTEM_CREATE_MUTATION_DISABLED,
         );
     }
     match file_tools.create_directory(args.path, Some(dry_run)).await {
@@ -3184,6 +3209,50 @@ mod tests {
         assert_eq!(filesystem_write_mode(false), AuditMode::Mutating);
         assert_eq!(filesystem_write_allowed_reason(true), FILESYSTEM_DRY_RUN_ALLOWED);
         assert_eq!(filesystem_write_allowed_reason(false), FILESYSTEM_WRITE_ALLOWED);
+    }
+
+
+    #[tokio::test]
+    async fn create_directory_mutation_fails_closed_without_authorization_gate() {
+        use axum::body::to_bytes;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let destination = safe_root.path().join("must-not-exist");
+        let file_tools = FileSystemTools::new(vec![safe_root.path().to_path_buf()]);
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+
+        let response = handle_create_directory_call_with_gate(
+            Some(json!("closed-gate")),
+            Some(json!({
+                "path": destination.to_string_lossy(),
+                "dry_run": false,
+            })),
+            &file_tools,
+            &counters,
+            false,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), MAX_CREATE_DIRECTORY_RESPONSE_BYTES)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["reasonCode"],
+            FILESYSTEM_CREATE_MUTATION_DISABLED
+        );
+        assert!(!destination.exists());
+
+        let snapshot = counters.lock().unwrap().clone();
+        assert_eq!(snapshot.denied_total, 1);
+        assert_eq!(
+            snapshot.by_reason_code[FILESYSTEM_CREATE_MUTATION_DISABLED].denied,
+            1
+        );
     }
 
     #[cfg(feature = "android-battery-status")]

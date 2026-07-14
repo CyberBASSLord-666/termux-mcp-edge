@@ -40,8 +40,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -51,15 +50,13 @@ jobs:
   rust:
     name: Rust validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Checkout
         # actions/checkout@v7.0.0 resolved 2026-07-10
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
@@ -79,82 +76,20 @@ jobs:
         # Swatinem/rust-cache@v2 resolved 2026-06-26
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      - name: Apply staged fail-closed directory gate
-        if: github.event_name == 'pull_request' && github.head_ref == 'create-directory-capability-grant-248'
-        run: |
-          python3 scripts/apply_create_directory_fail_closed_gate.py
-          cargo fmt --all
-
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Clippy (default posture)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy (all features diagnostic)
-        id: clippy_all
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-        run: |
-          set +e
-          cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tee /tmp/clippy-all-features.log
-          status=${PIPESTATUS[0]}
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Publish bounded Clippy diagnostic
-        if: steps.clippy_all.outputs.status != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          {
-            printf 'Automated all-features Clippy diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
-            tail -n 100 /tmp/clippy-all-features.log \
-              | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
-            printf '```\n'
-          } > /tmp/clippy-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/clippy-diagnostic.md
-
-      - name: Enforce all-features Clippy result
-        if: steps.clippy_all.outputs.status != '0'
-        run: exit 1
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests (default posture)
         run: cargo test --workspace --all-targets
 
-      - name: Tests (all features diagnostic)
-        id: tests_all
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-        run: |
-          set +e
-          cargo test --workspace --all-targets --all-features 2>&1 | tee /tmp/tests-all-features.log
-          status=${PIPESTATUS[0]}
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Publish bounded all-features test diagnostic
-        if: steps.tests_all.outputs.status != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          {
-            printf 'Automated all-features test diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
-            tail -n 140 /tmp/tests-all-features.log \
-              | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
-            printf '```\n'
-          } > /tmp/tests-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/tests-diagnostic.md
-
-      - name: Enforce all-features test result
-        if: steps.tests_all.outputs.status != '0'
-        run: exit 1
+      - name: Tests (all features)
+        run: cargo test --workspace --all-targets --all-features
 
       - name: Shell contract tests
         run: |
@@ -167,20 +102,3 @@ jobs:
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
             docs/command-emulated-evidence-schema-v1.json >/dev/null
-
-      - name: Publish validated fail-closed gate and restore CI
-        if: github.event_name == 'pull_request' && github.head_ref == 'create-directory-capability-grant-248'
-        env:
-          EXPECTED_BRANCH: create-directory-capability-grant-248
-        run: |
-          set -euo pipefail
-          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
-          git fetch --no-tags origin main
-          rm scripts/apply_create_directory_fail_closed_gate.py
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/mcp_transport.rs tests/mcp_tool_argument_schemas.rs scripts/apply_create_directory_fail_closed_gate.py .github/workflows/ci.yml
-          git diff --cached --check
-          git commit -m "fix: fail closed create-directory mutation pending grants"
-          git push origin "HEAD:$EXPECTED_BRANCH"
