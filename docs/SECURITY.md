@@ -20,8 +20,11 @@ The optional runtime is not a broad host-control surface. After authentication, 
 - `platform_info`
 - `android_status`
 - `project_service_status`
+- `create_directory`
 - `list_directory`
+- `path_metadata`
 - `read_file`
+- `search_text`
 - `write_file`
 
 An `android-battery-status` build may additionally expose `android_battery_status` only when `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`. The runtime flag defaults to disabled and is rejected if the compile feature is absent. The provider directly executes one fixed Termux:API program with no arguments, null stdin, a cleared inherited environment, a five-second normal-operation budget with a reserved cleanup window, and hard stdout/stderr ceilings. A single cancellation-safe supervisor isolates the provider process group, terminates it immediately on overflow or cancellation, closes both pipes, and synchronously reaps the direct child. If reaping misses the reserve, the stable wait-failure result becomes authoritative and the supervisor remains responsible until collection. It returns only normalized allowlisted fields and never reflects technology/vendor strings, identifiers, raw output, stderr, paths, or environment values.
@@ -68,8 +71,11 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `android_volume_status` | Disabled | Available only in the `android-volume-status` build with explicit runtime opt-in; bounded read-only telemetry |
 | `run_command_profile` | Disabled | Available only in the `command-execution` build with explicit runtime opt-in; three fixed read-only server diagnostics |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
+| `create_directory` | Disabled | One safe-rooted directory, fixed mode `0700`, atomic no-replace, dry-run by default |
 | `list_directory` | Disabled | Bounded and safe-rooted |
+| `path_metadata` | Disabled | Bounded, content-free, descriptor-relative metadata |
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
+| `search_text` | Disabled | Bounded literal locations without content excerpts |
 | `write_file` | Disabled | Payload-bounded, safe-rooted, dry-run by default |
 | Android control / arbitrary command execution / high-impact controls | Disabled | Disabled |
 
@@ -118,7 +124,7 @@ The default safe root is deliberately narrow:
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
-`list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are payload bounded. Directory results are deterministic, capped at 4,096 entries and a 256 KiB full response, and explicitly report truncation. Metadata classifies one opened regular file or directory, returns no content or host identifiers, and caps the full response at 16 KiB. Reads accept at most 1 MiB of valid UTF-8 while the full response is capped at 1,114,112 bytes; file content is emitted once rather than duplicated into the summary. Search uses fixed traversal/file/byte/match ceilings, returns only locations, and caps the full response at 256 KiB. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation. Explicit writes create an exclusive mode-0600 temporary file in the opened destination directory, sync its contents, rename relative to that same descriptor, and sync the parent directory. Cancellation before rename leaves descriptor-relative cleanup armed; after a successful rename the parent sync defines the crash-durability boundary.
+`create_directory`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview, requires explicit `dry_run:false`, creates one absent child with fixed mode `0700`, stages under an unpredictable name, publishes with atomic no-replace semantics, and caps the complete response at 16 KiB. Directory listings are deterministic, capped at 4,096 entries and a 256 KiB full response, and explicitly report truncation. Metadata classifies one opened regular file or directory, returns no content or host identifiers, and caps the full response at 16 KiB. Reads accept at most 1 MiB of valid UTF-8 while the full response is capped at 1,114,112 bytes; file content is emitted once rather than duplicated into the summary. Search uses fixed traversal/file/byte/match ceilings, returns only locations, and caps the full response at 256 KiB. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation. Explicit writes create an exclusive mode-0600 temporary file in the opened destination directory, sync its contents, rename relative to that same descriptor, and sync the parent directory. Mutation cleanup remains descriptor-relative and identity-checked where directory publication has occurred; successful parent sync defines the crash-durability boundary.
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
 

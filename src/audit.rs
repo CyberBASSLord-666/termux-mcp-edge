@@ -105,8 +105,9 @@ pub fn read_only_denied_event(
 
 /// Build a backend-neutral audit event for an allowed staged filesystem decision.
 ///
-/// The filesystem surface includes read-only directory listing, bounded read-only
-/// file reads, dry-run write previews, and explicitly requested writes. Callers
+/// The filesystem surface includes dry-run and explicit directory creation,
+/// read-only directory listing, bounded read-only file reads, dry-run file-write
+/// previews, and explicitly requested file writes. Callers
 /// must pass only stable labels and a coarse mode; this helper never captures raw
 /// paths, file contents, command output, environment values, or host metadata.
 pub fn filesystem_allowed_event(

@@ -886,7 +886,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1009,6 +1009,38 @@ run_mcp_runtime_checks() {
       and $search.maxResponseBytes == 262144
   ' "$body" >/dev/null 2>&1 || fail search_response_contract_invalid
   grep -Fq validation-visible "$body" && fail search_query_or_content_reflected
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/created-directory" '{"jsonrpc":"2.0","id":"create-directory-dry","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status create_directory_dry_run "$status" 200 create_directory_dry_run_succeeded
+  jq -e --arg path "$VALIDATION_SAFE_ROOT/created-directory" '
+    .result.structuredContent == {
+      path:$path,
+      dryRun:true,
+      mode:"0700",
+      maxResponseBytes:16384
+    }
+  ' "$body" >/dev/null 2>&1 || fail create_directory_dry_run_contract_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_dry_run_mutated
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/created-directory" '{"jsonrpc":"2.0","id":"create-directory","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status create_directory "$status" 200 create_directory_succeeded
+  jq -e --arg path "$VALIDATION_SAFE_ROOT/created-directory" '
+    .result.structuredContent == {
+      path:$path,
+      dryRun:false,
+      mode:"0700",
+      maxResponseBytes:16384
+    }
+  ' "$body" >/dev/null 2>&1 || fail create_directory_contract_invalid
+  [[ -d "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_target_missing
+  [[ "$(stat -c '%a' "$VALIDATION_SAFE_ROOT/created-directory" 2>/dev/null)" == 700 ]] || fail create_directory_mode_invalid
+  record_result runtime create_directory pass safe_root_directory_creation_verified
+
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status create_directory_existing "$status" 400 create_directory_existing_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail create_directory_existing_body_invalid
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/expanded-response.bin" bs=200000 count=1 status=none 2>/dev/null || fail read_bound_fixture_create_failed
   chmod 600 "$VALIDATION_SAFE_ROOT/expanded-response.bin" 2>/dev/null || fail read_bound_fixture_create_failed

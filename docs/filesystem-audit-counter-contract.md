@@ -4,6 +4,7 @@ This document defines the staged runtime contract for counting filesystem tool d
 
 The contract applies to the existing staged filesystem tools:
 
+- `create_directory`
 - `list_directory`
 - `path_metadata`
 - `read_file`
@@ -19,6 +20,8 @@ Filesystem audit counter wiring should make operator-visible runtime counters us
 The runtime should count:
 
 - allowed safe-rooted directory listings
+- allowed directory-creation dry runs and explicit one-directory mutations
+- denied directory creation, including invalid arguments, safe-root rejection, missing parents, existing destinations, response bounds, and internal failures
 - denied directory-listing requests, including invalid arguments and safe-root rejections
 - allowed bounded metadata reads for one safe-rooted regular file or directory
 - denied metadata requests, including invalid arguments, missing objects, unsupported types, safe-root rejections, response bounds, and internal failures
@@ -67,14 +70,16 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 
 | Tool | Allowed mode | Denied mode | Gate name |
 | --- | --- | --- | --- |
-| `list_directory` | `read_only` | `read_only` | `filesystem_safe_root` |
+| `create_directory` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
+| `create_directory` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
+| `list_directory` | `read_only` | `read_only` | `filesystem_read` |
 | `path_metadata` | `read_only` | `read_only` | `filesystem_metadata` |
-| `read_file` | `read_only` | `read_only` | `filesystem_safe_root` |
+| `read_file` | `read_only` | `read_only` | `filesystem_read` |
 | `search_text` | `read_only` | `read_only` | `filesystem_read` |
 | `write_file` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
 | `write_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
 
-A write call is a dry-run preview unless the existing write policy resolves `dry_run=false` to an explicit mutation. Audit wiring must use the resolved mode, not merely the raw caller argument.
+A directory or file mutation call is a dry-run preview unless `dry_run=false` resolves to an explicit mutation. Audit wiring must use the resolved mode, not merely the raw caller argument.
 
 ## Stable reason-code guidance
 
@@ -86,6 +91,7 @@ Recommended allowed reason codes:
 - `safe_root_metadata_read`
 - `safe_root_read`
 - `safe_root_text_searched`
+- `safe_root_directory_created`
 - `dry_run_preview`
 - `explicit_write_allowed`
 
@@ -97,6 +103,9 @@ Recommended denied reason codes:
 - `search_query_invalid`
 - `filesystem_path_not_found`
 - `filesystem_path_type_unsupported`
+- `filesystem_parent_not_found`
+- `filesystem_destination_exists`
+- `filesystem_directory_create_failed`
 - `path_outside_safe_root`
 - `read_byte_limit_exceeded`
 - `write_byte_limit_exceeded`
@@ -106,15 +115,15 @@ The final runtime implementation may consolidate equivalent failures under fewer
 
 ## Response-contract preservation
 
-Audit counter wiring must not change existing JSON-RPC response shapes for `list_directory`, `path_metadata`, `read_file`, `search_text`, or `write_file`.
+Audit counter wiring must not change existing JSON-RPC response shapes for `create_directory`, `list_directory`, `path_metadata`, `read_file`, `search_text`, or `write_file`.
 
 In particular, runtime wiring must preserve:
 
-- current success text for directory listings and writes
-- current `structuredContent` payloads for all three tools
+- current success text for creation, directory listings, and writes
+- current `structuredContent` payloads for every filesystem tool
 - current JSON-RPC error codes for invalid params, payload-too-large, and internal errors
 - current safe-root rejection message
-- current default-dry-run write behavior
+- current default-dry-run directory and file mutation behavior
 
 `runtime_status` may continue exposing the additive `auditCounters` snapshot already present in the staged runtime.
 
@@ -122,17 +131,18 @@ In particular, runtime wiring must preserve:
 
 A focused runtime wiring PR should verify all of the following:
 
-1. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.
-2. `list_directory` records a denied read-only filesystem event for invalid arguments, invalid depth, safe-root rejection, and internal operation failure.
-3. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
-4. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
-5. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
-6. `write_file` records an allowed mutating filesystem event for successful explicit writes.
-7. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
-8. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
-9. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
-10. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content.
+1. `create_directory` records allowed dry-run and mutating decisions and denied missing/existing/boundary/failure decisions without retaining path or temporary-name data.
+2. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.
+3. `list_directory` records a denied read-only filesystem event for invalid arguments, invalid depth, safe-root rejection, and internal operation failure.
+4. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
+5. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
+6. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
+7. `write_file` records an allowed mutating filesystem event for successful explicit writes.
+8. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
+9. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
+10. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
+11. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content.
 
 ## Security invariant
 
-Filesystem audit counter wiring is observability-only. It must not broaden the filesystem authority model, weaken safe-root checks, add new tools, expose new arguments, add shell access, or create any high-impact control surface.
+Filesystem audit counter wiring is observability-only. It must not broaden the documented filesystem authority model, weaken safe-root checks, add shell access, or create any high-impact control surface.

@@ -342,7 +342,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","path_metadata","read_file","search_text","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","list_directory","path_metadata","read_file","search_text","write_file"]'
 
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -382,6 +382,21 @@ protocol_smoke() {
   log "PASS ${label}_search_text_result=valid"
   grep -Fq device-smoke-visible "$body" && fail "search response reflected query or file content"
   log "PASS ${label}_search_text_content=redacted"
+
+  directory_target="$SAFE_ROOT/created-directory"
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory-dry","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_create_directory_dry_run_http" "$status" 200
+  assert_json "${label}_create_directory_dry_run_body" "$body" '.result.structuredContent.dryRun == true and .result.structuredContent.mode == "0700" and .result.structuredContent.maxResponseBytes == 16384'
+  assert_absent "${label}_create_directory_dry_run_target" "$directory_target"
+
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_create_directory_http" "$status" 200
+  assert_json "${label}_create_directory_body" "$body" '.result.structuredContent.dryRun == false and .result.structuredContent.mode == "0700"'
+  [[ -d "$directory_target" ]] || fail "explicit create_directory call did not create its target"
+  log "PASS ${label}_create_directory_target=directory"
+  assert_eq "${label}_create_directory_mode" "$(stat -c '%a' "$directory_target")" 700
 
   target="$SAFE_ROOT/write-target.txt"
   payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"

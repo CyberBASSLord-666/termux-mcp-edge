@@ -10,6 +10,7 @@ Enabled staged tools:
 - `platform_info`
 - `android_status`
 - `project_service_status`
+- `create_directory` for exactly one absent safe-rooted directory, dry-run by default, fixed mode `0700`, and atomic no-replace publication
 - `list_directory`
 - `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers
 - `read_file`

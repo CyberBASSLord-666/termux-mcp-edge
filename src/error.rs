@@ -23,6 +23,9 @@ pub enum AppError {
     #[error("Requested filesystem object type is not supported")]
     UnsupportedPathType,
 
+    #[error("Requested filesystem destination already exists")]
+    PathAlreadyExists,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -64,6 +67,10 @@ impl AppError {
             AppError::UnsupportedPathType => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Requested filesystem object type is not supported",
+            ),
+            AppError::PathAlreadyExists => (
+                StatusCode::CONFLICT,
+                "Requested filesystem destination already exists",
             ),
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -165,6 +172,13 @@ mod tests {
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Requested filesystem object type is not supported",
+            )
+        );
+        assert_eq!(
+            AppError::PathAlreadyExists.public_response(),
+            (
+                StatusCode::CONFLICT,
+                "Requested filesystem destination already exists",
             )
         );
     }

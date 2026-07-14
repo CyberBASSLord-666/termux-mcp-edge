@@ -84,7 +84,7 @@ Before treating an Android artifact as releasable, record:
 4. The SHA-256 digest and AArch64 Android ELF identity.
 5. The embedded `--version` output.
 6. On-device `/health` and `/ready` results.
-7. For the `mcp-runtime` posture, authenticated discovery and representative allowed and denied tool calls.
+7. For the `mcp-runtime` posture, authenticated discovery and representative allowed and denied tool calls, including dry-run/explicit directory creation, path metadata, and literal search.
 8. For the battery posture, disabled-default discovery plus enabled fixed-path, zero-argument, cleared-environment, normalized-output, immediate endless-output termination, process-group/descendant/cancellation cleanup, provider-failure, audit, and no-device-control checks.
 9. For the volume posture, disabled-default discovery plus enabled fixed-path, zero-argument, cleared-environment, exact six-stream normalization, canonical ordering, unknown-field rejection, immediate endless-output termination, process-group/descendant/cancellation cleanup, provider-failure, audit, and no-volume-mutation/device-control checks.
 10. For the command posture, default-artifact compile-gate rejection plus command-artifact disabled/enabled truth table, exact closed schema, fixed current executable and argv, safe-root cwd, empty environment, null stdin, bounded UTF-8 results, override/unknown-profile rejection, audit counters, and proof that arbitrary commands and high-impact controls remain disabled.
