@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "network-programming"]
 
 [features]
 default = []
-mcp-runtime = ["dep:rustix"]
+mcp-runtime = ["dep:base64", "dep:hmac", "dep:rustix", "dep:sha2", "dep:zeroize"]
 android-battery-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 command-execution = ["mcp-runtime", "tokio/process", "rustix/process"]
@@ -32,7 +32,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 metrics = "0.24"
-rustix = { version = "1", features = ["fs"], optional = true }
+base64 = { version = "0.22", optional = true }
+hmac = { version = "0.12", optional = true }
+rustix = { version = "1", features = ["fs", "process"], optional = true }
+sha2 = { version = "0.10", optional = true }
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 proptest = "1"

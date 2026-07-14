@@ -19,6 +19,7 @@ use termux_mcp_server::health::McpRequestLimitReadiness;
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
+    directory_grant::DirectoryGrantVerifier,
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     transport_security::TransportSecurityPolicy,
 };
@@ -71,6 +72,19 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "mcp-runtime")]
     let mcp_auth_policy = McpAuthPolicy::from_config(&config.auth, auth_posture)?;
+
+    #[cfg(feature = "mcp-runtime")]
+    let _directory_grant_verifier = DirectoryGrantVerifier::load_optional(
+        &config.directory_grant,
+        config.auth.static_token.as_deref(),
+    )?;
+
+    #[cfg(feature = "mcp-runtime")]
+    info!(
+        verification_configured = _directory_grant_verifier.is_some(),
+        mutation_enabled = false,
+        "Directory capability-grant verification posture loaded"
+    );
 
     #[cfg(feature = "mcp-runtime")]
     let mcp_request_limits = McpRequestLimits::from_seconds(

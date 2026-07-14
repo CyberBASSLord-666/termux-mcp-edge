@@ -17,6 +17,10 @@ use axum::{
 use serde_json::json;
 
 use crate::config::{AuthConfig, AuthPosture};
+#[cfg(feature = "mcp-runtime")]
+use crate::directory_grant::{
+    has_directory_grant_header, take_directory_grant_authorization, DirectoryGrantAuthorization,
+};
 
 /// Upper bound for both configured and presented bearer tokens.
 ///
@@ -42,6 +46,11 @@ impl AuthenticatedPrincipal {
         Ok(Self {
             stable_id: Arc::from(stable_id),
         })
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    pub(crate) fn stable_id(&self) -> &str {
+        &self.stable_id
     }
 }
 
@@ -141,14 +150,43 @@ pub async fn require_mcp_auth(
     next: Next,
 ) -> Response {
     match &policy {
-        McpAuthPolicy::UnauthenticatedLocalhostOnly => next.run(request).await,
+        McpAuthPolicy::UnauthenticatedLocalhostOnly => {
+            #[cfg(feature = "mcp-runtime")]
+            if has_directory_grant_header(request.headers()) {
+                request
+                    .headers_mut()
+                    .remove(crate::directory_grant::MCP_DIRECTORY_GRANT_HEADER);
+                return authorization_context_response(
+                    StatusCode::FORBIDDEN,
+                    "authorization_context_requires_authentication",
+                    "Capability-grant authorization context requires authenticated transport.",
+                );
+            }
+            next.run(request).await
+        }
         McpAuthPolicy::StaticBearer { token, principal } => {
             let authorized = extract_bearer_token(request.headers())
                 .is_some_and(|provided| constant_time_eq(provided.as_bytes(), token.as_bytes()));
 
             if authorized {
+                #[cfg(feature = "mcp-runtime")]
+                let grant: Option<DirectoryGrantAuthorization> =
+                    match take_directory_grant_authorization(request.headers_mut()) {
+                        Ok(grant) => grant,
+                        Err(_) => {
+                            return authorization_context_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_authorization_context",
+                                "Capability-grant authorization context is malformed.",
+                            );
+                        }
+                    };
                 if let Some(principal) = principal {
                     request.extensions_mut().insert(principal.clone());
+                }
+                #[cfg(feature = "mcp-runtime")]
+                if let Some(grant) = grant {
+                    request.extensions_mut().insert(grant);
                 }
                 next.run(request).await
             } else {
@@ -226,6 +264,19 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     }
 
     difference == 0
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn authorization_context_response(
+    status: StatusCode,
+    error: &'static str,
+    message: &'static str,
+) -> Response {
+    let mut response = (status, Json(json!({"error": error, "message": message}))).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 fn unauthorized_response() -> Response {
@@ -415,6 +466,94 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(text_body(response).await, "principal-unbound");
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    #[tokio::test]
+    async fn grant_context_requires_authentication_and_is_removed_before_dispatch() {
+        use crate::directory_grant::{DirectoryGrantAuthorization, MCP_DIRECTORY_GRANT_HEADER};
+
+        async fn grant_status(
+            grant: Option<Extension<DirectoryGrantAuthorization>>,
+            headers: HeaderMap,
+        ) -> &'static str {
+            match (
+                grant.is_some(),
+                headers.contains_key(MCP_DIRECTORY_GRANT_HEADER),
+            ) {
+                (true, false) => "opaque-grant-only",
+                _ => "grant-boundary-failed",
+            }
+        }
+
+        let app = Router::new().route("/mcp", post(grant_status)).route_layer(
+            middleware::from_fn_with_state(
+                McpAuthPolicy::static_bearer_for_principal("expected-value", "operator.primary:v1")
+                    .unwrap(),
+                require_mcp_auth,
+            ),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::post("/mcp")
+                    .header(header::AUTHORIZATION, "Bearer expected-value")
+                    .header(MCP_DIRECTORY_GRANT_HEADER, "canonical.grant.value")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(text_body(response).await, "opaque-grant-only");
+
+        let unauthenticated = Router::new().route("/mcp", post(grant_status)).route_layer(
+            middleware::from_fn_with_state(
+                McpAuthPolicy::unauthenticated_localhost_only(),
+                require_mcp_auth,
+            ),
+        );
+        let response = unauthenticated
+            .oneshot(
+                HttpRequest::post("/mcp")
+                    .header(MCP_DIRECTORY_GRANT_HEADER, "canonical.grant.value")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    #[tokio::test]
+    async fn bearer_authentication_precedes_grant_context_validation() {
+        use crate::directory_grant::MCP_DIRECTORY_GRANT_HEADER;
+
+        let response = call(
+            McpAuthPolicy::static_bearer("expected-value").unwrap(),
+            Some("Bearer wrong-value"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let app = Router::new()
+            .route("/mcp", post(principal_status))
+            .route_layer(middleware::from_fn_with_state(
+                McpAuthPolicy::static_bearer("expected-value").unwrap(),
+                require_mcp_auth,
+            ));
+        let response = app
+            .oneshot(
+                HttpRequest::post("/mcp")
+                    .header(header::AUTHORIZATION, "Bearer wrong-value")
+                    .header(MCP_DIRECTORY_GRANT_HEADER, "contains whitespace")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]

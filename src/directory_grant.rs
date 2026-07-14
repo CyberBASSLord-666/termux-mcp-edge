@@ -1,16 +1,4 @@
-#!/usr/bin/env python3
-from pathlib import Path
-
-
-def replace_once(path: Path, old: str, new: str) -> None:
-    text = path.read_text()
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:160]!r}")
-    path.write_text(text.replace(old, new, 1))
-
-
-Path("src/directory_grant.rs").write_text(r'''//! Request-scoped `create_directory` grant transport and cryptographic verification.
+//! Request-scoped `create_directory` grant transport and cryptographic verification.
 //!
 //! This module deliberately stops before mutation authorization. A verified grant
 //! cannot open the runtime mutation gate until durable single-use replay consumption
@@ -109,10 +97,7 @@ pub fn has_directory_grant_header(headers: &HeaderMap) -> bool {
 pub fn take_directory_grant_authorization(
     headers: &mut HeaderMap,
 ) -> Result<Option<DirectoryGrantAuthorization>, DirectoryGrantContextError> {
-    let count = headers
-        .get_all(MCP_DIRECTORY_GRANT_HEADER)
-        .iter()
-        .count();
+    let count = headers.get_all(MCP_DIRECTORY_GRANT_HEADER).iter().count();
     if count == 0 {
         return Ok(None);
     }
@@ -232,6 +217,7 @@ pub struct DirectoryGrantBinding<'a> {
     pub target_components: &'a [String],
 }
 
+#[derive(PartialEq, Eq)]
 pub struct VerifiedDirectoryGrant {
     grant_identifier: [u8; DIRECTORY_GRANT_ID_BYTES],
     expires_unix_seconds: u64,
@@ -308,11 +294,17 @@ impl DirectoryGrantVerifier {
         config: &DirectoryGrantConfig,
         authentication_token: Option<&str>,
     ) -> anyhow::Result<Option<Self>> {
+        Self::load_optional_at(config, authentication_token, current_unix_seconds()?)
+    }
+
+    fn load_optional_at(
+        config: &DirectoryGrantConfig,
+        authentication_token: Option<&str>,
+        now: u64,
+    ) -> anyhow::Result<Option<Self>> {
         if !config.verification_enabled {
             return Ok(None);
         }
-
-        let now = current_unix_seconds()?;
         let issuer = config
             .issuer
             .as_deref()
@@ -615,10 +607,10 @@ where
     T: DeserializeOwned + Serialize,
 {
     let bytes = decode_canonical_base64(segment, MAX_CLAIMS_SEGMENT_BYTES)?;
-    let value: T = serde_json::from_slice(&bytes)
-        .map_err(|_| DirectoryGrantVerificationError::Malformed)?;
-    let canonical = serde_json::to_vec(&value)
-        .map_err(|_| DirectoryGrantVerificationError::Malformed)?;
+    let value: T =
+        serde_json::from_slice(&bytes).map_err(|_| DirectoryGrantVerificationError::Malformed)?;
+    let canonical =
+        serde_json::to_vec(&value).map_err(|_| DirectoryGrantVerificationError::Malformed)?;
     if canonical != bytes {
         return Err(DirectoryGrantVerificationError::Malformed);
     }
@@ -659,7 +651,8 @@ fn validate_binding(
 }
 
 fn validate_session_id(value: &str) -> Result<(), DirectoryGrantVerificationError> {
-    let parsed = uuid::Uuid::parse_str(value).map_err(|_| DirectoryGrantVerificationError::Malformed)?;
+    let parsed =
+        uuid::Uuid::parse_str(value).map_err(|_| DirectoryGrantVerificationError::Malformed)?;
     if parsed.to_string() != value {
         return Err(DirectoryGrantVerificationError::Malformed);
     }
@@ -670,9 +663,7 @@ fn validate_safe_root_id(value: &str) -> Result<(), DirectoryGrantVerificationEr
     validate_label(value, 64).map_err(|_| DirectoryGrantVerificationError::Malformed)
 }
 
-fn validate_path_components(
-    components: &[String],
-) -> Result<(), DirectoryGrantVerificationError> {
+fn validate_path_components(components: &[String]) -> Result<(), DirectoryGrantVerificationError> {
     if components.is_empty() || components.len() > MAX_DIRECTORY_GRANT_PATH_COMPONENTS {
         return Err(DirectoryGrantVerificationError::Malformed);
     }
@@ -715,8 +706,7 @@ fn validate_label(value: &str, max_bytes: usize) -> anyhow::Result<()> {
     for (index, byte) in value.bytes().enumerate() {
         let separator = matches!(byte, b'-' | b'_' | b':' | b'.');
         if !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || separator)
-            || (separator
-                && (index == 0 || index + 1 == value.len() || previous_separator))
+            || (separator && (index == 0 || index + 1 == value.len() || previous_separator))
         {
             bail!("bounded identifier is invalid");
         }
@@ -781,7 +771,7 @@ mod tests {
 
     fn verifier(path: &Path, key: &[u8]) -> DirectoryGrantVerifier {
         write_keyring(path, key, 0o600, false);
-        DirectoryGrantVerifier::load_optional(&config(path), Some("authentication-token"))
+        DirectoryGrantVerifier::load_optional_at(&config(path), Some("authentication-token"), NOW)
             .unwrap()
             .unwrap()
     }
@@ -817,12 +807,15 @@ mod tests {
         .unwrap()
     }
 
-    fn binding(principal: &AuthenticatedPrincipal) -> DirectoryGrantBinding<'_> {
+    fn binding<'a>(
+        principal: &'a AuthenticatedPrincipal,
+        target_components: &'a [String],
+    ) -> DirectoryGrantBinding<'a> {
         DirectoryGrantBinding {
             principal,
             session_id: SESSION_ID,
             safe_root_id: ROOT_ID,
-            target_components: &["projects".to_owned(), "alpha".to_owned()],
+            target_components,
         }
     }
 
@@ -841,9 +834,12 @@ mod tests {
         let key = [0x42_u8; 32];
         let verifier = verifier(&directory.path().join("keyring.json"), &key);
         let principal = AuthenticatedPrincipal::configured(PRINCIPAL).unwrap();
+        let components = vec!["projects".to_owned(), "alpha".to_owned()];
         let grant = mint(&key, valid_header(), claims());
 
-        let verified = verifier.verify(Some(&grant), &binding(&principal), NOW).unwrap();
+        let verified = verifier
+            .verify(Some(&grant), &binding(&principal, &components), NOW)
+            .unwrap();
         let debug = format!("{verified:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains(&URL_SAFE_NO_PAD.encode([7_u8; 32])));
@@ -856,43 +852,111 @@ mod tests {
         let key = [0x43_u8; 32];
         let verifier = verifier(&directory.path().join("keyring.json"), &key);
         let principal = AuthenticatedPrincipal::configured(PRINCIPAL).unwrap();
+        let components = vec!["projects".to_owned(), "alpha".to_owned()];
 
         let mut bad_signature = mint(&[0x44_u8; 32], valid_header(), claims());
         assert_eq!(
-            verifier.verify(Some(&bad_signature), &binding(&principal), NOW),
+            verifier.verify(Some(&bad_signature), &binding(&principal, &components), NOW),
             Err(DirectoryGrantVerificationError::SignatureRejected)
         );
         bad_signature.serialized = Arc::from("bad");
         assert_eq!(
-            verifier.verify(Some(&bad_signature), &binding(&principal), NOW),
+            verifier.verify(Some(&bad_signature), &binding(&principal, &components), NOW),
             Err(DirectoryGrantVerificationError::Malformed)
         );
 
         let mut header = valid_header();
         header.alg = "none".to_owned();
         assert_eq!(
-            verifier.verify(Some(&mint(&key, header, claims())), &binding(&principal), NOW),
+            verifier.verify(
+                Some(&mint(&key, header, claims())),
+                &binding(&principal, &components),
+                NOW
+            ),
             Err(DirectoryGrantVerificationError::AlgorithmRejected)
         );
         let mut header = valid_header();
         header.kid = "unknown-key".to_owned();
         assert_eq!(
-            verifier.verify(Some(&mint(&key, header, claims())), &binding(&principal), NOW),
+            verifier.verify(
+                Some(&mint(&key, header, claims())),
+                &binding(&principal, &components),
+                NOW
+            ),
             Err(DirectoryGrantVerificationError::UnknownKey)
         );
 
-        for (mut claims, expected) in [
-            ({ let mut c = claims(); c.iss = "other-issuer".to_owned(); c }, DirectoryGrantVerificationError::IssuerMismatch),
-            ({ let mut c = claims(); c.aud = "other-audience".to_owned(); c }, DirectoryGrantVerificationError::AudienceMismatch),
-            ({ let mut c = claims(); c.sub = "operator.other:v1".to_owned(); c }, DirectoryGrantVerificationError::PrincipalMismatch),
-            ({ let mut c = claims(); c.sid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_owned(); c }, DirectoryGrantVerificationError::SessionMismatch),
-            ({ let mut c = claims(); c.cap = "filesystem.write-file".to_owned(); c }, DirectoryGrantVerificationError::CapabilityMismatch),
-            ({ let mut c = claims(); c.root = "other-root".to_owned(); c }, DirectoryGrantVerificationError::RootMismatch),
-            ({ let mut c = claims(); c.path = vec!["projects".to_owned(), "beta".to_owned()]; c }, DirectoryGrantVerificationError::PathMismatch),
-            ({ let mut c = claims(); c.posture = "dry-run".to_owned(); c }, DirectoryGrantVerificationError::PostureMismatch),
+        for (claims, expected) in [
+            (
+                {
+                    let mut c = claims();
+                    c.iss = "other-issuer".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::IssuerMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.aud = "other-audience".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::AudienceMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.sub = "operator.other:v1".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::PrincipalMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.sid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::SessionMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.cap = "filesystem.write-file".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::CapabilityMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.root = "other-root".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::RootMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.path = vec!["projects".to_owned(), "beta".to_owned()];
+                    c
+                },
+                DirectoryGrantVerificationError::PathMismatch,
+            ),
+            (
+                {
+                    let mut c = claims();
+                    c.posture = "dry-run".to_owned();
+                    c
+                },
+                DirectoryGrantVerificationError::PostureMismatch,
+            ),
         ] {
             let grant = mint(&key, valid_header(), claims);
-            assert_eq!(verifier.verify(Some(&grant), &binding(&principal), NOW), Err(expected));
+            assert_eq!(
+                verifier.verify(Some(&grant), &binding(&principal, &components), NOW),
+                Err(expected)
+            );
         }
     }
 
@@ -902,20 +966,29 @@ mod tests {
         let key = [0x45_u8; 32];
         let verifier = verifier(&directory.path().join("keyring.json"), &key);
         let principal = AuthenticatedPrincipal::configured(PRINCIPAL).unwrap();
+        let components = vec!["projects".to_owned(), "alpha".to_owned()];
 
         let mut future = claims();
         future.iat = NOW + 10;
         future.nbf = Some(NOW + 10);
         future.exp = NOW + 70;
         assert_eq!(
-            verifier.verify(Some(&mint(&key, valid_header(), future)), &binding(&principal), NOW),
+            verifier.verify(
+                Some(&mint(&key, valid_header(), future)),
+                &binding(&principal, &components),
+                NOW
+            ),
             Err(DirectoryGrantVerificationError::FutureIssued)
         );
 
         let mut not_yet = claims();
         not_yet.nbf = Some(NOW + 10);
         assert_eq!(
-            verifier.verify(Some(&mint(&key, valid_header(), not_yet)), &binding(&principal), NOW),
+            verifier.verify(
+                Some(&mint(&key, valid_header(), not_yet)),
+                &binding(&principal, &components),
+                NOW
+            ),
             Err(DirectoryGrantVerificationError::NotYetValid)
         );
 
@@ -924,21 +997,31 @@ mod tests {
         expired.nbf = Some(NOW - 100);
         expired.exp = NOW - 6;
         assert_eq!(
-            verifier.verify(Some(&mint(&key, valid_header(), expired)), &binding(&principal), NOW),
+            verifier.verify(
+                Some(&mint(&key, valid_header(), expired)),
+                &binding(&principal, &components),
+                NOW
+            ),
             Err(DirectoryGrantVerificationError::Expired)
         );
 
         let mut excessive = claims();
         excessive.exp = NOW + 121;
         assert_eq!(
-            verifier.verify(Some(&mint(&key, valid_header(), excessive)), &binding(&principal), NOW),
+            verifier.verify(
+                Some(&mint(&key, valid_header(), excessive)),
+                &binding(&principal, &components),
+                NOW
+            ),
             Err(DirectoryGrantVerificationError::ExcessiveLifetime)
         );
 
         let valid = mint(&key, valid_header(), claims());
-        verifier.verify(Some(&valid), &binding(&principal), NOW + 1).unwrap();
+        verifier
+            .verify(Some(&valid), &binding(&principal, &components), NOW + 1)
+            .unwrap();
         assert_eq!(
-            verifier.verify(Some(&valid), &binding(&principal), NOW),
+            verifier.verify(Some(&valid), &binding(&principal, &components), NOW),
             Err(DirectoryGrantVerificationError::ClockRollback)
         );
     }
@@ -950,15 +1033,22 @@ mod tests {
         let key = [0x46_u8; 32];
 
         write_keyring(&path, &key, 0o644, false);
-        assert!(DirectoryGrantVerifier::load_optional(&config(&path), Some("auth-token")).is_err());
+        assert!(
+            DirectoryGrantVerifier::load_optional_at(&config(&path), Some("auth-token"), NOW)
+                .is_err()
+        );
 
         write_keyring(&path, &key, 0o600, true);
-        assert!(DirectoryGrantVerifier::load_optional(&config(&path), Some("auth-token")).is_err());
+        assert!(
+            DirectoryGrantVerifier::load_optional_at(&config(&path), Some("auth-token"), NOW)
+                .is_err()
+        );
 
         let auth_token = "a".repeat(32);
         write_keyring(&path, auth_token.as_bytes(), 0o600, false);
-        let error = DirectoryGrantVerifier::load_optional(&config(&path), Some(&auth_token))
-            .unwrap_err();
+        let error =
+            DirectoryGrantVerifier::load_optional_at(&config(&path), Some(&auth_token), NOW)
+                .unwrap_err();
         assert!(error.to_string().contains("must not reuse"));
         assert!(!error.to_string().contains(&auth_token));
 
@@ -974,7 +1064,10 @@ mod tests {
         let key = [0x47_u8; 32];
         let grant = mint(&key, valid_header(), claims());
         let mut headers = HeaderMap::new();
-        headers.insert(MCP_DIRECTORY_GRANT_HEADER, grant.serialized().parse().unwrap());
+        headers.insert(
+            MCP_DIRECTORY_GRANT_HEADER,
+            grant.serialized().parse().unwrap(),
+        );
         let extracted = take_directory_grant_authorization(&mut headers)
             .unwrap()
             .unwrap();
@@ -992,7 +1085,10 @@ mod tests {
         assert!(!duplicate.contains_key(MCP_DIRECTORY_GRANT_HEADER));
 
         let mut malformed = HeaderMap::new();
-        malformed.insert(MCP_DIRECTORY_GRANT_HEADER, "contains whitespace".parse().unwrap());
+        malformed.insert(
+            MCP_DIRECTORY_GRANT_HEADER,
+            "contains whitespace".parse().unwrap(),
+        );
         assert_eq!(
             take_directory_grant_authorization(&mut malformed),
             Err(DirectoryGrantContextError::Malformed)
@@ -1000,645 +1096,3 @@ mod tests {
         assert!(!malformed.contains_key(MCP_DIRECTORY_GRANT_HEADER));
     }
 }
-''')
-
-cargo = Path("Cargo.toml")
-replace_once(
-    cargo,
-    'mcp-runtime = ["dep:rustix"]\n',
-    'mcp-runtime = ["dep:base64", "dep:hmac", "dep:rustix", "dep:sha2", "dep:zeroize"]\n',
-)
-replace_once(
-    cargo,
-    'metrics = "0.24"\nrustix = { version = "1", features = ["fs"], optional = true }\n',
-    'metrics = "0.24"\nbase64 = { version = "0.22", optional = true }\nhmac = { version = "0.12", optional = true }\nrustix = { version = "1", features = ["fs", "process"], optional = true }\nsha2 = { version = "0.10", optional = true }\nzeroize = { version = "1", optional = true }\n',
-)
-
-lib = Path("src/lib.rs")
-replace_once(
-    lib,
-    'pub mod config;\npub mod error;\n',
-    'pub mod config;\n#[cfg(feature = "mcp-runtime")]\npub mod directory_grant;\npub mod error;\n',
-)
-
-auth = Path("src/auth.rs")
-replace_once(
-    auth,
-    'use crate::config::{AuthConfig, AuthPosture};\n',
-    'use crate::{\n    config::{AuthConfig, AuthPosture},\n    directory_grant::{\n        has_directory_grant_header, take_directory_grant_authorization,\n        DirectoryGrantAuthorization,\n    },\n};\n',
-)
-replace_once(
-    auth,
-    '''    match &policy {
-        McpAuthPolicy::UnauthenticatedLocalhostOnly => next.run(request).await,
-        McpAuthPolicy::StaticBearer { token, principal } => {
-''',
-    '''    match &policy {
-        McpAuthPolicy::UnauthenticatedLocalhostOnly => {
-            if has_directory_grant_header(request.headers()) {
-                request.headers_mut().remove(crate::directory_grant::MCP_DIRECTORY_GRANT_HEADER);
-                return authorization_context_response(
-                    StatusCode::FORBIDDEN,
-                    "authorization_context_requires_authentication",
-                    "Capability-grant authorization context requires authenticated transport.",
-                );
-            }
-            next.run(request).await
-        }
-        McpAuthPolicy::StaticBearer { token, principal } => {
-''',
-)
-replace_once(
-    auth,
-    '''            if authorized {
-                if let Some(principal) = principal {
-                    request.extensions_mut().insert(principal.clone());
-                }
-                next.run(request).await
-            } else {
-''',
-    '''            if authorized {
-                let grant = match take_directory_grant_authorization(request.headers_mut()) {
-                    Ok(grant) => grant,
-                    Err(_) => {
-                        return authorization_context_response(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_authorization_context",
-                            "Capability-grant authorization context is malformed.",
-                        );
-                    }
-                };
-                if let Some(principal) = principal {
-                    request.extensions_mut().insert(principal.clone());
-                }
-                if let Some(grant) = grant {
-                    request.extensions_mut().insert(grant);
-                }
-                next.run(request).await
-            } else {
-''',
-)
-replace_once(
-    auth,
-    '''fn unauthorized_response() -> Response {
-''',
-    '''fn authorization_context_response(
-    status: StatusCode,
-    error: &'static str,
-    message: &'static str,
-) -> Response {
-    let mut response = (status, Json(json!({"error": error, "message": message}))).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
-fn unauthorized_response() -> Response {
-''',
-)
-# Ensure imported grant extension type is used in production code rather than only tests.
-replace_once(
-    auth,
-    '                if let Some(grant) = grant {\n                    request.extensions_mut().insert(grant);\n                }\n',
-    '                if let Some(grant): Option<DirectoryGrantAuthorization> = grant {\n                    request.extensions_mut().insert(grant);\n                }\n',
-)
-# Add focused middleware tests before the fixed-work comparison test.
-replace_once(
-    auth,
-    '''    #[test]
-    fn fixed_work_comparison_matches_only_equal_tokens() {
-''',
-    '''    #[tokio::test]
-    async fn grant_context_requires_authentication_and_is_removed_before_dispatch() {
-        use crate::directory_grant::{
-            DirectoryGrantAuthorization, MCP_DIRECTORY_GRANT_HEADER,
-        };
-
-        async fn grant_status(
-            grant: Option<Extension<DirectoryGrantAuthorization>>,
-            headers: HeaderMap,
-        ) -> &'static str {
-            match (
-                grant.is_some(),
-                headers.contains_key(MCP_DIRECTORY_GRANT_HEADER),
-            ) {
-                (true, false) => "opaque-grant-only",
-                _ => "grant-boundary-failed",
-            }
-        }
-
-        let app = Router::new()
-            .route("/mcp", post(grant_status))
-            .route_layer(middleware::from_fn_with_state(
-                McpAuthPolicy::static_bearer_for_principal(
-                    "expected-value",
-                    "operator.primary:v1",
-                )
-                .unwrap(),
-                require_mcp_auth,
-            ));
-        let response = app
-            .oneshot(
-                HttpRequest::post("/mcp")
-                    .header(header::AUTHORIZATION, "Bearer expected-value")
-                    .header(MCP_DIRECTORY_GRANT_HEADER, "canonical.grant.value")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(text_body(response).await, "opaque-grant-only");
-
-        let unauthenticated = Router::new()
-            .route("/mcp", post(grant_status))
-            .route_layer(middleware::from_fn_with_state(
-                McpAuthPolicy::unauthenticated_localhost_only(),
-                require_mcp_auth,
-            ));
-        let response = unauthenticated
-            .oneshot(
-                HttpRequest::post("/mcp")
-                    .header(MCP_DIRECTORY_GRANT_HEADER, "canonical.grant.value")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    #[tokio::test]
-    async fn bearer_authentication_precedes_grant_context_validation() {
-        use crate::directory_grant::MCP_DIRECTORY_GRANT_HEADER;
-
-        let response = call(
-            McpAuthPolicy::static_bearer("expected-value").unwrap(),
-            Some("Bearer wrong-value"),
-            None,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-        let app = Router::new()
-            .route("/mcp", post(principal_status))
-            .route_layer(middleware::from_fn_with_state(
-                McpAuthPolicy::static_bearer("expected-value").unwrap(),
-                require_mcp_auth,
-            ));
-        let response = app
-            .oneshot(
-                HttpRequest::post("/mcp")
-                    .header(header::AUTHORIZATION, "Bearer wrong-value")
-                    .header(MCP_DIRECTORY_GRANT_HEADER, "contains whitespace")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[test]
-    fn fixed_work_comparison_matches_only_equal_tokens() {
-''',
-)
-
-# Principal binding must be available internally to the verifier but never through Debug/serialization.
-replace_once(
-    auth,
-    '''    pub fn configured(stable_id: impl AsRef<str>) -> anyhow::Result<Self> {
-        let stable_id = stable_id.as_ref();
-        validate_principal_id(stable_id)?;
-        Ok(Self {
-            stable_id: Arc::from(stable_id),
-        })
-    }
-''',
-    '''    pub fn configured(stable_id: impl AsRef<str>) -> anyhow::Result<Self> {
-        let stable_id = stable_id.as_ref();
-        validate_principal_id(stable_id)?;
-        Ok(Self {
-            stable_id: Arc::from(stable_id),
-        })
-    }
-
-    pub(crate) fn stable_id(&self) -> &str {
-        &self.stable_id
-    }
-''',
-)
-
-config = Path("src/config.rs")
-replace_once(
-    config,
-    '''    pub command: CommandConfig,
-    pub file: FileConfig,
-    pub transport: TransportConfig,
-''',
-    '''    pub command: CommandConfig,
-    pub file: FileConfig,
-    pub directory_grant: DirectoryGrantConfig,
-    pub transport: TransportConfig,
-''',
-)
-replace_once(
-    config,
-    '''#[derive(Debug, Clone, Copy)]
-pub struct AndroidConfig {
-''',
-    '''#[derive(Clone)]
-pub struct DirectoryGrantConfig {
-    pub verification_enabled: bool,
-    pub issuer: Option<String>,
-    pub audience: Option<String>,
-    pub keyring_path: Option<PathBuf>,
-    pub safe_root_ids: Option<Vec<String>>,
-    pub max_lifetime_seconds: u64,
-    pub clock_skew_seconds: u64,
-}
-
-impl fmt::Debug for DirectoryGrantConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("DirectoryGrantConfig")
-            .field("verification_enabled", &self.verification_enabled)
-            .field("issuer_configured", &self.issuer.is_some())
-            .field("audience_configured", &self.audience.is_some())
-            .field("keyring_path_configured", &self.keyring_path.is_some())
-            .field(
-                "safe_root_identity_count",
-                &self.safe_root_ids.as_ref().map(Vec::len),
-            )
-            .field("max_lifetime_seconds", &self.max_lifetime_seconds)
-            .field("clock_skew_seconds", &self.clock_skew_seconds)
-            .finish()
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AndroidConfig {
-''',
-)
-replace_once(
-    config,
-    '''            file: FileConfig {
-                safe_roots: env_path_list(
-                    &read_variable,
-                    "MCP__FILE__SAFE_ROOTS",
-                    &[DEFAULT_FILE_SAFE_ROOT],
-                )?,
-            },
-            transport: TransportConfig {
-''',
-    '''            file: FileConfig {
-                safe_roots: env_path_list(
-                    &read_variable,
-                    "MCP__FILE__SAFE_ROOTS",
-                    &[DEFAULT_FILE_SAFE_ROOT],
-                )?,
-            },
-            directory_grant: DirectoryGrantConfig {
-                verification_enabled: env_bool(
-                    &read_variable,
-                    "MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED",
-                    false,
-                )?,
-                issuer: optional_env_string(&read_variable, "MCP__DIRECTORY_GRANT__ISSUER")?,
-                audience: optional_env_string(
-                    &read_variable,
-                    "MCP__DIRECTORY_GRANT__AUDIENCE",
-                )?,
-                keyring_path: optional_env_string(
-                    &read_variable,
-                    "MCP__DIRECTORY_GRANT__KEYRING_PATH",
-                )?
-                .map(PathBuf::from),
-                safe_root_ids: optional_env_exact_string_list(
-                    &read_variable,
-                    "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS",
-                )?,
-                max_lifetime_seconds: env_u64(
-                    &read_variable,
-                    "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS",
-                    120,
-                )?,
-                clock_skew_seconds: env_u64(
-                    &read_variable,
-                    "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS",
-                    5,
-                )?,
-            },
-            transport: TransportConfig {
-''',
-)
-replace_once(
-    config,
-    '''        validate_file_safe_roots(&config.file)?;
-        validate_android_capabilities(&config.android)?;
-''',
-    '''        validate_file_safe_roots(&config.file)?;
-        validate_directory_grant_config(&config.directory_grant, &config.auth, &config.file)?;
-        validate_android_capabilities(&config.android)?;
-''',
-)
-replace_once(
-    config,
-    '''fn env_exact_string_list(
-''',
-    '''fn optional_env_exact_string_list(
-    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
-    name: &str,
-) -> anyhow::Result<Option<Vec<String>>> {
-    match read_env(read_variable, name)? {
-        Some(value) => split_exact_env_list(name, &value).map(Some),
-        None => Ok(None),
-    }
-}
-
-fn env_exact_string_list(
-''',
-)
-# Insert validation before runtime auth validation.
-replace_once(
-    config,
-    '''pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
-''',
-    '''fn validate_directory_grant_config(
-    grant: &DirectoryGrantConfig,
-    auth: &AuthConfig,
-    file: &FileConfig,
-) -> anyhow::Result<()> {
-    const MAX_AUTHORITY_LABEL_BYTES: usize = 256;
-    const MAX_SAFE_ROOT_ID_BYTES: usize = 64;
-    const MAX_GRANT_LIFETIME_SECONDS: u64 = 300;
-    const MAX_CLOCK_SKEW_SECONDS: u64 = 30;
-
-    let subordinate_configured = grant.issuer.is_some()
-        || grant.audience.is_some()
-        || grant.keyring_path.is_some()
-        || grant.safe_root_ids.is_some();
-    if !grant.verification_enabled {
-        if subordinate_configured {
-            bail!(
-                "directory grant verification settings require MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED=true"
-            );
-        }
-        return Ok(());
-    }
-    if !cfg!(feature = "mcp-runtime") {
-        bail!(
-            "MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED requires a binary built with the mcp-runtime feature"
-        );
-    }
-    if auth.static_token.is_none() || auth.static_principal_id.is_none() {
-        bail!(
-            "directory grant verification requires static bearer authentication with MCP__AUTH__STATIC_PRINCIPAL_ID"
-        );
-    }
-    let issuer = grant
-        .issuer
-        .as_deref()
-        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__ISSUER is required"))?;
-    let audience = grant
-        .audience
-        .as_deref()
-        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__AUDIENCE is required"))?;
-    for (name, value) in [
-        ("MCP__DIRECTORY_GRANT__ISSUER", issuer),
-        ("MCP__DIRECTORY_GRANT__AUDIENCE", audience),
-    ] {
-        if value.is_empty()
-            || value.len() > MAX_AUTHORITY_LABEL_BYTES
-            || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
-        {
-            bail!("{name} must be bounded visible ASCII without whitespace");
-        }
-    }
-    let keyring_path = grant
-        .keyring_path
-        .as_deref()
-        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__KEYRING_PATH is required"))?;
-    if !keyring_path.is_absolute() {
-        bail!("MCP__DIRECTORY_GRANT__KEYRING_PATH must be absolute");
-    }
-    let root_ids = grant
-        .safe_root_ids
-        .as_ref()
-        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS is required"))?;
-    if root_ids.len() != file.safe_roots.len() {
-        bail!(
-            "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS must contain exactly one identity per configured safe root"
-        );
-    }
-    let mut unique = std::collections::BTreeSet::new();
-    for root_id in root_ids {
-        if root_id.is_empty()
-            || root_id.len() > MAX_SAFE_ROOT_ID_BYTES
-            || !root_id.bytes().all(|byte| {
-                byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || matches!(byte, b'-' | b'_' | b':' | b'.')
-            })
-            || !unique.insert(root_id)
-        {
-            bail!("MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS contains an invalid or duplicate identity");
-        }
-    }
-    if !(1..=MAX_GRANT_LIFETIME_SECONDS).contains(&grant.max_lifetime_seconds) {
-        bail!(
-            "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS must be between 1 and {MAX_GRANT_LIFETIME_SECONDS}"
-        );
-    }
-    if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {
-        bail!(
-            "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}"
-        );
-    }
-    Ok(())
-}
-
-pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
-''',
-)
-# AppConfig test helper gets disabled defaults.
-replace_once(
-    config,
-    '''            file: FileConfig {
-                safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
-            },
-            transport: transport_config(),
-''',
-    '''            file: FileConfig {
-                safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
-            },
-            directory_grant: DirectoryGrantConfig {
-                verification_enabled: false,
-                issuer: None,
-                audience: None,
-                keyring_path: None,
-                safe_root_ids: None,
-                max_lifetime_seconds: 120,
-                clock_skew_seconds: 5,
-            },
-            transport: transport_config(),
-''',
-)
-replace_once(
-    config,
-    '''        assert!(!config.command.enabled);
-        assert_eq!(
-''',
-    '''        assert!(!config.command.enabled);
-        assert!(!config.directory_grant.verification_enabled);
-        assert_eq!(config.directory_grant.issuer, None);
-        assert_eq!(config.directory_grant.audience, None);
-        assert_eq!(config.directory_grant.keyring_path, None);
-        assert_eq!(config.directory_grant.safe_root_ids, None);
-        assert_eq!(config.directory_grant.max_lifetime_seconds, 120);
-        assert_eq!(config.directory_grant.clock_skew_seconds, 5);
-        assert_eq!(
-''',
-)
-replace_once(
-    config,
-    '''            "MCP__COMMAND__ENABLED",
-            "MCP__TRANSPORT__ALLOWED_HOSTS",
-''',
-    '''            "MCP__COMMAND__ENABLED",
-            "MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED",
-            "MCP__DIRECTORY_GRANT__ISSUER",
-            "MCP__DIRECTORY_GRANT__AUDIENCE",
-            "MCP__DIRECTORY_GRANT__KEYRING_PATH",
-            "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS",
-            "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS",
-            "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS",
-            "MCP__TRANSPORT__ALLOWED_HOSTS",
-''',
-)
-# Add config tests before static token posture tests.
-replace_once(
-    config,
-    '''    #[test]
-    fn static_token_auth_posture_is_accepted_for_non_loopback_hosts() {
-''',
-    '''    #[test]
-    fn directory_grant_settings_are_default_disabled_and_fail_closed_when_partial() {
-        let mut config = app_config("127.0.0.1", Some("token"), false);
-        config.directory_grant.issuer = Some("authority:v1".to_owned());
-        let error = validate_directory_grant_config(
-            &config.directory_grant,
-            &config.auth,
-            &config.file,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("VERIFICATION_ENABLED=true"));
-        assert!(!error.to_string().contains("authority:v1"));
-    }
-
-    #[cfg(feature = "mcp-runtime")]
-    #[test]
-    fn directory_grant_verification_requires_complete_trusted_configuration() {
-        let mut config = app_config("127.0.0.1", Some("token"), false);
-        config.auth.static_principal_id = Some("operator.primary:v1".to_owned());
-        config.directory_grant = DirectoryGrantConfig {
-            verification_enabled: true,
-            issuer: Some("authority:v1".to_owned()),
-            audience: Some("server:v1".to_owned()),
-            keyring_path: Some(PathBuf::from("/data/data/com.termux/files/home/.config/mcp/grants.json")),
-            safe_root_ids: Some(vec!["primary-root".to_owned()]),
-            max_lifetime_seconds: 120,
-            clock_skew_seconds: 5,
-        };
-        validate_directory_grant_config(
-            &config.directory_grant,
-            &config.auth,
-            &config.file,
-        )
-        .unwrap();
-
-        config.auth.static_principal_id = None;
-        assert!(validate_directory_grant_config(
-            &config.directory_grant,
-            &config.auth,
-            &config.file,
-        )
-        .is_err());
-        config.auth.static_principal_id = Some("operator.primary:v1".to_owned());
-        config.directory_grant.safe_root_ids = Some(vec!["duplicate".to_owned(), "duplicate".to_owned()]);
-        assert!(validate_directory_grant_config(
-            &config.directory_grant,
-            &config.auth,
-            &config.file,
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn directory_grant_debug_output_does_not_disclose_authority_or_keyring_path() {
-        let config = DirectoryGrantConfig {
-            verification_enabled: true,
-            issuer: Some("private-authority:v1".to_owned()),
-            audience: Some("private-audience:v1".to_owned()),
-            keyring_path: Some(PathBuf::from("/private/keyring.json")),
-            safe_root_ids: Some(vec!["private-root".to_owned()]),
-            max_lifetime_seconds: 120,
-            clock_skew_seconds: 5,
-        };
-        let debug = format!("{config:?}");
-        assert!(debug.contains("issuer_configured: true"));
-        assert!(debug.contains("keyring_path_configured: true"));
-        assert!(!debug.contains("private-authority"));
-        assert!(!debug.contains("private-audience"));
-        assert!(!debug.contains("/private/keyring.json"));
-        assert!(!debug.contains("private-root"));
-    }
-
-    #[test]
-    fn static_token_auth_posture_is_accepted_for_non_loopback_hosts() {
-''',
-)
-
-main = Path("src/main.rs")
-replace_once(
-    main,
-    '''    auth::{require_mcp_auth, McpAuthPolicy},
-    request_limits::{enforce_mcp_request_limits, McpRequestLimits},
-''',
-    '''    auth::{require_mcp_auth, McpAuthPolicy},
-    directory_grant::DirectoryGrantVerifier,
-    request_limits::{enforce_mcp_request_limits, McpRequestLimits},
-''',
-)
-replace_once(
-    main,
-    '''    #[cfg(feature = "mcp-runtime")]
-    let mcp_request_limits = McpRequestLimits::from_seconds(
-''',
-    '''    #[cfg(feature = "mcp-runtime")]
-    let _directory_grant_verifier = DirectoryGrantVerifier::load_optional(
-        &config.directory_grant,
-        config.auth.static_token.as_deref(),
-    )?;
-
-    #[cfg(feature = "mcp-runtime")]
-    info!(
-        verification_configured = _directory_grant_verifier.is_some(),
-        mutation_enabled = false,
-        "Directory capability-grant verification posture loaded"
-    );
-
-    #[cfg(feature = "mcp-runtime")]
-    let mcp_request_limits = McpRequestLimits::from_seconds(
-''',
-)
-
-# Sanity checks that prevent accidental activation or raw grant transport through tool schemas.
-for forbidden in [
-    'create_directory_mutation_enabled: true',
-    '"grant"',
-    '"capability_grant"',
-]:
-    if forbidden in Path("src/mcp_transport.rs").read_text():
-        raise SystemExit(f"unexpected mutation or tool-argument grant activation: {forbidden}")

@@ -26,6 +26,7 @@ pub struct AppConfig {
     pub android: AndroidConfig,
     pub command: CommandConfig,
     pub file: FileConfig,
+    pub directory_grant: DirectoryGrantConfig,
     pub transport: TransportConfig,
 }
 
@@ -73,6 +74,35 @@ pub struct FileConfig {
     /// Whitelisted root directories for file operations.
     /// All paths are resolved absolutely and checked against these roots.
     pub safe_roots: Vec<PathBuf>,
+}
+
+#[derive(Clone)]
+pub struct DirectoryGrantConfig {
+    pub verification_enabled: bool,
+    pub issuer: Option<String>,
+    pub audience: Option<String>,
+    pub keyring_path: Option<PathBuf>,
+    pub safe_root_ids: Option<Vec<String>>,
+    pub max_lifetime_seconds: u64,
+    pub clock_skew_seconds: u64,
+}
+
+impl fmt::Debug for DirectoryGrantConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DirectoryGrantConfig")
+            .field("verification_enabled", &self.verification_enabled)
+            .field("issuer_configured", &self.issuer.is_some())
+            .field("audience_configured", &self.audience.is_some())
+            .field("keyring_path_configured", &self.keyring_path.is_some())
+            .field(
+                "safe_root_identity_count",
+                &self.safe_root_ids.as_ref().map(Vec::len),
+            )
+            .field("max_lifetime_seconds", &self.max_lifetime_seconds)
+            .field("clock_skew_seconds", &self.clock_skew_seconds)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,6 +182,34 @@ impl AppConfig {
                     &[DEFAULT_FILE_SAFE_ROOT],
                 )?,
             },
+            directory_grant: DirectoryGrantConfig {
+                verification_enabled: env_bool(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED",
+                    false,
+                )?,
+                issuer: optional_env_string(&read_variable, "MCP__DIRECTORY_GRANT__ISSUER")?,
+                audience: optional_env_string(&read_variable, "MCP__DIRECTORY_GRANT__AUDIENCE")?,
+                keyring_path: optional_env_string(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__KEYRING_PATH",
+                )?
+                .map(PathBuf::from),
+                safe_root_ids: optional_env_exact_string_list(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS",
+                )?,
+                max_lifetime_seconds: env_u64(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS",
+                    120,
+                )?,
+                clock_skew_seconds: env_u64(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS",
+                    5,
+                )?,
+            },
             transport: TransportConfig {
                 allowed_hosts: env_exact_string_list(
                     &read_variable,
@@ -191,6 +249,7 @@ impl AppConfig {
         };
 
         validate_file_safe_roots(&config.file)?;
+        validate_directory_grant_config(&config.directory_grant, &config.auth, &config.file)?;
         validate_android_capabilities(&config.android)?;
         validate_command_capability(&config.command)?;
         validate_transport_security(&config.transport)?;
@@ -307,6 +366,16 @@ fn parse_bool(name: &str, value: &str) -> anyhow::Result<bool> {
     bail!("{name} must be a boolean value: true/false, 1/0, yes/no, or on/off")
 }
 
+fn optional_env_exact_string_list(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+) -> anyhow::Result<Option<Vec<String>>> {
+    match read_env(read_variable, name)? {
+        Some(value) => split_exact_env_list(name, &value).map(Some),
+        None => Ok(None),
+    }
+}
+
 fn env_exact_string_list(
     read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
     name: &str,
@@ -333,6 +402,98 @@ fn split_exact_env_list(name: &str, value: &str) -> anyhow::Result<Vec<String>> 
         bail!("{name} must not contain empty list entries");
     }
     Ok(items)
+}
+
+fn validate_directory_grant_config(
+    grant: &DirectoryGrantConfig,
+    auth: &AuthConfig,
+    file: &FileConfig,
+) -> anyhow::Result<()> {
+    const MAX_AUTHORITY_LABEL_BYTES: usize = 256;
+    const MAX_SAFE_ROOT_ID_BYTES: usize = 64;
+    const MAX_GRANT_LIFETIME_SECONDS: u64 = 300;
+    const MAX_CLOCK_SKEW_SECONDS: u64 = 30;
+
+    let subordinate_configured = grant.issuer.is_some()
+        || grant.audience.is_some()
+        || grant.keyring_path.is_some()
+        || grant.safe_root_ids.is_some();
+    if !grant.verification_enabled {
+        if subordinate_configured {
+            bail!(
+                "directory grant verification settings require MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED=true"
+            );
+        }
+        return Ok(());
+    }
+    if !cfg!(feature = "mcp-runtime") {
+        bail!(
+            "MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED requires a binary built with the mcp-runtime feature"
+        );
+    }
+    if auth.static_token.is_none() || auth.static_principal_id.is_none() {
+        bail!(
+            "directory grant verification requires static bearer authentication with MCP__AUTH__STATIC_PRINCIPAL_ID"
+        );
+    }
+    let issuer = grant
+        .issuer
+        .as_deref()
+        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__ISSUER is required"))?;
+    let audience = grant
+        .audience
+        .as_deref()
+        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__AUDIENCE is required"))?;
+    for (name, value) in [
+        ("MCP__DIRECTORY_GRANT__ISSUER", issuer),
+        ("MCP__DIRECTORY_GRANT__AUDIENCE", audience),
+    ] {
+        if value.is_empty()
+            || value.len() > MAX_AUTHORITY_LABEL_BYTES
+            || value.bytes().any(|byte| !(0x21..=0x7e).contains(&byte))
+        {
+            bail!("{name} must be bounded visible ASCII without whitespace");
+        }
+    }
+    let keyring_path = grant
+        .keyring_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__KEYRING_PATH is required"))?;
+    if !keyring_path.is_absolute() {
+        bail!("MCP__DIRECTORY_GRANT__KEYRING_PATH must be absolute");
+    }
+    let root_ids = grant
+        .safe_root_ids
+        .as_ref()
+        .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS is required"))?;
+    if root_ids.len() != file.safe_roots.len() {
+        bail!(
+            "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS must contain exactly one identity per configured safe root"
+        );
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for root_id in root_ids {
+        if root_id.is_empty()
+            || root_id.len() > MAX_SAFE_ROOT_ID_BYTES
+            || !root_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b':' | b'.')
+            })
+            || !unique.insert(root_id)
+        {
+            bail!("MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS contains an invalid or duplicate identity");
+        }
+    }
+    if !(1..=MAX_GRANT_LIFETIME_SECONDS).contains(&grant.max_lifetime_seconds) {
+        bail!(
+            "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS must be between 1 and {MAX_GRANT_LIFETIME_SECONDS}"
+        );
+    }
+    if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {
+        bail!("MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}");
+    }
+    Ok(())
 }
 
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
@@ -527,6 +688,15 @@ mod tests {
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             },
+            directory_grant: DirectoryGrantConfig {
+                verification_enabled: false,
+                issuer: None,
+                audience: None,
+                keyring_path: None,
+                safe_root_ids: None,
+                max_lifetime_seconds: 120,
+                clock_skew_seconds: 5,
+            },
             transport: transport_config(),
         }
     }
@@ -582,6 +752,13 @@ mod tests {
         assert!(!config.android.battery_status_enabled);
         assert!(!config.android.volume_status_enabled);
         assert!(!config.command.enabled);
+        assert!(!config.directory_grant.verification_enabled);
+        assert_eq!(config.directory_grant.issuer, None);
+        assert_eq!(config.directory_grant.audience, None);
+        assert_eq!(config.directory_grant.keyring_path, None);
+        assert_eq!(config.directory_grant.safe_root_ids, None);
+        assert_eq!(config.directory_grant.max_lifetime_seconds, 120);
+        assert_eq!(config.directory_grant.clock_skew_seconds, 5);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
@@ -690,6 +867,13 @@ mod tests {
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
             "MCP__COMMAND__ENABLED",
+            "MCP__DIRECTORY_GRANT__VERIFICATION_ENABLED",
+            "MCP__DIRECTORY_GRANT__ISSUER",
+            "MCP__DIRECTORY_GRANT__AUDIENCE",
+            "MCP__DIRECTORY_GRANT__KEYRING_PATH",
+            "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS",
+            "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS",
+            "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
@@ -794,6 +978,74 @@ mod tests {
 
         let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");
         assert!(err.to_string().contains("must not include filesystem root"));
+    }
+
+    #[test]
+    fn directory_grant_settings_are_default_disabled_and_fail_closed_when_partial() {
+        let mut config = app_config("127.0.0.1", Some("token"), false);
+        config.directory_grant.issuer = Some("authority:v1".to_owned());
+        let error =
+            validate_directory_grant_config(&config.directory_grant, &config.auth, &config.file)
+                .unwrap_err();
+        assert!(error.to_string().contains("VERIFICATION_ENABLED=true"));
+        assert!(!error.to_string().contains("authority:v1"));
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    #[test]
+    fn directory_grant_verification_requires_complete_trusted_configuration() {
+        let mut config = app_config("127.0.0.1", Some("token"), false);
+        config.auth.static_principal_id = Some("operator.primary:v1".to_owned());
+        config.directory_grant = DirectoryGrantConfig {
+            verification_enabled: true,
+            issuer: Some("authority:v1".to_owned()),
+            audience: Some("server:v1".to_owned()),
+            keyring_path: Some(PathBuf::from(
+                "/data/data/com.termux/files/home/.config/mcp/grants.json",
+            )),
+            safe_root_ids: Some(vec!["primary-root".to_owned()]),
+            max_lifetime_seconds: 120,
+            clock_skew_seconds: 5,
+        };
+        validate_directory_grant_config(&config.directory_grant, &config.auth, &config.file)
+            .unwrap();
+
+        config.auth.static_principal_id = None;
+        assert!(validate_directory_grant_config(
+            &config.directory_grant,
+            &config.auth,
+            &config.file,
+        )
+        .is_err());
+        config.auth.static_principal_id = Some("operator.primary:v1".to_owned());
+        config.directory_grant.safe_root_ids =
+            Some(vec!["duplicate".to_owned(), "duplicate".to_owned()]);
+        assert!(validate_directory_grant_config(
+            &config.directory_grant,
+            &config.auth,
+            &config.file,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn directory_grant_debug_output_does_not_disclose_authority_or_keyring_path() {
+        let config = DirectoryGrantConfig {
+            verification_enabled: true,
+            issuer: Some("private-authority:v1".to_owned()),
+            audience: Some("private-audience:v1".to_owned()),
+            keyring_path: Some(PathBuf::from("/private/keyring.json")),
+            safe_root_ids: Some(vec!["private-root".to_owned()]),
+            max_lifetime_seconds: 120,
+            clock_skew_seconds: 5,
+        };
+        let debug = format!("{config:?}");
+        assert!(debug.contains("issuer_configured: true"));
+        assert!(debug.contains("keyring_path_configured: true"));
+        assert!(!debug.contains("private-authority"));
+        assert!(!debug.contains("private-audience"));
+        assert!(!debug.contains("/private/keyring.json"));
+        assert!(!debug.contains("private-root"));
     }
 
     #[test]
