@@ -1,0 +1,78 @@
+name: Apply create-directory fail-closed gate
+
+on:
+  push:
+    branches: [ create-directory-capability-grant-248 ]
+    paths:
+      - "scripts/apply_create_directory_fail_closed_gate.py"
+      - ".github/workflows/apply-create-directory-fail-closed-gate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-create-directory-fail-closed-gate
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: create-directory-capability-grant-248
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+
+      - name: Cache Cargo inputs and outputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Apply guarded source transformation
+        run: python3 scripts/apply_create_directory_fail_closed_gate.py
+
+      - name: Format source
+        run: cargo fmt --all
+
+      - name: Validate source and repository contracts
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets
+          cargo test --workspace --all-targets --all-features
+          bash tests/package_android_artifact_test.sh
+          bash tests/termux_deploy_test.sh
+          bash tests/termux_device_smoke_test.sh
+          bash tests/termux_emulated_gate_test.sh
+          bash tests/termux_release_validate_test.sh
+          bash tests/setup_named_tunnel_test.sh
+          git diff --check
+
+      - name: Remove temporary applicator
+        run: |
+          rm scripts/apply_create_directory_fail_closed_gate.py
+          rm .github/workflows/apply-create-directory-fail-closed-gate.yml
+
+      - name: Publish validated source commit
+        env:
+          EXPECTED_BRANCH: create-directory-capability-grant-248
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
+          git status --short
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/mcp_transport.rs scripts/apply_create_directory_fail_closed_gate.py .github/workflows/apply-create-directory-fail-closed-gate.yml
+          git diff --cached --check
+          git commit -m "fix: fail closed create-directory mutation pending grants"
+          git push origin "HEAD:$EXPECTED_BRANCH"
