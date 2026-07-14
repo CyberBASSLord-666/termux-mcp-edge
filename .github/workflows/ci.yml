@@ -99,15 +99,14 @@ jobs:
         if: steps.apply.outputs.status != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
             printf 'Directory-grant applicator diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
             tail -n 120 /tmp/apply-directory-grant-verifier.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
             printf '```\n'
-          } > /tmp/apply-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/apply-diagnostic.md
+          } > /tmp/grant-diagnostic.md
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/4973608841" -f body="$(cat /tmp/grant-diagnostic.md)" >/dev/null
 
       - name: Enforce applicator result
         if: steps.apply.outputs.status != '0'
@@ -132,15 +131,14 @@ jobs:
         if: steps.clippy_default.outputs.status != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
             printf 'Directory-grant verifier default Clippy diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
             tail -n 220 /tmp/clippy-default.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
             printf '```\n'
-          } > /tmp/clippy-default-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/clippy-default-diagnostic.md
+          } > /tmp/grant-diagnostic.md
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/4973608841" -f body="$(cat /tmp/grant-diagnostic.md)" >/dev/null
 
       - name: Enforce default Clippy result
         if: steps.clippy_default.outputs.status != '0'
@@ -162,15 +160,14 @@ jobs:
         if: steps.clippy_all.outputs.status != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
             printf 'Directory-grant verifier all-features Clippy diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
             tail -n 220 /tmp/clippy-all-features.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
             printf '```\n'
-          } > /tmp/clippy-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/clippy-diagnostic.md
+          } > /tmp/grant-diagnostic.md
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/4973608841" -f body="$(cat /tmp/grant-diagnostic.md)" >/dev/null
 
       - name: Enforce all-features Clippy result
         if: steps.clippy_all.outputs.status != '0'
@@ -195,15 +192,14 @@ jobs:
         if: steps.tests_all.outputs.status != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
             printf 'Directory-grant verifier all-features test diagnostic for `%s`:\n\n```text\n' "$SOURCE_SHA"
             tail -n 240 /tmp/tests-all-features.log | sed -E 's#/home/runner/work/[^ ]+#<workspace>#g'
             printf '```\n'
-          } > /tmp/tests-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/tests-diagnostic.md
+          } > /tmp/grant-diagnostic.md
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/4973608841" -f body="$(cat /tmp/grant-diagnostic.md)" >/dev/null
 
       - name: Enforce all-features test result
         if: steps.tests_all.outputs.status != '0'
