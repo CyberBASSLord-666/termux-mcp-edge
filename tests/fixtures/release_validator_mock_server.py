@@ -48,6 +48,18 @@ def result(identifier: Any, structured: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def tool_error_result(identifier: Any, error: str, reason_code: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": identifier,
+        "result": {
+            "content": [{"type": "text", "text": "fixture-tool-error"}],
+            "structuredContent": {"error": error, "reasonCode": reason_code},
+            "isError": True,
+        },
+    }
+
+
 def rpc_error(identifier: Any, code: int, message: str, data: str) -> dict[str, Any]:
     return {
         "jsonrpc": "2.0",
@@ -348,15 +360,22 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             if not dry_run:
-                target.mkdir(mode=0o700, parents=False, exist_ok=False)
-                target.chmod(0o700)
+                self.send_json(
+                    200,
+                    tool_error_result(
+                        identifier,
+                        "filesystem_directory_create_unauthorized",
+                        "directory_mutation_authorization_unavailable",
+                    ),
+                )
+                return
             self.send_json(
                 200,
                 result(
                     identifier,
                     {
                         "path": str(target),
-                        "dryRun": dry_run,
+                        "dryRun": True,
                         "mode": "0700",
                         "maxResponseBytes": 16384,
                     },

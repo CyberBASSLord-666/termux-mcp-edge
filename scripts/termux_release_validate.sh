@@ -1025,22 +1025,23 @@ run_mcp_runtime_checks() {
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/created-directory" '{"jsonrpc":"2.0","id":"create-directory","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  expect_status create_directory "$status" 200 create_directory_succeeded
-  jq -e --arg path "$VALIDATION_SAFE_ROOT/created-directory" '
-    .result.structuredContent == {
-      path:$path,
-      dryRun:false,
-      mode:"0700",
-      maxResponseBytes:16384
-    }
-  ' "$body" >/dev/null 2>&1 || fail create_directory_contract_invalid
-  [[ -d "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_target_missing
-  [[ "$(stat -c '%a' "$VALIDATION_SAFE_ROOT/created-directory" 2>/dev/null)" == 700 ]] || fail create_directory_mode_invalid
-  record_result runtime create_directory pass safe_root_directory_creation_verified
+  expect_status create_directory_gate_closed "$status" 200 create_directory_gate_closed
+  jq -e '
+    .result.isError == true
+    and .result.structuredContent.error == "filesystem_directory_create_unauthorized"
+    and .result.structuredContent.reasonCode == "directory_mutation_authorization_unavailable"
+  ' "$body" >/dev/null 2>&1 || fail create_directory_gate_contract_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/created-directory" && ! -L "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_gate_mutated
+  record_result runtime create_directory pass create_directory_mutation_gate_closed_verified
 
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  expect_status create_directory_existing "$status" 400 create_directory_existing_rejected
-  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail create_directory_existing_body_invalid
+  expect_status create_directory_gate_repeat "$status" 200 create_directory_gate_repeat_closed
+  jq -e '
+    .result.isError == true
+    and .result.structuredContent.error == "filesystem_directory_create_unauthorized"
+    and .result.structuredContent.reasonCode == "directory_mutation_authorization_unavailable"
+  ' "$body" >/dev/null 2>&1 || fail create_directory_gate_repeat_contract_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/created-directory" && ! -L "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_gate_repeat_mutated
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/expanded-response.bin" bs=200000 count=1 status=none 2>/dev/null || fail read_bound_fixture_create_failed
   chmod 600 "$VALIDATION_SAFE_ROOT/expanded-response.bin" 2>/dev/null || fail read_bound_fixture_create_failed

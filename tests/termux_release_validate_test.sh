@@ -523,7 +523,7 @@ jq -e '
   and ([.results[].code] | index("exact_tool_allowlist") != null)
   and ([.results[].code] | index("read_only_metadata_verified") != null)
   and ([.results[].code] | index("deterministic_bounded_list") != null)
-  and ([.results[].code] | index("safe_root_directory_creation_verified") != null)
+  and ([.results[].code] | index("create_directory_mutation_gate_closed_verified") != null)
   and ([.results[].code] | index("safe_root_path_metadata_succeeded") != null)
   and ([.results[].code] | index("safe_root_text_search_succeeded") != null)
   and ([.results[].code] | index("read_response_bound_enforced") != null)
