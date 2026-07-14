@@ -885,7 +885,7 @@ fn open_metadata_descriptor(root_fd: OwnedFd, relative_path: &Path) -> Result<Ow
     }
 
     let (parent_relative, file_name) = split_parent_and_name(relative_path)?;
-    let parent_fd = open_descendant_directory(root_fd, &parent_relative)?;
+    let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
     descriptor_fs::openat(
         &parent_fd,
         &file_name,
@@ -899,6 +899,40 @@ fn open_metadata_descriptor(root_fd: OwnedFd, relative_path: &Path) -> Result<Ow
             descriptor_error(error)
         }
     })
+}
+
+fn open_metadata_parent_directory(
+    mut directory: OwnedFd,
+    relative_path: &Path,
+) -> Result<OwnedFd, AppError> {
+    for component in relative_path.components() {
+        let Component::Normal(name) = component else {
+            return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+        };
+        let child = descriptor_fs::openat(
+            &directory,
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::NOENT {
+                AppError::PathNotFound
+            } else {
+                descriptor_error(error)
+            }
+        })?;
+        let metadata = descriptor_fs::fstat(&child).map_err(descriptor_error)?;
+        let file_type = FileType::from_raw_mode(metadata.st_mode);
+        if file_type.is_symlink() {
+            return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+        }
+        if !file_type.is_dir() {
+            return Err(AppError::PathNotFound);
+        }
+        directory = child;
+    }
+    Ok(directory)
 }
 
 fn split_parent_and_name(relative_path: &Path) -> Result<(PathBuf, OsString), AppError> {
@@ -1371,6 +1405,18 @@ mod tests {
         assert!(matches!(
             tools
                 .path_metadata(root.path().join("missing").to_string_lossy().to_string())
+                .await,
+            Err(AppError::PathNotFound)
+        ));
+        assert!(matches!(
+            tools
+                .path_metadata(
+                    root.path()
+                        .join("missing-parent")
+                        .join("child")
+                        .to_string_lossy()
+                        .to_string()
+                )
                 .await,
             Err(AppError::PathNotFound)
         ));
