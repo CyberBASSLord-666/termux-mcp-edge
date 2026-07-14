@@ -121,6 +121,37 @@ replace_once(
 grant = Path("src/directory_grant.rs")
 replace_once(
     grant,
+    '''impl DirectoryGrantVerifier {
+    pub fn load_optional(
+        config: &DirectoryGrantConfig,
+        authentication_token: Option<&str>,
+    ) -> anyhow::Result<Option<Self>> {
+        if !config.verification_enabled {
+            return Ok(None);
+        }
+
+        let now = current_unix_seconds()?;
+''',
+    '''impl DirectoryGrantVerifier {
+    pub fn load_optional(
+        config: &DirectoryGrantConfig,
+        authentication_token: Option<&str>,
+    ) -> anyhow::Result<Option<Self>> {
+        Self::load_optional_at(config, authentication_token, current_unix_seconds()?)
+    }
+
+    fn load_optional_at(
+        config: &DirectoryGrantConfig,
+        authentication_token: Option<&str>,
+        now: u64,
+    ) -> anyhow::Result<Option<Self>> {
+        if !config.verification_enabled {
+            return Ok(None);
+        }
+''',
+)
+replace_once(
+    grant,
     '''pub struct VerifiedDirectoryGrant {
 ''',
     '''#[derive(PartialEq, Eq)]
@@ -156,6 +187,44 @@ replace_once(
     '''        for (mut claims, expected) in [
 ''',
     '''        for (claims, expected) in [
+''',
+)
+replace_once(
+    grant,
+    '''        DirectoryGrantVerifier::load_optional(&config(path), Some("authentication-token"))
+            .unwrap()
+            .unwrap()
+''',
+    '''        DirectoryGrantVerifier::load_optional_at(
+            &config(path),
+            Some("authentication-token"),
+            NOW,
+        )
+        .unwrap()
+        .unwrap()
+''',
+)
+text = grant.read_text()
+keyring_call = '''DirectoryGrantVerifier::load_optional(&config(&path), Some("auth-token"))'''
+count = text.count(keyring_call)
+if count != 3:
+    raise SystemExit(f"src/directory_grant.rs: expected three keyring validation calls, found {count}")
+text = text.replace(
+    keyring_call,
+    '''DirectoryGrantVerifier::load_optional_at(&config(&path), Some("auth-token"), NOW)''',
+)
+grant.write_text(text)
+replace_once(
+    grant,
+    '''        let error = DirectoryGrantVerifier::load_optional(&config(&path), Some(&auth_token))
+            .unwrap_err();
+''',
+    '''        let error = DirectoryGrantVerifier::load_optional_at(
+            &config(&path),
+            Some(&auth_token),
+            NOW,
+        )
+        .unwrap_err();
 ''',
 )
 principal_line = '''        let principal = AuthenticatedPrincipal::configured(PRINCIPAL).unwrap();
