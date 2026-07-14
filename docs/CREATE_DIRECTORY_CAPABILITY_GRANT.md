@@ -14,20 +14,29 @@ Mutation requires all of the following:
 
 Grant material must never appear in tool arguments, URLs, responses, logs, tracing fields, metrics labels, or audit labels.
 
+## Grant authority and key separation
+
+Only a separately trusted capability-grant authority may mint mutation grants. The server must verify an exact configured issuer and audience in addition to the cryptographic signature or MAC. Authentication credentials, MCP bearer tokens, session secrets, transport credentials, audit keys, and replay-ledger digest keys must never be accepted as grant-signing keys or reused to mint grants.
+
+Grant verification uses an explicit algorithm allowlist and a fail-closed keyring loaded from owner-only configuration. Caller-selected algorithms, embedded keys, remote key URLs, key discovery, algorithm substitution, and fallback to authentication secrets are prohibited. Duplicate key identifiers, unknown issuers or audiences, malformed key material, unsafe permissions, missing active verification keys, and ambiguous configuration prevent mutation capability startup.
+
+Signing/verification keys and replay-ledger digest keys require domain separation and independent rotation. A retiring verification key must remain available until every grant it could have signed is expired plus the fixed clock-skew allowance. A retiring ledger-digest key must remain available until every replay record derived from it is safely expired and compacted. Key removal, upgrade, or rollback must never make an unexpired grant or consumed identifier unverifiable in a way that permits mutation; uncertainty fails closed.
+
 ## Grant binding
 
 The trusted grant authority must cryptographically bind:
 
+- exact issuer and audience;
 - authenticated principal and session/authorization context;
 - capability identifier `filesystem.create-directory`;
 - selected safe-root identity;
 - normalized root-relative target components;
 - mutating posture;
-- grant format version and allowlisted key identifier;
+- grant format version, algorithm, and allowlisted key identifier;
 - a unique high-entropy grant identifier;
-- issuance time and a short server-enforced expiry.
+- issuance time, not-before time where present, and a short server-enforced expiry.
 
-Confinement occurs before grant-path comparison. Unknown versions, keys, or algorithms; malformed grants; excessive lifetimes; future issuance beyond fixed skew; expiry; clock rollback; binding mismatch; and replay fail closed with stable non-sensitive errors.
+Confinement occurs before grant-path comparison. Unknown versions, issuers, audiences, keys, or algorithms; malformed grants; excessive lifetimes; future issuance beyond fixed skew; not-yet-valid or expired grants; clock rollback; binding mismatch; and replay fail closed with stable non-sensitive errors. Verification must cover the exact serialized claims representation and use constant-time comparison for authentication tags and fixed-size sensitive identifiers.
 
 ## Consumption and replay resistance
 
@@ -37,7 +46,7 @@ Replay state must be concurrency-safe, bounded, retained through expiry, and una
 
 Consumption must also survive process crashes, runit restarts, package upgrades, and abrupt Android process death for the full remaining grant lifetime. An in-memory-only replay cache is insufficient. Before the first filesystem mutation, the implementation must durably publish the consumed identifier to a descriptor-confined, owner-only replay ledger and synchronize the ledger and its parent directory. Mutation is forbidden unless durable consumption succeeds. Recovery must reject every unexpired consumed identifier, tolerate a torn final record without accepting replay, compact only expired entries, and fail closed on corruption, rollback, permission drift, unsafe links, or storage exhaustion. Cleanup or compaction failure must never resurrect a consumed grant.
 
-The durable ledger must contain only a keyed, non-reversible digest of the grant identifier plus the minimum expiry/version metadata required for replay enforcement. It must not contain grant material, principal/session identifiers, safe-root paths, target components, or other caller-derived labels. Ledger size, record count, startup scan work, compaction work, and retained lifetime must have fixed server-side ceilings suitable for Termux devices.
+The durable ledger must contain only a keyed, non-reversible digest of the grant identifier plus the minimum expiry/version/key metadata required for replay enforcement. It must not contain grant material, principal/session identifiers, safe-root paths, target components, or other caller-derived labels. Ledger size, record count, startup scan work, compaction work, and retained lifetime must have fixed server-side ceilings suitable for Termux devices.
 
 ## Discovery and dispatch
 
@@ -53,8 +62,12 @@ Tests must prove:
 
 - disabled-gate discovery and dispatch denial;
 - authorization-context-only grant transport and closed tool arguments;
-- principal/session, capability, root, path, posture, version/key, issuance, expiry, and unique-ID binding;
-- malformed, expired, future-issued, excessive-lifetime, unknown-version/key, mismatched, replayed, and clock-rollback denial;
+- exact issuer/audience enforcement and rejection of caller-selected algorithms, embedded keys, remote key URLs, and authentication-secret fallback;
+- separation of grant verification, authentication, transport, audit, and replay-ledger keys;
+- fail-closed startup for missing, malformed, duplicate, permission-unsafe, rolled-back, or ambiguous key configuration;
+- principal/session, capability, root, path, posture, version/algorithm/key, issuance, not-before, expiry, and unique-ID binding;
+- malformed, expired, future-issued, not-yet-valid, excessive-lifetime, unknown-version/key/issuer/audience, mismatched, replayed, and clock-rollback denial;
+- retiring-key overlap through the maximum grant and replay-record lifetimes, including upgrade and rollback cases;
 - one winner and at most one mutation attempt under concurrent replay;
 - permanent consumption after all post-consumption failures;
 - dry-run non-consumption;
