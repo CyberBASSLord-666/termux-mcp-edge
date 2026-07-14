@@ -2,12 +2,12 @@
 
 mod support;
 
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::symlink;
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
 use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
-use termux_mcp_server::tools::{CREATE_DIRECTORY_MODE, MAX_CREATE_DIRECTORY_RESPONSE_BYTES};
+use termux_mcp_server::tools::MAX_CREATE_DIRECTORY_RESPONSE_BYTES;
 
 fn create_call(id: Value, path: &str, dry_run: Option<bool>) -> Value {
     let mut arguments = json!({"path": path});
@@ -65,10 +65,10 @@ async fn discovery_advertises_one_closed_create_directory_schema() {
 }
 
 #[tokio::test]
-async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
+async fn create_directory_is_dry_run_first_and_mutation_fails_closed() {
     let (root, file_tools) = empty_test_file_tools();
     let preview = root.path().join("preview-only");
-    let created = root.path().join("created");
+    let created = root.path().join("must-not-be-created");
     let router = test_router(file_tools);
     let session_id = initialize_session(&router).await;
 
@@ -107,7 +107,7 @@ async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
         router,
         &session_id,
         create_call(
-            json!("create"),
+            json!("closed-mutation-gate"),
             created.to_string_lossy().as_ref(),
             Some(false),
         ),
@@ -120,17 +120,19 @@ async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
     )
     .await
     .unwrap();
+    assert!(body.len() <= MAX_CREATE_DIRECTORY_RESPONSE_BYTES);
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["result"]["structuredContent"]["dryRun"], false);
+    assert_eq!(payload["result"]["isError"], true);
     assert_eq!(
-        std::fs::symlink_metadata(&created)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        CREATE_DIRECTORY_MODE
+        payload["result"]["structuredContent"]["error"],
+        "filesystem_directory_create_unauthorized"
     );
-    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    assert_eq!(
+        payload["result"]["structuredContent"]["reasonCode"],
+        "directory_mutation_authorization_unavailable"
+    );
+    assert!(!created.exists());
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
 
 #[tokio::test]
@@ -159,15 +161,15 @@ async fn create_directory_rejects_invalid_existing_and_boundary_requests() {
         Some(json!({"path": "bad\0path"})),
         Some(json!({"path": root.path().to_string_lossy()})),
         Some(
-            json!({"path": outside.path().join("outside-created").to_string_lossy(), "dry_run": false}),
+            json!({"path": outside.path().join("outside-created").to_string_lossy(), "dry_run": true}),
         ),
         Some(
-            json!({"path": root.path().join("missing").join("child").to_string_lossy(), "dry_run": false}),
+            json!({"path": root.path().join("missing").join("child").to_string_lossy(), "dry_run": true}),
         ),
-        Some(json!({"path": existing_file.to_string_lossy(), "dry_run": false})),
-        Some(json!({"path": existing_directory.to_string_lossy(), "dry_run": false})),
-        Some(json!({"path": linked_parent.join("child").to_string_lossy(), "dry_run": false})),
-        Some(json!({"path": linked_target.to_string_lossy(), "dry_run": false})),
+        Some(json!({"path": existing_file.to_string_lossy(), "dry_run": true})),
+        Some(json!({"path": existing_directory.to_string_lossy(), "dry_run": true})),
+        Some(json!({"path": linked_parent.join("child").to_string_lossy(), "dry_run": true})),
+        Some(json!({"path": linked_target.to_string_lossy(), "dry_run": true})),
     ];
 
     for (index, arguments) in cases.into_iter().enumerate() {
@@ -229,6 +231,20 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
     )
     .await;
     assert_eq!(create_response.status(), StatusCode::OK);
+    let body = to_bytes(
+        create_response.into_body(),
+        MAX_CREATE_DIRECTORY_RESPONSE_BYTES + 1,
+    )
+    .await
+    .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["result"]["isError"], true);
+    assert_eq!(
+        payload["result"]["structuredContent"]["reasonCode"],
+        "directory_mutation_authorization_unavailable"
+    );
+    assert!(!created.exists());
+
     let denied_response = post_json_to_session(
         router.clone(),
         &session_id,
@@ -239,7 +255,7 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
                 .join("private-outside")
                 .to_string_lossy()
                 .as_ref(),
-            Some(false),
+            Some(true),
         ),
     )
     .await;
@@ -311,11 +327,11 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
     }
     let payload: Value = serde_json::from_slice(&body).unwrap();
     let counters = &payload["result"]["structuredContent"]["auditCounters"];
-    assert_eq!(counters["by_tool"]["create_directory"]["allowed"], 2);
-    assert_eq!(counters["by_tool"]["create_directory"]["denied"], 3);
+    assert_eq!(counters["by_tool"]["create_directory"]["allowed"], 1);
+    assert_eq!(counters["by_tool"]["create_directory"]["denied"], 4);
     assert_eq!(counters["by_reason_code"]["dry_run_preview"]["allowed"], 1);
     assert_eq!(
-        counters["by_reason_code"]["safe_root_directory_created"]["allowed"],
+        counters["by_reason_code"]["directory_mutation_authorization_unavailable"]["denied"],
         1
     );
     assert_eq!(
