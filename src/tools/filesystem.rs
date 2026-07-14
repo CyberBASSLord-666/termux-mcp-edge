@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use metrics::{counter, histogram};
-use rustix::fs::{self as descriptor_fs, AtFlags, Dir, FileType, Mode, OFlags};
+use rustix::fs::{self as descriptor_fs, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
@@ -25,6 +25,8 @@ pub const MAX_LIST_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_READ_BYTES: usize = 1_048_576;
 pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
 pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
+pub const MAX_CREATE_DIRECTORY_RESPONSE_BYTES: usize = 16_384;
+pub const CREATE_DIRECTORY_MODE: u32 = 0o700;
 pub const MIN_SEARCH_DEPTH: u32 = 1;
 pub const MAX_SEARCH_DEPTH: u32 = 5;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
@@ -45,6 +47,63 @@ struct DescriptorTempFileCleanup<'a> {
     parent: &'a OwnedFd,
     name: OsString,
     armed: bool,
+}
+
+struct DescriptorDirectoryCleanup<'a> {
+    parent: &'a OwnedFd,
+    name: OsString,
+    expected_identity: Option<(u64, u64)>,
+    armed: bool,
+}
+
+impl<'a> DescriptorDirectoryCleanup<'a> {
+    fn new(parent: &'a OwnedFd, name: OsString) -> Self {
+        Self {
+            parent,
+            name,
+            expected_identity: None,
+            armed: true,
+        }
+    }
+
+    fn set_expected_identity(&mut self, device: u64, inode: u64) {
+        self.expected_identity = Some((device, inode));
+    }
+
+    fn published_as(&mut self, name: OsString) {
+        self.name = name;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DescriptorDirectoryCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let Some((expected_device, expected_inode)) = self.expected_identity else {
+            return;
+        };
+        let Ok(metadata) =
+            descriptor_fs::statat(self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+        else {
+            return;
+        };
+        let file_type = FileType::from_raw_mode(metadata.st_mode);
+        if !file_type.is_dir()
+            || metadata.st_dev != expected_device
+            || metadata.st_ino != expected_inode
+        {
+            return;
+        }
+        if descriptor_fs::unlinkat(self.parent, &self.name, AtFlags::REMOVEDIR).is_ok() {
+            let _ = descriptor_fs::fsync(self.parent);
+        }
+    }
 }
 
 impl<'a> DescriptorTempFileCleanup<'a> {
@@ -518,6 +577,112 @@ impl FileSystemTools {
         Ok(result)
     }
 
+    pub async fn create_directory(
+        &self,
+        path: String,
+        dry_run: Option<bool>,
+    ) -> Result<CreateDirectoryResult, AppError> {
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let dry_run = dry_run.unwrap_or(true);
+        let result = tokio::task::spawn_blocking(move || {
+            let (parent_relative, directory_name) = split_parent_and_name(&anchored.relative_path)?;
+            let root_fd = open_root_directory(&anchored.root_path)?;
+            let parent_fd = open_mutation_parent_directory(root_fd, &parent_relative)?;
+
+            match descriptor_fs::statat(&parent_fd, &directory_name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
+                    return Err(path_rejected(
+                        anchored.display_path.to_string_lossy().as_ref(),
+                    ));
+                }
+                Ok(_) => return Err(AppError::PathAlreadyExists),
+                Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(descriptor_error(error)),
+            }
+
+            let result = create_directory_result(&anchored, dry_run);
+            if dry_run {
+                return Ok(result);
+            }
+
+            let temp_name = OsString::from(format!(
+                ".termux-mcp-create-directory-{}.tmp",
+                uuid::Uuid::new_v4()
+            ));
+            descriptor_fs::mkdirat(&parent_fd, &temp_name, Mode::RUSR | Mode::WUSR | Mode::XUSR)
+                .map_err(descriptor_error)?;
+            let mut cleanup = DescriptorDirectoryCleanup::new(&parent_fd, temp_name.clone());
+            let temp_fd = open_child_directory(&parent_fd, &temp_name)?;
+            let created_metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
+            if !FileType::from_raw_mode(created_metadata.st_mode).is_dir() {
+                return Err(AppError::Io(std::io::Error::other(
+                    "created directory verification failed",
+                )));
+            }
+            cleanup.set_expected_identity(created_metadata.st_dev, created_metadata.st_ino);
+            descriptor_fs::fchmod(&temp_fd, Mode::RUSR | Mode::WUSR | Mode::XUSR)
+                .map_err(descriptor_error)?;
+            let metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
+            let file_type = FileType::from_raw_mode(metadata.st_mode);
+            if !file_type.is_dir()
+                || metadata.st_dev != created_metadata.st_dev
+                || metadata.st_ino != created_metadata.st_ino
+                || (metadata.st_mode & 0o7777) != CREATE_DIRECTORY_MODE
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "created directory verification failed",
+                )));
+            }
+            descriptor_fs::fsync(&temp_fd).map_err(descriptor_error)?;
+            match descriptor_fs::renameat_with(
+                &parent_fd,
+                &temp_name,
+                &parent_fd,
+                &directory_name,
+                RenameFlags::NOREPLACE,
+            ) {
+                Ok(()) => cleanup.published_as(directory_name),
+                Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
+                Err(error) => return Err(descriptor_error(error)),
+            }
+            let published_metadata =
+                descriptor_fs::statat(&parent_fd, &cleanup.name, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(descriptor_error)?;
+            if !FileType::from_raw_mode(published_metadata.st_mode).is_dir()
+                || published_metadata.st_dev != metadata.st_dev
+                || published_metadata.st_ino != metadata.st_ino
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "published directory verification failed",
+                )));
+            }
+            descriptor_fs::fsync(&parent_fd).map_err(descriptor_error)?;
+            cleanup.disarm();
+            Ok(result)
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.create_directory.latency_seconds").record(start.elapsed().as_secs_f64());
+        if result.dry_run {
+            counter!("mcp.fs.create_directory.dry_runs_total").increment(1);
+        } else {
+            counter!("mcp.fs.create_directory.created_total").increment(1);
+        }
+
+        Ok(result)
+    }
+
+    pub(crate) fn create_directory_response_preview(
+        &self,
+        path: &str,
+        dry_run: bool,
+    ) -> Result<CreateDirectoryResult, AppError> {
+        let anchored = self.anchor(path)?;
+        Ok(create_directory_result(&anchored, dry_run))
+    }
+
     pub async fn search_text(
         &self,
         path: String,
@@ -935,12 +1100,35 @@ fn open_metadata_parent_directory(
     Ok(directory)
 }
 
+fn open_mutation_parent_directory(
+    root_fd: OwnedFd,
+    relative_path: &Path,
+) -> Result<OwnedFd, AppError> {
+    let parent = open_metadata_parent_directory(root_fd, relative_path)?;
+    descriptor_fs::openat(
+        &parent,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(descriptor_error)
+}
+
 fn split_parent_and_name(relative_path: &Path) -> Result<(PathBuf, OsString), AppError> {
     let Some(name) = relative_path.file_name() else {
         return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
     };
     let parent = relative_path.parent().unwrap_or_else(|| Path::new(""));
     Ok((parent.to_path_buf(), name.to_os_string()))
+}
+
+fn create_directory_result(anchored: &AnchoredPath, dry_run: bool) -> CreateDirectoryResult {
+    CreateDirectoryResult {
+        path: anchored.display_path.to_string_lossy().to_string(),
+        dry_run,
+        mode: "0700".to_owned(),
+        max_response_bytes: MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+    }
 }
 
 fn stat_modified_time(metadata: &descriptor_fs::Stat) -> Option<String> {
@@ -1008,6 +1196,15 @@ pub struct PathMetadataResult {
     pub kind: PathMetadataKind,
     pub size_bytes: Option<u64>,
     pub modified: Option<String>,
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateDirectoryResult {
+    pub path: String,
+    pub dry_run: bool,
+    pub mode: String,
     pub max_response_bytes: usize,
 }
 
@@ -1311,6 +1508,60 @@ mod tests {
         assert!(path.exists());
     }
 
+    #[test]
+    fn directory_cleanup_removes_only_the_created_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("created.tmp");
+        let parked = root.path().join("created.parked");
+        std::fs::create_dir(&original).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let original_metadata =
+            descriptor_fs::statat(&root_fd, "created.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+
+        {
+            let mut cleanup =
+                DescriptorDirectoryCleanup::new(&root_fd, OsString::from("created.tmp"));
+            cleanup.set_expected_identity(original_metadata.st_dev, original_metadata.st_ino);
+            std::fs::rename(&original, &parked).unwrap();
+            std::fs::create_dir(&original).unwrap();
+        }
+
+        assert!(original.is_dir());
+        assert!(parked.is_dir());
+    }
+
+    #[test]
+    fn directory_cleanup_without_captured_identity_preserves_unknown_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("unknown.tmp");
+        std::fs::create_dir(&path).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+
+        {
+            let _cleanup = DescriptorDirectoryCleanup::new(&root_fd, OsString::from("unknown.tmp"));
+        }
+
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn directory_cleanup_removes_matching_empty_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("created.tmp");
+        std::fs::create_dir(&path).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let metadata =
+            descriptor_fs::statat(&root_fd, "created.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+
+        {
+            let mut cleanup =
+                DescriptorDirectoryCleanup::new(&root_fd, OsString::from("created.tmp"));
+            cleanup.set_expected_identity(metadata.st_dev, metadata.st_ino);
+        }
+
+        assert!(!path.exists());
+    }
+
     #[tokio::test]
     async fn write_file_requires_explicit_false_to_mutate_safe_rooted_file() {
         let root = tempfile::tempdir().unwrap();
@@ -1335,6 +1586,144 @@ mod tests {
             std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[tokio::test]
+    async fn create_directory_defaults_to_validated_dry_run() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("preview-directory");
+
+        let result = tools
+            .create_directory(target.to_string_lossy().to_string(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.path, target.to_string_lossy());
+        assert!(result.dry_run);
+        assert_eq!(result.mode, "0700");
+        assert_eq!(
+            result.max_response_bytes,
+            MAX_CREATE_DIRECTORY_RESPONSE_BYTES
+        );
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn create_directory_requires_explicit_false_and_publishes_mode_0700() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("created-directory");
+
+        let result = tools
+            .create_directory(target.to_string_lossy().to_string(), Some(false))
+            .await
+            .unwrap();
+
+        assert!(!result.dry_run);
+        assert_eq!(result.mode, "0700");
+        let metadata = std::fs::symlink_metadata(&target).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, CREATE_DIRECTORY_MODE);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_directory_rejects_existing_and_missing_parent_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let existing_file = root.path().join("existing-file");
+        let existing_directory = root.path().join("existing-directory");
+        std::fs::write(&existing_file, "unchanged").unwrap();
+        std::fs::create_dir(&existing_directory).unwrap();
+
+        for target in [&existing_file, &existing_directory] {
+            let result = tools
+                .create_directory(target.to_string_lossy().to_string(), Some(false))
+                .await;
+            assert!(matches!(result, Err(AppError::PathAlreadyExists)));
+        }
+
+        let missing_parent = root.path().join("missing-parent").join("child");
+        let result = tools
+            .create_directory(missing_parent.to_string_lossy().to_string(), Some(false))
+            .await;
+        assert!(matches!(result, Err(AppError::PathNotFound)));
+        assert!(!missing_parent.exists());
+        assert_eq!(std::fs::read_to_string(existing_file).unwrap(), "unchanged");
+    }
+
+    #[tokio::test]
+    async fn create_directory_rejects_root_outside_and_symlink_boundaries() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let linked_parent = root.path().join("linked-parent");
+        symlink(outside.path(), &linked_parent).unwrap();
+        let linked_target = root.path().join("linked-target");
+        symlink(outside.path().join("redirected"), &linked_target).unwrap();
+
+        for target in [
+            root.path().to_path_buf(),
+            outside.path().join("outside-created"),
+            linked_parent.join("child"),
+            linked_target,
+        ] {
+            let result = tools
+                .create_directory(target.to_string_lossy().to_string(), Some(false))
+                .await;
+            assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+        }
+
+        assert!(!outside.path().join("outside-created").exists());
+        assert!(!outside.path().join("child").exists());
+        assert!(!outside.path().join("redirected").exists());
+    }
+
+    #[test]
+    fn held_parent_descriptor_prevents_directory_creation_redirection() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let parked = root.path().join("parent-parked");
+        std::fs::create_dir(&parent).unwrap();
+
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let parent_fd = open_mutation_parent_directory(root_fd, Path::new("parent")).unwrap();
+        std::fs::rename(&parent, &parked).unwrap();
+        symlink(outside.path(), &parent).unwrap();
+
+        descriptor_fs::mkdirat(&parent_fd, "created", Mode::RUSR | Mode::WUSR | Mode::XUSR)
+            .unwrap();
+        descriptor_fs::fsync(&parent_fd).unwrap();
+
+        assert!(parked.join("created").is_dir());
+        assert!(!outside.path().join("created").exists());
+    }
+
+    #[test]
+    fn no_replace_publication_rejects_concurrent_final_target() {
+        let root = tempfile::tempdir().unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        descriptor_fs::mkdirat(
+            &root_fd,
+            "prepared.tmp",
+            Mode::RUSR | Mode::WUSR | Mode::XUSR,
+        )
+        .unwrap();
+        std::fs::create_dir(root.path().join("target")).unwrap();
+
+        let result = descriptor_fs::renameat_with(
+            &root_fd,
+            "prepared.tmp",
+            &root_fd,
+            "target",
+            RenameFlags::NOREPLACE,
+        );
+
+        assert_eq!(result, Err(rustix::io::Errno::EXIST));
+        assert!(root.path().join("prepared.tmp").is_dir());
+        assert!(root.path().join("target").is_dir());
     }
 
     #[tokio::test]

@@ -48,9 +48,9 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        FileSystemTools, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
-        MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
-        MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+        FileSystemTools, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES,
+        MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
+        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -70,16 +70,18 @@ const ANDROID_STATUS_TOOL: &str = "android_status";
 const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
+const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const PATH_METADATA_TOOL: &str = "path_metadata";
 const READ_FILE_TOOL: &str = "read_file";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 9] = [
+const BASE_AVAILABLE_TOOLS: [&str; 10] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
     PROJECT_SERVICE_STATUS_TOOL,
+    CREATE_DIRECTORY_TOOL,
     LIST_DIRECTORY_TOOL,
     PATH_METADATA_TOOL,
     READ_FILE_TOOL,
@@ -139,6 +141,10 @@ const FILESYSTEM_SEARCH_FAILED: &str = "filesystem_search_failed";
 const FILESYSTEM_READ_TOO_LARGE: &str = "read_size_limit_exceeded";
 const FILESYSTEM_READ_ENCODING_INVALID: &str = "read_encoding_invalid";
 const FILESYSTEM_RESPONSE_TOO_LARGE: &str = "response_size_limit_exceeded";
+const FILESYSTEM_CREATE_ALLOWED: &str = "safe_root_directory_created";
+const FILESYSTEM_CREATE_EXISTS: &str = "filesystem_destination_exists";
+const FILESYSTEM_CREATE_PARENT_NOT_FOUND: &str = "filesystem_parent_not_found";
+const FILESYSTEM_CREATE_FAILED: &str = "filesystem_directory_create_failed";
 const FILESYSTEM_READ_FAILED: &str = "filesystem_read_failed";
 const FILESYSTEM_DRY_RUN_ALLOWED: &str = "dry_run_preview";
 const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
@@ -387,6 +393,14 @@ struct PathMetadataArguments {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CreateDirectoryArguments {
+    path: String,
+    #[serde(default)]
+    dry_run: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SearchTextArguments {
     path: String,
     query: String,
@@ -416,7 +430,7 @@ struct RunCommandProfileArguments {
 /// deterministic runtime metadata, non-sensitive platform metadata,
 /// read-only Android/Termux status metadata, read-only project-owned service
 /// status metadata, safe-rooted directory listing and object metadata, bounded
-/// safe-rooted UTF-8 reads, default-dry-run safe-rooted writes, and optionally
+/// safe-rooted UTF-8 reads, default-dry-run safe-rooted directory/file writes, and optionally
 /// compiled and enabled fixed-profile command diagnostics. Android platform control,
 /// arbitrary command execution, and high-impact actions remain unavailable.
 #[rustfmt::skip]
@@ -1057,6 +1071,25 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": CREATE_DIRECTORY_TOOL,
+                        "description": "Create one safe-rooted directory with fixed mode 0700. Defaults to dry-run; mutation requires explicit dry_run=false.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute new-directory path inside one configured safe root; the parent must already exist.",
+                                },
+                                "dry_run": {
+                                    "type": "boolean",
+                                    "description": "Defaults to true. Set explicitly to false to create exactly one directory.",
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": LIST_DIRECTORY_TOOL,
                         "description": "List entries under a configured filesystem safe root without reading file contents or writing data.",
                         "inputSchema": {
@@ -1277,6 +1310,15 @@ async fn handle_tool_call(
                 call.arguments.into_value(),
                 &state.audit_counters,
             )
+        }
+        CREATE_DIRECTORY_TOOL => {
+            handle_create_directory_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
         }
         LIST_DIRECTORY_TOOL => {
             handle_list_directory_call(
@@ -1748,7 +1790,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=create-directory-list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -1770,7 +1812,7 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
                     "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled,
@@ -2248,6 +2290,155 @@ async fn handle_read_file_call(
                 FILESYSTEM_READ_FAILED,
             );
             internal_error(id, "Filesystem read failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_create_directory_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "create_directory requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<CreateDirectoryArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    let dry_run = args.dry_run.unwrap_or(true);
+    let mode = filesystem_write_mode(dry_run);
+    let success_text = if dry_run {
+        "Validated one safe-rooted directory creation without mutation."
+    } else {
+        "Created one safe-rooted directory with fixed mode 0700."
+    };
+    if file_tools
+        .create_directory_response_preview(&args.path, dry_run)
+        .ok()
+        .is_some_and(|preview| {
+            bounded_ok_result(
+                id.clone(),
+                success_text.to_owned(),
+                json!(preview),
+                MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+            )
+            .is_none()
+        })
+    {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "Directory creation response exceeds the staged response byte limit.",
+            MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+        );
+    }
+    match file_tools.create_directory(args.path, Some(dry_run)).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let Some(response) = bounded_ok_result(
+                id,
+                success_text.to_owned(),
+                json!(result),
+                MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    CREATE_DIRECTORY_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Directory creation response exceeds the staged response byte limit.",
+                    MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                if dry_run {
+                    FILESYSTEM_DRY_RUN_ALLOWED
+                } else {
+                    FILESYSTEM_CREATE_ALLOWED
+                },
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_PARENT_NOT_FOUND,
+            );
+            invalid_params(id, "Filesystem parent directory does not exist.")
+        }
+        Err(AppError::PathAlreadyExists) => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_EXISTS,
+            );
+            invalid_params(id, "Filesystem destination already exists.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_FAILED,
+            );
+            internal_error(id, "Filesystem directory creation failed.")
         }
     }
 }
@@ -2840,6 +3031,7 @@ mod tests {
                 "platform_info",
                 "android_status",
                 "project_service_status",
+                "create_directory",
                 "list_directory",
                 "path_metadata",
                 "read_file",
@@ -2870,7 +3062,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            11
+            12
         );
     }
 

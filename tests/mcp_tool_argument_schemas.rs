@@ -107,6 +107,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
             "project_service_status",
             "project_service_status requires a service_name argument.",
         ),
+        (
+            "create_directory",
+            "create_directory requires a path argument.",
+        ),
         ("list_directory", "list_directory requires a path argument."),
         ("path_metadata", "path_metadata requires a path argument."),
         ("read_file", "read_file requires a path argument."),
@@ -167,6 +171,8 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     let (root, file_tools) = empty_test_file_tools();
     let router = test_router(file_tools);
     let source = root.path().join("source.txt");
+    let directory_preview = root.path().join("directory-preview");
+    let directory_mutation = root.path().join("directory-mutation");
     let dry_run_target = root.path().join("dry-run-target.txt");
     let mutation_target = root.path().join("mutation-target.txt");
     tokio::fs::write(&source, "safe content").await.unwrap();
@@ -176,6 +182,16 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             "service-minimal-and-full",
             "project_service_status",
             json!({"service_name": "mcp_runtime"}),
+        ),
+        (
+            "create-directory-minimal",
+            "create_directory",
+            json!({"path": directory_preview.to_string_lossy()}),
+        ),
+        (
+            "create-directory-full",
+            "create_directory",
+            json!({"path": directory_mutation.to_string_lossy(), "dry_run": false}),
         ),
         (
             "list-minimal",
@@ -233,6 +249,8 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     }
 
     assert!(!dry_run_target.exists());
+    assert!(!directory_preview.exists());
+    assert!(directory_mutation.is_dir());
     assert_eq!(
         tokio::fs::read_to_string(&mutation_target).await.unwrap(),
         "explicit mutation"
@@ -255,6 +273,10 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
         (
             "project_service_status",
             json!({"service_name": "mcp_runtime", "unexpected": true}),
+        ),
+        (
+            "create_directory",
+            json!({"path": root.path().join("directory").to_string_lossy(), "unexpected": true}),
         ),
         (
             "list_directory",
@@ -312,6 +334,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
 
     for tool_name in [
         "project_service_status",
+        "create_directory",
         "list_directory",
         "path_metadata",
         "read_file",
@@ -339,6 +362,11 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         (
             "project_service_status",
             json!({"service_name": "private-unlisted-service"}),
+        ),
+        ("create_directory", json!({"path": false})),
+        (
+            "create_directory",
+            json!({"path": root.path().join("directory").to_string_lossy(), "dry_run": "false"}),
         ),
         ("list_directory", json!({"path": false})),
         (

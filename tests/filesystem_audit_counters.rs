@@ -34,8 +34,15 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
         AuditMode::ReadOnly,
         "safe_root_metadata_read",
     );
-    let denied_read = filesystem_denied_event(
+    let allowed_create = filesystem_allowed_event(
         1_725_000_004,
+        "create_directory",
+        "filesystem_write",
+        AuditMode::Mutating,
+        "safe_root_directory_created",
+    );
+    let denied_read = filesystem_denied_event(
+        1_725_000_005,
         "read_file",
         "filesystem_read",
         AuditMode::ReadOnly,
@@ -46,16 +53,18 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
     counters.record_event(&allowed_dry_run);
     counters.record_event(&allowed_search);
     counters.record_event(&allowed_metadata);
+    counters.record_event(&allowed_create);
     counters.record_event(&denied_read);
 
-    assert_eq!(counters.allowed_total, 4);
+    assert_eq!(counters.allowed_total, 5);
     assert_eq!(counters.denied_total, 1);
-    assert_eq!(counters.total(), 5);
+    assert_eq!(counters.total(), 6);
     assert_eq!(counters.by_tool["list_directory"].allowed, 1);
     assert_eq!(counters.by_tool["write_file"].allowed, 1);
     assert_eq!(counters.by_tool["read_file"].denied, 1);
     assert_eq!(counters.by_tool["search_text"].allowed, 1);
     assert_eq!(counters.by_tool["path_metadata"].allowed, 1);
+    assert_eq!(counters.by_tool["create_directory"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_listed"].allowed, 1);
     assert_eq!(counters.by_reason_code["dry_run_preview"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_rejected"].denied, 1);
@@ -65,6 +74,10 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
     );
     assert_eq!(
         counters.by_reason_code["safe_root_metadata_read"].allowed,
+        1
+    );
+    assert_eq!(
+        counters.by_reason_code["safe_root_directory_created"].allowed,
         1
     );
 

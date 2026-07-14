@@ -10,6 +10,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `platform_info`
 - `android_status`
 - `project_service_status`
+- `create_directory`
 - `list_directory`
 - `path_metadata`
 - `read_file`
@@ -20,7 +21,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search, and dry-run-by-default writes. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, filenames, metadata values, search queries, file contents, match data, or caller-provided values.
+Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search, and dry-run-by-default directory/file mutation. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, filenames, metadata values, search queries, file contents, match data, temporary names, or caller-provided values.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -137,6 +138,10 @@ Current runtime/status/filesystem examples include:
 - `safe_root_listing`
 - `safe_root_read`
 - `safe_root_text_searched`
+- `safe_root_directory_created`
+- `filesystem_parent_not_found`
+- `filesystem_destination_exists`
+- `filesystem_directory_create_failed`
 - `search_query_invalid`
 - `filesystem_search_failed`
 - `dry_run_preview`

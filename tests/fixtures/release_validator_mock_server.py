@@ -23,6 +23,7 @@ TOOLS = [
     "platform_info",
     "android_status",
     "project_service_status",
+    "create_directory",
     "list_directory",
     "path_metadata",
     "read_file",
@@ -326,6 +327,38 @@ class Handler(BaseHTTPRequestHandler):
                         "environment_exposed": False,
                         "command_execution_enabled": False,
                         "mutation_enabled": False,
+                    },
+                ),
+            )
+            return
+        if name == "create_directory":
+            target = safe_path(str(arguments.get("path", "")))
+            dry_run = arguments.get("dry_run", True)
+            if (
+                target is None
+                or not isinstance(dry_run, bool)
+                or target == SAFE_ROOT
+                or not target.parent.is_dir()
+                or target.exists()
+                or target.is_symlink()
+            ):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Directory destination invalid."),
+                )
+                return
+            if not dry_run:
+                target.mkdir(mode=0o700, parents=False, exist_ok=False)
+                target.chmod(0o700)
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "path": str(target),
+                        "dryRun": dry_run,
+                        "mode": "0700",
+                        "maxResponseBytes": 16384,
                     },
                 ),
             )
