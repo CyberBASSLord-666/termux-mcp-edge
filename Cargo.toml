@@ -17,6 +17,7 @@ mcp-runtime = ["dep:rustix"]
 android-battery-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 command-execution = ["mcp-runtime", "tokio/process", "rustix/process"]
+# No compile-time feature enables create_directory mutation; authorization remains runtime fail-closed.
 
 [dependencies]
 axum = "0.8"
