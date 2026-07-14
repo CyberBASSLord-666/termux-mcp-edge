@@ -27,9 +27,6 @@ replace_once(
     '    android_battery_status_enabled: bool,\n',
 )
 
-# Every state constructor must default the mutation gate closed. Test-only callers
-# that need to exercise the lower-level filesystem primitive use the existing
-# test wrapper added below rather than opening the production state gate.
 needle = '            sessions: McpSessionStore::new(),\n            android_'
 count = text.count(needle)
 if count < 1:
@@ -74,17 +71,7 @@ async fn handle_create_directory_call(
     audit_counters: &SharedAuditCounters,
 ) -> Response {
 ''',
-    '''#[cfg(test)]
-async fn handle_create_directory_call(
-    id: Option<Value>,
-    arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-    audit_counters: &SharedAuditCounters,
-) -> Response {
-    handle_create_directory_call_with_gate(id, arguments, file_tools, audit_counters, true).await
-}
-
-#[rustfmt::skip]
+    '''#[rustfmt::skip]
 async fn handle_create_directory_call_with_gate(
     id: Option<Value>,
     arguments: Option<Value>,
