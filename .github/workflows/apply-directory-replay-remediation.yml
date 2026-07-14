@@ -24,6 +24,33 @@ jobs:
         with:
           ref: create-directory-capability-grant-248
           fetch-depth: 0
+      - name: Repair stale applicator anchor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/remediation/apply_directory_replay_ledger.py')
+          text = path.read_text()
+          old = '''    if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {
+                  bail!(
+                      "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}"
+                  );
+              }
+              Ok(())
+          }
+          '''
+          new = '''    if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {
+                  bail!("MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}");
+              }
+              Ok(())
+          }
+          '''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one stale applicator anchor, found {count}')
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Apply staged remediation
         shell: bash
         run: |
