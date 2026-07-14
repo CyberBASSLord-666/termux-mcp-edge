@@ -31,6 +31,18 @@ use crate::directory_grant::{
 )
 replace_once(
     auth,
+    '''    pub(crate) fn stable_id(&self) -> &str {
+        &self.stable_id
+    }
+''',
+    '''    #[cfg(feature = "mcp-runtime")]
+    pub(crate) fn stable_id(&self) -> &str {
+        &self.stable_id
+    }
+''',
+)
+replace_once(
+    auth,
     '''        McpAuthPolicy::UnauthenticatedLocalhostOnly => {
             if has_directory_grant_header(request.headers()) {
 ''',
