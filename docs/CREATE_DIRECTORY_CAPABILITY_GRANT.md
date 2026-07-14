@@ -22,12 +22,23 @@ Grant verification uses an explicit algorithm allowlist and a fail-closed keyrin
 
 Signing/verification keys and replay-ledger digest keys require domain separation and independent rotation. A retiring verification key must remain available until every grant it could have signed is expired plus the fixed clock-skew allowance. A retiring ledger-digest key must remain available until every replay record derived from it is safely expired and compacted. Key removal, upgrade, or rollback must never make an unexpired grant or consumed identifier unverifiable in a way that permits mutation; uncertainty fails closed.
 
+## Trusted identity provenance
+
+Grant binding must use identity values derived by the server only after successful authentication. Tool arguments, JSON-RPC identifiers, query parameters, forwarded headers, caller-selected labels, and unvalidated authorization metadata are not identity sources.
+
+The authenticated principal binding must be a stable, non-secret credential identity assigned by trusted local configuration or derived with a dedicated keyed one-way function from the accepted credential. It must not be the raw bearer token, a loggable token prefix, or a value selected by the caller. Credential rotation must define an explicit overlap or replacement policy so that a grant cannot silently migrate to a different principal and an old credential cannot retain mutation authority beyond its configured retirement boundary.
+
+The session binding must use the server-created MCP session record after lookup and phase validation. Merely echoing an `mcp-session-id` header is insufficient. The grant must bind the exact active server-side session identity and its authenticated-principal association. Missing, unknown, closed, expired, cross-principal, or re-created sessions fail closed. Session identifiers supplied before successful authentication must not influence grant verification.
+
+If the configured authentication mode cannot produce a stable principal identity and a validated server-side session association, mutation capability startup must fail closed. Implementations must not weaken this requirement by treating every authenticated caller as an implicit shared principal unless that single-principal deployment mode is explicitly configured and documented; grants from that mode must remain non-transferable across credential rotation and session boundaries.
+
 ## Grant binding
 
 The trusted grant authority must cryptographically bind:
 
 - exact issuer and audience;
-- authenticated principal and session/authorization context;
+- server-derived authenticated principal identity;
+- exact validated server-side MCP session identity and principal association;
 - capability identifier `filesystem.create-directory`;
 - selected safe-root identity;
 - normalized root-relative target components;
@@ -65,6 +76,11 @@ Tests must prove:
 - exact issuer/audience enforcement and rejection of caller-selected algorithms, embedded keys, remote key URLs, and authentication-secret fallback;
 - separation of grant verification, authentication, transport, audit, and replay-ledger keys;
 - fail-closed startup for missing, malformed, duplicate, permission-unsafe, rolled-back, or ambiguous key configuration;
+- rejection of caller-controlled principal or session identity sources, including tool arguments, forwarded headers, query parameters, JSON-RPC identifiers, and unauthenticated session headers;
+- stable server-derived principal binding without raw-token storage or logging;
+- exact active server-side session binding, principal/session association validation, and denial of unknown, closed, expired, cross-principal, or re-created sessions;
+- credential and session rotation behavior that prevents grants from migrating across principals, retired credentials, or replacement sessions;
+- fail-closed mutation startup when the authentication mode cannot provide trustworthy principal and session provenance;
 - principal/session, capability, root, path, posture, version/algorithm/key, issuance, not-before, expiry, and unique-ID binding;
 - malformed, expired, future-issued, not-yet-valid, excessive-lifetime, unknown-version/key/issuer/audience, mismatched, replayed, and clock-rollback denial;
 - retiring-key overlap through the maximum grant and replay-record lifetimes, including upgrade and rollback cases;
