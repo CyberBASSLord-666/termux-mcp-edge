@@ -18,13 +18,14 @@ Separately gated read-only tool:
 
 - `android_battery_status` only in an `android-battery-status` build with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`
 - `android_volume_status` only in an `android-volume-status` build with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true`
+- `run_command_profile` only in a `command-execution` build with `MCP__COMMAND__ENABLED=true`; this is a closed set of fixed read-only server diagnostics, not arbitrary command execution
 
 Current audit visibility is aggregate and in-memory. The staged runtime exposes backend-neutral `auditCounters` through `runtime_status` for the currently wired status and filesystem surfaces. These counters are intentionally not retained request logs and store only stable tool names, gate names, modes, reason codes, and allowed or denied counts.
 
 Still disabled:
 
 - Android platform or audio control beyond read-only allowlisted status and optional battery/volume telemetry
-- Shell and command execution
+- Shell, arbitrary commands, caller-selected executables/argv, and all command mutation
 - Global process listing and arbitrary service inspection
 - Service mutation or control
 - High-impact device or host controls
@@ -139,21 +140,36 @@ Required before any future expansion:
 
 ## Gate 4: command execution
 
-Status: design and inert policy primitives are present; runtime command execution remains disabled.
+Status: the first fixed-profile, read-only diagnostic slice is implemented behind independent compile-time and runtime gates. Arbitrary command execution remains disabled.
 
 The detailed gate design is maintained in [`command-execution-gate.md`](command-execution-gate.md).
 
-Required before implementation:
+Implemented scope:
 
-- Explicit command allowlist
-- Fixed argv vectors only; no shell interpolation
-- Timeout enforcement
-- Output byte limits
-- Working-directory safe-root policy
-- Environment allowlist
-- Audit event per invocation
-- Tests for injection attempts, disallowed commands, timeout, output cap, environment filtering, and safe-root violations
-- Runtime disabled-by-default behavior until both compile-time and runtime gates opt in
+- Separate `command-execution` feature, including `mcp-runtime`
+- Separate `MCP__COMMAND__ENABLED=true` runtime opt-in, defaulting to disabled
+- `run_command_profile` with a one-property closed schema and exact profile enum
+- Exact current server executable only; no `PATH` lookup
+- Fixed complete argv for `server_version`, `server_help`, and `execution_boundary`
+- First canonical configured safe root as cwd, empty environment, and null stdin
+- Five-second deadlines, profile-specific stdout/stderr ceilings, and two non-queueing concurrency permits
+- The cancellation-safe shared process supervisor with process-group isolation, immediate termination, cleanup reserve, and authoritative direct-child reaping
+- UTF-8 and zero-exit success requirements; stable non-sensitive failures with no partial output
+- Hidden disabled discovery, runtime-disabled direct-call denial, and aggregate audit counters using only reason codes and numeric profile ordinals
+- Exact-source fifth Android artifact and native ARM64 official-Termux validation of the compile/runtime truth table and fixed boundary
+
+Denied:
+
+- Raw command strings, shells, interpreters, caller-selected programs, argv, paths, environment, stdin, timeouts, or limits
+- Profiles with placeholders, credentials, broad host inspection, filesystem mutation, Android control, service/package/process/network mutation, or other side effects
+- Raw output or caller values in audit counters
+
+Required before any future expansion:
+
+- Apply the full rejection checklist in [`command-profile-validation.md`](command-profile-validation.md)
+- Keep each new capability in a separately reviewed profile or higher-risk gate
+- Preserve deterministic native evidence and exact-head CI/Security/Android success
+- Never redefine fixed diagnostics as arbitrary or high-impact execution
 
 ## Gate 5: high-impact controls
 

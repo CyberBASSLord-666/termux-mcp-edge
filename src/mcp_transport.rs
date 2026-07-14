@@ -18,11 +18,27 @@ use serde_json::{json, Value};
 use crate::android_battery::AndroidBatteryClient;
 #[cfg(feature = "android-volume-status")]
 use crate::android_volume::AndroidVolumeClient;
+#[cfg(feature = "command-execution")]
+use crate::command_execution::{CommandExecutionClient, CommandExecutionError};
+#[cfg(not(feature = "command-execution"))]
+use crate::command_policy::COMMAND_FEATURE_DISABLED_REASON;
+#[cfg(feature = "command-execution")]
+use crate::command_policy::{
+    CommandExecutionPolicy, CommandPolicyDecision, COMMAND_CONCURRENCY_LIMIT_REASON,
+    COMMAND_OUTPUT_INVALID_UTF8_REASON, COMMAND_PROFILE_NOT_ALLOWLISTED_REASON,
+    COMMAND_PROGRAM_FAILED_REASON, COMMAND_PROGRAM_UNAVAILABLE_REASON, COMMAND_SPAWN_FAILED_REASON,
+    COMMAND_STDERR_LIMIT_REASON, COMMAND_STDOUT_LIMIT_REASON, COMMAND_TIMEOUT_REASON,
+    COMMAND_WAIT_FAILED_REASON,
+};
 use crate::{
     android_status::collect_android_status,
     audit::{
         filesystem_allowed_event, filesystem_denied_event, read_only_allowed_event,
         read_only_denied_event, AuditCounters, AuditMode,
+    },
+    command_policy::{
+        command_profile_ids, COMMAND_EXECUTION_GATE, COMMAND_INVALID_ARGUMENTS_REASON,
+        COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
     },
     error::AppError,
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
@@ -113,6 +129,8 @@ const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
 const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
+const COMMAND_EXECUTION_ERROR: &str = "command_profile_execution_failed";
+
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
 const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised input schema.";
 
@@ -126,10 +144,13 @@ struct McpTransportState {
     sessions: McpSessionStore,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
     #[cfg(feature = "android-volume-status")]
     android_volume_client: AndroidVolumeClient,
+    #[cfg(feature = "command-execution")]
+    command_execution_client: CommandExecutionClient,
 }
 
 impl McpTransportState {
@@ -138,7 +159,18 @@ impl McpTransportState {
         file_tools: FileSystemTools,
         android_battery_status_enabled: bool,
         android_volume_status_enabled: bool,
+        command_execution_enabled: bool,
     ) -> Self {
+        #[cfg(feature = "command-execution")]
+        let command_execution_client = CommandExecutionClient::current_server(
+            file_tools
+                .safe_roots()
+                .first()
+                .cloned()
+                .expect("validated MCP filesystem tools own at least one safe root"),
+        )
+        .expect("current server executable and anchored command safe root must be usable");
+
         Self {
             security_policy,
             file_tools,
@@ -148,10 +180,14 @@ impl McpTransportState {
                 && cfg!(feature = "android-battery-status"),
             android_volume_status_enabled: android_volume_status_enabled
                 && cfg!(feature = "android-volume-status"),
+            command_execution_enabled: command_execution_enabled
+                && cfg!(feature = "command-execution"),
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
+            #[cfg(feature = "command-execution")]
+            command_execution_client,
         }
     }
 
@@ -162,6 +198,16 @@ impl McpTransportState {
         android_battery_status_enabled: bool,
         android_battery_client: AndroidBatteryClient,
     ) -> Self {
+        #[cfg(feature = "command-execution")]
+        let command_execution_client = CommandExecutionClient::current_server(
+            file_tools
+                .safe_roots()
+                .first()
+                .cloned()
+                .expect("test filesystem tools own a safe root"),
+        )
+        .expect("test command client construction must succeed");
+
         Self {
             security_policy,
             file_tools,
@@ -169,9 +215,12 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             android_battery_status_enabled,
             android_volume_status_enabled: false,
+            command_execution_enabled: false,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
+            #[cfg(feature = "command-execution")]
+            command_execution_client,
         }
     }
 
@@ -182,6 +231,16 @@ impl McpTransportState {
         android_volume_status_enabled: bool,
         android_volume_client: AndroidVolumeClient,
     ) -> Self {
+        #[cfg(feature = "command-execution")]
+        let command_execution_client = CommandExecutionClient::current_server(
+            file_tools
+                .safe_roots()
+                .first()
+                .cloned()
+                .expect("test filesystem tools own a safe root"),
+        )
+        .expect("test command client construction must succeed");
+
         Self {
             security_policy,
             file_tools,
@@ -189,9 +248,35 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             android_battery_status_enabled: false,
             android_volume_status_enabled,
+            command_execution_enabled: false,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             android_volume_client,
+            #[cfg(feature = "command-execution")]
+            command_execution_client,
+        }
+    }
+
+    #[cfg(all(test, feature = "command-execution"))]
+    fn with_command_execution_client(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        command_execution_enabled: bool,
+        command_execution_client: CommandExecutionClient,
+    ) -> Self {
+        Self {
+            security_policy,
+            file_tools,
+            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
+            sessions: McpSessionStore::new(),
+            android_battery_status_enabled: false,
+            android_volume_status_enabled: false,
+            command_execution_enabled,
+            #[cfg(feature = "android-battery-status")]
+            android_battery_client: AndroidBatteryClient::termux(),
+            #[cfg(feature = "android-volume-status")]
+            android_volume_client: AndroidVolumeClient::termux(),
+            command_execution_client,
         }
     }
 }
@@ -231,7 +316,7 @@ struct NoArgumentToolContract {
     gate_name: &'static str,
     allowed_reason: &'static str,
     denied_reason: &'static str,
-    response_builder: fn(Option<Value>, &SharedAuditCounters) -> Response,
+    response_builder: fn(Option<Value>, &SharedAuditCounters, bool) -> Response,
 }
 
 impl ToolArguments {
@@ -287,27 +372,35 @@ struct WriteFileArguments {
     dry_run: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunCommandProfileArguments {
+    profile: String,
+}
+
 /// Build the stable MCP 2025-11-25 Streamable HTTP transport.
 ///
 /// The runtime exposes negotiated, session-scoped MCP discovery,
 /// deterministic runtime metadata, non-sensitive platform metadata,
 /// read-only Android/Termux status metadata, read-only project-owned service
 /// status metadata, safe-rooted directory listing, bounded safe-rooted UTF-8
-/// reads, and default-dry-run safe-rooted writes. Android platform control,
-/// command execution, and high-impact actions remain unavailable until later
-/// independently validated stages.
+/// reads, default-dry-run safe-rooted writes, and optionally compiled and
+/// enabled fixed-profile command diagnostics. Android platform control,
+/// arbitrary command execution, and high-impact actions remain unavailable.
 #[rustfmt::skip]
 pub fn router(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
 ) -> Router {
     router_from_state(McpTransportState::new(
         security_policy,
         file_tools,
         android_battery_status_enabled,
         android_volume_status_enabled,
+        command_execution_enabled,
     ))
 }
 
@@ -1026,6 +1119,28 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             }));
     }
 
+    if state.command_execution_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": RUN_COMMAND_PROFILE_TOOL,
+                "description": "Run one reviewed read-only diagnostic profile with fixed executable identity, argv, safe-root working directory, empty environment, null stdin, and bounded output.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "profile": {
+                            "type": "string",
+                            "enum": command_profile_ids().collect::<Vec<_>>(),
+                            "description": "Reviewed project-owned diagnostic profile identifier.",
+                        },
+                    },
+                    "required": ["profile"],
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -1051,6 +1166,7 @@ async fn handle_tool_call(
             id,
             call.arguments,
             &state.audit_counters,
+            state.command_execution_enabled,
             NoArgumentToolContract {
                 tool_name: PLATFORM_INFO_TOOL,
                 gate_name: PLATFORM_INFO_GATE,
@@ -1063,6 +1179,7 @@ async fn handle_tool_call(
             id,
             call.arguments,
             &state.audit_counters,
+            state.command_execution_enabled,
             NoArgumentToolContract {
                 tool_name: ANDROID_STATUS_TOOL,
                 gate_name: ANDROID_STATUS_GATE,
@@ -1111,6 +1228,14 @@ async fn handle_tool_call(
             )
             .await
         }
+        RUN_COMMAND_PROFILE_TOOL => {
+            handle_run_command_profile_call(
+                id,
+                call.arguments.into_value(),
+                state,
+            )
+            .await
+        }
         _ => method_not_available(id, "The requested tool is not available in this runtime posture."),
     }
 }
@@ -1141,6 +1266,7 @@ fn handle_runtime_status_call(
         &state.audit_counters,
         state.android_battery_status_enabled,
         state.android_volume_status_enabled,
+        state.command_execution_enabled,
     )
 }
 
@@ -1167,7 +1293,7 @@ async fn handle_android_battery_status_call(
             ANDROID_BATTERY_STATUS_GATE,
             ANDROID_BATTERY_STATUS_FEATURE_DISABLED,
         );
-        android_provider_tool_error_result(
+        tool_error_result(
             id,
             ANDROID_BATTERY_STATUS_TOOL,
             "android_battery_status_unavailable",
@@ -1184,7 +1310,7 @@ async fn handle_android_battery_status_call(
                 ANDROID_BATTERY_STATUS_GATE,
                 ANDROID_BATTERY_STATUS_RUNTIME_DISABLED,
             );
-            return android_provider_tool_error_result(
+            return tool_error_result(
                 id,
                 ANDROID_BATTERY_STATUS_TOOL,
                 "android_battery_status_unavailable",
@@ -1215,7 +1341,7 @@ async fn handle_android_battery_status_call(
                     ANDROID_BATTERY_STATUS_GATE,
                     reason_code,
                 );
-                android_provider_tool_error_result(
+                tool_error_result(
                     id,
                     ANDROID_BATTERY_STATUS_TOOL,
                     "android_battery_status_unavailable",
@@ -1249,7 +1375,7 @@ async fn handle_android_volume_status_call(
             ANDROID_VOLUME_STATUS_GATE,
             ANDROID_VOLUME_STATUS_FEATURE_DISABLED,
         );
-        android_provider_tool_error_result(
+        tool_error_result(
             id,
             ANDROID_VOLUME_STATUS_TOOL,
             "android_volume_status_unavailable",
@@ -1266,7 +1392,7 @@ async fn handle_android_volume_status_call(
                 ANDROID_VOLUME_STATUS_GATE,
                 ANDROID_VOLUME_STATUS_RUNTIME_DISABLED,
             );
-            return android_provider_tool_error_result(
+            return tool_error_result(
                 id,
                 ANDROID_VOLUME_STATUS_TOOL,
                 "android_volume_status_unavailable",
@@ -1297,7 +1423,7 @@ async fn handle_android_volume_status_call(
                     ANDROID_VOLUME_STATUS_GATE,
                     reason_code,
                 );
-                android_provider_tool_error_result(
+                tool_error_result(
                     id,
                     ANDROID_VOLUME_STATUS_TOOL,
                     "android_volume_status_unavailable",
@@ -1308,10 +1434,137 @@ async fn handle_android_volume_status_call(
     }
 }
 
+async fn handle_run_command_profile_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    state: &McpTransportState,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_read_only_denied(
+                &state.audit_counters,
+                RUN_COMMAND_PROFILE_TOOL,
+                COMMAND_EXECUTION_GATE,
+                COMMAND_MISSING_ARGUMENTS_REASON,
+            );
+            return invalid_params(id, "run_command_profile requires a profile argument.");
+        }
+    };
+    let args = match serde_json::from_value::<RunCommandProfileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_read_only_denied(
+                &state.audit_counters,
+                RUN_COMMAND_PROFILE_TOOL,
+                COMMAND_EXECUTION_GATE,
+                COMMAND_INVALID_ARGUMENTS_REASON,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    #[cfg(not(feature = "command-execution"))]
+    {
+        let _ = args;
+        record_read_only_denied(
+            &state.audit_counters,
+            RUN_COMMAND_PROFILE_TOOL,
+            COMMAND_EXECUTION_GATE,
+            COMMAND_FEATURE_DISABLED_REASON,
+        );
+        tool_error_result(
+            id,
+            RUN_COMMAND_PROFILE_TOOL,
+            COMMAND_EXECUTION_ERROR,
+            COMMAND_FEATURE_DISABLED_REASON,
+        )
+    }
+
+    #[cfg(feature = "command-execution")]
+    {
+        let policy = CommandExecutionPolicy::new();
+        let decision = policy.evaluate(
+            &args.profile,
+            state.command_execution_enabled,
+            !state.file_tools.safe_roots().is_empty(),
+        );
+        if !decision.allowed {
+            record_command_policy_decision(&state.audit_counters, &decision);
+            return if decision.reason_code == COMMAND_PROFILE_NOT_ALLOWLISTED_REASON {
+                invalid_params(id, TOOL_ARGUMENTS_INVALID)
+            } else {
+                tool_error_result(
+                    id,
+                    RUN_COMMAND_PROFILE_TOOL,
+                    COMMAND_EXECUTION_ERROR,
+                    decision.reason_code,
+                )
+            };
+        }
+
+        let profile = decision
+            .profile
+            .expect("allowed command policy decisions own a fixed profile");
+        match state.command_execution_client.execute(profile).await {
+            Ok(result) => {
+                record_command_policy_decision(&state.audit_counters, &decision);
+                ok_result(
+                    id,
+                    format!(
+                        "run_command_profile: fixed read-only profile {} completed within all bounds.",
+                        profile.id,
+                    ),
+                    json!(result),
+                )
+            }
+            Err(error) => {
+                let failure = CommandPolicyDecision {
+                    allowed: false,
+                    reason_code: command_execution_error_reason(error),
+                    profile: Some(profile),
+                };
+                record_command_policy_decision(&state.audit_counters, &failure);
+                tool_error_result(
+                    id,
+                    RUN_COMMAND_PROFILE_TOOL,
+                    COMMAND_EXECUTION_ERROR,
+                    failure.reason_code,
+                )
+            }
+        }
+    }
+}
+
+#[cfg(feature = "command-execution")]
+fn command_execution_error_reason(error: CommandExecutionError) -> &'static str {
+    match error {
+        CommandExecutionError::ProgramUnavailable => COMMAND_PROGRAM_UNAVAILABLE_REASON,
+        CommandExecutionError::SpawnFailed => COMMAND_SPAWN_FAILED_REASON,
+        CommandExecutionError::WaitFailed => COMMAND_WAIT_FAILED_REASON,
+        CommandExecutionError::TimedOut => COMMAND_TIMEOUT_REASON,
+        CommandExecutionError::StdoutLimitExceeded => COMMAND_STDOUT_LIMIT_REASON,
+        CommandExecutionError::StderrLimitExceeded => COMMAND_STDERR_LIMIT_REASON,
+        CommandExecutionError::ProgramFailed => COMMAND_PROGRAM_FAILED_REASON,
+        CommandExecutionError::InvalidUtf8 => COMMAND_OUTPUT_INVALID_UTF8_REASON,
+        CommandExecutionError::ConcurrencyLimitExceeded => COMMAND_CONCURRENCY_LIMIT_REASON,
+    }
+}
+
+#[cfg(feature = "command-execution")]
+fn record_command_policy_decision(
+    counters: &SharedAuditCounters,
+    decision: &CommandPolicyDecision,
+) {
+    let event = CommandExecutionPolicy::new().audit_decision(current_unix_seconds(), decision);
+    record_audit_event(counters, &event);
+}
+
 fn handle_no_argument_tool_call(
     id: Option<Value>,
     arguments: ToolArguments,
     audit_counters: &SharedAuditCounters,
+    command_execution_enabled: bool,
     contract: NoArgumentToolContract,
 ) -> Response {
     if !arguments.is_omitted_or_empty_object() {
@@ -1330,12 +1583,13 @@ fn handle_no_argument_tool_call(
         contract.gate_name,
         contract.allowed_reason,
     );
-    (contract.response_builder)(id, audit_counters)
+    (contract.response_builder)(id, audit_counters, command_execution_enabled)
 }
 
 fn available_tools(
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
 ) -> Vec<&'static str> {
     let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
     if android_battery_status_enabled {
@@ -1343,6 +1597,9 @@ fn available_tools(
     }
     if android_volume_status_enabled {
         tools.push(ANDROID_VOLUME_STATUS_TOOL);
+    }
+    if command_execution_enabled {
+        tools.push(RUN_COMMAND_PROFILE_TOOL);
     }
     tools
 }
@@ -1353,11 +1610,13 @@ fn runtime_status_response(
     audit_counters: &SharedAuditCounters,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
 ) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
     let available_tools = available_tools(
         android_battery_status_enabled,
         android_volume_status_enabled,
+        command_execution_enabled,
     );
     let battery_mode = if android_battery_status_enabled {
         "read_only_battery_telemetry"
@@ -1378,6 +1637,11 @@ fn runtime_status_response(
         (false, true) => "read_only_volume_telemetry",
         (false, false) => "disabled",
     };
+    let command_execution_mode = if command_execution_enabled {
+        "fixed_read_only_server_diagnostics"
+    } else {
+        "disabled"
+    };
 
     (
         StatusCode::OK,
@@ -1389,10 +1653,11 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_device_control=disabled, command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
+                            command_execution_mode,
                         ),
                     },
                 ],
@@ -1420,7 +1685,10 @@ fn runtime_status_response(
                     "androidVolumeStatusCompiled": cfg!(feature = "android-volume-status"),
                     "androidVolumeStatusEnabled": android_volume_status_enabled,
                     "androidDeviceControl": false,
-                    "commandExecution": false,
+                    "commandExecutionCompiled": cfg!(feature = "command-execution"),
+                    "commandExecution": command_execution_enabled,
+                    "commandExecutionMode": command_execution_mode,
+                    "arbitraryCommandExecution": false,
                     "highImpactTools": false,
                     "auditCounters": audit_counters_snapshot,
                 },
@@ -1435,6 +1703,7 @@ fn runtime_status_response(
 fn platform_info_response(
     id: Option<Value>,
     _audit_counters: &SharedAuditCounters,
+    _command_execution_enabled: bool,
 ) -> Response {
     let info = collect_platform_info();
     ok_result(
@@ -1451,8 +1720,9 @@ fn platform_info_response(
 fn android_status_response(
     id: Option<Value>,
     _audit_counters: &SharedAuditCounters,
+    command_execution_enabled: bool,
 ) -> Response {
-    let status = collect_android_status();
+    let status = collect_android_status(command_execution_enabled);
     ok_result(
         id,
         format!(
@@ -1880,7 +2150,7 @@ fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Resp
 }
 
 #[rustfmt::skip]
-fn android_provider_tool_error_result(
+fn tool_error_result(
     id: Option<Value>,
     tool_name: &'static str,
     error_name: &'static str,
@@ -2152,6 +2422,11 @@ fn current_unix_seconds() -> u64 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "command-execution")]
+    use crate::command_policy::{
+        COMMAND_PROFILE_ALLOWED_REASON, COMMAND_RUNTIME_DISABLED_REASON,
+    };
+
     #[cfg(all(
         feature = "android-battery-status",
         feature = "android-volume-status"
@@ -2166,6 +2441,7 @@ mod tests {
             FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
             true,
             true,
+            false,
         );
 
         let tools = tools_list_response(Some(json!("tools")), &state);
@@ -2198,6 +2474,7 @@ mod tests {
             &state.audit_counters,
             state.android_battery_status_enabled,
             state.android_volume_status_enabled,
+            state.command_execution_enabled,
         );
         let runtime: Value = serde_json::from_slice(
             &to_bytes(runtime.into_body(), 64 * 1024).await.unwrap(),
@@ -2608,6 +2885,179 @@ mod tests {
         assert_eq!(
             counters.by_reason_code[ANDROID_VOLUME_STATUS_RUNTIME_DISABLED].denied,
             1
+        );
+    }
+
+    #[cfg(feature = "command-execution")]
+    fn test_command_client(
+        safe_root: &std::path::Path,
+        script: &str,
+    ) -> (tempfile::TempDir, CommandExecutionClient) {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        let program_root = tempfile::tempdir().unwrap();
+        let program = program_root.path().join("fixed-command-program");
+        fs::write(&program, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = CommandExecutionClient::with_program_and_concurrency(
+            program,
+            safe_root.to_path_buf(),
+            2,
+        )
+        .unwrap();
+        (program_root, client)
+    }
+
+    #[cfg(feature = "command-execution")]
+    #[tokio::test]
+    async fn enabled_command_tool_is_discovered_executes_and_audits_fixed_profile() {
+        use axum::body::to_bytes;
+
+        let _guard = crate::bounded_process::BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let safe_root = tempfile::tempdir().unwrap();
+        let (_program_root, client) = test_command_client(
+            safe_root.path(),
+            "test \"$#\" -eq 1; test \"$1\" = --version; printf version-output; printf warning >&2",
+        );
+        let state = McpTransportState::with_command_execution_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            true,
+            client,
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        let command = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == RUN_COMMAND_PROFILE_TOOL)
+            .unwrap();
+        assert_eq!(
+            command["inputSchema"]["properties"]["profile"]["enum"],
+            json!(["server_version", "server_help", "execution_boundary"])
+        );
+        assert_eq!(command["inputSchema"]["additionalProperties"], false);
+
+        let response = handle_run_command_profile_call(
+            Some(json!("command-success")),
+            Some(json!({"profile": "server_version"})),
+            &state,
+        )
+        .await;
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"]["profile"],
+            "server_version"
+        );
+        assert_eq!(
+            payload["result"]["structuredContent"]["stdout"],
+            "version-output"
+        );
+        assert_eq!(payload["result"]["structuredContent"]["stderr"], "warning");
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[RUN_COMMAND_PROFILE_TOOL].allowed, 1);
+        assert_eq!(
+            counters.by_reason_code[COMMAND_PROFILE_ALLOWED_REASON].allowed,
+            1
+        );
+    }
+
+    #[cfg(feature = "command-execution")]
+    #[tokio::test]
+    async fn disabled_command_tool_is_hidden_and_direct_calls_never_spawn() {
+        use axum::body::to_bytes;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let marker = safe_root.path().join("must-not-exist");
+        let script = format!("touch '{}'", marker.display());
+        let (_program_root, client) = test_command_client(safe_root.path(), &script);
+        let state = McpTransportState::with_command_execution_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            false,
+            client,
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != RUN_COMMAND_PROFILE_TOOL));
+
+        let response = handle_run_command_profile_call(
+            Some(json!("command-disabled")),
+            Some(json!({"profile": "server_version"})),
+            &state,
+        )
+        .await;
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["result"]["isError"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["reasonCode"],
+            COMMAND_RUNTIME_DISABLED_REASON
+        );
+        assert!(!marker.exists());
+        assert_eq!(
+            state.audit_counters.lock().unwrap().by_reason_code
+                [COMMAND_RUNTIME_DISABLED_REASON]
+                .denied,
+            1
+        );
+    }
+
+    #[cfg(feature = "command-execution")]
+    #[tokio::test]
+    async fn raw_command_override_fields_are_rejected_before_spawn() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let marker = safe_root.path().join("must-not-exist");
+        let script = format!("touch '{}'", marker.display());
+        let (_program_root, client) = test_command_client(safe_root.path(), &script);
+        let state = McpTransportState::with_command_execution_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            true,
+            client,
+        );
+
+        for arguments in [
+            json!({"profile": "server_version", "command": "sh -c id"}),
+            json!({"profile": "server_version", "argv": ["--help"]}),
+            json!({"profile": "server_version", "workingDirectory": "/"}),
+            json!({"profile": "server_version", "environment": {"TOKEN": "secret"}}),
+            json!({"profile": "server_version", "timeout": 999}),
+            json!({"profile": "server_version", "stdoutLimit": 999999}),
+        ] {
+            let response = handle_run_command_profile_call(
+                Some(json!("command-invalid")),
+                Some(arguments),
+                &state,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        assert!(!marker.exists());
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(
+            counters.by_reason_code[COMMAND_INVALID_ARGUMENTS_REASON].denied,
+            6
         );
     }
 }

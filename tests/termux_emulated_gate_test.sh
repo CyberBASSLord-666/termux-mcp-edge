@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/scripts/termux_emulated_gate.sh"
 BATTERY_GATE="$ROOT/scripts/termux_battery_emulated_gate.sh"
 VOLUME_GATE="$ROOT/scripts/termux_volume_emulated_gate.sh"
+COMMAND_GATE="$ROOT/scripts/termux_command_emulated_gate.sh"
 CLASSIFIER="$ROOT/scripts/classify_observation_requirement.sh"
 INHERITANCE="$ROOT/scripts/verify_observation_inheritance.sh"
 ANDROID_WORKFLOW="$ROOT/.github/workflows/android-cross-compile.yml"
@@ -19,7 +20,7 @@ fail_test() {
   exit 1
 }
 
-for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$CLASSIFIER" "$INHERITANCE"; do
+for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$COMMAND_GATE" "$CLASSIFIER" "$INHERITANCE"; do
   bash -n "$script"
   bash "$script" --help | grep -Fq 'Usage:' || fail_test "help output missing for $(basename "$script")"
 done
@@ -39,6 +40,11 @@ if bash "$VOLUME_GATE" >"$ROOT/.termux-volume-test.stdout" 2>"$ROOT/.termux-volu
 fi
 grep -Fq 'reason=expected_commit_invalid' "$ROOT/.termux-volume-test.stderr" || fail_test 'volume gate missing deterministic argument failure'
 
+if bash "$COMMAND_GATE" >"$ROOT/.termux-command-test.stdout" 2>"$ROOT/.termux-command-test.stderr"; then
+  fail_test 'command gate without required arguments unexpectedly succeeded'
+fi
+grep -Fq 'reason=expected_commit_invalid' "$ROOT/.termux-command-test.stderr" || fail_test 'command gate missing deterministic argument failure'
+
 if bash "$CLASSIFIER" >"$ROOT/.termux-classifier-test.stdout" 2>"$ROOT/.termux-classifier-test.stderr"; then
   fail_test 'observation classifier without required arguments unexpectedly succeeded'
 fi
@@ -53,6 +59,7 @@ rm -f -- \
   "$ROOT/.termux-emulated-test.stdout" "$ROOT/.termux-emulated-test.stderr" \
   "$ROOT/.termux-battery-test.stdout" "$ROOT/.termux-battery-test.stderr" \
   "$ROOT/.termux-volume-test.stdout" "$ROOT/.termux-volume-test.stderr" \
+  "$ROOT/.termux-command-test.stdout" "$ROOT/.termux-command-test.stderr" \
   "$ROOT/.termux-classifier-test.stdout" "$ROOT/.termux-classifier-test.stderr" \
   "$ROOT/.termux-inheritance-test.stdout" "$ROOT/.termux-inheritance-test.stderr"
 
@@ -105,6 +112,28 @@ jq -e '
   and ."$defs".validation.properties.boundedSupervisorCleanup.const == true
   and ."$defs".validation.properties.androidDeviceControlDisabled.const == true
 ' "$ROOT/docs/android-volume-emulated-evidence-schema-v1.json" >/dev/null
+
+jq -e '
+  .properties.schemaVersion.const == 1
+  and .properties.gateVersion.const == "1"
+  and .properties.releaseQualificationEligible.const == false
+  and .properties.candidate."$ref" == "#/$defs/candidate"
+  and ."$defs".candidate.required == ["commit","version","ciRunId","securityRunId","androidRunId","artifact","defaultArtifact"]
+  and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and ."$defs".validation.properties.compileGate.const == true
+  and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
+  and ."$defs".validation.properties.fixedCurrentExecutable.const == true
+  and ."$defs".validation.properties.fixedArgvProfiles.const == true
+  and ."$defs".validation.properties.closedInputSchema.const == true
+  and ."$defs".validation.properties.overrideFieldsRejected.const == true
+  and ."$defs".validation.properties.fixedWorkingDirectory.const == true
+  and ."$defs".validation.properties.inheritedEnvironmentCleared.const == true
+  and ."$defs".validation.properties.nullStdin.const == true
+  and ."$defs".validation.properties.boundedOutput.const == true
+  and ."$defs".validation.properties.auditCounters.const == true
+  and ."$defs".validation.properties.arbitraryCommandExecutionDisabled.const == true
+  and ."$defs".validation.properties.longObservationRequired.const == false
+' "$ROOT/docs/command-emulated-evidence-schema-v1.json" >/dev/null
 
 jq -e '
   .properties.releaseQualificationEligible.const == false
@@ -225,11 +254,16 @@ grep -Fq 'termux/termux-docker:aarch64@sha256:926e5c08aebc6df89f1cb3d9558c3b56b6
 grep -Fq 'uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3' "$ANDROID_WORKFLOW" || fail_test 'download action is not pinned'
 grep -Fq 'posture: android-battery-status' "$ANDROID_WORKFLOW" || fail_test 'battery feature build posture missing'
 grep -Fq 'posture: android-volume-status' "$ANDROID_WORKFLOW" || fail_test 'volume feature build posture missing'
+grep -Fq 'posture: command-execution' "$ANDROID_WORKFLOW" || fail_test 'command feature build posture missing'
 grep -Fq 'termux_battery_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'battery native emulation gate missing'
 grep -Fq 'termux_volume_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'volume native emulation gate missing'
+grep -Fq 'termux_command_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'command native emulation gate missing'
 grep -Fq 'docs/android-volume-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'volume evidence schema does not trigger CI'
+grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'command evidence schema does not trigger CI'
 grep -Fq 'scripts/termux_volume_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'volume native gate does not trigger Security'
 grep -Fq 'docs/android-volume-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" || fail_test 'volume evidence schema does not trigger Security'
+grep -Fq 'scripts/termux_command_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'command native gate does not trigger Security'
+grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" || fail_test 'command evidence schema does not trigger Security'
 grep -Fq 'classify_observation_requirement.sh' "$ANDROID_WORKFLOW" || fail_test 'observation requirement classifier missing'
 grep -Fq "if jq -e '.inheritanceCandidate == true'" "$ANDROID_WORKFLOW" || fail_test 'inheritance verifier is not conditionally gated'
 grep -Fq '.evidenceMode == "physical_observation_required"' "$ANDROID_WORKFLOW" || fail_test 'runtime-change observation evidence path missing'
@@ -245,4 +279,4 @@ chown_line="$(grep -nF "sudo chown 1000:1000 \"\$output_root\"" "$ANDROID_WORKFL
 [[ "$chmod_line" =~ ^[0-9]+$ && "$chown_line" =~ ^[0-9]+$ ]] || fail_test 'private output ownership sequence missing'
 ((chmod_line < chown_line)) || fail_test 'output mode must be set before ownership transfers to the container user'
 
-printf 'Native ARM64 Termux, battery/volume postures, and observation evidence contract tests passed\n'
+printf 'Native ARM64 Termux, battery/volume/command postures, and observation evidence contract tests passed\n'

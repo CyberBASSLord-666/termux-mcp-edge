@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/command-emulated-evidence-schema-v1.json",
+  "title": "Termux MCP fixed command profile native emulation evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateVersion",
+    "status",
+    "failureCode",
+    "releaseQualificationEligible",
+    "startedAt",
+    "completedAt",
+    "candidate",
+    "environment",
+    "validation"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "gateVersion": { "const": "1" },
+    "status": { "const": "pass" },
+    "failureCode": { "type": "null" },
+    "releaseQualificationEligible": { "const": false },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "environment": { "$ref": "#/$defs/environment" },
+    "validation": { "$ref": "#/$defs/validation" }
+  },
+  "$defs": {
+    "sha1": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "version",
+        "ciRunId",
+        "securityRunId",
+        "androidRunId",
+        "artifact",
+        "defaultArtifact"
+      ],
+      "properties": {
+        "commit": { "$ref": "#/$defs/sha1" },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "ciRunId": { "$ref": "#/$defs/runId" },
+        "securityRunId": { "$ref": "#/$defs/runId" },
+        "androidRunId": { "$ref": "#/$defs/runId" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "defaultArtifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "executionMode",
+        "image",
+        "imageDigest",
+        "androidLinker"
+      ],
+      "properties": {
+        "architecture": { "enum": ["aarch64", "arm64"] },
+        "executionMode": { "const": "official-termux-docker-native-arm64" },
+        "image": { "const": "termux/termux-docker:aarch64" },
+        "imageDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "androidLinker": { "const": true }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "requests",
+        "exactArtifact",
+        "compileGate",
+        "runtimeDefaultDisabled",
+        "disabledDiscovery",
+        "fixedCurrentExecutable",
+        "fixedArgvProfiles",
+        "closedInputSchema",
+        "overrideFieldsRejected",
+        "unknownProfileRejected",
+        "fixedWorkingDirectory",
+        "inheritedEnvironmentCleared",
+        "nullStdin",
+        "boundedOutput",
+        "utf8Output",
+        "versionProfile",
+        "helpProfile",
+        "boundaryProfile",
+        "auditCounters",
+        "stableErrors",
+        "arbitraryCommandExecutionDisabled",
+        "androidDeviceControlDisabled",
+        "highImpactToolsDisabled",
+        "longObservationRequired"
+      ],
+      "properties": {
+        "status": { "const": "pass" },
+        "requests": { "type": "integer", "minimum": 25 },
+        "exactArtifact": { "const": true },
+        "compileGate": { "const": true },
+        "runtimeDefaultDisabled": { "const": true },
+        "disabledDiscovery": { "const": true },
+        "fixedCurrentExecutable": { "const": true },
+        "fixedArgvProfiles": { "const": true },
+        "closedInputSchema": { "const": true },
+        "overrideFieldsRejected": { "const": true },
+        "unknownProfileRejected": { "const": true },
+        "fixedWorkingDirectory": { "const": true },
+        "inheritedEnvironmentCleared": { "const": true },
+        "nullStdin": { "const": true },
+        "boundedOutput": { "const": true },
+        "utf8Output": { "const": true },
+        "versionProfile": { "const": true },
+        "helpProfile": { "const": true },
+        "boundaryProfile": { "const": true },
+        "auditCounters": { "const": true },
+        "stableErrors": { "const": true },
+        "arbitraryCommandExecutionDisabled": { "const": true },
+        "androidDeviceControlDisabled": { "const": true },
+        "highImpactToolsDisabled": { "const": true },
+        "longObservationRequired": { "const": false }
+      }
+    }
+  }
+}

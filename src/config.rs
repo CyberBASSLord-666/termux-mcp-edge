@@ -24,6 +24,7 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub auth: AuthConfig,
     pub android: AndroidConfig,
+    pub command: CommandConfig,
     pub file: FileConfig,
     pub transport: TransportConfig,
 }
@@ -75,6 +76,12 @@ pub struct AndroidConfig {
     pub volume_status_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CommandConfig {
+    /// Explicit runtime opt-in for fixed-profile command diagnostics.
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     /// Allowed HTTP Host header values for staged MCP transport routes.
@@ -124,6 +131,9 @@ impl AppConfig {
                     false,
                 )?,
             },
+            command: CommandConfig {
+                enabled: env_bool(&read_variable, "MCP__COMMAND__ENABLED", false)?,
+            },
             file: FileConfig {
                 safe_roots: env_path_list(
                     &read_variable,
@@ -171,6 +181,7 @@ impl AppConfig {
 
         validate_file_safe_roots(&config.file)?;
         validate_android_capabilities(&config.android)?;
+        validate_command_capability(&config.command)?;
         validate_transport_security(&config.transport)?;
         Ok(config)
     }
@@ -383,6 +394,13 @@ fn validate_android_capabilities(android: &AndroidConfig) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn validate_command_capability(command: &CommandConfig) -> anyhow::Result<()> {
+    if command.enabled && !cfg!(feature = "command-execution") {
+        bail!("MCP__COMMAND__ENABLED requires a binary built with the command-execution feature");
+    }
+    Ok(())
+}
+
 fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()> {
     if transport.allowed_hosts.is_empty() {
         bail!("MCP__TRANSPORT__ALLOWED_HOSTS must contain at least one exact host");
@@ -460,6 +478,7 @@ mod tests {
                 battery_status_enabled: false,
                 volume_status_enabled: false,
             },
+            command: CommandConfig { enabled: false },
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             },
@@ -513,6 +532,7 @@ mod tests {
         assert_eq!(config.auth.static_token, None);
         assert!(!config.android.battery_status_enabled);
         assert!(!config.android.volume_status_enabled);
+        assert!(!config.command.enabled);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
@@ -581,6 +601,31 @@ mod tests {
             .starts_with("MCP__ANDROID__VOLUME_STATUS_ENABLED must be a boolean value"));
     }
 
+    #[test]
+    fn command_execution_requires_compile_and_runtime_opt_in() {
+        let config = load_from_os_values([]).unwrap();
+        assert!(!config.command.enabled);
+
+        let configured = load_from_os_values([("MCP__COMMAND__ENABLED", OsString::from("true"))]);
+        if cfg!(feature = "command-execution") {
+            assert!(configured.unwrap().command.enabled);
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__COMMAND__ENABLED requires a binary built with the command-execution feature"
+            );
+        }
+    }
+
+    #[test]
+    fn command_execution_rejects_invalid_runtime_flag() {
+        let error = load_from_os_values([("MCP__COMMAND__ENABLED", OsString::from("sometimes"))])
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("MCP__COMMAND__ENABLED must be a boolean value"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn present_non_unicode_security_environment_values_fail_closed() {
@@ -594,6 +639,7 @@ mod tests {
             "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
+            "MCP__COMMAND__ENABLED",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",

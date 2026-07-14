@@ -15,6 +15,7 @@ on:
       - "docs/*release-evidence-schema-v1.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
+      - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/ci.yml"
@@ -32,6 +33,7 @@ on:
       - "docs/*release-evidence-schema-v1.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
+      - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/ci.yml"
@@ -77,10 +79,16 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Clippy
+      - name: Clippy (default posture)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Tests
+      - name: Tests (default posture)
+        run: cargo test --workspace --all-targets
+
+      - name: Tests (all features)
         run: cargo test --workspace --all-targets --all-features
 
       - name: Shell contract tests
@@ -91,3 +99,6 @@ jobs:
           bash tests/termux_emulated_gate_test.sh
           bash tests/termux_release_validate_test.sh
           bash tests/setup_named_tunnel_test.sh
+          bash -n scripts/termux_command_emulated_gate.sh
+          jq -e '.type == "object" and .additionalProperties == false' \
+            docs/command-emulated-evidence-schema-v1.json >/dev/null

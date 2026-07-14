@@ -104,6 +104,17 @@ jq -e '
   and .features == ["android-volume-status"]
 ' "$VOLUME_BUNDLE/artifact-manifest.json" >/dev/null
 
+COMMAND_BUNDLE="$ROOT/output/command-execution"
+run_package \
+  "$BINARY" \
+  "$COMMAND_BUNDLE" \
+  termux-mcp-server-aarch64-linux-android-command-execution \
+  command-execution >/dev/null
+jq -e '
+  .posture == "command-execution"
+  and .features == ["command-execution"]
+' "$COMMAND_BUNDLE/artifact-manifest.json" >/dev/null
+
 LINKER_ONLY="$ROOT/linker-only-candidate"
 printf '%s\n' '#!/usr/bin/env bash' '# linker-only' 'exit 0' >"$LINKER_ONLY"
 chmod 700 "$LINKER_ONLY"
