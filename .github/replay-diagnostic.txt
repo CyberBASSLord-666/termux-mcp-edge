@@ -1,2 +1,0 @@
-status=1
-src/config.rs: expected exactly one match, found 0: '    if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {\n        bail!(\n            "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}"\n        );'

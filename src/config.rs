@@ -85,6 +85,11 @@ pub struct DirectoryGrantConfig {
     pub safe_root_ids: Option<Vec<String>>,
     pub max_lifetime_seconds: u64,
     pub clock_skew_seconds: u64,
+    pub replay_enabled: bool,
+    pub replay_keyring_path: Option<PathBuf>,
+    pub replay_ledger_path: Option<PathBuf>,
+    pub replay_max_records: usize,
+    pub replay_max_bytes: usize,
 }
 
 impl fmt::Debug for DirectoryGrantConfig {
@@ -101,6 +106,17 @@ impl fmt::Debug for DirectoryGrantConfig {
             )
             .field("max_lifetime_seconds", &self.max_lifetime_seconds)
             .field("clock_skew_seconds", &self.clock_skew_seconds)
+            .field("replay_enabled", &self.replay_enabled)
+            .field(
+                "replay_keyring_path_configured",
+                &self.replay_keyring_path.is_some(),
+            )
+            .field(
+                "replay_ledger_path_configured",
+                &self.replay_ledger_path.is_some(),
+            )
+            .field("replay_max_records", &self.replay_max_records)
+            .field("replay_max_bytes", &self.replay_max_bytes)
             .finish()
     }
 }
@@ -208,6 +224,31 @@ impl AppConfig {
                     &read_variable,
                     "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS",
                     5,
+                )?,
+                replay_enabled: env_bool(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__REPLAY_ENABLED",
+                    false,
+                )?,
+                replay_keyring_path: optional_env_string(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__REPLAY_KEYRING_PATH",
+                )?
+                .map(PathBuf::from),
+                replay_ledger_path: optional_env_string(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__REPLAY_LEDGER_PATH",
+                )?
+                .map(PathBuf::from),
+                replay_max_records: env_usize(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__REPLAY_MAX_RECORDS",
+                    4096,
+                )?,
+                replay_max_bytes: env_usize(
+                    &read_variable,
+                    "MCP__DIRECTORY_GRANT__REPLAY_MAX_BYTES",
+                    1_048_576,
                 )?,
             },
             transport: TransportConfig {
@@ -417,7 +458,10 @@ fn validate_directory_grant_config(
     let subordinate_configured = grant.issuer.is_some()
         || grant.audience.is_some()
         || grant.keyring_path.is_some()
-        || grant.safe_root_ids.is_some();
+        || grant.safe_root_ids.is_some()
+        || grant.replay_enabled
+        || grant.replay_keyring_path.is_some()
+        || grant.replay_ledger_path.is_some();
     if !grant.verification_enabled {
         if subordinate_configured {
             bail!(
@@ -491,7 +535,36 @@ fn validate_directory_grant_config(
         );
     }
     if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {
-        bail!("MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}");
+        bail!(
+            "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}"
+        );
+    }
+    let replay_paths_configured = grant.replay_keyring_path.is_some()
+        || grant.replay_ledger_path.is_some();
+    if !grant.replay_enabled && replay_paths_configured {
+        bail!(
+            "directory replay paths require MCP__DIRECTORY_GRANT__REPLAY_ENABLED=true"
+        );
+    }
+    if grant.replay_enabled {
+        let keyring = grant
+            .replay_keyring_path
+            .as_deref()
+            .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__REPLAY_KEYRING_PATH is required"))?;
+        let ledger = grant
+            .replay_ledger_path
+            .as_deref()
+            .ok_or_else(|| anyhow!("MCP__DIRECTORY_GRANT__REPLAY_LEDGER_PATH is required"))?;
+        if !keyring.is_absolute() || !ledger.is_absolute() || keyring == ledger {
+            bail!("directory replay keyring and ledger paths must be distinct absolute paths");
+        }
+        if !(1..=16_384).contains(&grant.replay_max_records) {
+            bail!("MCP__DIRECTORY_GRANT__REPLAY_MAX_RECORDS must be between 1 and 16384");
+        }
+        let minimum_bytes = 16_usize.saturating_add(224_usize);
+        if grant.replay_max_bytes < minimum_bytes || grant.replay_max_bytes > 16_777_216 {
+            bail!("MCP__DIRECTORY_GRANT__REPLAY_MAX_BYTES is outside its fixed safety range");
+        }
     }
     Ok(())
 }
@@ -696,6 +769,11 @@ mod tests {
                 safe_root_ids: None,
                 max_lifetime_seconds: 120,
                 clock_skew_seconds: 5,
+                replay_enabled: false,
+                replay_keyring_path: None,
+                replay_ledger_path: None,
+                replay_max_records: 4096,
+                replay_max_bytes: 1_048_576,
             },
             transport: transport_config(),
         }
@@ -759,6 +837,11 @@ mod tests {
         assert_eq!(config.directory_grant.safe_root_ids, None);
         assert_eq!(config.directory_grant.max_lifetime_seconds, 120);
         assert_eq!(config.directory_grant.clock_skew_seconds, 5);
+        assert!(!config.directory_grant.replay_enabled);
+        assert_eq!(config.directory_grant.replay_keyring_path, None);
+        assert_eq!(config.directory_grant.replay_ledger_path, None);
+        assert_eq!(config.directory_grant.replay_max_records, 4096);
+        assert_eq!(config.directory_grant.replay_max_bytes, 1_048_576);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
@@ -874,6 +957,11 @@ mod tests {
             "MCP__DIRECTORY_GRANT__SAFE_ROOT_IDS",
             "MCP__DIRECTORY_GRANT__MAX_LIFETIME_SECONDS",
             "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS",
+            "MCP__DIRECTORY_GRANT__REPLAY_ENABLED",
+            "MCP__DIRECTORY_GRANT__REPLAY_KEYRING_PATH",
+            "MCP__DIRECTORY_GRANT__REPLAY_LEDGER_PATH",
+            "MCP__DIRECTORY_GRANT__REPLAY_MAX_RECORDS",
+            "MCP__DIRECTORY_GRANT__REPLAY_MAX_BYTES",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
@@ -1006,6 +1094,11 @@ mod tests {
             safe_root_ids: Some(vec!["primary-root".to_owned()]),
             max_lifetime_seconds: 120,
             clock_skew_seconds: 5,
+            replay_enabled: false,
+            replay_keyring_path: None,
+            replay_ledger_path: None,
+            replay_max_records: 4096,
+            replay_max_bytes: 1_048_576,
         };
         validate_directory_grant_config(&config.directory_grant, &config.auth, &config.file)
             .unwrap();
@@ -1038,6 +1131,11 @@ mod tests {
             safe_root_ids: Some(vec!["private-root".to_owned()]),
             max_lifetime_seconds: 120,
             clock_skew_seconds: 5,
+            replay_enabled: false,
+            replay_keyring_path: None,
+            replay_ledger_path: None,
+            replay_max_records: 4096,
+            replay_max_bytes: 1_048_576,
         };
         let debug = format!("{config:?}");
         assert!(debug.contains("issuer_configured: true"));

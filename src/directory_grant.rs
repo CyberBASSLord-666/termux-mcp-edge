@@ -25,7 +25,7 @@ use rustix::{
     process,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{auth::AuthenticatedPrincipal, config::DirectoryGrantConfig};
@@ -132,6 +132,7 @@ struct VerifierInner {
 
 struct VerificationKey {
     material: Zeroizing<Vec<u8>>,
+    fingerprint: [u8; 32],
     not_before_unix_seconds: u64,
     verify_until_unix_seconds: u64,
 }
@@ -220,7 +221,7 @@ pub struct DirectoryGrantBinding<'a> {
 #[derive(PartialEq, Eq)]
 pub struct VerifiedDirectoryGrant {
     grant_identifier: [u8; DIRECTORY_GRANT_ID_BYTES],
-    expires_unix_seconds: u64,
+    replay_retention_until_unix_seconds: u64,
     format_version: u8,
     key_id: String,
 }
@@ -230,10 +231,31 @@ impl fmt::Debug for VerifiedDirectoryGrant {
         formatter
             .debug_struct("VerifiedDirectoryGrant")
             .field("grant_identifier", &"<redacted>")
-            .field("expires_unix_seconds", &self.expires_unix_seconds)
+            .field(
+                "replay_retention_until_unix_seconds",
+                &self.replay_retention_until_unix_seconds,
+            )
             .field("format_version", &self.format_version)
             .field("key_id", &"<redacted>")
             .finish()
+    }
+}
+
+impl VerifiedDirectoryGrant {
+    pub(crate) fn grant_identifier(&self) -> &[u8; DIRECTORY_GRANT_ID_BYTES] {
+        &self.grant_identifier
+    }
+
+    pub(crate) const fn replay_retention_until_unix_seconds(&self) -> u64 {
+        self.replay_retention_until_unix_seconds
+    }
+
+    pub(crate) const fn format_version(&self) -> u8 {
+        self.format_version
+    }
+
+    pub(crate) fn verification_key_id(&self) -> &str {
+        &self.key_id
     }
 }
 
@@ -290,6 +312,13 @@ struct RawVerificationKey {
 }
 
 impl DirectoryGrantVerifier {
+    pub(crate) fn contains_key_fingerprint(&self, fingerprint: &[u8; 32]) -> bool {
+        self.inner
+            .keys
+            .values()
+            .any(|key| &key.fingerprint == fingerprint)
+    }
+
     pub fn load_optional(
         config: &DirectoryGrantConfig,
         authentication_token: Option<&str>,
@@ -403,7 +432,9 @@ impl DirectoryGrantVerifier {
 
         Ok(VerifiedDirectoryGrant {
             grant_identifier,
-            expires_unix_seconds: claims.exp,
+            replay_retention_until_unix_seconds: claims
+                .exp
+                .saturating_add(self.inner.clock_skew_seconds),
             format_version: claims.v,
             key_id: header.kid,
         })
@@ -587,8 +618,10 @@ fn load_keyring(
             active_key_available = true;
         }
 
+        let fingerprint = Sha256::digest(&decoded).into();
         let key = VerificationKey {
             material: Zeroizing::new(decoded),
+            fingerprint,
             not_before_unix_seconds: raw_key.not_before_unix_seconds,
             verify_until_unix_seconds: raw_key.verify_until_unix_seconds,
         };
@@ -723,6 +756,122 @@ fn current_unix_seconds() -> anyhow::Result<u64> {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+
+    use super::*;
+
+    pub(crate) struct TestGrantKeyring {
+        path: PathBuf,
+    }
+
+    impl TestGrantKeyring {
+        pub(crate) fn write(path: PathBuf, key: [u8; 32], now: u64) -> Self {
+            fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": 1,
+                    "keys": [{
+                        "kid": "grant-key-01",
+                        "alg": DIRECTORY_GRANT_ALGORITHM,
+                        "key_b64url": URL_SAFE_NO_PAD.encode(key),
+                        "not_before_unix_seconds": now - 60,
+                        "verify_until_unix_seconds": now + 600,
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            Self { path }
+        }
+
+        pub(crate) fn load_verifier(&self, now: u64) -> DirectoryGrantVerifier {
+            DirectoryGrantVerifier::load_optional_at(
+                &DirectoryGrantConfig {
+                    verification_enabled: true,
+                    issuer: Some("termux-grant-authority:v1".to_owned()),
+                    audience: Some("termux-mcp-edge:v1".to_owned()),
+                    keyring_path: Some(self.path.clone()),
+                    safe_root_ids: Some(vec!["primary-root".to_owned()]),
+                    max_lifetime_seconds: 120,
+                    clock_skew_seconds: 5,
+                    replay_enabled: false,
+                    replay_keyring_path: None,
+                    replay_ledger_path: None,
+                    replay_max_records: 4096,
+                    replay_max_bytes: 1_048_576,
+                },
+                Some("authentication-token"),
+                now,
+            )
+            .unwrap()
+            .unwrap()
+        }
+    }
+
+    #[derive(Clone)]
+    pub(crate) struct TestGrantClaims {
+        pub(crate) grant_id: [u8; 32],
+        pub(crate) now: u64,
+        pub(crate) principal: String,
+        pub(crate) session_id: String,
+        pub(crate) root_id: String,
+        pub(crate) path: Vec<String>,
+    }
+
+    impl Default for TestGrantClaims {
+        fn default() -> Self {
+            Self {
+                grant_id: [7_u8; 32],
+                now: 1_800_000_000,
+                principal: "operator.primary:v1".to_owned(),
+                session_id: "11111111-2222-4333-8444-555555555555".to_owned(),
+                root_id: "primary-root".to_owned(),
+                path: vec!["projects".to_owned(), "alpha".to_owned()],
+            }
+        }
+    }
+
+    pub(crate) fn mint_test_grant(
+        key: [u8; 32],
+        claims: TestGrantClaims,
+    ) -> DirectoryGrantAuthorization {
+        let header = GrantHeader {
+            v: DIRECTORY_GRANT_FORMAT_VERSION,
+            typ: DIRECTORY_GRANT_TYPE.to_owned(),
+            alg: DIRECTORY_GRANT_ALGORITHM.to_owned(),
+            kid: "grant-key-01".to_owned(),
+        };
+        let claims = GrantClaims {
+            v: DIRECTORY_GRANT_FORMAT_VERSION,
+            iss: "termux-grant-authority:v1".to_owned(),
+            aud: "termux-mcp-edge:v1".to_owned(),
+            sub: claims.principal,
+            sid: claims.session_id,
+            cap: DIRECTORY_CREATE_CAPABILITY.to_owned(),
+            root: claims.root_id,
+            path: claims.path,
+            posture: DIRECTORY_CREATE_POSTURE.to_owned(),
+            jti: URL_SAFE_NO_PAD.encode(claims.grant_id),
+            iat: claims.now - 1,
+            nbf: Some(claims.now - 1),
+            exp: claims.now + 60,
+        };
+        let header_segment = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let claims_segment = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
+        let signing_input = format!("{header_segment}.{claims_segment}");
+        let mut mac = HmacSha256::new_from_slice(&key).unwrap();
+        mac.update(signing_input.as_bytes());
+        let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        DirectoryGrantAuthorization::parse(&format!(
+            "{header_segment}.{claims_segment}.{signature}"
+        ))
+        .unwrap()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
@@ -766,6 +915,11 @@ mod tests {
             safe_root_ids: Some(vec![ROOT_ID.to_owned()]),
             max_lifetime_seconds: 120,
             clock_skew_seconds: 5,
+            replay_enabled: false,
+            replay_keyring_path: None,
+            replay_ledger_path: None,
+            replay_max_records: 4096,
+            replay_max_bytes: 1_048_576,
         }
     }
 

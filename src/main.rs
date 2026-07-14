@@ -20,6 +20,7 @@ use termux_mcp_server::health::McpRequestLimitReadiness;
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
     directory_grant::DirectoryGrantVerifier,
+    directory_replay::DirectoryReplayLedger,
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     transport_security::TransportSecurityPolicy,
 };
@@ -80,10 +81,21 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     #[cfg(feature = "mcp-runtime")]
+    let _directory_replay_ledger = DirectoryReplayLedger::load_optional(
+        &config.directory_grant,
+        config.auth.static_token.as_deref(),
+        _directory_grant_verifier.as_ref(),
+        chrono::Utc::now().timestamp().try_into().map_err(|_| {
+            anyhow::anyhow!("system clock is before the Unix epoch")
+        })?,
+    )?;
+
+    #[cfg(feature = "mcp-runtime")]
     info!(
         verification_configured = _directory_grant_verifier.is_some(),
+        replay_configured = _directory_replay_ledger.is_some(),
         mutation_enabled = false,
-        "Directory capability-grant verification posture loaded"
+        "Directory capability-grant authorization posture loaded"
     );
 
     #[cfg(feature = "mcp-runtime")]

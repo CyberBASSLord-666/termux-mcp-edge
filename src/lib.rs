@@ -22,6 +22,8 @@ pub mod command_policy;
 pub mod config;
 #[cfg(feature = "mcp-runtime")]
 pub mod directory_grant;
+#[cfg(feature = "mcp-runtime")]
+pub mod directory_replay;
 pub mod error;
 pub mod health;
 pub mod json_rpc;
