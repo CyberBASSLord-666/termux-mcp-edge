@@ -48,8 +48,9 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        FileSystemTools, MAX_LIST_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
-        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+        FileSystemTools, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
+        MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
+        MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -70,15 +71,17 @@ const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
+const PATH_METADATA_TOOL: &str = "path_metadata";
 const READ_FILE_TOOL: &str = "read_file";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 8] = [
+const BASE_AVAILABLE_TOOLS: [&str; 9] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
     PROJECT_SERVICE_STATUS_TOOL,
     LIST_DIRECTORY_TOOL,
+    PATH_METADATA_TOOL,
     READ_FILE_TOOL,
     SEARCH_TEXT_TOOL,
     WRITE_FILE_TOOL,
@@ -92,6 +95,7 @@ const ANDROID_STATUS_GATE: &str = "android_read_only_status";
 const ANDROID_BATTERY_STATUS_GATE: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_GATE: &str = "android_volume_status";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
+const FILESYSTEM_METADATA_GATE: &str = "filesystem_metadata";
 const FILESYSTEM_READ_GATE: &str = "filesystem_read";
 const FILESYSTEM_WRITE_GATE: &str = "filesystem_write";
 
@@ -124,6 +128,10 @@ const FILESYSTEM_INVALID_ARGUMENTS: &str = "invalid_arguments";
 const FILESYSTEM_INVALID_DEPTH: &str = "invalid_max_depth";
 const FILESYSTEM_SAFE_ROOT_REJECTED: &str = "safe_root_rejected";
 const FILESYSTEM_LIST_ALLOWED: &str = "safe_root_listed";
+const FILESYSTEM_METADATA_ALLOWED: &str = "safe_root_metadata_read";
+const FILESYSTEM_METADATA_NOT_FOUND: &str = "filesystem_path_not_found";
+const FILESYSTEM_METADATA_UNSUPPORTED: &str = "filesystem_path_type_unsupported";
+const FILESYSTEM_METADATA_FAILED: &str = "filesystem_metadata_failed";
 const FILESYSTEM_READ_ALLOWED: &str = "safe_root_read";
 const FILESYSTEM_SEARCH_ALLOWED: &str = "safe_root_text_searched";
 const FILESYSTEM_SEARCH_INVALID_QUERY: &str = "search_query_invalid";
@@ -373,6 +381,12 @@ struct ReadFileArguments {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PathMetadataArguments {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SearchTextArguments {
     path: String,
     query: String,
@@ -401,9 +415,9 @@ struct RunCommandProfileArguments {
 /// The runtime exposes negotiated, session-scoped MCP discovery,
 /// deterministic runtime metadata, non-sensitive platform metadata,
 /// read-only Android/Termux status metadata, read-only project-owned service
-/// status metadata, safe-rooted directory listing, bounded safe-rooted UTF-8
-/// reads, default-dry-run safe-rooted writes, and optionally compiled and
-/// enabled fixed-profile command diagnostics. Android platform control,
+/// status metadata, safe-rooted directory listing and object metadata, bounded
+/// safe-rooted UTF-8 reads, default-dry-run safe-rooted writes, and optionally
+/// compiled and enabled fixed-profile command diagnostics. Android platform control,
 /// arbitrary command execution, and high-impact actions remain unavailable.
 #[rustfmt::skip]
 pub fn router(
@@ -1066,6 +1080,21 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": PATH_METADATA_TOOL,
+                        "description": "Return bounded non-sensitive metadata for one regular file or directory inside a configured filesystem safe root.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute regular-file or directory path inside one configured safe root.",
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": READ_FILE_TOOL,
                         "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
                         "inputSchema": {
@@ -1251,6 +1280,15 @@ async fn handle_tool_call(
         }
         LIST_DIRECTORY_TOOL => {
             handle_list_directory_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        PATH_METADATA_TOOL => {
+            handle_path_metadata_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -1710,7 +1748,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -1732,7 +1770,7 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "list_directory_read_file_and_default_dry_run_write_file",
+                    "filesystemToolMode": "list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
                     "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled,
@@ -1942,9 +1980,10 @@ async fn handle_list_directory_call(
                     AuditMode::ReadOnly,
                     FILESYSTEM_RESPONSE_TOO_LARGE,
                 );
-                return payload_too_large(
+                return bounded_payload_too_large(
                     error_id,
                     "Directory listing exceeds the staged response byte limit.",
+                    MAX_LIST_RESPONSE_BYTES,
                 );
             };
             record_filesystem_allowed(
@@ -1978,6 +2017,118 @@ async fn handle_list_directory_call(
                 FILESYSTEM_READ_FAILED,
             );
             internal_error(id, "Filesystem operation failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_path_metadata_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "path_metadata requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<PathMetadataArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools.path_metadata(args.path).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let Some(response) = bounded_ok_result(
+                id,
+                "Read bounded metadata for one safe-rooted filesystem object.".to_owned(),
+                json!(result),
+                MAX_PATH_METADATA_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    PATH_METADATA_TOOL,
+                    FILESYSTEM_METADATA_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Filesystem metadata exceeds the staged response byte limit.",
+                    MAX_PATH_METADATA_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_NOT_FOUND,
+            );
+            invalid_params(id, "Filesystem object does not exist.")
+        }
+        Err(AppError::UnsupportedPathType) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_UNSUPPORTED,
+            );
+            invalid_params(id, "Filesystem object type is not supported.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_FAILED,
+            );
+            internal_error(id, "Filesystem metadata lookup failed.")
         }
     }
 }
@@ -2037,9 +2188,10 @@ async fn handle_read_file_call(
                     AuditMode::ReadOnly,
                     FILESYSTEM_RESPONSE_TOO_LARGE,
                 );
-                return payload_too_large(
+                return bounded_payload_too_large(
                     error_id,
                     "File content exceeds the staged read_file response byte limit.",
+                    MAX_READ_RESPONSE_BYTES,
                 );
             };
             record_filesystem_allowed(
@@ -2198,9 +2350,10 @@ async fn handle_search_text_call(
                     AuditMode::ReadOnly,
                     FILESYSTEM_RESPONSE_TOO_LARGE,
                 );
-                return payload_too_large(
+                return bounded_payload_too_large(
                     error_id,
                     "Text-search results exceed the staged response byte limit.",
+                    MAX_SEARCH_RESPONSE_BYTES,
                 );
             };
             record_filesystem_allowed(
@@ -2491,6 +2644,27 @@ fn payload_too_large(id: Option<Value>, message: &str) -> Response {
         .into_response()
 }
 
+fn bounded_payload_too_large(
+    id: Option<Value>,
+    message: &str,
+    max_response_bytes: usize,
+) -> Response {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "error": {
+            "code": -32001,
+            "message": "Payload too large",
+            "data": message,
+        },
+    });
+    if serde_json::to_vec(&body).is_ok_and(|serialized| serialized.len() <= max_response_bytes) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+    }
+
+    payload_too_large(None, message)
+}
+
 #[rustfmt::skip]
 fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
     (
@@ -2667,6 +2841,7 @@ mod tests {
                 "android_status",
                 "project_service_status",
                 "list_directory",
+                "path_metadata",
                 "read_file",
                 "search_text",
                 "write_file",
@@ -2695,7 +2870,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            10
+            11
         );
     }
 

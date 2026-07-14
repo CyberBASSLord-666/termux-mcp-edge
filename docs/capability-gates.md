@@ -11,6 +11,7 @@ Enabled staged tools:
 - `android_status`
 - `project_service_status`
 - `list_directory`
+- `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers
 - `read_file`
 - `search_text` for bounded literal UTF-8 location search without content excerpts
 - `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`

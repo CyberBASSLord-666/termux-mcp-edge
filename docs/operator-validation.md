@@ -10,7 +10,7 @@ The expected posture is narrow and fail-closed:
 
 - In static-token mode, the complete `/mcp` route requires the configured bearer token before transport validation, JSON-RPC parsing, discovery, or invocation.
 - Explicit unauthenticated development mode is accepted only when startup validates a loopback bind.
-- `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, `search_text`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status`, `android_volume_status`, and `run_command_profile` are expected only when their respective compile-time and runtime gates are enabled.
+- `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status`, `android_volume_status`, and `run_command_profile` are expected only when their respective compile-time and runtime gates are enabled.
 - `write_file` remains dry-run by default and must require explicit `dry_run:false` plus safe-root validation before mutation.
 - Filesystem reads, listings, and writes remain bounded to configured safe roots.
 - `project_service_status` remains limited to explicitly allowlisted project-owned logical services.
@@ -71,7 +71,7 @@ unset MCP_TEST_TOKEN
 A valid runtime discovery pass proves presence and absence:
 
 - An unauthenticated caller receives no tool list in static-token mode.
-- An authenticated `tools/list` call includes the eight baseline tools. Battery, volume, and fixed-command tools are absent by default; each appears only in its explicitly enabled posture. An all-feature test build has eleven tools only when all three runtime flags are enabled.
+- An authenticated `tools/list` call includes the nine baseline tools. Battery, volume, and fixed-command tools are absent by default; each appears only in its explicitly enabled posture. An all-feature test build has twelve tools only when all three runtime flags are enabled.
 - `tools/list` does not include arbitrary command execution, shells, Android control, process listing, service mutation, package management, arbitrary network mutation, environment inspection, or token-management tools.
 - Tool descriptions and schemas continue to communicate safe-root, read-only, dry-run, and allowlist boundaries where applicable.
 
@@ -98,6 +98,7 @@ Audit counters are evidence of gate decisions, not an authorization mechanism an
 Use a dedicated safe-root test directory. Validate all of the following with authenticated calls in static-token mode:
 
 - Listing a safe-rooted directory succeeds with a `safe_root_listing`-style allowed decision.
+- `path_metadata` returns only normalized path, `regular_file`/`directory` kind, nullable file size and RFC 3339 modification time, and `maxResponseBytes:16384`; links, unsupported types, content, inode/device/UID/GID/mode/access-time fields, and oversized envelopes fail closed.
 - Reading a bounded UTF-8 file under a safe root succeeds with a `safe_root_read`-style allowed decision.
 - Literal `search_text` finds path/line/byte-column locations without returning matching content or echoing the query; depth, query, file, aggregate-byte, match, and response limits remain fixed.
 - Search skips symlinks, non-regular files, oversized files, and invalid UTF-8 without escaping the safe root or reflecting raw operating-system errors.
