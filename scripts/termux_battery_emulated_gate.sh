@@ -422,6 +422,7 @@ jq -e '
     "project_service_status",
     "list_directory",
     "read_file",
+    "search_text",
     "write_file",
     "android_battery_status"
   ]
@@ -543,6 +544,7 @@ jq -e '
     "project_service_status",
     "list_directory",
     "read_file",
+    "search_text",
     "write_file"
   ]
 ' "$BODY_FILE" >/dev/null || fail disabled_tool_discovery_invalid

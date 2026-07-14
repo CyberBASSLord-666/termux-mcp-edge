@@ -59,7 +59,7 @@ done
 
 for protocol_marker in \
   '"notifications/initialized"' \
-  '"runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","search_text","write_file"' \
   '"name":"shell"' \
   'mcp_request_body_too_large' \
   'outside-secret-must-not-be-returned' \

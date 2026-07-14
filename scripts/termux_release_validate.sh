@@ -886,7 +886,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -973,6 +973,26 @@ run_mcp_runtime_checks() {
   bytes="$(wc -c <"$body" 2>/dev/null)" || fail read_response_size_failed
   ((bytes <= 65536)) || fail read_response_too_large
   jq -e '.result.structuredContent.content == "validation-visible"' "$body" >/dev/null 2>&1 || fail read_content_invalid
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT" --arg query validation-visible '{"jsonrpc":"2.0","id":"search","method":"tools/call","params":{"name":"search_text","arguments":{"path":$path,"query":$query,"max_depth":1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status search_text "$status" 200 safe_root_text_search_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail search_response_size_failed
+  ((bytes <= 262144)) || fail search_response_too_large
+  jq -e --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '
+    .result.structuredContent as $search
+    | $search.matches == [{"path":$path,"lineNumber":1,"columnByte":1}]
+      and $search.truncated == false
+      and $search.queryBytes == 18
+      and $search.maxDepth == 1
+      and $search.maxEntries == 8192
+      and $search.maxFiles == 4096
+      and $search.maxFileBytes == 1048576
+      and $search.maxTotalBytes == 8388608
+      and $search.maxMatches == 256
+      and $search.maxResponseBytes == 262144
+  ' "$body" >/dev/null 2>&1 || fail search_response_contract_invalid
+  grep -Fq validation-visible "$body" && fail search_query_or_content_reflected
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/expanded-response.bin" bs=200000 count=1 status=none 2>/dev/null || fail read_bound_fixture_create_failed
   chmod 600 "$VALIDATION_SAFE_ROOT/expanded-response.bin" 2>/dev/null || fail read_bound_fixture_create_failed

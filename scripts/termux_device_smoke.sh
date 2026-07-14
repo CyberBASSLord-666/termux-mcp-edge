@@ -342,7 +342,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","list_directory","read_file","search_text","write_file"]'
 
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -359,6 +359,14 @@ protocol_smoke() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_read_file_http" "$status" 200
   assert_json "${label}_read_file_content" "$body" '.result.structuredContent.content == "device-smoke-visible"'
+
+  payload="$(jq -cn --arg path "$SAFE_ROOT" --arg query device-smoke-visible '{"jsonrpc":"2.0","id":"search-text","method":"tools/call","params":{"name":"search_text","arguments":{"path":$path,"query":$query,"max_depth":1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_search_text_http" "$status" 200
+  jq -e --arg expected "$SAFE_ROOT/visible.txt" '.result.structuredContent.matches == [{"path":$expected,"lineNumber":1,"columnByte":1}] and .result.structuredContent.truncated == false' "$body" >/dev/null || fail "${label}_search_text_result JSON assertion failed"
+  log "PASS ${label}_search_text_result=valid"
+  grep -Fq device-smoke-visible "$body" && fail "search response reflected query or file content"
+  log "PASS ${label}_search_text_content=redacted"
 
   target="$SAFE_ROOT/write-target.txt"
   payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"

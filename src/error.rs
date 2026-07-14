@@ -14,6 +14,9 @@ pub enum AppError {
     #[error("File content is not valid UTF-8")]
     InvalidFileEncoding,
 
+    #[error("Search query does not satisfy the literal text-search contract")]
+    InvalidSearchQuery,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -43,6 +46,10 @@ impl AppError {
             AppError::InvalidFileEncoding => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "File content must be valid UTF-8",
+            ),
+            AppError::InvalidSearchQuery => (
+                StatusCode::BAD_REQUEST,
+                "Search query does not satisfy the literal text-search contract",
             ),
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -123,6 +130,13 @@ mod tests {
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "File content must be valid UTF-8",
+            )
+        );
+        assert_eq!(
+            AppError::InvalidSearchQuery.public_response(),
+            (
+                StatusCode::BAD_REQUEST,
+                "Search query does not satisfy the literal text-search contract",
             )
         );
     }

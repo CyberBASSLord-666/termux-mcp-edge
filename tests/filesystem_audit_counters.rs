@@ -20,8 +20,15 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
         AuditMode::DryRun,
         "dry_run_preview",
     );
-    let denied_read = filesystem_denied_event(
+    let allowed_search = filesystem_allowed_event(
         1_725_000_002,
+        "search_text",
+        "filesystem_read",
+        AuditMode::ReadOnly,
+        "safe_root_text_searched",
+    );
+    let denied_read = filesystem_denied_event(
+        1_725_000_003,
         "read_file",
         "filesystem_read",
         AuditMode::ReadOnly,
@@ -30,17 +37,23 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
 
     counters.record_event(&allowed_list);
     counters.record_event(&allowed_dry_run);
+    counters.record_event(&allowed_search);
     counters.record_event(&denied_read);
 
-    assert_eq!(counters.allowed_total, 2);
+    assert_eq!(counters.allowed_total, 3);
     assert_eq!(counters.denied_total, 1);
-    assert_eq!(counters.total(), 3);
+    assert_eq!(counters.total(), 4);
     assert_eq!(counters.by_tool["list_directory"].allowed, 1);
     assert_eq!(counters.by_tool["write_file"].allowed, 1);
     assert_eq!(counters.by_tool["read_file"].denied, 1);
+    assert_eq!(counters.by_tool["search_text"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_listed"].allowed, 1);
     assert_eq!(counters.by_reason_code["dry_run_preview"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_rejected"].denied, 1);
+    assert_eq!(
+        counters.by_reason_code["safe_root_text_searched"].allowed,
+        1
+    );
 
     let serialized = serde_json::to_string(&counters)
         .expect("filesystem audit counters should serialize deterministically")

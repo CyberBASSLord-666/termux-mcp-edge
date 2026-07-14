@@ -71,7 +71,7 @@ The harness records and verifies:
 10. health and readiness;
 11. unauthenticated MCP rejection;
 12. stable `2025-11-25` initialization, notification, and session deletion;
-13. the exact seven-tool discovery allowlist;
+13. the exact eight-tool discovery allowlist, including bounded `search_text`;
 14. disabled command, Android-control, and high-impact gates;
 15. safe-rooted directory listing and UTF-8 read;
 16. default dry-run write and explicit mutation with final mode `0600`;

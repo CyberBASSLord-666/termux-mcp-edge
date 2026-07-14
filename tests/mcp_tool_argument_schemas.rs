@@ -110,6 +110,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
         ("list_directory", "list_directory requires a path argument."),
         ("read_file", "read_file requires a path argument."),
         (
+            "search_text",
+            "search_text requires path and query arguments.",
+        ),
+        (
             "write_file",
             "write_file requires path and content arguments.",
         ),
@@ -188,6 +192,16 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             json!({"path": source.to_string_lossy()}),
         ),
         (
+            "search-minimal",
+            "search_text",
+            json!({"path": root.path().to_string_lossy(), "query": "safe"}),
+        ),
+        (
+            "search-full",
+            "search_text",
+            json!({"path": root.path().to_string_lossy(), "query": "safe", "max_depth": 5}),
+        ),
+        (
             "write-minimal",
             "write_file",
             json!({
@@ -245,6 +259,14 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
         (
+            "search_text",
+            json!({
+                "path": root.path().to_string_lossy(),
+                "query": "safe",
+                "unexpected": true
+            }),
+        ),
+        (
             "write_file",
             json!({
                 "path": target.to_string_lossy(),
@@ -282,6 +304,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "project_service_status",
         "list_directory",
         "read_file",
+        "search_text",
         "write_file",
     ] {
         for (label, arguments) in [
@@ -312,6 +335,14 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
             json!({"path": root.path().to_string_lossy(), "max_depth": "5"}),
         ),
         ("read_file", json!({"path": [source.to_string_lossy()]})),
+        (
+            "search_text",
+            json!({"path": root.path().to_string_lossy(), "query": false}),
+        ),
+        (
+            "search_text",
+            json!({"path": root.path().to_string_lossy(), "query": "safe", "max_depth": "5"}),
+        ),
         (
             "write_file",
             json!({"path": 7, "content": "content", "dry_run": false}),

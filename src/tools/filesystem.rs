@@ -24,11 +24,21 @@ pub const MAX_LIST_ENTRIES: usize = 4_096;
 pub const MAX_LIST_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_READ_BYTES: usize = 1_048_576;
 pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
+pub const MIN_SEARCH_DEPTH: u32 = 1;
+pub const MAX_SEARCH_DEPTH: u32 = 5;
+pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
+pub const MAX_SEARCH_ENTRIES: usize = 8_192;
+pub const MAX_SEARCH_FILES: usize = 4_096;
+pub const MAX_SEARCH_FILE_BYTES: usize = 1_048_576;
+pub const MAX_SEARCH_TOTAL_BYTES: usize = 8_388_608;
+pub const MAX_SEARCH_MATCHES: usize = 256;
+pub const MAX_SEARCH_RESPONSE_BYTES: usize = 262_144;
 
 // Leave deterministic room for the JSON-RPC envelope, bounded summary, and a
 // normally sized request id. The transport independently enforces the exact
 // full-response ceilings above, including caller-controlled ids.
 const MAX_LIST_STRUCTURED_BYTES: usize = MAX_LIST_RESPONSE_BYTES - 1_024;
+const MAX_SEARCH_STRUCTURED_BYTES: usize = MAX_SEARCH_RESPONSE_BYTES - 1_024;
 
 struct DescriptorTempFileCleanup<'a> {
     parent: &'a OwnedFd,
@@ -69,6 +79,49 @@ struct PendingEntry {
     name: OsString,
     display_path: PathBuf,
     encoded_bytes: usize,
+}
+
+struct SearchPendingEntry {
+    name: OsString,
+    display_path: PathBuf,
+    file_type: FileType,
+    size: u64,
+}
+
+struct SearchState<'a> {
+    query: &'a str,
+    matches: Vec<SearchTextMatch>,
+    entries_examined: usize,
+    files_scanned: usize,
+    bytes_scanned: usize,
+    skipped_oversized_files: usize,
+    skipped_invalid_utf8_files: usize,
+    skipped_unsafe_entries: usize,
+    skipped_unreadable_entries: usize,
+    truncated: bool,
+}
+
+impl<'a> SearchState<'a> {
+    fn new(query: &'a str) -> Self {
+        Self {
+            query,
+            matches: Vec::new(),
+            entries_examined: 0,
+            files_scanned: 0,
+            bytes_scanned: 0,
+            skipped_oversized_files: 0,
+            skipped_invalid_utf8_files: 0,
+            skipped_unsafe_entries: 0,
+            skipped_unreadable_entries: 0,
+            truncated: false,
+        }
+    }
+
+    fn execution_exhausted(&self) -> bool {
+        self.files_scanned >= MAX_SEARCH_FILES
+            || self.bytes_scanned >= MAX_SEARCH_TOTAL_BYTES
+            || self.matches.len() >= MAX_SEARCH_MATCHES
+    }
 }
 
 #[derive(Clone)]
@@ -420,6 +473,80 @@ impl FileSystemTools {
         Ok(result)
     }
 
+    pub async fn search_text(
+        &self,
+        path: String,
+        query: String,
+        max_depth: Option<u32>,
+    ) -> Result<SearchTextResult, AppError> {
+        validate_search_query(&query)?;
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let depth = max_depth
+            .unwrap_or(MAX_SEARCH_DEPTH)
+            .clamp(MIN_SEARCH_DEPTH, MAX_SEARCH_DEPTH);
+        let result = tokio::task::spawn_blocking(move || {
+            let root_fd = open_root_directory(&anchored.root_path)?;
+            let target_fd = open_descendant_directory(root_fd, &anchored.relative_path)?;
+            let mut state = SearchState::new(&query);
+            collect_text_matches_descriptor_relative(
+                target_fd,
+                &anchored.display_path,
+                depth,
+                &mut state,
+            )?;
+            state.matches.sort_unstable_by(|left, right| {
+                (&left.path, left.line_number, left.column_byte).cmp(&(
+                    &right.path,
+                    right.line_number,
+                    right.column_byte,
+                ))
+            });
+
+            let mut result = SearchTextResult {
+                path: anchored.display_path.to_string_lossy().to_string(),
+                matches: state.matches,
+                truncated: state.truncated,
+                entries_examined: state.entries_examined,
+                files_scanned: state.files_scanned,
+                bytes_scanned: state.bytes_scanned,
+                skipped_oversized_files: state.skipped_oversized_files,
+                skipped_invalid_utf8_files: state.skipped_invalid_utf8_files,
+                skipped_unsafe_entries: state.skipped_unsafe_entries,
+                skipped_unreadable_entries: state.skipped_unreadable_entries,
+                query_bytes: query.len(),
+                max_depth: depth,
+                max_entries: MAX_SEARCH_ENTRIES,
+                max_files: MAX_SEARCH_FILES,
+                max_file_bytes: MAX_SEARCH_FILE_BYTES,
+                max_total_bytes: MAX_SEARCH_TOTAL_BYTES,
+                max_matches: MAX_SEARCH_MATCHES,
+                max_response_bytes: MAX_SEARCH_RESPONSE_BYTES,
+            };
+            while serde_json::to_vec(&result)
+                .map_err(std::io::Error::other)?
+                .len()
+                > MAX_SEARCH_STRUCTURED_BYTES
+            {
+                if result.matches.pop().is_none() {
+                    return Err(AppError::Io(std::io::Error::other(
+                        "search response metadata exceeds its bound",
+                    )));
+                }
+                result.truncated = true;
+            }
+            Ok::<_, AppError>(result)
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.search.latency_seconds").record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.search.calls_total").increment(1);
+        counter!("mcp.fs.search.bytes_total").increment(result.bytes_scanned as u64);
+
+        Ok(result)
+    }
+
     pub async fn write_file(
         &self,
         path: String,
@@ -488,6 +615,182 @@ fn path_rejected(input: &str) -> AppError {
     AppError::PathTraversal {
         attempted: input.to_string(),
     }
+}
+
+fn validate_search_query(query: &str) -> Result<(), AppError> {
+    if query.is_empty()
+        || query.len() > MAX_SEARCH_QUERY_BYTES
+        || query
+            .chars()
+            .any(|character| matches!(character, '\0' | '\n' | '\r'))
+    {
+        return Err(AppError::InvalidSearchQuery);
+    }
+    Ok(())
+}
+
+fn collect_text_matches_descriptor_relative(
+    root_fd: OwnedFd,
+    root_path: &Path,
+    max_depth: u32,
+    state: &mut SearchState<'_>,
+) -> Result<(), AppError> {
+    let mut queue = VecDeque::new();
+    queue.push_back((root_fd, root_path.to_path_buf(), 1_u32));
+
+    while let Some((dir_fd, dir_path, depth)) = queue.pop_front() {
+        if state.execution_exhausted() || state.entries_examined >= MAX_SEARCH_ENTRIES {
+            state.truncated = true;
+            break;
+        }
+
+        let mut read_dir = Dir::read_from(&dir_fd).map_err(descriptor_error)?;
+        let mut candidates = BTreeMap::new();
+
+        for entry in &mut read_dir {
+            if state.entries_examined >= MAX_SEARCH_ENTRIES {
+                state.truncated = true;
+                break;
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    state.skipped_unreadable_entries += 1;
+                    continue;
+                }
+            };
+            let name_bytes = entry.file_name().to_bytes();
+            if name_bytes == b"." || name_bytes == b".." {
+                continue;
+            }
+            state.entries_examined += 1;
+            let name = OsString::from_vec(name_bytes.to_vec());
+            let Some(name_key) = name.to_str().map(str::to_owned) else {
+                state.skipped_unsafe_entries += 1;
+                continue;
+            };
+            let metadata = match descriptor_fs::statat(&dir_fd, &name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    state.skipped_unreadable_entries += 1;
+                    continue;
+                }
+            };
+            let file_type = FileType::from_raw_mode(metadata.st_mode);
+            if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
+                state.skipped_unsafe_entries += 1;
+                continue;
+            }
+            let display_path = dir_path.join(&name);
+            candidates.insert(
+                name_key,
+                SearchPendingEntry {
+                    name,
+                    display_path,
+                    file_type,
+                    size: u64::try_from(metadata.st_size).unwrap_or(u64::MAX),
+                },
+            );
+        }
+
+        for (_, pending) in candidates {
+            if state.execution_exhausted() {
+                state.truncated = true;
+                break;
+            }
+            if pending.file_type.is_dir() {
+                if depth < max_depth {
+                    match open_child_directory(&dir_fd, &pending.name) {
+                        Ok(child_fd) => {
+                            queue.push_back((child_fd, pending.display_path, depth + 1));
+                        }
+                        Err(_) => state.skipped_unreadable_entries += 1,
+                    }
+                }
+                continue;
+            }
+
+            scan_search_file(&dir_fd, &pending, state)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn scan_search_file(
+    parent_fd: &OwnedFd,
+    pending: &SearchPendingEntry,
+    state: &mut SearchState<'_>,
+) -> Result<(), AppError> {
+    if pending.size > MAX_SEARCH_FILE_BYTES as u64
+        || pending.size as usize > MAX_SEARCH_TOTAL_BYTES.saturating_sub(state.bytes_scanned)
+    {
+        state.skipped_oversized_files += 1;
+        state.truncated = true;
+        return Ok(());
+    }
+
+    let file_fd = match descriptor_fs::openat(
+        parent_fd,
+        &pending.name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(file_fd) => file_fd,
+        Err(_) => {
+            state.skipped_unreadable_entries += 1;
+            return Ok(());
+        }
+    };
+    let opened_metadata = match descriptor_fs::fstat(&file_fd) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            state.skipped_unreadable_entries += 1;
+            return Ok(());
+        }
+    };
+    if !FileType::from_raw_mode(opened_metadata.st_mode).is_file() {
+        state.skipped_unsafe_entries += 1;
+        return Ok(());
+    }
+
+    let remaining_total = MAX_SEARCH_TOTAL_BYTES.saturating_sub(state.bytes_scanned);
+    let read_limit = MAX_SEARCH_FILE_BYTES.min(remaining_total).saturating_add(1);
+    let mut bytes = Vec::with_capacity(pending.size as usize);
+    if File::from(file_fd)
+        .take(read_limit as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        state.skipped_unreadable_entries += 1;
+        return Ok(());
+    }
+    if bytes.len() > MAX_SEARCH_FILE_BYTES || bytes.len() > remaining_total {
+        state.skipped_oversized_files += 1;
+        state.truncated = true;
+        return Ok(());
+    }
+    state.files_scanned += 1;
+    state.bytes_scanned += bytes.len();
+
+    let Ok(content) = std::str::from_utf8(&bytes) else {
+        state.skipped_invalid_utf8_files += 1;
+        return Ok(());
+    };
+    for (line_index, line) in content.split('\n').enumerate() {
+        for (column, _) in line.match_indices(state.query) {
+            if state.matches.len() >= MAX_SEARCH_MATCHES {
+                state.truncated = true;
+                return Ok(());
+            }
+            state.matches.push(SearchTextMatch {
+                path: pending.display_path.to_string_lossy().to_string(),
+                line_number: line_index + 1,
+                column_byte: column + 1,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn descriptor_error(error: rustix::io::Errno) -> AppError {
@@ -588,6 +891,37 @@ pub struct ReadFileResult {
     pub path: String,
     pub content: String,
     pub size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTextMatch {
+    pub path: String,
+    pub line_number: usize,
+    pub column_byte: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchTextResult {
+    pub path: String,
+    pub matches: Vec<SearchTextMatch>,
+    pub truncated: bool,
+    pub entries_examined: usize,
+    pub files_scanned: usize,
+    pub bytes_scanned: usize,
+    pub skipped_oversized_files: usize,
+    pub skipped_invalid_utf8_files: usize,
+    pub skipped_unsafe_entries: usize,
+    pub skipped_unreadable_entries: usize,
+    pub query_bytes: usize,
+    pub max_depth: u32,
+    pub max_entries: usize,
+    pub max_files: usize,
+    pub max_file_bytes: usize,
+    pub max_total_bytes: usize,
+    pub max_matches: usize,
+    pub max_response_bytes: usize,
 }
 
 #[cfg(test)]
@@ -946,5 +1280,245 @@ mod tests {
             std::fs::read_to_string(parked.join("result.txt")).unwrap(),
             "safe-write"
         );
+    }
+
+    #[test]
+    fn search_query_contract_accepts_exact_limit_and_rejects_unsafe_shapes() {
+        assert!(validate_search_query(&"q".repeat(MAX_SEARCH_QUERY_BYTES)).is_ok());
+        for query in [
+            String::new(),
+            "q".repeat(MAX_SEARCH_QUERY_BYTES + 1),
+            "two\nlines".to_string(),
+            "carriage\rreturn".to_string(),
+            "nul\0byte".to_string(),
+        ] {
+            assert!(matches!(
+                validate_search_query(&query),
+                Err(AppError::InvalidSearchQuery)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn search_text_returns_deterministic_locations_without_echoing_content() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(
+            root.path().join("z.txt"),
+            "needle first\nnone\nneedle and needle",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("a.txt"), "prefix needle").unwrap();
+        std::fs::write(nested.join("b.txt"), "needle nested").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let shallow = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "needle".to_string(),
+                Some(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shallow.matches.len(), 4);
+        assert!(shallow
+            .matches
+            .iter()
+            .all(|matched| !matched.path.ends_with("nested/b.txt")));
+
+        let result = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "needle".to_string(),
+                Some(2),
+            )
+            .await
+            .unwrap();
+        let locations = result
+            .matches
+            .iter()
+            .map(|matched| {
+                (
+                    matched
+                        .path
+                        .strip_prefix(root.path().to_string_lossy().as_ref())
+                        .unwrap()
+                        .to_string(),
+                    matched.line_number,
+                    matched.column_byte,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            locations,
+            vec![
+                ("/a.txt".to_string(), 1, 8),
+                ("/nested/b.txt".to_string(), 1, 1),
+                ("/z.txt".to_string(), 1, 1),
+                ("/z.txt".to_string(), 3, 1),
+                ("/z.txt".to_string(), 3, 12),
+            ]
+        );
+        assert!(!result.truncated);
+        assert_eq!(result.query_bytes, 6);
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(!serialized.contains("prefix needle"));
+        assert!(!serialized.contains("needle nested"));
+        assert!(!serialized.contains("needle and needle"));
+    }
+
+    #[tokio::test]
+    async fn search_text_rejects_outside_root_and_skips_symlink_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "needle outside").unwrap();
+        symlink(outside.path(), root.path().join("escape")).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        assert!(matches!(
+            tools
+                .search_text(
+                    outside.path().to_string_lossy().to_string(),
+                    "needle".to_string(),
+                    None,
+                )
+                .await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        let result = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "needle".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.matches.is_empty());
+        assert_eq!(result.skipped_unsafe_entries, 1);
+    }
+
+    #[tokio::test]
+    async fn search_text_skips_oversized_and_invalid_utf8_files() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("oversized.txt"),
+            vec![b'x'; MAX_SEARCH_FILE_BYTES + 1],
+        )
+        .unwrap();
+        std::fs::write(root.path().join("binary.dat"), [0xff, 0xfe, 0xfd]).unwrap();
+        std::fs::write(root.path().join("valid.txt"), "needle").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let result = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "needle".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.files_scanned, 2);
+        assert_eq!(result.skipped_oversized_files, 1);
+        assert_eq!(result.skipped_invalid_utf8_files, 1);
+        assert!(result.truncated);
+    }
+
+    #[tokio::test]
+    async fn search_text_enforces_match_and_aggregate_byte_budgets() {
+        let match_root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            match_root.path().join("matches.txt"),
+            "x ".repeat(MAX_SEARCH_MATCHES + 1),
+        )
+        .unwrap();
+        let match_tools = FileSystemTools::new(vec![match_root.path().to_path_buf()]);
+        let matches = match_tools
+            .search_text(
+                match_root.path().to_string_lossy().to_string(),
+                "x".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(matches.matches.len(), MAX_SEARCH_MATCHES);
+        assert!(matches.truncated);
+
+        let byte_root = tempfile::tempdir().unwrap();
+        for index in 0..9 {
+            std::fs::write(
+                byte_root.path().join(format!("{index}.txt")),
+                vec![b'a'; MAX_SEARCH_FILE_BYTES],
+            )
+            .unwrap();
+        }
+        let byte_tools = FileSystemTools::new(vec![byte_root.path().to_path_buf()]);
+        let bytes = byte_tools
+            .search_text(
+                byte_root.path().to_string_lossy().to_string(),
+                "needle".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(bytes.bytes_scanned, MAX_SEARCH_TOTAL_BYTES);
+        assert_eq!(bytes.files_scanned, 8);
+        assert!(bytes.truncated);
+    }
+
+    #[tokio::test]
+    async fn search_text_truncates_long_path_matches_to_response_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let component = "d".repeat(250);
+        let mut directory = root.path().to_path_buf();
+        for suffix in ['a', 'b', 'c', 'd'] {
+            directory.push(format!("{component}{suffix}"));
+            std::fs::create_dir(&directory).unwrap();
+        }
+        for index in 0..MAX_SEARCH_MATCHES {
+            std::fs::write(directory.join(format!("{index:03}.txt")), "needle").unwrap();
+        }
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let result = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "needle".to_string(),
+                Some(MAX_SEARCH_DEPTH),
+            )
+            .await
+            .unwrap();
+        assert!(result.truncated);
+        assert!(result.matches.len() < MAX_SEARCH_MATCHES);
+        assert!(serde_json::to_vec(&result).unwrap().len() <= MAX_SEARCH_STRUCTURED_BYTES);
+    }
+
+    #[test]
+    fn held_directory_descriptor_prevents_search_redirection_after_swap() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let child = root.path().join("child");
+        let parked = root.path().join("parked");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("data.txt"), "needle safe").unwrap();
+        std::fs::write(outside.path().join("data.txt"), "needle outside").unwrap();
+        let child_fd = open_root_directory(&child).unwrap();
+
+        std::fs::rename(&child, &parked).unwrap();
+        symlink(outside.path(), &child).unwrap();
+
+        let pending = SearchPendingEntry {
+            name: OsString::from("data.txt"),
+            display_path: child.join("data.txt"),
+            file_type: FileType::RegularFile,
+            size: 11,
+        };
+        let mut state = SearchState::new("needle");
+        scan_search_file(&child_fd, &pending, &mut state).unwrap();
+
+        assert_eq!(state.matches.len(), 1);
+        assert_eq!(state.bytes_scanned, 11);
+        assert!(!state.matches[0].path.contains("outside"));
     }
 }
