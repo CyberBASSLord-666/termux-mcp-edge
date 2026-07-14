@@ -29,9 +29,10 @@ cargo build --release
 cargo build --release --features mcp-runtime
 cargo build --release --features android-battery-status
 cargo build --release --features android-volume-status
+cargo build --release --features command-execution
 ```
 
-CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, and `android-volume-status` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
+CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, and `command-execution` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
 
 ## Dependency gate
 
@@ -126,7 +127,7 @@ Any invocation change must prove:
 
 ## High-impact tool requirements
 
-High-impact tools include command execution, package management, process/service control, Android/device control, broad filesystem mutation, network mutation, browser automation, credential handling, and shared-storage operations.
+High-impact tools include arbitrary or mutating command execution, new executable authority beyond the fixed server diagnostics, package management, process/service control, Android/device control, broad filesystem mutation, network mutation, browser automation, credential handling, and shared-storage operations.
 
 A PR exposing any high-impact family must document and test:
 

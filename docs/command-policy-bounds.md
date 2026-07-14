@@ -1,44 +1,32 @@
-# Command Policy Bounds Contract
+# Fixed command policy bounds contract
 
-The command policy remains a design-only preview. It does not expose an MCP tool, spawn a process, invoke a shell, read environment values, or enable command execution.
+`run_command_profile` accepts exactly one public value: a profile identifier no longer than 64 bytes. The current enum is `server_version`, `server_help`, and `execution_boundary`. No command, program, argv, working directory, environment, stdin, timeout, output-limit, or concurrency value is request-configurable.
 
-## Request bounds
+## Fixed bounds
 
-Every accepted preview must satisfy all of the following before detailed allowlist comparison:
+| Profile | Timeout | stdout | stderr |
+|---|---:|---:|---:|
+| `server_version` | 5 s | 4,096 bytes | 1,024 bytes |
+| `server_help` | 5 s | 16,384 bytes | 1,024 bytes |
+| `execution_boundary` | 5 s | 1,024 bytes | 1,024 bytes |
 
-- argv contains at most 16 elements;
-- environment-name metadata contains at most 8 elements;
-- timeout is at least 1 second and no greater than the selected fixed profile limit;
-- stdout and stderr caps are each at least 1 byte and no greater than the selected fixed profile limits;
-- the working directory is already proven safe-rooted;
-- argv exactly matches the fixed profile vector;
-- every environment name is present in the fixed profile allowlist.
+All profiles use the exact current executable, the first canonical configured safe root, empty environment, null stdin, and a two-permit non-queueing semaphore.
 
-Zero does not mean unlimited. Zero timeout and zero output caps are rejected with stable lower-bound reason codes.
+## Deterministic denial order
 
-## Stable denial reasons
+1. Missing or structurally invalid arguments are rejected before policy evaluation.
+2. An uncompiled build returns `command_feature_not_compiled`.
+3. A compiled but runtime-disabled build returns `command_runtime_disabled` without resolving the identifier.
+4. An enabled build rejects oversized or unknown identifiers with `command_profile_not_allowlisted`.
+5. An allowlisted profile requires an available safe root.
+6. Execution then enforces concurrency, process creation, deadline, stream limits, zero exit, valid UTF-8, and cleanup confirmation.
 
-The policy emits non-sensitive reason codes:
+No failure returns partial child output.
 
-- `argv_count_exceeds_limit`;
-- `environment_name_count_exceeds_limit`;
-- `timeout_below_minimum`;
-- `timeout_exceeds_limit`;
-- `stdout_cap_below_minimum`;
-- `stdout_cap_exceeds_limit`;
-- `stderr_cap_below_minimum`;
-- `stderr_cap_exceeds_limit`.
+## Cleanup budget
 
-Existing fixed-command, exact-argv, safe-root, environment-name allowlist, and disabled-execution reasons remain unchanged.
-
-## Denial precedence
-
-The policy first resolves the fixed command identifier and preserves the disabled-runtime gate for execution requests. It then rejects oversized argv or environment-name cardinality before inspecting individual elements. Exact argv matching, numeric lower and upper bounds, safe-root status, and environment allowlist comparison follow.
-
-This ordering bounds work for malformed previews and makes the first denial deterministic. Tests cover zero, minimum, maximum, above-limit, cardinality-boundary, and competing-denial cases.
+The process timeout is divided into an operation deadline and a reserved cleanup window. The reserve is one quarter of the timeout, clamped from 1 ms through 250 ms. Construction rejects timeouts below 4 ms. Cleanup-reserve exhaustion overrides the primary outcome with `command_wait_failed`, while the independent supervisor remains responsible until reaping completes.
 
 ## Audit privacy
 
-Audit events retain only stable reason codes, the fixed command ordinal when known, bounded numeric limits, and request-side counts. They never contain argv values, environment names or values, command output, secrets, filesystem paths, or caller-provided strings.
-
-See `docs/command-profile-validation.md` for the broader operator review required before any future runtime enablement.
+Audit metadata contains only the numeric profile ordinal when an allowlisted profile was resolved. Requested identifiers, executable paths, argv, cwd, environment, output, limits, and caller text are never stored. See [`command-execution-gate.md`](command-execution-gate.md) for the full runtime contract and [`command-profile-validation.md`](command-profile-validation.md) for profile-change review.

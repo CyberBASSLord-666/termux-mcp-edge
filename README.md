@@ -14,7 +14,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
-- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`; independent `android-battery-status` and `android-volume-status` builds may additionally expose their single read-only provider tool after explicit runtime opt-in.
+- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
 - **Filesystem surface:** deterministic bounded directory listing and UTF-8 reads; writes are descriptor-relative, payload-bounded, cancellation-safe, crash-durable, and dry-run by default. Deterministic pre-open and post-open exchange tests preserve the no-follow race-hardening delivered through #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
@@ -25,7 +25,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
 - **Named tunnels:** explicit, non-overwriting Cloudflare Tunnel setup with strict hostname validation and hermetic failure-path tests.
 
-Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, network mutation, and high-impact actions remain unavailable. The optional battery and volume tools are bounded read-only telemetry and do not authorize any of those surfaces.
+Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, network mutation, and high-impact actions remain unavailable. The optional battery and volume tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the exact server binary and does not authorize a shell or caller-selected command surface.
 
 ## Security and authentication
 
@@ -128,6 +128,19 @@ The feature includes `mcp-runtime`. Startup rejects the runtime flag when the fe
 
 See [`docs/ANDROID_VOLUME_STATUS.md`](docs/ANDROID_VOLUME_STATUS.md) for the exact stream contract, authority boundary, stable failures, audit behavior, and native ARM64 evidence.
 
+## Optional fixed-profile command diagnostics
+
+Fixed server diagnostics require a separate build and runtime opt-in:
+
+```bash
+cargo build --release --features command-execution
+export MCP__COMMAND__ENABLED=true
+```
+
+The feature includes `mcp-runtime`. A default build rejects the runtime flag, while a command build with the flag unset hides `run_command_profile` and denies direct calls without spawning. Enabled callers may choose only `server_version`, `server_help`, or `execution_boundary`. Every profile runs the exact current executable with fixed argv, the first canonical safe root as cwd, empty environment, null stdin, a five-second deadline, independent output ceilings, a two-permit non-queueing concurrency limit, process-group cleanup, zero-exit enforcement, and UTF-8-only bounded output. Callers cannot supply a command, program, argv, path, environment, stdin, timeout, or limit.
+
+See [`docs/command-execution-gate.md`](docs/command-execution-gate.md) for the complete request, response, failure, audit, and native validation contract.
+
 ## Build and validate
 
 Run the exact CI gates:
@@ -145,6 +158,7 @@ cargo build --release
 cargo build --release --features mcp-runtime
 cargo build --release --features android-battery-status
 cargo build --release --features android-volume-status
+cargo build --release --features command-execution
 ```
 
 The binary exposes deployment-facing metadata without requiring runtime configuration:
@@ -169,7 +183,7 @@ Before a release declaration, run the no-clone exact-commit AArch64 device gate 
 
 Validate the exact downloaded default and `mcp-runtime` Android candidates separately through [`docs/RELEASE_CANDIDATE_VALIDATION.md`](docs/RELEASE_CANDIDATE_VALIDATION.md). Each workflow bundle includes an exact-source manifest and checksum sidecar; the offline validator reconciles those with the supplied commit/run metadata and feature postures before any listener or service mutation, requires explicit confirmation for runtime/deployment phases, and emits only versioned sanitized JSON evidence.
 
-The Android workflow additionally executes the default, `mcp-runtime`, opt-in battery, and opt-in volume postures in the pinned official Termux container on a native ARM64 runner. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated gates, the evidence-only classification used when runtime changes require later physical release evidence, and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
+The Android workflow additionally executes the default, `mcp-runtime`, opt-in battery, opt-in volume, and fixed-command postures in the digest-pinned official Termux container on a native ARM64 runner. The command gate also runs the default binary to prove compile-time rejection. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated gates, the evidence-only classification used when runtime changes require later physical release evidence, and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
 
 Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticated MCP, audit-counter, filesystem, Android-status, service-status, and capability-boundary checks.
 
@@ -185,6 +199,8 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Android artifact contract](docs/ANDROID_ARTIFACTS.md)
 - [Android battery status tool](docs/ANDROID_BATTERY_STATUS.md)
 - [Android volume status tool](docs/ANDROID_VOLUME_STATUS.md)
+- [Fixed-profile command diagnostics](docs/command-execution-gate.md)
+- [Command profile validation runbook](docs/command-profile-validation.md)
 - [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)
 - [Downloaded release-candidate validation](docs/RELEASE_CANDIDATE_VALIDATION.md)
 - [Native ARM64 Termux emulated release gate](docs/EMULATED_RELEASE_GATE.md)

@@ -1,234 +1,124 @@
-# Command Profile Validation Runbook
+# Command profile validation runbook
 
-Termux MCP Edge is built for developers, advanced Termux operators, and power users who understand local automation risk. This runbook defines the operator checks required before any future command-policy profile can be considered for enablement.
+This runbook governs changes to the implemented `run_command_profile` registry. The current registry is intentionally closed to three read-only diagnostics of the exact server binary. A proposed profile is denied unless every check below passes.
 
-Command execution remains disabled in the staged runtime. This document does not enable a command-capable MCP tool, does not relax policy, and does not authorize shell access, arbitrary arguments, process control, Android platform control, or high-impact actions.
+## Current approved profiles
 
-## Validation objective
+| Identifier | Executable | Argv | Side effects |
+|---|---|---|---|
+| `server_version` | Current server | `--version` | None |
+| `server_help` | Current server | `--help` | None |
+| `execution_boundary` | Current server | `--self-check-command-boundary` | None |
 
-A command profile is acceptable only when an operator can prove that it is narrow, deterministic, bounded, safe-rooted, auditable, and explicitly opted in. Failure to prove any required property is a block.
+These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits.
 
-The validation output should be a short record containing:
+## Review record
 
-- profile identifier;
-- intended operational purpose;
-- reviewer name or handle;
-- validation date;
-- source revision reviewed;
-- explicit pass/fail decision;
-- reason codes for any rejected profile.
+Record the proposed identifier, exact source revision, purpose, exact executable identity, complete argv, timeout, stdout/stderr ceilings, expected output class, reviewer, and pass/fail decision. Do not put raw output, environment data, credentials, private paths, device identifiers, or caller payloads in the record.
 
-Do not store command output, file contents, environment values, secrets, private host metadata, usernames, device identifiers, or filesystem paths outside the documented safe-root decision context in the validation record.
+## Eligibility checklist
 
-## Required preconditions
+A profile is eligible only when all answers are yes:
 
-Before profile review starts, confirm that:
+1. Is the purpose narrow, read-only, and diagnostic?
+2. Is the program the exact running Termux MCP Edge binary?
+3. Is every argv element fixed in source with no placeholder or caller data?
+4. Does the program path avoid `PATH` lookup?
+5. Does the profile run in an already-anchored configured safe root?
+6. Is the inherited environment completely empty?
+7. Is stdin always null?
+8. Are timeout and independent stdout/stderr ceilings finite and conservative?
+9. Does any nonzero exit, timeout, overflow, invalid UTF-8, or cleanup failure suppress all output?
+10. Is the result useful without credentials, host paths, device identifiers, broad process state, or private file contents?
+11. Does cancellation retain cleanup ownership until the direct child is reaped?
+12. Are discovery, runtime-disabled, invalid-input, allowed, and failure paths audited without caller text?
+13. Do exact-head CI, Security, Android cross-compile, and native ARM64 Termux gates pass?
+14. Does the change preserve `arbitraryCommandExecution=false` and `highImpactTools=false`?
 
-1. the command-execution gate is still disabled by default;
-2. no command-capable MCP tool is exposed through `tools/list`;
-3. the profile is defined in reviewed project configuration or source, not supplied dynamically by a caller;
-4. the operator explicitly opted in to the reviewed profile set;
-5. the profile has a documented owner and purpose;
-6. the profile does not overlap with Android control, package management, service mutation, network mutation, credential access, device control, or other high-impact capability classes.
+Any no answer blocks the profile.
 
-If any precondition fails, reject the profile with `profile_precondition_failed`.
+## Automatic rejection classes
 
-## Fixed executable review
+Reject profiles involving any of the following:
 
-Each profile must name exactly one fixed executable.
+- shells, interpreters, `eval`, `-c`, scripts, plugins, config loading, or code evaluation;
+- caller-selected programs, argv, paths, environment, stdin, timeout, output limits, or concurrency;
+- package managers, privilege bridges, Android control commands, process-control tools, service mutation, network clients, or network configuration;
+- recursive filesystem inspection, broad host roots, shared-storage roots, `/proc`, `/sys`, `/dev`, or arbitrary current directories;
+- credentials, authentication material, cookies, keys, account data, identifiers, messages, contacts, notifications, location, camera, microphone, or accessibility data;
+- writes, deletes, renames, permission changes, package/service changes, external requests, or any other side effect;
+- unbounded, binary, secret-bearing, path-bearing, device-bearing, or nondeterministic output.
 
-Pass criteria:
+Such work belongs in a separate threat-modeled capability gate. It must not be disguised as a diagnostic profile.
 
-- executable identity is static in project-owned configuration or source;
-- executable is not a shell, shell wrapper, interpreter escape hatch, package manager, process-control utility, credential tool, network mutation tool, or Android control tool;
-- executable purpose matches the documented profile purpose;
-- executable location is not caller-controlled;
-- executable resolution cannot be changed by caller-supplied `PATH` or environment values.
+## Identifier and schema review
 
-Reject the profile if the executable is any of:
+Profile identifiers must be short stable ASCII-style names no longer than 64 bytes. They must not contain path syntax, whitespace, NUL, shell tokens, or command text. The public schema remains a one-property closed object whose enum is derived from the canonical registry.
 
-- `sh`, `bash`, `zsh`, `fish`, `dash`, `busybox sh`, or equivalent shell surface;
-- `su`, `sudo`, `doas`, `rish`, `adb`, or similar privilege/device bridge;
-- `pkg`, `apt`, `dpkg`, `pm`, `cmd`, `am`, `settings`, `svc`, `termux-*` control commands, or package/platform mutation tools;
-- `kill`, `pkill`, `reboot`, `mount`, `ip`, `iptables`, `nft`, `ssh`, `scp`, `curl`, `wget`, or broad system/network mutation tools;
-- any interpreter intended to evaluate caller-supplied code.
+Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
 
-Recommended rejection reason codes:
+## Executable and argv review
 
-- `shell_executable_rejected`;
-- `privilege_bridge_rejected`;
-- `platform_control_rejected`;
-- `package_or_service_mutation_rejected`;
-- `network_mutation_rejected`;
-- `dynamic_executable_rejected`.
+The production client resolves only `std::env::current_exe()`. A proposal to launch any other executable is outside this gate.
 
-## Fixed argv review
+Argv must be a complete immutable slice. Reject shell metacharacters, command substitution, redirection, pipes, globs, path expansion, configuration-file arguments, dynamic verbosity, and any option that can load or execute external content. Tests must assert the exact argv observed by a fixture executable.
 
-Each profile must define a fixed argv vector. Callers must not be able to add, remove, reorder, interpolate, template, or escape arguments.
+## Working-directory review
 
-Pass criteria:
+The command client receives the first safe root only after startup has canonicalized it and verified that it is an existing directory. It rejects relative paths, `/`, and nonexistent directories. Callers cannot select or see the working directory.
 
-- argv is fully enumerated in reviewed project-owned configuration or source;
-- no argv element contains caller-controlled text;
-- no argv element invokes shell evaluation, command substitution, glob expansion, redirection, pipes, background execution, or command chaining;
-- no argv element expands access to filesystem locations outside the safe root;
-- no argv element requests verbose secret-bearing output.
+Any profile whose behavior can escape the directory through its own fixed arguments or implicit config discovery is ineligible even though the child cwd is safe-rooted.
 
-Reject the profile if it uses:
+## Environment and stdin review
 
-- free-form command strings;
-- templated argv values;
-- wildcard argv values that broaden filesystem or process scope;
-- `--config`, `--script`, `--exec`, `--eval`, `-c`, or equivalent options that load caller-controlled code or commands;
-- command separators such as `;`, `&&`, `||`, pipes, or redirection operators.
+`env_clear()` is mandatory; there is no environment allowlist in this gate. Profiles that require any environment variable are ineligible. `stdin` is always `/dev/null`; profiles requiring interactive or static input are ineligible.
 
-Recommended rejection reason codes:
+The native `execution_boundary` profile must continue to prove both properties without reflecting their values.
 
-- `dynamic_argv_rejected`;
-- `argv_template_rejected`;
-- `shell_syntax_rejected`;
-- `unsafe_scope_expansion_rejected`;
-- `caller_controlled_code_rejected`.
+## Bounds and cleanup review
 
-## Working-directory and safe-root review
+Every profile owns explicit timeout, stdout bytes, and stderr bytes. Four milliseconds is the implementation minimum because a real nonzero cleanup reserve is mandatory; production profiles use five seconds.
 
-Each profile must run from a safe-rooted working directory. The caller must not be able to select arbitrary paths.
+The shared supervisor must preserve:
 
-Pass criteria:
+- independent concurrent pipe draining;
+- immediate overflow recognition;
+- isolated process-group kill;
+- cleanup on success, failure, timeout, overflow, and caller cancellation;
+- authoritative reap after the response future is cancelled;
+- cleanup-deadline failure precedence.
 
-- working directory is fixed or selected from a small project-owned allowlist;
-- every allowed working directory resolves inside a configured safe root;
-- symlinks cannot escape the safe root;
-- relative paths are normalized before policy decisions;
-- profile behavior does not depend on ambient current directory state;
-- profile cannot read or write outside the safe root through arguments, config files, symlinks, archive extraction, or generated output paths.
+The command-specific semaphore remains non-queueing and bounded at two concurrent profiles unless a separately reviewed resource analysis changes it.
 
-Reject the profile if it permits:
+## Output and response review
 
-- `/`, `/data`, `/proc`, `/sys`, `/dev`, `/sdcard`, `/storage`, `$HOME`, or other broad host roots as working directories;
-- caller-provided absolute paths;
-- path traversal segments that survive normalization;
-- following symlinks outside the safe root;
-- archive or build output that can write outside the safe root.
+Only zero-exit valid-UTF-8 output may be returned. A response includes the stable profile identifier, zero exit code, each bounded stream once, exact byte counts, and bounded duration. Error responses contain stable reason codes only.
 
-Recommended rejection reason codes:
-
-- `safe_root_required`;
-- `path_traversal_rejected`;
-- `symlink_escape_rejected`;
-- `global_path_scope_rejected`;
-- `unsafe_output_path_rejected`.
-
-## Environment review
-
-Profiles may allow only environment variable names from an explicit allowlist. Environment values must not be captured in audit records or surfaced through MCP responses.
-
-Pass criteria:
-
-- allowed environment variable names are explicitly enumerated;
-- names are necessary for the fixed executable and fixed argv to work;
-- values are supplied by the local runtime or operator configuration, not by arbitrary MCP caller input;
-- secrets are not required for profile execution unless a later dedicated credential gate is designed and approved;
-- audit records include at most counts or allowlist names, never values.
-
-Reject the profile if it allows:
-
-- wildcard environment forwarding;
-- full ambient environment inheritance;
-- caller-supplied variable names;
-- caller-supplied variable values;
-- secret-bearing variables such as tokens, passwords, keys, cookies, authorization headers, or cloud credentials.
-
-Recommended rejection reason codes:
-
-- `environment_wildcard_rejected`;
-- `ambient_environment_rejected`;
-- `caller_environment_rejected`;
-- `secret_environment_rejected`.
-
-## Bounds review
-
-Every profile must have explicit runtime and output bounds.
-
-Pass criteria:
-
-- timeout is finite and appropriate for the command purpose;
-- stdout byte limit is finite;
-- stderr byte limit is finite;
-- combined output behavior is deterministic when limits are exceeded;
-- failure mode is structured and does not include unbounded command output;
-- retry behavior is absent or explicitly bounded.
-
-Reject the profile if it has:
-
-- no timeout;
-- no output limits;
-- unbounded streaming output;
-- unbounded retries;
-- failure responses that include raw, unlimited stdout or stderr.
-
-Recommended rejection reason codes:
-
-- `timeout_required`;
-- `stdout_bound_required`;
-- `stderr_bound_required`;
-- `unbounded_retry_rejected`;
-- `unbounded_output_rejected`.
-
-## Dry-run or preview review
-
-Where the executable can mutate files, state, services, network settings, packages, Android state, or external systems, a command profile is not eligible under the command-execution gate alone.
-
-A profile with any high-impact or mutation behavior must remain disabled until the relevant higher-risk gate defines:
-
-- dry-run or preview semantics;
-- confirmation requirements;
-- capability-token requirements;
-- rollback expectations;
-- audit requirements;
-- concurrency and idempotency behavior.
-
-Reject such profiles with `higher_risk_gate_required`.
+Review output for secrets, private paths, hostnames, usernames, Android identifiers, full environment, global process state, and dependency details that materially aid exploitation. If output cannot be proven safe and stable, reject the profile.
 
 ## Audit review
 
-Every accepted profile must produce a non-sensitive audit event for allowed and denied decisions.
+Allowed and denied events may retain only tool name, gate name, read-only mode, decision, stable reason code, and resolved numeric profile ordinal. They must not retain the requested identifier, executable path, argv, cwd, streams, environment, token, session ID, or arbitrary caller value.
 
-Pass criteria:
+## Required validation
 
-- audit event contains stable tool name, gate name, mode, decision, and reason code;
-- metadata contains only bounded counts, limit values, or stable profile identifiers;
-- audit event does not include raw command output, argv supplied by callers, file contents, environment values, secrets, private host metadata, usernames, Android identifiers, or broad filesystem paths;
-- denied decisions are auditable before execution;
-- timeout and output-limit failures are auditable without leaking raw output.
+Run:
 
-Recommended reason codes for accepted profiles:
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+cargo test --workspace --all-targets --all-features
+bash tests/package_android_artifact_test.sh
+```
 
-- `profile_allowlisted`;
-- `fixed_argv_verified`;
-- `safe_root_verified`;
-- `bounded_execution_verified`;
-- `audit_verified`.
+The exact PR head must also pass:
 
-## Final approval checklist
+- CI on all feature combinations;
+- Security checks;
+- five Android artifact builds;
+- native ARM64 official-Termux execution of `termux_command_emulated_gate.sh`;
+- evidence validation against `command-emulated-evidence-schema-v1.json`.
 
-A profile may be approved only if all answers below are `yes`:
-
-1. Is command execution still disabled unless the operator explicitly opts in?
-2. Is the profile defined in reviewed project-owned configuration or source?
-3. Is the executable fixed and non-shell?
-4. Is argv fixed and non-templated?
-5. Is the working directory safe-rooted?
-6. Are path traversal and symlink escapes blocked?
-7. Is environment exposure name-allowlisted and value-suppressed?
-8. Are timeout, stdout, and stderr bounds finite?
-9. Are allowed and denied decisions auditable with non-sensitive metadata only?
-10. Does the profile avoid Android control, package management, service mutation, process control, network mutation, credential access, and other high-impact actions?
-11. Is the failure mode structured and bounded?
-12. Is the profile purpose narrow enough that a future reviewer can reason about it independently?
-
-Any `no` answer blocks approval.
-
-## Runtime enablement boundary
-
-This runbook is a validation prerequisite, not an enablement mechanism. A future PR that enables any command-capable MCP surface must still include implementation, tests, documentation, threat review, and explicit opt-in behavior in that PR. Until then, command execution remains unavailable.
+Do not substitute a long idle observation for these deterministic boundary tests. Physical observation, when release governance requires it for changed runtime inputs, is a separate release-qualification decision and does not replace command-policy evidence.

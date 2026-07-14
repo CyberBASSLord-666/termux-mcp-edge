@@ -14,7 +14,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `read_file`
 - `write_file`
 
-When either separately compiled and runtime-enabled Android provider posture is active, the same counter path also records `android_battery_status` or `android_volume_status`. Disabled direct calls and provider failures are denied decisions; successful normalized reads are allowed decisions. No raw Termux:API output is retained.
+When a separately compiled and runtime-enabled optional posture is active, the same counter path also records `android_battery_status`, `android_volume_status`, or `run_command_profile`. Disabled direct calls and provider/process failures are denied decisions; successful normalized reads or fixed diagnostics are allowed decisions. No raw Termux:API or command output is retained. Command policy events may carry a numeric profile ordinal internally, but `AuditCounters` deliberately ignores all event metadata.
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
@@ -169,6 +169,22 @@ Current runtime/status/filesystem examples include:
 - `volume_output_invalid_utf8`
 - `volume_output_invalid_json`
 - `volume_output_invalid_field`
+- `command_profile_execution_allowed`
+- `command_feature_not_compiled`
+- `command_runtime_disabled`
+- `command_profile_missing_arguments`
+- `command_profile_invalid_arguments`
+- `command_profile_not_allowlisted`
+- `command_safe_root_unavailable`
+- `command_program_unavailable`
+- `command_spawn_failed`
+- `command_wait_failed`
+- `command_timeout`
+- `command_stdout_limit_exceeded`
+- `command_stderr_limit_exceeded`
+- `command_program_failed`
+- `command_output_invalid_utf8`
+- `command_concurrency_limit_exceeded`
 
 Capability-token evaluation examples include:
 

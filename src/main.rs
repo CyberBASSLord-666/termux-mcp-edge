@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
             file_tools,
             config.android.battery_status_enabled,
             config.android.volume_status_enabled,
+            config.command.enabled,
         )
         .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
         .route_layer(middleware::from_fn_with_state(
@@ -202,8 +203,33 @@ fn handle_cli() -> anyhow::Result<bool> {
             print!("{CLI_HELP}");
             Ok(true)
         }
+        (Some(argument), None) if argument == OsStr::new("--self-check-command-boundary") => {
+            verify_command_execution_boundary()?;
+            println!("termux-mcp-command-boundary ok");
+            Ok(true)
+        }
         _ => anyhow::bail!("unsupported command-line arguments; use --help"),
     }
+}
+
+fn verify_command_execution_boundary() -> anyhow::Result<()> {
+    if std::env::vars_os().next().is_some() {
+        anyhow::bail!("command execution boundary check failed");
+    }
+
+    let working_directory = std::env::current_dir()
+        .map_err(|_| anyhow::anyhow!("command execution boundary check failed"))?;
+    if !working_directory.is_absolute() || working_directory == std::path::Path::new("/") {
+        anyhow::bail!("command execution boundary check failed");
+    }
+
+    let stdin_target = std::fs::read_link("/proc/self/fd/0")
+        .map_err(|_| anyhow::anyhow!("command execution boundary check failed"))?;
+    if stdin_target != std::path::Path::new("/dev/null") {
+        anyhow::bail!("command execution boundary check failed");
+    }
+
+    Ok(())
 }
 
 async fn health_check() -> &'static str {
@@ -310,5 +336,11 @@ mod tests {
             error.to_string(),
             "at least one filesystem safe root must be configured"
         );
+    }
+
+    #[test]
+    fn command_boundary_check_fails_under_the_ambient_test_process() {
+        let error = verify_command_execution_boundary().unwrap_err();
+        assert_eq!(error.to_string(), "command execution boundary check failed");
     }
 }

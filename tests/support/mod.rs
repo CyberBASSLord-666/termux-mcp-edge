@@ -39,6 +39,19 @@ pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
         file_tools,
         false,
         false,
+        false,
+    )
+}
+
+#[cfg(feature = "command-execution")]
+pub(super) fn command_test_router(file_tools: FileSystemTools) -> Router {
+    router(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+        false,
+        false,
+        true,
     )
 }
 

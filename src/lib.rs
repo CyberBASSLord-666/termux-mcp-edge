@@ -9,7 +9,15 @@ pub mod android_status;
 pub mod android_volume;
 pub mod audit;
 pub mod auth;
+#[cfg(any(
+    feature = "android-battery-status",
+    feature = "android-volume-status",
+    feature = "command-execution"
+))]
+mod bounded_process;
 pub mod capability_token;
+#[cfg(feature = "command-execution")]
+pub mod command_execution;
 pub mod command_policy;
 pub mod config;
 pub mod error;

@@ -26,6 +26,7 @@ fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Route
         file_tools,
         false,
         false,
+        false,
     )
     .route_layer(middleware::from_fn_with_state(policy, require_mcp_auth))
 }

@@ -32,6 +32,7 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
         file_tools,
         false,
         false,
+        false,
     )
     .layer(DefaultBodyLimit::max(max_body_bytes))
     .route_layer(middleware::from_fn_with_state(

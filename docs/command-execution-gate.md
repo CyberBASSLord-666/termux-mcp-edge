@@ -1,210 +1,173 @@
-# Command execution gate design
+# Fixed-profile command diagnostics
 
-## Purpose
+## Scope
 
-This document defines the command-execution gate before any execution-capable MCP tool is enabled. Termux MCP Edge is intended for developers and advanced power users, so command execution can be a valid future capability, but only through explicit operator opt-in, fixed allowlists, bounded execution, and auditable decisions.
+Termux MCP Edge implements one deliberately narrow process-execution surface for read-only diagnostics of the exact running server binary. It is not a shell, a generic command runner, a program launcher, or a path/argument templating system.
 
-This design is a prerequisite. It does not enable command execution.
+The public tool is `run_command_profile`. A caller can select only one reviewed profile identifier. The executable, complete argv vector, working directory, environment, stdin policy, timeout, output ceilings, and concurrency limit are owned by the server and cannot be overridden in an MCP request.
 
-## Non-negotiable constraints
+Arbitrary command execution, shell evaluation, interpreters, caller-selected programs, caller-selected arguments, Android control, package or service mutation, network mutation, and other high-impact actions remain unavailable.
 
-- Command execution is disabled by default.
-- No shell interpolation.
-- No arbitrary user-supplied command string.
-- No global process inventory.
-- No high-impact host or Android device-control actions.
-- No implicit fallback from read-only tools into shell commands.
-- No environment inheritance except an explicit allowlist.
-- No writes outside configured safe-root policy.
+## Two independent gates
 
-## Capability enablement model
+Both gates are required:
 
-A future execution-capable build must require both compile-time and runtime opt-in:
+1. Build the separate posture with `--features command-execution`.
+2. Set `MCP__COMMAND__ENABLED=true` at runtime.
 
-1. Compile-time feature gate, for example `command-execution`.
-2. Runtime configuration flag, for example `MCP__COMMAND__ENABLED=true`.
-3. Non-empty command allowlist configuration or built-in conservative allowlist.
-4. Audit event sink or counter path available before the first invocation.
+The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENABLED=true` during startup. A command-capable build with the runtime flag absent or false hides `run_command_profile` from discovery and denies direct calls with `command_runtime_disabled` without spawning a process.
 
-If any requirement is missing, the transport must report command execution as disabled in `runtime_status` and reject command tool calls with a structured error.
+Example:
 
-## Command allowlist model
-
-Allowed commands must be represented as named command profiles, not raw strings.
-
-Each command profile should define:
-
-- `profile_name`: stable public identifier exposed to MCP clients.
-- `program`: absolute path or resolved fixed program name.
-- `argv_template`: fixed argument vector with explicitly typed placeholders.
-- `allowed_placeholders`: placeholder definitions with validators.
-- `working_directory_policy`: safe-rooted or fixed directory.
-- `environment_policy`: explicit key/value allowlist.
-- `timeout_ms`: hard upper bound.
-- `stdout_max_bytes`: hard upper bound.
-- `stderr_max_bytes`: hard upper bound.
-- `stdin_policy`: disabled by default; bounded static input only if later approved.
-- `audit_gate_name`: stable audit gate identifier.
-
-Example profile shape:
-
-```text
-profile_name = "cargo_metadata"
-program = "cargo"
-argv_template = ["metadata", "--format-version", "1", "--no-deps"]
-working_directory_policy = "safe_root_required"
-timeout_ms = 15000
-stdout_max_bytes = 1048576
-stderr_max_bytes = 65536
-environment_policy = {}
+```bash
+cargo build --release --features command-execution
+export MCP__COMMAND__ENABLED=true
 ```
 
-## Argument handling
+Authentication, session lifecycle, Host/Origin policy, request concurrency, request timeout, and request-body limits still apply before tool dispatch.
 
-Argument construction must use fixed argv vectors. Placeholder expansion is allowed only when every placeholder has a validator.
+## Fixed profile registry
 
-Required validators:
+| Profile | Exact argv | Timeout | stdout | stderr | Purpose |
+|---|---|---:|---:|---:|---|
+| `server_version` | `--version` | 5 s | 4 KiB | 1 KiB | Exact server version |
+| `server_help` | `--help` | 5 s | 16 KiB | 1 KiB | Static CLI help |
+| `execution_boundary` | `--self-check-command-boundary` | 5 s | 1 KiB | 1 KiB | Prove the child has empty environment, null stdin, and a non-root safe working directory |
 
-- UTF-8 string length limit.
-- No NUL bytes.
-- No path traversal components for path placeholders.
-- Safe-root resolution for path placeholders.
-- Enum validation for mode-like values.
-- Numeric min/max validation for numeric placeholders.
+Every profile invokes `std::env::current_exe()`. No lookup through `PATH` occurs. The registry has no placeholders and no profile accepts caller data beyond its exact identifier.
 
-Rejected inputs must fail before process spawn.
+`execution_boundary` is an internal CLI self-check used by native validation. It returns only `termux-mcp-command-boundary ok` and fails with one generic message if any boundary property is absent. It does not reflect the working directory, environment, or stdin target.
 
-## Working directory policy
+## Closed MCP schema
 
-Working directories must be one of:
+Discovery occurs only while both gates are enabled:
 
-- A fixed project directory compiled/configured by the operator.
-- A resolved safe-rooted directory.
+```json
+{
+  "name": "run_command_profile",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "profile": {
+        "type": "string",
+        "enum": ["server_version", "server_help", "execution_boundary"]
+      }
+    },
+    "required": ["profile"],
+    "additionalProperties": false
+  }
+}
+```
 
-The runtime must reject:
+The following request fields are rejected before policy resolution or spawn: `command`, `program`, `argv`, `workingDirectory`, `environment`, `stdin`, `timeout`, `stdoutLimit`, and `stderrLimit`. Unknown, missing, oversized, shell-shaped, or path-shaped profile identifiers are rejected.
 
-- Relative working directories.
-- Directories outside configured safe roots.
-- Symlink escapes beyond a safe root.
-- Missing directories unless the specific profile explicitly allows creation in a later gate.
+## Process boundary
 
-## Environment policy
+The shared bounded process supervisor provides all of these properties:
 
-The default process environment is empty or minimal. The runtime must not inherit the server process environment wholesale.
+- exact absolute executable selected by the server;
+- fixed complete argv selected by the profile;
+- first already-canonicalized configured safe root as the working directory;
+- no filesystem-root or relative working directory;
+- completely cleared inherited environment;
+- null stdin;
+- separately piped and independently bounded stdout and stderr;
+- no shell invocation or interpolation;
+- isolated process group;
+- hard operation deadline with a reserved nonzero cleanup window;
+- immediate group termination on timeout, overflow, cancellation, process failure, or completion;
+- authoritative direct-child reaping even after caller cancellation;
+- stable failure if cleanup cannot be confirmed within the final deadline.
 
-Allowed environment variables must be profile-specific and explicit. Values must be fixed or derived from safe configuration, not from MCP request payloads unless a validator exists.
+The command lane has its own non-queueing semaphore with two permits. If both permits are in use, another profile call fails immediately with `command_concurrency_limit_exceeded`; it does not wait behind running commands.
 
-Denied by default:
+Successful output must be valid UTF-8. Invalid UTF-8, nonzero exit, timeout, overflow, spawn failure, wait failure, or program unavailability suppresses all child output and returns a stable non-sensitive reason code.
 
-- Tokens and credentials.
-- Shell configuration.
-- Android account or device identifiers.
-- Full `PATH` inheritance.
-- User home expansion.
+## Response contract
 
-## Execution bounds
+A successful response contains one bounded copy of each stream:
 
-Every invocation must enforce:
+```json
+{
+  "profile": "server_version",
+  "exitCode": 0,
+  "stdout": "termux-mcp-server 0.6.0\n",
+  "stderr": "",
+  "stdoutBytes": 24,
+  "stderrBytes": 0,
+  "durationMilliseconds": 2
+}
+```
 
-- Timeout.
-- stdout byte cap.
-- stderr byte cap.
-- Maximum argv count.
-- Maximum argument byte length.
-- Optional concurrency limit.
+Only successful zero-exit profiles produce this shape. Failures use an MCP tool error with `command_profile_execution_failed` and one stable reason code; raw stdout, raw stderr, exit details, program paths, working-directory paths, environment values, and caller text are not returned.
 
-On timeout, the child process must be terminated and the response must clearly indicate timeout without returning partial unbounded output.
+## Stable reason codes
 
-## Audit requirements
+Policy and configuration:
 
-Every attempted invocation must emit an audit event or equivalent metrics counters before returning.
+- `command_feature_not_compiled`
+- `command_runtime_disabled`
+- `command_profile_missing_arguments`
+- `command_profile_invalid_arguments`
+- `command_profile_not_allowlisted`
+- `command_safe_root_unavailable`
 
-Audit fields:
+Execution:
 
-- Timestamp.
-- Tool name.
-- Command profile name.
-- Gate name.
-- Dry-run versus mutating/executing mode.
-- Allowed or denied decision.
-- Reason code.
-- Timeout/limit metadata.
-- Output byte counts, not raw output.
+- `command_program_unavailable`
+- `command_spawn_failed`
+- `command_wait_failed`
+- `command_timeout`
+- `command_stdout_limit_exceeded`
+- `command_stderr_limit_exceeded`
+- `command_program_failed`
+- `command_output_invalid_utf8`
+- `command_concurrency_limit_exceeded`
 
-Audit logs must not include:
+Success uses `command_profile_execution_allowed`.
 
-- Raw stdout or stderr.
-- Secret values.
-- Full environment.
-- Raw file contents.
-- Private host paths outside already-safe rooted paths.
+## Audit privacy
 
-## Required reason codes
+Every resolved policy decision and execution outcome increments the existing in-memory aggregate audit counters. Events use:
 
-At minimum:
+- tool `run_command_profile`;
+- gate `fixed_command_execution`;
+- mode `read_only`;
+- allowed or denied decision;
+- stable reason code;
+- the stable numeric profile ordinal only when an allowlisted profile was resolved.
 
-- `command_execution_disabled`
-- `profile_not_allowlisted`
-- `invalid_argument_shape`
-- `argument_validation_failed`
-- `working_directory_outside_safe_root`
-- `environment_key_not_allowlisted`
-- `timeout_exceeded`
-- `stdout_limit_exceeded`
-- `stderr_limit_exceeded`
-- `spawn_failed`
-- `process_completed`
+Counters never retain the requested profile text, argv, program path, working directory, environment names or values, stdout, stderr, bearer material, session identifiers, or host paths. Disabled runtime decisions intentionally do not disclose whether the supplied profile identifier is allowlisted.
 
-## MCP transport behavior
+## Runtime posture reporting
 
-A future command tool must expose a closed schema with no additional properties.
+`runtime_status` reports these fields independently:
 
-The request should identify a command profile and structured arguments only. It must not accept a raw command string.
+- `commandExecutionCompiled`
+- `commandExecution`
+- `commandExecutionMode`, either `fixed_read_only_server_diagnostics` or `disabled`
+- `arbitraryCommandExecution`, always `false`
+- `highImpactTools`, always `false`
 
-Responses must be structured:
+`android_status.command_execution_enabled` mirrors the effective fixed-profile runtime posture while `shell_fallback_enabled`, `android_control_enabled`, and `high_impact_controls_enabled` remain false.
 
-- Success: exit status, bounded stdout/stderr strings, byte counts, duration, and profile name.
-- Denied: structured JSON-RPC invalid-params or policy-denied response with reason code.
-- Timeout: bounded timeout response with no unbounded partial output.
+## Validation gates
 
-## Required tests before enabling runtime command execution
+Unit and integration coverage proves:
 
-Unit tests:
+- the registry is unique, fixed, and bounded;
+- raw and injection-shaped identifiers are denied;
+- all override fields fail before spawn;
+- disabled discovery and direct-call behavior are fail-closed;
+- the child receives fixed argv, a safe-root working directory, empty environment, and null stdin;
+- timeout, both output ceilings, nonzero exit, invalid UTF-8, cancellation cleanup, and command-specific concurrency are enforced;
+- successful and denied decisions produce only non-sensitive counters;
+- fixed mode is distinguished from arbitrary execution in runtime metadata.
 
-- Allowlisted profile resolves to fixed argv.
-- Unknown profile is denied.
-- Raw command string cannot be submitted.
-- Placeholder validation rejects NUL bytes, traversal, overlong values, and invalid enum values.
-- Working directory must resolve inside safe root.
-- Environment only contains allowlisted keys.
-- stdout and stderr caps are enforced.
-- Timeout path terminates the child process.
-- Audit events are emitted for allowed and denied decisions.
+The Android workflow builds a fifth exact-source artifact named `termux-mcp-server-aarch64-linux-android-command-execution`. In the digest-pinned official ARM64 Termux container, `scripts/termux_command_emulated_gate.sh` validates both the default artifact's compile-time rejection and the command artifact's enabled/disabled truth table, exact schema, three profiles, execution boundary, override rejection, and audit counters. Its sanitized report conforms to `docs/command-emulated-evidence-schema-v1.json`.
 
-Integration tests:
+This native gate is deterministic and does not require a long observation window. It is development evidence, not by itself a physical-device release qualification.
 
-- MCP `tools/list` exposes command tool only when both compile-time and runtime gates are enabled.
-- Disabled-by-default runtime status reports command execution disabled.
-- Invalid requests fail before process spawn.
-- A known safe profile executes with bounded output.
-- Disallowed command attempts never spawn a process.
+## Expansion rule
 
-## Implementation sequence
-
-1. Add inert command profile data types and validation tests.
-2. Add command policy resolution and deny-by-default tests.
-3. Add audit-event integration for denied decisions.
-4. Add process runner behind feature gate, without MCP exposure.
-5. Add MCP discovery and tool-call handling only after the runner and policy tests are green.
-6. Add operator documentation and examples.
-
-## Merge gate
-
-No implementation PR may enable command execution unless:
-
-- Exact-head CI is green.
-- Security is green if dependencies, workflows, or lockfiles change.
-- Tests prove disabled-by-default behavior.
-- Tests prove no shell interpolation.
-- Tests prove no arbitrary raw command string reaches process spawn.
-- Documentation explains operator risk and opt-in requirements.
+Adding a profile is a security-sensitive public-surface change. A profile is not eligible if it accepts placeholders, evaluates code, reads broad host state, mutates any state, requires credentials, uses a shell/interpreter, or can escape the configured safe root. Such work requires a separate capability gate and threat review rather than broadening `run_command_profile`.

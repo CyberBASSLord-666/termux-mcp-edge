@@ -1,0 +1,319 @@
+//! Bounded execution client for reviewed read-only command profiles.
+//!
+//! Production profiles invoke only the currently running server executable with
+//! project-owned argv. The caller cannot select a program, argument, working
+//! directory, environment value, timeout, or output limit.
+
+use std::{ffi::OsString, path::PathBuf, sync::Arc};
+
+use serde::Serialize;
+use tokio::sync::Semaphore;
+
+use crate::{
+    bounded_process::{BoundedProcess, BoundedProcessConfigError, BoundedProcessError},
+    command_policy::CommandProfile,
+};
+
+pub const MAX_CONCURRENT_COMMAND_PROFILES: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandClientConfigError {
+    CurrentExecutableUnavailable,
+    ProgramMustBeAbsolute,
+    WorkingDirectoryMustBeSafeRooted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandExecutionError {
+    ProgramUnavailable,
+    SpawnFailed,
+    WaitFailed,
+    TimedOut,
+    StdoutLimitExceeded,
+    StderrLimitExceeded,
+    ProgramFailed,
+    InvalidUtf8,
+    ConcurrencyLimitExceeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExecutionResult {
+    pub profile: String,
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_bytes: usize,
+    pub stderr_bytes: usize,
+    pub duration_milliseconds: u64,
+}
+
+impl From<BoundedProcessError> for CommandExecutionError {
+    fn from(error: BoundedProcessError) -> Self {
+        match error {
+            BoundedProcessError::ProgramUnavailable => Self::ProgramUnavailable,
+            BoundedProcessError::SpawnFailed => Self::SpawnFailed,
+            BoundedProcessError::WaitFailed => Self::WaitFailed,
+            BoundedProcessError::TimedOut => Self::TimedOut,
+            BoundedProcessError::StdoutLimitExceeded => Self::StdoutLimitExceeded,
+            BoundedProcessError::StderrLimitExceeded => Self::StderrLimitExceeded,
+            BoundedProcessError::ProgramFailed => Self::ProgramFailed,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandExecutionClient {
+    program: PathBuf,
+    working_directory: PathBuf,
+    concurrency: Arc<Semaphore>,
+}
+
+impl CommandExecutionClient {
+    pub fn current_server(working_directory: PathBuf) -> Result<Self, CommandClientConfigError> {
+        let program = std::env::current_exe()
+            .map_err(|_| CommandClientConfigError::CurrentExecutableUnavailable)?;
+        Self::new(program, working_directory)
+    }
+
+    fn new(program: PathBuf, working_directory: PathBuf) -> Result<Self, CommandClientConfigError> {
+        if !program.is_absolute() {
+            return Err(CommandClientConfigError::ProgramMustBeAbsolute);
+        }
+        if !working_directory.is_absolute()
+            || working_directory == std::path::Path::new("/")
+            || !working_directory.is_dir()
+        {
+            return Err(CommandClientConfigError::WorkingDirectoryMustBeSafeRooted);
+        }
+
+        Ok(Self {
+            program,
+            working_directory,
+            concurrency: Arc::new(Semaphore::new(MAX_CONCURRENT_COMMAND_PROFILES)),
+        })
+    }
+
+    pub async fn execute(
+        &self,
+        profile: &'static CommandProfile,
+    ) -> Result<CommandExecutionResult, CommandExecutionError> {
+        let _permit = self
+            .concurrency
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| CommandExecutionError::ConcurrencyLimitExceeded)?;
+        let process = BoundedProcess::new(
+            self.program.clone(),
+            profile.argv.iter().map(OsString::from).collect(),
+            self.working_directory.clone(),
+            profile.timeout,
+            profile.max_stdout_bytes,
+            profile.max_stderr_bytes,
+        )
+        .map_err(|error| match error {
+            BoundedProcessConfigError::TimeoutTooShort => CommandExecutionError::WaitFailed,
+        })?;
+        let output = process.run().await?;
+        let stdout_bytes = output.stdout.len();
+        let stderr_bytes = output.stderr.len();
+        let stdout =
+            String::from_utf8(output.stdout).map_err(|_| CommandExecutionError::InvalidUtf8)?;
+        let stderr =
+            String::from_utf8(output.stderr).map_err(|_| CommandExecutionError::InvalidUtf8)?;
+        let duration_milliseconds = u64::try_from(output.duration.as_millis()).unwrap_or(u64::MAX);
+
+        Ok(CommandExecutionResult {
+            profile: profile.id.to_owned(),
+            exit_code: 0,
+            stdout,
+            stderr,
+            stdout_bytes,
+            stderr_bytes,
+            duration_milliseconds,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_program_and_concurrency(
+        program: PathBuf,
+        working_directory: PathBuf,
+        concurrency_limit: usize,
+    ) -> Result<Self, CommandClientConfigError> {
+        let mut client = Self::new(program, working_directory)?;
+        client.concurrency = Arc::new(Semaphore::new(concurrency_limit));
+        Ok(client)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::{
+        bounded_process::BOUNDED_PROCESS_TEST_LOCK,
+        command_policy::{command_profile, CommandProfile},
+    };
+
+    fn executable(script: &str) -> (TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("fixed-program");
+        fs::write(&program, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        (directory, program)
+    }
+
+    fn profile_with_bounds(
+        argv: &'static [&'static str],
+        timeout: Duration,
+        stdout: usize,
+        stderr: usize,
+    ) -> &'static CommandProfile {
+        Box::leak(Box::new(CommandProfile {
+            id: "test_profile",
+            ordinal: 99,
+            argv,
+            timeout,
+            max_stdout_bytes: stdout,
+            max_stderr_bytes: stderr,
+        }))
+    }
+
+    #[test]
+    fn client_requires_absolute_program_and_narrow_existing_working_directory() {
+        let safe_root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            CommandExecutionClient::new(PathBuf::from("relative"), safe_root.path().to_path_buf())
+                .unwrap_err(),
+            CommandClientConfigError::ProgramMustBeAbsolute
+        );
+        assert_eq!(
+            CommandExecutionClient::new(PathBuf::from("/program"), PathBuf::from("relative"))
+                .unwrap_err(),
+            CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
+        );
+        assert_eq!(
+            CommandExecutionClient::new(PathBuf::from("/program"), PathBuf::from("/")).unwrap_err(),
+            CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
+        );
+    }
+
+    #[tokio::test]
+    async fn fixed_profile_clears_environment_nulls_stdin_and_uses_safe_root_cwd() {
+        let _guard = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let safe_root = tempfile::tempdir().unwrap();
+        let expected_cwd = safe_root.path().to_string_lossy();
+        let script = format!(
+            "test \"$#\" -eq 1\n\
+             test \"$1\" = --version\n\
+             test \"$PWD\" = '{expected_cwd}'\n\
+             test \"$(/usr/bin/readlink /proc/self/fd/0)\" = /dev/null\n\
+             test -z \"${{TERMUX_MCP_COMMAND_TEST_SECRET+x}}\"\n\
+             printf '%s' 'termux-mcp-server 0.6.0'\n\
+             printf '%s' 'diagnostic' >&2"
+        );
+        let (_program_root, program) = executable(&script);
+        std::env::set_var("TERMUX_MCP_COMMAND_TEST_SECRET", "must-not-be-inherited");
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let result = client
+            .execute(command_profile("server_version").unwrap())
+            .await;
+        std::env::remove_var("TERMUX_MCP_COMMAND_TEST_SECRET");
+
+        let result = result.unwrap();
+        assert_eq!(result.profile, "server_version");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "termux-mcp-server 0.6.0");
+        assert_eq!(result.stderr, "diagnostic");
+        assert_eq!(result.stdout_bytes, result.stdout.len());
+        assert_eq!(result.stderr_bytes, result.stderr.len());
+    }
+
+    #[tokio::test]
+    async fn timeout_and_output_caps_fail_closed() {
+        let _guard = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let safe_root = tempfile::tempdir().unwrap();
+
+        let (_root, program) = executable("/bin/sleep 30");
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        assert_eq!(
+            client
+                .execute(profile_with_bounds(&[], Duration::from_millis(80), 8, 8))
+                .await
+                .unwrap_err(),
+            CommandExecutionError::TimedOut
+        );
+
+        let (_root, program) = executable("printf '12345'");
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        assert_eq!(
+            client
+                .execute(profile_with_bounds(&[], Duration::from_secs(1), 4, 4))
+                .await
+                .unwrap_err(),
+            CommandExecutionError::StdoutLimitExceeded
+        );
+
+        let (_root, program) = executable("printf '12345' >&2");
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        assert_eq!(
+            client
+                .execute(profile_with_bounds(&[], Duration::from_secs(1), 4, 4))
+                .await
+                .unwrap_err(),
+            CommandExecutionError::StderrLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn nonzero_and_invalid_utf8_outputs_are_not_reflected() {
+        let _guard = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let safe_root = tempfile::tempdir().unwrap();
+
+        let (_root, program) = executable("printf 'private failure' >&2; exit 9");
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        assert_eq!(
+            client
+                .execute(profile_with_bounds(&[], Duration::from_secs(1), 64, 64))
+                .await
+                .unwrap_err(),
+            CommandExecutionError::ProgramFailed
+        );
+
+        let (_root, program) = executable("printf '\\377'");
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        assert_eq!(
+            client
+                .execute(profile_with_bounds(&[], Duration::from_secs(1), 64, 64))
+                .await
+                .unwrap_err(),
+            CommandExecutionError::InvalidUtf8
+        );
+    }
+
+    #[tokio::test]
+    async fn command_specific_concurrency_limit_rejects_without_queueing() {
+        let _guard = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let safe_root = tempfile::tempdir().unwrap();
+        let (_root, program) = executable("/bin/sleep 1; printf done");
+        let client = CommandExecutionClient::with_program_and_concurrency(
+            program,
+            safe_root.path().to_path_buf(),
+            1,
+        )
+        .unwrap();
+        let profile = profile_with_bounds(&[], Duration::from_secs(2), 64, 64);
+        let running_client = client.clone();
+        let running = tokio::spawn(async move { running_client.execute(profile).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert_eq!(
+            client.execute(profile).await.unwrap_err(),
+            CommandExecutionError::ConcurrencyLimitExceeded
+        );
+        assert_eq!(running.await.unwrap().unwrap().stdout, "done");
+    }
+}

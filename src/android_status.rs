@@ -78,13 +78,13 @@ pub struct AndroidStatus {
     pub android_control_enabled: bool,
     /// Shell fallback remains disabled.
     pub shell_fallback_enabled: bool,
-    /// Command execution remains disabled.
+    /// Fixed-profile command diagnostics may be independently enabled.
     pub command_execution_enabled: bool,
     /// High-impact controls remain disabled.
     pub high_impact_controls_enabled: bool,
 }
 
-pub fn collect_android_status() -> AndroidStatus {
+pub fn collect_android_status(command_execution_enabled: bool) -> AndroidStatus {
     AndroidStatus {
         status_mode: "read_only_allowlisted_status",
         target_os: std::env::consts::OS,
@@ -99,7 +99,7 @@ pub fn collect_android_status() -> AndroidStatus {
         android_api_access: "not_used",
         android_control_enabled: false,
         shell_fallback_enabled: false,
-        command_execution_enabled: false,
+        command_execution_enabled,
         high_impact_controls_enabled: false,
     }
 }
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn android_status_contains_only_allowlisted_fields() {
-        let value = serde_json::to_value(collect_android_status()).unwrap();
+        let value = serde_json::to_value(collect_android_status(false)).unwrap();
         let object = value.as_object().unwrap();
         let actual_keys = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
         let allowed_keys = ANDROID_STATUS_ALLOWED_FIELDS
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn android_status_distinguishes_read_only_status_from_control() {
-        let status = collect_android_status();
+        let status = collect_android_status(false);
 
         assert_eq!(status.status_mode, "read_only_allowlisted_status");
         assert_eq!(status.android_api_access, "not_used");
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn android_status_serialization_excludes_denied_fields() {
-        let value = serde_json::to_value(collect_android_status()).unwrap();
+        let value = serde_json::to_value(collect_android_status(false)).unwrap();
         let object = value.as_object().unwrap();
 
         for denied_field in ANDROID_STATUS_DENIED_FIELDS {
@@ -166,6 +166,16 @@ mod tests {
                 "field cannot be both allowed and denied: {denied}"
             );
         }
+    }
+
+    #[test]
+    fn command_posture_is_explicit_without_enabling_android_control() {
+        let status = collect_android_status(true);
+
+        assert!(status.command_execution_enabled);
+        assert!(!status.android_control_enabled);
+        assert!(!status.shell_fallback_enabled);
+        assert!(!status.high_impact_controls_enabled);
     }
 
     fn assert_no_sensitive_tokens(value: &Value) {

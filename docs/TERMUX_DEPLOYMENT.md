@@ -67,6 +67,14 @@ MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 
 Do not add this setting to a build without the matching feature. The provider uses only the fixed zero-argument `termux-volume` status mode and does not authorize volume mutation. See [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md).
 
+An artifact built with `--features command-execution` may opt into fixed read-only server diagnostics:
+
+```text
+MCP__COMMAND__ENABLED=true
+```
+
+Do not add this setting to a build without the matching feature; startup fails closed. The tool accepts only the reviewed `server_version`, `server_help`, and `execution_boundary` profiles and does not authorize a shell or caller-selected program, argv, path, environment, stdin, timeout, or output limit. See [`command-execution-gate.md`](command-execution-gate.md).
+
 Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
 
 ## Validate the candidate

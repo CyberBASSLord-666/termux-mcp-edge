@@ -2,12 +2,13 @@
 
 ## Current Security Posture
 
-Termux MCP Edge has four deliberate compile-time postures:
+Termux MCP Edge has five deliberate compile-time postures:
 
 - The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
 - The optional `mcp-runtime` feature additionally exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its narrowly scoped staged tool registry.
 - The optional `android-battery-status` feature includes `mcp-runtime` and permits a separately runtime-gated read-only battery tool.
 - The optional `android-volume-status` feature includes `mcp-runtime` and permits a separately runtime-gated read-only audio-stream volume-status tool.
+- The optional `command-execution` feature includes `mcp-runtime` and permits a separately runtime-gated fixed-profile server diagnostic tool.
 
 The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 because optional server-initiated SSE, replay, and resumption are not implemented.
 
@@ -26,6 +27,8 @@ The optional runtime is not a broad host-control surface. After authentication, 
 An `android-battery-status` build may additionally expose `android_battery_status` only when `MCP__ANDROID__BATTERY_STATUS_ENABLED=true`. The runtime flag defaults to disabled and is rejected if the compile feature is absent. The provider directly executes one fixed Termux:API program with no arguments, null stdin, a cleared inherited environment, a five-second normal-operation budget with a reserved cleanup window, and hard stdout/stderr ceilings. A single cancellation-safe supervisor isolates the provider process group, terminates it immediately on overflow or cancellation, closes both pipes, and synchronously reaps the direct child. If reaping misses the reserve, the stable wait-failure result becomes authoritative and the supervisor remains responsible until collection. It returns only normalized allowlisted fields and never reflects technology/vendor strings, identifiers, raw output, stderr, paths, or environment values.
 
 An `android-volume-status` build may additionally expose `android_volume_status` only when `MCP__ANDROID__VOLUME_STATUS_ENABLED=true`. Its runtime flag has the same compile/runtime fail-closed relationship. It directly executes only the fixed `termux-volume` path with zero arguments, so callers cannot reach the upstream command's mutation mode. The shared Android provider supervisor applies the same environment, process-group, cancellation, cleanup, and reaping guarantees with 8 KiB/4 KiB output ceilings. Parsing requires the exact six official streams and exact integer fields; it canonicalizes output order and rejects unknown, duplicate, missing, extra, or range-invalid data without reflection.
+
+A `command-execution` build may additionally expose `run_command_profile` only when `MCP__COMMAND__ENABLED=true`. Its only profiles run the exact current server binary with project-owned argv for version, help, or boundary self-check output. The working directory is an anchored safe root; the inherited environment is empty; stdin is null; time, both output streams, concurrency, process groups, cancellation cleanup, and direct-child reaping are bounded. The request cannot select a program, argv, cwd, environment, stdin, timeout, or limit. Failures suppress child output and use stable reasons.
 
 Android platform control, shell fallback, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and other high-impact controls remain disabled.
 
@@ -63,11 +66,12 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `android_status` | Disabled | Read-only allowlisted metadata |
 | `android_battery_status` | Disabled | Available only in the `android-battery-status` build with explicit runtime opt-in; bounded read-only telemetry |
 | `android_volume_status` | Disabled | Available only in the `android-volume-status` build with explicit runtime opt-in; bounded read-only telemetry |
+| `run_command_profile` | Disabled | Available only in the `command-execution` build with explicit runtime opt-in; three fixed read-only server diagnostics |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
 | `list_directory` | Disabled | Bounded and safe-rooted |
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
 | `write_file` | Disabled | Payload-bounded, safe-rooted, dry-run by default |
-| Android control / command execution / high-impact controls | Disabled | Disabled |
+| Android control / arbitrary command execution / high-impact controls | Disabled | Disabled |
 
 The unauthenticated operational endpoints are intentionally coarse. They must not return secrets, raw configuration, private paths, tool discovery, or tool results.
 
@@ -130,9 +134,9 @@ Audit counters provide evidence of gate decisions; they are not authorization an
 
 ## Command and High-Impact Capability Boundaries
 
-Command-policy and capability-token modules are inert policy scaffolding. Their presence does not enable process spawning, shell access, Android control, package/service/network mutation, or any high-impact MCP tool.
+The fixed-profile command gate is live only in its separate build and only after runtime opt-in. It authorizes three read-only diagnostics of the exact server binary, not a shell or general process launcher. Its complete boundary is documented in [`command-execution-gate.md`](command-execution-gate.md).
 
-Any future command-capable or high-impact surface requires its own focused gate with compile-time and runtime opt-in, fixed allowlists, bounded execution, structured denial behavior, audit coverage, tests, and operator documentation.
+Capability-token primitives remain inert policy scaffolding. Any new executable, parameterized profile, mutating command, Android/service/package/network control, or other high-impact surface requires its own focused gate with compile-time and runtime opt-in, threat review, fixed allowlists, bounded execution, structured denial behavior, audit coverage, tests, and operator documentation.
 
 ## Dependency Advisory Policy
 

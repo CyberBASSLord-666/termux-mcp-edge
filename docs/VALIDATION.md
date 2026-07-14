@@ -4,7 +4,7 @@
 
 The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its current limited tool surface.
 
-The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status` or `android_volume_status`. Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
+The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, or the fixed server-diagnostic `run_command_profile`. Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
 
 The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling.
 
@@ -25,6 +25,7 @@ cargo build --release
 cargo build --release --features mcp-runtime
 cargo build --release --features android-battery-status
 cargo build --release --features android-volume-status
+cargo build --release --features command-execution
 ```
 
 Validate the exact release candidate on an AArch64 Termux device with the no-clone harness in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md). Its companion contract test runs in CI as `tests/termux_device_smoke_test.sh`; CI validates the harness interface and required coverage markers, while the actual run requires a real Termux/runit device.
@@ -137,7 +138,7 @@ curl -sS \
   http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 7'
 ```
 
-Confirm a normal `mcp-runtime` build returns exactly the seven baseline tools. A provider build still returns seven unless its corresponding runtime flag is true; then `android_battery_status` or `android_volume_status` is the eighth tool. An all-feature validation build returns nine only when both runtime flags are true. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
+Confirm a normal `mcp-runtime` build returns exactly the seven baseline tools. An optional build still returns seven unless its corresponding runtime flag is true; then its one additional tool is eighth. An all-feature validation build returns ten only when the battery, volume, and command runtime flags are all true. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
 
 Validate the project-owned service status tool with the current allowlisted service name:
 
@@ -247,9 +248,12 @@ BUILD_FEATURES=android-battery-status \
 BUILD_FEATURES=android-volume-status \
   ANDROID_NDK_HOME=/path/to/android-ndk \
   ./scripts/cross_compile.sh
+BUILD_FEATURES=command-execution \
+  ANDROID_NDK_HOME=/path/to/android-ndk \
+  ./scripts/cross_compile.sh
 ```
 
-The `Android Cross Compile` workflow validates all four postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific default, `mcp-runtime`, `android-battery-status`, and `android-volume-status` artifacts before treating a release run that publishes the optional features as complete. Verify their commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md). Battery v2 and volume v1 evidence require prompt endless-output rejection plus process-group, pipe-holder, client-cancellation, and bounded-supervisor cleanup attestations. Host regressions separately force cleanup-reserve exhaustion on timeout, both output-limit paths, and caller cancellation, requiring the stable wait failure to override the primary result only after direct-child reaping.
+The `Android Cross Compile` workflow validates all five postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, and `command-execution` artifacts before treating a release run that publishes the optional features as complete. Verify their commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md). Battery v2 and volume v1 evidence require prompt endless-output rejection plus process-group, pipe-holder, client-cancellation, and bounded-supervisor cleanup attestations. Command v1 evidence proves default-artifact compile rejection, runtime-disabled hiding, exact profiles/schema, boundary isolation, override rejection, and audit counters without a long observation. Host regressions separately force cleanup-reserve exhaustion on timeout, both output-limit paths, and caller cancellation, requiring the stable wait failure to override the primary result only after direct-child reaping.
 
 ## MCP Runtime Gate
 
@@ -269,4 +273,4 @@ Do not mark the project as broadly MCP-runtime-ready until each enabled capabili
 
 ## Current Known Limitation
 
-The transport implements the stable non-SSE MCP 2025-11-25 posture, while the tool authority intentionally remains staged. It exposes selected low-risk tools, including separately gated bounded battery and volume telemetry, but not Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, or high-impact controls. Restoring those surfaces is product work, not cleanup-only work.
+The transport implements the stable non-SSE MCP 2025-11-25 posture, while tool authority intentionally remains staged. It exposes selected low-risk tools, including separately gated bounded battery/volume telemetry and fixed server diagnostics, but not Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, or high-impact controls. Expanding those surfaces is separately threat-modeled product work.

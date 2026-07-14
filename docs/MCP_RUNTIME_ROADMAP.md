@@ -12,7 +12,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 
-The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. Separate `android-battery-status` and `android-volume-status` compile features plus disabled-by-default runtime flags expose bounded read-only Termux:API telemetry without Android or audio control. Command-policy and high-impact capability-token modules are inert policy scaffolding only. Android platform/audio control, shell fallback, live arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact actions remain unavailable until their own power-user capability gates land.
+The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. Separate `android-battery-status` and `android-volume-status` compile features plus disabled-by-default runtime flags expose bounded read-only Termux:API telemetry without Android or audio control. A separate `command-execution` feature and runtime flag expose only three fixed read-only diagnostics of the exact server binary. High-impact capability-token primitives remain inert policy scaffolding. Android platform/audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and high-impact actions remain unavailable until their own power-user capability gates land.
 
 ## Capability-Gate Philosophy
 
@@ -133,30 +133,29 @@ Battery telemetry satisfies this stage only for its read-only data family: fixed
 
 Volume telemetry satisfies this stage only for zero-argument status: fixed `termux-volume` execution, no caller-selected stream or level, cleared environment, bounded output/time, an exact six-stream parser with canonical order, disabled discovery, stable errors, aggregate audit coverage, the shared hardened provider supervisor, and a dedicated native ARM64 evidence report. It does not authorize the upstream command's argument-taking mutation mode, audio routing, media control, or any broader Android control family.
 
-## Stage 7: Command Execution and High-Impact Tooling
+## Stage 7: Fixed Command Diagnostics and High-Impact Tooling
 
 Add command execution or high-impact tooling only after separate authorization, audit/logging, and operator-consent policy is in place.
 
-Status: design and inert policy scaffolding complete; live runtime execution and high-impact tool exposure are not started.
+Status: the first fixed read-only server-diagnostic slice is implemented. Arbitrary, parameterized, mutating, and high-impact command surfaces are not started.
 
 Completed prerequisites:
 
-- Command-execution gate design.
-- Fixed allowlist and bounded command-policy primitives with no process spawning.
+- Command-execution gate design and profile-review runbook.
+- Separate compile-time feature and disabled-by-default runtime flag.
+- Closed `run_command_profile` schema with three fixed current-executable profiles.
+- Safe-root cwd, empty environment, null stdin, independent stream bounds, hard deadline, two non-queueing permits, process-group cleanup, and authoritative reaping.
+- Stable non-sensitive failures and aggregate allowed/denied audit coverage.
+- Exact-source fifth Android artifact with deterministic native ARM64 official-Termux evidence.
 - High-impact controls threat model.
 - Inert capability-token policy primitives with no token issuance, persistence, or live authorization surface.
 - Backend-neutral audit event/counter primitives and capability-policy audit contract tests.
 - Operator-facing validation and audit-counter documentation.
 
-Required before live implementation:
+Required before any expansion beyond fixed diagnostics:
 
-- Dedicated compile-time feature gate.
-- Runtime disabled-by-default configuration.
-- Explicit operator opt-in.
-- Fixed allowlisted command shapes; no arbitrary shell string execution.
-- Bounded timeout, argv, stdout, stderr, working-directory, and environment policy.
 - Capability-token/confirmation model for high-impact actions.
-- Audit event integration for every allowed and denied invocation.
+- A separate gate for any new executable, placeholder, caller input, mutation, credential, or broad inspection authority.
 - Separate focused validation PR for each tool family.
 - Regression tests proving disabled-by-default behavior and no accidental MCP discovery.
 - Rollback/cleanup behavior for mutating or long-running actions.
@@ -168,5 +167,6 @@ Required before live implementation:
 - Do not bundle dependency updates with unrelated behavior changes.
 - Do not treat `project_service_status` as arbitrary service discovery or process inspection.
 - Do not treat read-only Android/Termux status metadata as Android platform control.
-- Do not treat inert command/capability policy modules as live execution or authorization.
+- Do not treat fixed server diagnostics as arbitrary command execution or authorization for a broader executable surface.
+- Do not treat inert capability-token policy as live high-impact authorization.
 - Do not claim broad MCP production readiness without stable protocol conformance and tool smoke tests for each enabled surface.
