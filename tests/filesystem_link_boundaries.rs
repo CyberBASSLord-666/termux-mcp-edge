@@ -41,7 +41,7 @@ async fn read_file_rejects_link_resolving_beyond_safe_root() {
 }
 
 #[tokio::test]
-async fn list_and_read_reject_symlinked_parent_components() {
+async fn list_read_and_search_reject_symlinked_parent_components() {
     let root = tempfile::tempdir().unwrap();
     let peer = tempfile::tempdir().unwrap();
     let peer_file = peer.path().join("peer.txt");
@@ -56,7 +56,15 @@ async fn list_and_read_reject_symlinked_parent_components() {
     let read_result = tools
         .read_file(linked_parent.join("peer.txt").to_string_lossy().to_string())
         .await;
+    let search_result = tools
+        .search_text(
+            linked_parent.to_string_lossy().to_string(),
+            "peer".to_string(),
+            Some(1),
+        )
+        .await;
 
     assert_path_traversal(list_result);
     assert_path_traversal(read_result);
+    assert_path_traversal(search_result);
 }

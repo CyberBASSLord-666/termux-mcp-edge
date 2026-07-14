@@ -12,13 +12,14 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `project_service_status`
 - `list_directory`
 - `read_file`
+- `search_text`
 - `write_file`
 
 When a separately compiled and runtime-enabled optional posture is active, the same counter path also records `android_battery_status`, `android_volume_status`, or `run_command_profile`. Disabled direct calls and provider/process failures are denied decisions; successful normalized reads or fixed diagnostics are allowed decisions. No raw Termux:API or command output is retained. Command policy events may carry a numeric profile ordinal internally, but `AuditCounters` deliberately ignores all event metadata.
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded reads, and dry-run-by-default writes. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, file contents, or caller-provided values.
+Filesystem tools remain governed by safe-root validation, bounded reads/search, and dry-run-by-default writes. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, search queries, file contents, match data, or caller-provided values.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -134,6 +135,9 @@ Current runtime/status/filesystem examples include:
 - `unsupported_service`
 - `safe_root_listing`
 - `safe_root_read`
+- `safe_root_text_searched`
+- `search_query_invalid`
+- `filesystem_search_failed`
 - `dry_run_preview`
 - `explicit_write_allowed`
 - `missing_path_argument`

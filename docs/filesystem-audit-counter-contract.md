@@ -6,6 +6,7 @@ The contract applies to the existing staged filesystem tools:
 
 - `list_directory`
 - `read_file`
+- `search_text`
 - `write_file`
 
 It builds on the backend-neutral audit helpers in `src/audit.rs`, including `filesystem_allowed_event`, `filesystem_denied_event`, `AuditMode`, and `AuditCounters`.
@@ -20,6 +21,8 @@ The runtime should count:
 - denied directory-listing requests, including invalid arguments and safe-root rejections
 - allowed bounded safe-rooted file reads
 - denied read requests, including invalid arguments, safe-root rejections, and byte-limit failures
+- allowed bounded safe-rooted literal text searches
+- denied search requests, including invalid arguments/query/depth, safe-root rejection, response bounds, and internal failures
 - allowed `write_file` dry-run previews
 - allowed explicit `write_file` mutations
 - denied write requests, including invalid arguments, safe-root rejections, and byte-limit failures
@@ -63,6 +66,7 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 | --- | --- | --- | --- |
 | `list_directory` | `read_only` | `read_only` | `filesystem_safe_root` |
 | `read_file` | `read_only` | `read_only` | `filesystem_safe_root` |
+| `search_text` | `read_only` | `read_only` | `filesystem_read` |
 | `write_file` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
 | `write_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
 
@@ -76,6 +80,7 @@ Recommended allowed reason codes:
 
 - `safe_root_listing`
 - `safe_root_read`
+- `safe_root_text_searched`
 - `dry_run_preview`
 - `explicit_write_allowed`
 
@@ -84,6 +89,7 @@ Recommended denied reason codes:
 - `missing_path_argument`
 - `invalid_filesystem_arguments`
 - `invalid_list_depth`
+- `search_query_invalid`
 - `path_outside_safe_root`
 - `read_byte_limit_exceeded`
 - `write_byte_limit_exceeded`
@@ -93,7 +99,7 @@ The final runtime implementation may consolidate equivalent failures under fewer
 
 ## Response-contract preservation
 
-Audit counter wiring must not change existing JSON-RPC response shapes for `list_directory`, `read_file`, or `write_file`.
+Audit counter wiring must not change existing JSON-RPC response shapes for `list_directory`, `read_file`, `search_text`, or `write_file`.
 
 In particular, runtime wiring must preserve:
 
@@ -116,7 +122,8 @@ A focused runtime wiring PR should verify all of the following:
 5. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
 6. `write_file` records an allowed mutating filesystem event for successful explicit writes.
 7. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
-8. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content.
+8. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
+9. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content.
 
 ## Security invariant
 

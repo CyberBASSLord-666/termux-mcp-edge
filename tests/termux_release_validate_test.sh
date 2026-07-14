@@ -523,6 +523,7 @@ jq -e '
   and ([.results[].code] | index("exact_tool_allowlist") != null)
   and ([.results[].code] | index("read_only_metadata_verified") != null)
   and ([.results[].code] | index("deterministic_bounded_list") != null)
+  and ([.results[].code] | index("safe_root_text_search_succeeded") != null)
   and ([.results[].code] | index("read_response_bound_enforced") != null)
   and ([.results[].code] | index("symlink_escape_rejected") != null)
   and ([.results[].code] | index("authentication_precedes_body_limit") != null)

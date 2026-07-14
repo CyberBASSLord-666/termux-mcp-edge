@@ -25,6 +25,7 @@ TOOLS = [
     "project_service_status",
     "list_directory",
     "read_file",
+    "search_text",
     "write_file",
 ]
 
@@ -386,6 +387,67 @@ class Handler(BaseHTTPRequestHandler):
                 result(
                     identifier,
                     {"path": str(target), "content": content, "size": len(content.encode())},
+                ),
+            )
+            return
+        if name == "search_text":
+            target = safe_path(str(arguments.get("path", "")))
+            query = arguments.get("query")
+            if target is None or not target.is_dir() or not isinstance(query, str) or not query:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Search arguments invalid."),
+                )
+                return
+            matches = []
+            files_scanned = 0
+            bytes_scanned = 0
+            entries_examined = 0
+            for child in sorted(target.iterdir(), key=lambda item: str(item)):
+                entries_examined += 1
+                if not child.is_file() or child.is_symlink():
+                    continue
+                content = child.read_text()
+                files_scanned += 1
+                bytes_scanned += len(content.encode())
+                for line_number, line in enumerate(content.split("\n"), start=1):
+                    start = 0
+                    while True:
+                        column = line.find(query, start)
+                        if column < 0:
+                            break
+                        matches.append(
+                            {
+                                "path": str(child),
+                                "lineNumber": line_number,
+                                "columnByte": len(line[:column].encode()) + 1,
+                            }
+                        )
+                        start = column + len(query)
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "path": str(target),
+                        "matches": matches,
+                        "truncated": False,
+                        "entriesExamined": entries_examined,
+                        "filesScanned": files_scanned,
+                        "bytesScanned": bytes_scanned,
+                        "skippedOversizedFiles": 0,
+                        "skippedInvalidUtf8Files": 0,
+                        "skippedUnsafeEntries": 0,
+                        "skippedUnreadableEntries": 0,
+                        "queryBytes": len(query.encode()),
+                        "maxDepth": int(arguments.get("max_depth", 5)),
+                        "maxEntries": 8192,
+                        "maxFiles": 4096,
+                        "maxFileBytes": 1048576,
+                        "maxTotalBytes": 8388608,
+                        "maxMatches": 256,
+                        "maxResponseBytes": 262144,
+                    },
                 ),
             )
             return

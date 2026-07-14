@@ -8,7 +8,7 @@ The default build exposes operational health/readiness endpoints only. The optio
 
 In static-token mode, `/mcp` requires `Authorization: Bearer <configured-token>` before JSON-RPC parsing, discovery, or invocation. Explicit unauthenticated development mode is allowed only when startup validation confirms a loopback bind.
 
-The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and dry-run-first `write_file`. Independent `android-battery-status`, `android-volume-status`, and `command-execution` builds may additionally register their single bounded read-only tool only after the corresponding runtime flag is explicitly enabled. No Android or audio control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
+The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, literal `search_text`, and dry-run-first `write_file`. `search_text` is read-only, safe-rooted, descriptor-relative, fixed-limit, content-free location search; query text is neither executed nor audited. Independent `android-battery-status`, `android-volume-status`, and `command-execution` builds may additionally register their single bounded read-only tool only after the corresponding runtime flag is explicitly enabled. No Android or audio control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
 
 ## Default Deny Rule
 

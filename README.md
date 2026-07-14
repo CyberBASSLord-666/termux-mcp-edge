@@ -14,8 +14,8 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
-- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
-- **Filesystem surface:** deterministic bounded directory listing and UTF-8 reads; writes are descriptor-relative, payload-bounded, cancellation-safe, crash-durable, and dry-run by default. Deterministic pre-open and post-open exchange tests preserve the no-follow race-hardening delivered through #200.
+- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, `search_text`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
+- **Filesystem surface:** deterministic bounded directory listing, UTF-8 reads, and literal text search; writes are descriptor-relative, payload-bounded, cancellation-safe, crash-durable, and dry-run by default. Search returns only file/line/byte-column locations under fixed traversal, file, aggregate-byte, match, and response ceilings. Deterministic pre-open and post-open exchange tests preserve the no-follow race-hardening delivered through #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
@@ -100,7 +100,7 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 ## Filesystem safe roots
 
-The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live list/read/write operations walk from an opened safe-root descriptor with no-follow semantics for every descendant instead of authorizing one pathname and using it later.
+The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live list/read/search/write operations walk from an opened safe-root descriptor with no-follow semantics for every descendant instead of authorizing one pathname and using it later. [`docs/SAFE_ROOT_TEXT_SEARCH.md`](docs/SAFE_ROOT_TEXT_SEARCH.md) defines the fixed literal-search limits and output contract.
 
 ## Optional Android battery telemetry
 

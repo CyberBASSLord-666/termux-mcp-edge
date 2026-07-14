@@ -9,7 +9,7 @@ This checklist defines the evidence required to merge, release, and operate the 
 | `GET /health` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response |
 | `GET /ready` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, includes non-sensitive request-limit metadata | Same as `mcp-runtime` | Same as `mcp-runtime` | Same as `mcp-runtime` |
 | `POST`, `GET`, `DELETE /mcp` | Not compiled | Authenticated, resource-bounded stable 2025-11-25 transport; GET deliberately returns 405 because SSE is not offered | Same transport; feature includes `mcp-runtime` | Same transport; feature includes `mcp-runtime` | Same transport; feature includes `mcp-runtime` |
-| MCP tools | None | Seven baseline tools | Seven baseline tools; `android_battery_status` appears only after explicit runtime opt-in | Seven baseline tools; `android_volume_status` appears only after explicit runtime opt-in | Seven baseline tools; `run_command_profile` appears only after explicit runtime opt-in |
+| MCP tools | None | Eight baseline tools | Eight baseline tools; `android_battery_status` appears only after explicit runtime opt-in | Eight baseline tools; `android_volume_status` appears only after explicit runtime opt-in | Eight baseline tools; `run_command_profile` appears only after explicit runtime opt-in |
 | Android or audio control, shell, arbitrary command execution, arbitrary service control, and other high-impact actions | Disabled | Disabled | Disabled | Disabled | Disabled |
 
 All postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
@@ -25,6 +25,7 @@ The confirmed implementation lanes have focused merge evidence:
 - #204: uniform fail-closed environment parsing and listener/safe-root validation;
 - #205/#218: reconciled package licensing/metadata and minimized dependency features;
 - #206: deterministic response byte/cardinality bounds and happy/boundary coverage.
+- #240: descriptor-relative literal text search with fixed traversal, file, byte, match, response, and audit bounds.
 
 Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, every published Android posture is retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
 
@@ -99,9 +100,9 @@ A change to the stable transport or staged tool registry must prove:
 - notifications and client responses receive HTTP 202 with no body, batches remain rejected, and GET returns the documented 405 without creating SSE/replay state;
 - notification-shaped tool calls cannot dispatch or mutate state;
 - unauthenticated callers cannot discover or invoke tools;
-- discovery lists exactly seven baseline tools, plus only those battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled (eight with one, nine with two, ten with all three);
+- discovery lists exactly eight baseline tools, plus only those battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled (nine with one, ten with two, eleven with all three);
 - every tool call enforces its advertised closed input schema, including the omitted-or-empty contract for no-argument tools;
-- filesystem tools remain safe-rooted, bounded, and dry-run-first for writes;
+- filesystem tools remain safe-rooted and bounded; search is literal/content-free and writes remain dry-run-first;
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
 - errors and audit counters retain only stable non-sensitive data;
 - arbitrary command execution, Android control, shell fallback, and other high-impact tools remain absent; fixed server diagnostics appear only in their explicit posture.

@@ -12,6 +12,7 @@ Enabled staged tools:
 - `project_service_status`
 - `list_directory`
 - `read_file`
+- `search_text` for bounded literal UTF-8 location search without content excerpts
 - `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`
 
 Separately gated read-only tool:

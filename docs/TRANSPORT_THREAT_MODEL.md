@@ -14,7 +14,7 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - strict single-message JSON-RPC request, notification, and response classification;
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
-- the seven-tool baseline allowlist, plus only those read-only battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled, as documented in README and the authorization policy;
+- the eight-tool baseline allowlist, plus only those read-only battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.
@@ -93,7 +93,7 @@ Current controls:
 - bounded file reads, write payloads, directory depth, and entry count;
 - a separate two-permit non-queueing semaphore plus fixed deadlines and stream ceilings for command diagnostics.
 
-Deterministic filesystem response-byte budgets and single-content serialization landed through #206. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
+Deterministic filesystem response-byte budgets and single-content serialization landed through #206. Literal search adds fixed query, entry, file, per-file, aggregate-byte, match, and response ceilings; returns no content; and performs no regex or subprocess evaluation. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
 
 ### Filesystem escape and mutation
 

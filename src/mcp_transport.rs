@@ -47,7 +47,10 @@ use crate::{
     service_status::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
-    tools::{FileSystemTools, MAX_LIST_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES},
+    tools::{
+        FileSystemTools, MAX_LIST_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
+        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+    },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
 };
@@ -68,14 +71,16 @@ const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const READ_FILE_TOOL: &str = "read_file";
+const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 7] = [
+const BASE_AVAILABLE_TOOLS: [&str; 8] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
     PROJECT_SERVICE_STATUS_TOOL,
     LIST_DIRECTORY_TOOL,
     READ_FILE_TOOL,
+    SEARCH_TEXT_TOOL,
     WRITE_FILE_TOOL,
 ];
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
@@ -120,6 +125,9 @@ const FILESYSTEM_INVALID_DEPTH: &str = "invalid_max_depth";
 const FILESYSTEM_SAFE_ROOT_REJECTED: &str = "safe_root_rejected";
 const FILESYSTEM_LIST_ALLOWED: &str = "safe_root_listed";
 const FILESYSTEM_READ_ALLOWED: &str = "safe_root_read";
+const FILESYSTEM_SEARCH_ALLOWED: &str = "safe_root_text_searched";
+const FILESYSTEM_SEARCH_INVALID_QUERY: &str = "search_query_invalid";
+const FILESYSTEM_SEARCH_FAILED: &str = "filesystem_search_failed";
 const FILESYSTEM_READ_TOO_LARGE: &str = "read_size_limit_exceeded";
 const FILESYSTEM_READ_ENCODING_INVALID: &str = "read_encoding_invalid";
 const FILESYSTEM_RESPONSE_TOO_LARGE: &str = "response_size_limit_exceeded";
@@ -365,6 +373,15 @@ struct ReadFileArguments {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SearchTextArguments {
+    path: String,
+    query: String,
+    #[serde(default)]
+    max_depth: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WriteFileArguments {
     path: String,
     content: String,
@@ -374,6 +391,7 @@ struct WriteFileArguments {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(not(feature = "command-execution"), allow(dead_code))]
 struct RunCommandProfileArguments {
     profile: String,
 }
@@ -1063,6 +1081,36 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": SEARCH_TEXT_TOOL,
+                        "description": "Locate bounded literal UTF-8 text matches under a configured filesystem safe root without returning file contents.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute directory path inside one configured safe root.",
+                                },
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": MAX_SEARCH_QUERY_BYTES,
+                                    "x-maxBytes": MAX_SEARCH_QUERY_BYTES,
+                                    "description": "Case-sensitive literal single-line UTF-8 query of at most 256 bytes; regular expressions and globs are not evaluated.",
+                                },
+                                "max_depth": {
+                                    "type": "integer",
+                                    "minimum": MIN_SEARCH_DEPTH,
+                                    "maximum": MAX_SEARCH_DEPTH,
+                                    "description": format!(
+                                        "Optional bounded traversal depth; defaults to {MAX_SEARCH_DEPTH}."
+                                    ),
+                                },
+                            },
+                            "required": ["path", "query"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": WRITE_FILE_TOOL,
                         "description": "Write UTF-8 text to a safe-rooted file. Defaults to dry-run; mutation requires explicit dry_run=false.",
                         "inputSchema": {
@@ -1212,6 +1260,15 @@ async fn handle_tool_call(
         }
         READ_FILE_TOOL => {
             handle_read_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        SEARCH_TEXT_TOOL => {
+            handle_search_text_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -1653,7 +1710,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=list-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -2039,6 +2096,154 @@ async fn handle_read_file_call(
                 FILESYSTEM_READ_FAILED,
             );
             internal_error(id, "Filesystem read failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_search_text_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "search_text requires path and query arguments.");
+        }
+    };
+
+    let args = match serde_json::from_value::<SearchTextArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    if args.query.is_empty()
+        || args.query.len() > MAX_SEARCH_QUERY_BYTES
+        || args.query.chars().any(|character| matches!(character, '\0' | '\n' | '\r'))
+    {
+        record_filesystem_denied(
+            audit_counters,
+            SEARCH_TEXT_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_SEARCH_INVALID_QUERY,
+        );
+        return invalid_params(
+            id,
+            &format!(
+                "search_text.query must be one non-empty line of at most {MAX_SEARCH_QUERY_BYTES} UTF-8 bytes."
+            ),
+        );
+    }
+    if let Some(max_depth) = args.max_depth {
+        if !(MIN_SEARCH_DEPTH..=MAX_SEARCH_DEPTH).contains(&max_depth) {
+            record_filesystem_denied(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_DEPTH,
+            );
+            return invalid_params(
+                id,
+                &format!(
+                    "search_text.max_depth must be between {MIN_SEARCH_DEPTH} and {MAX_SEARCH_DEPTH}."
+                ),
+            );
+        }
+    }
+
+    match file_tools.search_text(args.path, args.query, args.max_depth).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = if result.truncated {
+                format!(
+                    "Located {} safe-rooted literal text matches; the bounded search was truncated.",
+                    result.matches.len()
+                )
+            } else {
+                format!(
+                    "Located {} safe-rooted literal text matches.",
+                    result.matches.len()
+                )
+            };
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_SEARCH_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    SEARCH_TEXT_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return payload_too_large(
+                    error_id,
+                    "Text-search results exceed the staged response byte limit.",
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SEARCH_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::InvalidSearchQuery) => {
+            record_filesystem_denied(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SEARCH_INVALID_QUERY,
+            );
+            invalid_params(id, "Search query does not satisfy the literal text-search contract.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                SEARCH_TEXT_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SEARCH_FAILED,
+            );
+            internal_error(id, "Filesystem search failed.")
         }
     }
 }
@@ -2463,6 +2668,7 @@ mod tests {
                 "project_service_status",
                 "list_directory",
                 "read_file",
+                "search_text",
                 "write_file",
                 "android_battery_status",
                 "android_volume_status",
@@ -2489,7 +2695,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            9
+            10
         );
     }
 
