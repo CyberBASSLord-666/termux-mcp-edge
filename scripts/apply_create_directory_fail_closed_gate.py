@@ -190,3 +190,43 @@ new_test = insert_after + '''
 replace_once(insert_after, new_test)
 
 PATH.write_text(text)
+
+TEST_PATH = Path("tests/mcp_tool_argument_schemas.rs")
+test_text = TEST_PATH.read_text()
+old_test_block = '''    for (id, tool_name, arguments) in valid_calls {
+        let response =
+            post_to_router(router.clone(), tool_call(id, tool_name, Some(arguments))).await;
+        assert_eq!(response.status(), StatusCode::OK, "valid call failed: {id}");
+    }
+
+    assert!(!dry_run_target.exists());
+    assert!(!directory_preview.exists());
+    assert!(directory_mutation.is_dir());
+'''
+new_test_block = '''    for (id, tool_name, arguments) in valid_calls {
+        let response =
+            post_to_router(router.clone(), tool_call(id, tool_name, Some(arguments))).await;
+        assert_eq!(response.status(), StatusCode::OK, "valid call failed: {id}");
+        if id == "create-directory-full" {
+            let payload = response_json(response).await;
+            assert_eq!(payload["result"]["isError"], true);
+            assert_eq!(
+                payload["result"]["structuredContent"]["error"],
+                "filesystem_directory_create_unauthorized"
+            );
+            assert_eq!(
+                payload["result"]["structuredContent"]["reasonCode"],
+                "directory_mutation_authorization_unavailable"
+            );
+        }
+    }
+
+    assert!(!dry_run_target.exists());
+    assert!(!directory_preview.exists());
+    assert!(!directory_mutation.exists());
+'''
+count = test_text.count(old_test_block)
+if count != 1:
+    raise SystemExit(f"expected one schema acceptance block, found {count}")
+test_text = test_text.replace(old_test_block, new_test_block, 1)
+TEST_PATH.write_text(test_text)
