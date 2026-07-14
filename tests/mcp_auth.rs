@@ -49,6 +49,7 @@ async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> 
         }),
         authorization,
         None,
+        None,
     );
     let initialize_response = app.clone().oneshot(initialize).await.unwrap();
     if initialize_response.status() != StatusCode::OK {
@@ -69,6 +70,7 @@ async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> 
         }),
         authorization,
         Some(&session_id),
+        None,
     );
     let initialized_response = app.clone().oneshot(initialized).await.unwrap();
     assert_eq!(initialized_response.status(), StatusCode::ACCEPTED);
@@ -81,6 +83,7 @@ async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> 
         }),
         authorization,
         Some(&session_id),
+        None,
     ))
     .await
     .unwrap()
@@ -90,6 +93,7 @@ fn authenticated_request(
     body: Value,
     authorization: Option<&str>,
     session_id: Option<&str>,
+    spoofed_principal: Option<&str>,
 ) -> Request<Body> {
     let mut request = Request::post("/mcp")
         .header(header::HOST, "localhost:8000")
@@ -103,6 +107,9 @@ fn authenticated_request(
         request = request
             .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
             .header(MCP_SESSION_ID_HEADER, session_id);
+    }
+    if let Some(spoofed_principal) = spoofed_principal {
+        request = request.header("x-mcp-principal-id", spoofed_principal);
     }
     request.body(Body::from(body.to_string())).unwrap()
 }
@@ -134,7 +141,8 @@ async fn unauthorized_client_cannot_reach_tool_discovery() {
 #[tokio::test]
 async fn correct_bearer_token_reaches_tool_discovery() {
     let response = post_tools_list(
-        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        McpAuthPolicy::static_bearer_for_principal("expected-token", "operator.primary:v1")
+            .unwrap(),
         Some("Bearer expected-token"),
     )
     .await;
@@ -144,6 +152,34 @@ async fn correct_bearer_token_reaches_tool_discovery() {
     assert_eq!(payload["id"], "auth-test");
     let tools = payload["result"]["tools"].as_array().unwrap();
     assert!(tools.iter().any(|tool| tool["name"] == "runtime_status"));
+}
+
+#[tokio::test]
+async fn caller_selected_principal_header_does_not_create_identity_provenance() {
+    let root = tempfile::tempdir().unwrap();
+    let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let app = protected_router(
+        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        file_tools,
+    );
+    let initialize = authenticated_request(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "spoofed-principal",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "auth-tests", "version": "1.0.0"}
+            }
+        }),
+        Some("Bearer expected-token"),
+        None,
+        Some("operator.primary:v1"),
+    );
+
+    let response = app.oneshot(initialize).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -158,7 +194,8 @@ async fn authentication_rejects_before_transport_validation_or_body_dispatch() {
     let root = tempfile::tempdir().unwrap();
     let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
     let app = protected_router(
-        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        McpAuthPolicy::static_bearer_for_principal("expected-token", "operator.primary:v1")
+            .unwrap(),
         file_tools,
     );
 
@@ -168,6 +205,7 @@ async fn authentication_rejects_before_transport_validation_or_body_dispatch() {
                 .header(header::HOST, "localhost:8000")
                 .header(header::ORIGIN, "https://example.invalid")
                 .header(header::CONTENT_TYPE, "application/json")
+                .header("x-mcp-principal-id", "operator.primary:v1")
                 .body(Body::from("not-json"))
                 .unwrap(),
         )

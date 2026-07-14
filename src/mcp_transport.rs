@@ -5,7 +5,7 @@ use std::{
 
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{Extension, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
@@ -36,6 +36,7 @@ use crate::{
         filesystem_allowed_event, filesystem_denied_event, read_only_allowed_event,
         read_only_denied_event, AuditCounters, AuditMode,
     },
+    auth::AuthenticatedPrincipal,
     command_policy::{
         command_profile_ids, COMMAND_EXECUTION_GATE, COMMAND_INVALID_ARGUMENTS_REASON,
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
@@ -464,12 +465,14 @@ fn router_from_state(state: McpTransportState) -> Router {
 
 async fn handle_mcp_request(
     State(state): State<McpTransportState>,
+    principal: Option<Extension<AuthenticatedPrincipal>>,
     method: Method,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let host = header_value(&headers, header::HOST);
     let origin = header_value(&headers, header::ORIGIN);
+    let principal = principal.as_ref().map(|value| &value.0);
 
     let mut response = if let Err(error) = state.security_policy.validate_request(host, origin) {
         (
@@ -482,9 +485,9 @@ async fn handle_mcp_request(
             .into_response()
     } else {
         match method {
-            Method::POST => handle_mcp_post(&state, &headers, body).await,
-            Method::GET => handle_mcp_get(&state, &headers),
-            Method::DELETE => handle_mcp_delete(&state, &headers),
+            Method::POST => handle_mcp_post(&state, &headers, body, principal).await,
+            Method::GET => handle_mcp_get(&state, &headers, principal),
+            Method::DELETE => handle_mcp_delete(&state, &headers, principal),
             _ => method_not_allowed(),
         }
     };
@@ -494,7 +497,12 @@ async fn handle_mcp_request(
     response
 }
 
-async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: Bytes) -> Response {
+async fn handle_mcp_post(
+    state: &McpTransportState,
+    headers: &HeaderMap,
+    body: Bytes,
+    principal: Option<&AuthenticatedPrincipal>,
+) -> Response {
     if !has_json_content_type(headers) {
         return transport_error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -544,11 +552,11 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
                     "Initialize requests must not include MCP-Session-Id.",
                 );
             }
-            return initialize_response(Some(id.clone()), params.clone(), state);
+            return initialize_response(Some(id.clone()), params.clone(), state, principal);
         }
     }
 
-    let (session_id, phase) = match validate_session_request(headers, &state.sessions) {
+    let (session_id, phase) = match validate_session_request(headers, &state.sessions, principal) {
         Ok(session) => session,
         Err(error) => return session_request_error_response(error),
     };
@@ -573,7 +581,7 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
         }
         IncomingJsonRpcMessage::Notification { method, params: _ } => {
             if method == "notifications/initialized" {
-                return match state.sessions.activate(&session_id) {
+                return match state.sessions.activate(&session_id, principal) {
                     Ok(()) => StatusCode::ACCEPTED.into_response(),
                     Err(error) => session_store_error_response(error),
                 };
@@ -592,7 +600,11 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
     }
 }
 
-fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
+fn handle_mcp_get(
+    state: &McpTransportState,
+    headers: &HeaderMap,
+    principal: Option<&AuthenticatedPrincipal>,
+) -> Response {
     if !accepts_media_type(headers, TEXT_EVENT_STREAM) {
         return transport_error(
             StatusCode::NOT_ACCEPTABLE,
@@ -601,7 +613,7 @@ fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
         );
     }
 
-    let (_, phase) = match validate_session_request(headers, &state.sessions) {
+    let (_, phase) = match validate_session_request(headers, &state.sessions, principal) {
         Ok(session) => session,
         Err(error) => return session_request_error_response(error),
     };
@@ -616,13 +628,17 @@ fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
     response
 }
 
-fn handle_mcp_delete(state: &McpTransportState, headers: &HeaderMap) -> Response {
-    let (session_id, _) = match validate_session_request(headers, &state.sessions) {
+fn handle_mcp_delete(
+    state: &McpTransportState,
+    headers: &HeaderMap,
+    principal: Option<&AuthenticatedPrincipal>,
+) -> Response {
+    let (session_id, _) = match validate_session_request(headers, &state.sessions, principal) {
         Ok(session) => session,
         Err(error) => return session_request_error_response(error),
     };
 
-    match state.sessions.terminate(&session_id) {
+    match state.sessions.terminate(&session_id, principal) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => session_store_error_response(error),
     }
@@ -641,6 +657,7 @@ fn initialize_response(
     id: Option<Value>,
     params: Option<Value>,
     state: &McpTransportState,
+    principal: Option<&AuthenticatedPrincipal>,
 ) -> Response {
     if !valid_initialize_params(params.as_ref()) {
         return invalid_params(
@@ -649,7 +666,7 @@ fn initialize_response(
         );
     }
 
-    let session_id = match state.sessions.create() {
+    let session_id = match state.sessions.create(principal) {
         Ok(session_id) => session_id,
         Err(error) => return session_store_error_response(error),
     };
@@ -898,6 +915,7 @@ fn acceptable_media_range(item: &str, expected: &str) -> bool {
 fn validate_session_request(
     headers: &HeaderMap,
     sessions: &McpSessionStore,
+    principal: Option<&AuthenticatedPrincipal>,
 ) -> Result<(String, SessionPhase), SessionRequestError> {
     let protocol = match single_header_value(headers, MCP_PROTOCOL_VERSION_HEADER) {
         Ok(Some(protocol)) if protocol == MCP_PROTOCOL_VERSION => protocol,
@@ -930,7 +948,7 @@ fn validate_session_request(
     };
 
     sessions
-        .phase(&session_id)
+        .phase(&session_id, principal)
         .map(|phase| (session_id, phase))
         .map_err(SessionRequestError::from)
 }
@@ -953,10 +971,10 @@ fn session_store_error_response(error: SessionStoreError) -> Response {
             "session_capacity_reached",
             "The bounded MCP session capacity is currently exhausted.",
         ),
-        SessionStoreError::NotFound => transport_error(
+        SessionStoreError::NotFound | SessionStoreError::PrincipalMismatch => transport_error(
             StatusCode::NOT_FOUND,
             "session_not_found",
-            "The MCP session does not exist or has expired.",
+            "The MCP session does not exist, has expired, or is not associated with this authenticated principal.",
         ),
         SessionStoreError::Poisoned => transport_error(
             StatusCode::INTERNAL_SERVER_ERROR,

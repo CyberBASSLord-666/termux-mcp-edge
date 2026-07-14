@@ -40,6 +40,9 @@ pub struct AuthConfig {
     /// Static bearer token for simple deployments.
     /// For production, consider integrating with external IdP.
     pub static_token: Option<String>,
+    /// Optional trusted, non-secret stable identity for the configured static credential.
+    /// Caller-controlled headers and tool arguments are never principal sources.
+    pub static_principal_id: Option<String>,
     /// Explicit unsafe/local-only opt-in for development without a bearer token.
     /// When true, startup still requires binding to localhost.
     pub allow_unauthenticated_localhost_only: bool,
@@ -52,6 +55,10 @@ impl fmt::Debug for AuthConfig {
             .field(
                 "static_token",
                 &self.static_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "static_principal_id_configured",
+                &self.static_principal_id.is_some(),
             )
             .field(
                 "allow_unauthenticated_localhost_only",
@@ -113,6 +120,10 @@ impl AppConfig {
             },
             auth: AuthConfig {
                 static_token: optional_env_string(&read_variable, "MCP__AUTH__STATIC_TOKEN")?,
+                static_principal_id: optional_env_string(
+                    &read_variable,
+                    "MCP__AUTH__STATIC_PRINCIPAL_ID",
+                )?,
                 allow_unauthenticated_localhost_only: env_bool(
                     &read_variable,
                     "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
@@ -325,6 +336,8 @@ fn split_exact_env_list(name: &str, value: &str) -> anyhow::Result<Vec<String>> 
 }
 
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
+    validate_static_principal_identity(&config.auth)?;
+
     if let Some(ref token) = config.auth.static_token {
         if token.trim().is_empty() {
             bail!(EMPTY_STATIC_TOKEN_ERROR);
@@ -342,6 +355,37 @@ pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthP
     }
 
     Ok(AuthPosture::UnauthenticatedLocalhostOnly)
+}
+
+fn validate_static_principal_identity(auth: &AuthConfig) -> anyhow::Result<()> {
+    const MAX_PRINCIPAL_ID_BYTES: usize = 128;
+
+    let Some(principal) = auth.static_principal_id.as_deref() else {
+        return Ok(());
+    };
+    let Some(token) = auth.static_token.as_deref() else {
+        bail!("MCP__AUTH__STATIC_PRINCIPAL_ID requires MCP__AUTH__STATIC_TOKEN");
+    };
+    if principal.is_empty() {
+        bail!("MCP__AUTH__STATIC_PRINCIPAL_ID must not be empty");
+    }
+    if principal.len() > MAX_PRINCIPAL_ID_BYTES {
+        bail!(
+            "MCP__AUTH__STATIC_PRINCIPAL_ID exceeds the {MAX_PRINCIPAL_ID_BYTES}-byte safety limit"
+        );
+    }
+    if !principal
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        bail!(
+            "MCP__AUTH__STATIC_PRINCIPAL_ID may contain only ASCII letters, digits, '.', '_', '-', and ':'"
+        );
+    }
+    if principal == token {
+        bail!("MCP__AUTH__STATIC_PRINCIPAL_ID must not equal MCP__AUTH__STATIC_TOKEN");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -472,6 +516,7 @@ mod tests {
             },
             auth: AuthConfig {
                 static_token: static_token.map(str::to_owned),
+                static_principal_id: None,
                 allow_unauthenticated_localhost_only: allow_localhost_only,
             },
             android: AndroidConfig {
@@ -501,12 +546,15 @@ mod tests {
     fn auth_config_debug_output_redacts_static_token() {
         let auth = AuthConfig {
             static_token: Some("secret-value".to_owned()),
+            static_principal_id: Some("operator.primary:v1".to_owned()),
             allow_unauthenticated_localhost_only: false,
         };
         let debug = format!("{auth:?}");
 
         assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("static_principal_id_configured: true"));
         assert!(!debug.contains("secret-value"));
+        assert!(!debug.contains("operator.primary:v1"));
     }
 
     #[test]
@@ -530,6 +578,7 @@ mod tests {
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8000);
         assert_eq!(config.auth.static_token, None);
+        assert_eq!(config.auth.static_principal_id, None);
         assert!(!config.android.battery_status_enabled);
         assert!(!config.android.volume_status_enabled);
         assert!(!config.command.enabled);
@@ -633,6 +682,7 @@ mod tests {
 
         for name in [
             "MCP__AUTH__STATIC_TOKEN",
+            "MCP__AUTH__STATIC_PRINCIPAL_ID",
             "MCP__SERVER__HOST",
             "MCP__FILE__SAFE_ROOTS",
             "MCP__SERVER__PORT",
@@ -753,6 +803,43 @@ mod tests {
         let posture = validate_runtime_auth_posture(&config).expect("token auth should validate");
 
         assert_eq!(posture, AuthPosture::StaticTokenConfigured);
+    }
+
+    #[test]
+    fn configured_static_principal_identity_is_validated_without_disclosure() {
+        let mut config = app_config("0.0.0.0", Some("configured-token"), false);
+        config.auth.static_principal_id = Some("operator.primary:v1".to_owned());
+        assert_eq!(
+            validate_runtime_auth_posture(&config).unwrap(),
+            AuthPosture::StaticTokenConfigured
+        );
+
+        config.auth.static_principal_id = Some(String::new());
+        let error = validate_runtime_auth_posture(&config).unwrap_err();
+        assert!(error.to_string().contains("must not be empty"));
+
+        for invalid in ["contains whitespace", "slash/not-allowed", "é"] {
+            config.auth.static_principal_id = Some(invalid.to_owned());
+            let error = validate_runtime_auth_posture(&config).unwrap_err();
+            assert!(!error.to_string().contains(invalid));
+        }
+
+        config.auth.static_principal_id = Some("configured-token".to_owned());
+        let error = validate_runtime_auth_posture(&config).unwrap_err();
+        assert!(error.to_string().contains("must not equal"));
+        assert!(!error.to_string().contains("configured-token"));
+    }
+
+    #[test]
+    fn static_principal_identity_requires_static_token_authentication() {
+        let mut config = app_config("127.0.0.1", None, true);
+        config.auth.static_principal_id = Some("operator.primary:v1".to_owned());
+
+        let error = validate_runtime_auth_posture(&config).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "MCP__AUTH__STATIC_PRINCIPAL_ID requires MCP__AUTH__STATIC_TOKEN"
+        );
     }
 
     #[test]
