@@ -85,7 +85,9 @@ jobs:
           (
             set -euo pipefail
             python3 -m py_compile .github/remediation/apply_directory_grant_verifier.py
+            python3 -m py_compile .github/remediation/fix_directory_grant_verifier_generated.py
             python3 .github/remediation/apply_directory_grant_verifier.py
+            python3 .github/remediation/fix_directory_grant_verifier_generated.py
             cargo fmt --all
             git diff --check
           ) 2>&1 | tee /tmp/apply-directory-grant-verifier.log
@@ -201,12 +203,13 @@ jobs:
           test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
           git fetch --no-tags origin main
           rm .github/remediation/apply_directory_grant_verifier.py
+          rm .github/remediation/fix_directory_grant_verifier_generated.py
           rm -rf .github/remediation/__pycache__
           rmdir .github/remediation
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock src/auth.rs src/config.rs src/directory_grant.rs src/lib.rs src/main.rs .github/remediation/apply_directory_grant_verifier.py .github/workflows/ci.yml
+          git add Cargo.toml Cargo.lock src/auth.rs src/config.rs src/directory_grant.rs src/lib.rs src/main.rs .github/remediation/apply_directory_grant_verifier.py .github/remediation/fix_directory_grant_verifier_generated.py .github/workflows/ci.yml
           git diff --cached --check
           git commit -m "feat: verify request-scoped directory capability grants"
           git push origin "HEAD:$EXPECTED_BRANCH"
