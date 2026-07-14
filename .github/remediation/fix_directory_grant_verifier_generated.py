@@ -151,6 +151,13 @@ replace_once(
     }
 ''',
 )
+replace_once(
+    grant,
+    '''        for (mut claims, expected) in [
+''',
+    '''        for (claims, expected) in [
+''',
+)
 principal_line = '''        let principal = AuthenticatedPrincipal::configured(PRINCIPAL).unwrap();
 '''
 text = grant.read_text()
