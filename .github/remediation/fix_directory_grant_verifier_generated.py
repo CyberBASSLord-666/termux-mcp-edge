@@ -207,8 +207,8 @@ replace_once(
 text = grant.read_text()
 keyring_call = '''DirectoryGrantVerifier::load_optional(&config(&path), Some("auth-token"))'''
 count = text.count(keyring_call)
-if count != 3:
-    raise SystemExit(f"src/directory_grant.rs: expected three keyring validation calls, found {count}")
+if count != 2:
+    raise SystemExit(f"src/directory_grant.rs: expected two repeated keyring validation calls, found {count}")
 text = text.replace(
     keyring_call,
     '''DirectoryGrantVerifier::load_optional_at(&config(&path), Some("auth-token"), NOW)''',
