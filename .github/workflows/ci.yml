@@ -80,6 +80,7 @@ jobs:
         if: github.event_name == 'pull_request' && github.head_ref == 'create-directory-capability-grant-248'
         run: |
           python3 .github/remediation/apply_principal_session_provenance.py
+          python3 .github/remediation/fix_principal_validation_test.py
           cargo fmt --all
           git diff --check
 
@@ -173,11 +174,12 @@ jobs:
           test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
           git fetch --no-tags origin main
           rm .github/remediation/apply_principal_session_provenance.py
+          rm .github/remediation/fix_principal_validation_test.py
           rmdir .github/remediation
           git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/auth.rs src/config.rs src/mcp_session.rs src/mcp_transport.rs tests/mcp_auth.rs .github/remediation/apply_principal_session_provenance.py .github/workflows/ci.yml
+          git add src/auth.rs src/config.rs src/mcp_session.rs src/mcp_transport.rs tests/mcp_auth.rs .github/remediation/apply_principal_session_provenance.py .github/remediation/fix_principal_validation_test.py .github/workflows/ci.yml
           git diff --cached --check
           git commit -m "feat: bind MCP sessions to trusted principals"
           git push origin "HEAD:$EXPECTED_BRANCH"
