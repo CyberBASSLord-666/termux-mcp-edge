@@ -35,6 +35,10 @@ The server atomically consumes the grant immediately before the first mutation a
 
 Replay state must be concurrency-safe, bounded, retained through expiry, and unavailable to caller-controlled identifiers or labels.
 
+Consumption must also survive process crashes, runit restarts, package upgrades, and abrupt Android process death for the full remaining grant lifetime. An in-memory-only replay cache is insufficient. Before the first filesystem mutation, the implementation must durably publish the consumed identifier to a descriptor-confined, owner-only replay ledger and synchronize the ledger and its parent directory. Mutation is forbidden unless durable consumption succeeds. Recovery must reject every unexpired consumed identifier, tolerate a torn final record without accepting replay, compact only expired entries, and fail closed on corruption, rollback, permission drift, unsafe links, or storage exhaustion. Cleanup or compaction failure must never resurrect a consumed grant.
+
+The durable ledger must contain only a keyed, non-reversible digest of the grant identifier plus the minimum expiry/version metadata required for replay enforcement. It must not contain grant material, principal/session identifiers, safe-root paths, target components, or other caller-derived labels. Ledger size, record count, startup scan work, compaction work, and retained lifetime must have fixed server-side ceilings suitable for Termux devices.
+
 ## Discovery and dispatch
 
 The mutation path must remain unavailable while the dedicated runtime gate is disabled. Tool discovery and dispatch must use the same effective gate decision, with no time-of-check/time-of-use divergence. Dry-run availability must not permit a caller to bypass the mutating authorization path.
@@ -54,6 +58,11 @@ Tests must prove:
 - one winner and at most one mutation attempt under concurrent replay;
 - permanent consumption after all post-consumption failures;
 - dry-run non-consumption;
+- replay denial after clean restart, crash immediately after durable consumption, runit restart, and abrupt process termination;
+- no mutation when replay-ledger publication or synchronization fails;
+- fail-closed behavior for torn records, corruption, permission drift, symlink substitution, rollback, storage exhaustion, and bounded-capacity exhaustion;
+- bounded startup recovery and compaction with no resurrection of unexpired consumed identifiers;
+- replay-ledger privacy: keyed digests only, with no raw grant, principal/session, root, or target data;
 - complete grant-secret and identifier redaction;
 - unchanged authentication, Host/Origin, limits, safe-root, durability, rollback, and audit contracts;
 - exact-head CI, Security, Android Cross Compile, device-smoke, and native official-Termux ARM64 execution.
