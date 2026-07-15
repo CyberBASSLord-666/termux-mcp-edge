@@ -15,9 +15,10 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
-  group: replay-format-${{ github.event.pull_request.number || github.ref }}
+  group: replay-clippy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -39,13 +40,6 @@ jobs:
           toolchain: 1.88.0
           components: rustfmt, clippy
 
-      - name: Verify Rust toolchain
-        run: |
-          test "$(rustc --version | awk '{print $2}')" = "1.88.0"
-          test "$(cargo --version | awk '{print $2}')" = "1.88.0"
-          rustfmt --version
-          cargo clippy --version
-
       - name: Cache cargo registry and build outputs
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
@@ -58,27 +52,29 @@ jobs:
       - name: Clippy default posture
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy all features
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Tests default posture
-        run: cargo test --workspace --all-targets
-
-      - name: Tests all features
-        run: cargo test --workspace --all-targets --all-features
-
-      - name: Shell contract tests
+      - name: Clippy all features diagnostic
+        id: clippy_all
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
         run: |
-          bash tests/package_android_artifact_test.sh
-          bash tests/termux_deploy_test.sh
-          bash tests/termux_device_smoke_test.sh
-          bash tests/termux_emulated_gate_test.sh
-          bash tests/termux_release_validate_test.sh
-          bash tests/setup_named_tunnel_test.sh
-          bash -n scripts/termux_command_emulated_gate.sh
-          jq -e '.type == "object" and .additionalProperties == false' docs/command-emulated-evidence-schema-v1.json >/dev/null
+          set +e
+          cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tee /tmp/replay-clippy-all.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
-      - name: Publish validated formatting and restore permanent CI
+      - name: Publish all-feature Clippy diagnostic
+        if: steps.clippy_all.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          { printf 'Durable replay all-features Clippy diagnostic for `%s`:\n\n```text\n' "$GITHUB_SHA"; tail -n 260 /tmp/replay-clippy-all.log; printf '```\n'; } > /tmp/replay-diagnostic.md
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/replay-diagnostic.md
+
+      - name: Publish canonical formatting and restore permanent CI
+        if: always() && steps.clippy_all.outcome != 'skipped'
         run: |
           set -euo pipefail
           test "$(git branch --show-current)" = "create-directory-capability-grant-248"
@@ -88,5 +84,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/config.rs src/directory_grant.rs src/directory_replay.rs src/lib.rs src/main.rs .github/workflows/ci.yml
           git diff --cached --check
-          git commit -m "style: format durable replay ledger implementation"
-          git push origin HEAD:create-directory-capability-grant-248
+          if ! git diff --cached --quiet; then
+            git commit -m "style: format durable replay ledger implementation"
+            git push origin HEAD:create-directory-capability-grant-248
+          fi
+
+      - name: Enforce all-feature Clippy
+        if: steps.clippy_all.outputs.status != '0'
+        run: exit 1
