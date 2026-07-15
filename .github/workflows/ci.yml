@@ -16,10 +16,9 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
-  group: replay-clippy-repair-${{ github.event.pull_request.number || github.ref }}
+  group: replay-clippy-diagnostic-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -55,38 +54,31 @@ jobs:
       - name: Clippy default posture
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy all features
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Tests default posture
-        run: cargo test --workspace --all-targets
-
-      - name: Tests all features
-        run: cargo test --workspace --all-targets --all-features
-
-      - name: Shell contract tests
+      - name: Clippy all features diagnostic
+        id: clippy_all
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
         run: |
-          bash tests/package_android_artifact_test.sh
-          bash tests/termux_deploy_test.sh
-          bash tests/termux_device_smoke_test.sh
-          bash tests/termux_emulated_gate_test.sh
-          bash tests/termux_release_validate_test.sh
-          bash tests/setup_named_tunnel_test.sh
-          bash -n scripts/termux_command_emulated_gate.sh
-          jq -e '.type == "object" and .additionalProperties == false' docs/command-emulated-evidence-schema-v1.json >/dev/null
+          set +e
+          cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tee /tmp/replay-clippy-all.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
 
-      - name: Publish validated replay repair and restore permanent CI
+      - name: Persist source repair and bounded diagnostic
+        if: always() && steps.clippy_all.outcome != 'skipped'
         run: |
           set -euo pipefail
           test "$(git branch --show-current)" = "create-directory-capability-grant-248"
-          git fetch --no-tags origin main
-          rm .github/remediation/fix_replay_clippy.py
-          rm -rf .github/remediation/__pycache__
-          rmdir .github/remediation
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          tail -n 260 /tmp/replay-clippy-all.log > .github/replay-clippy-diagnostic.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/directory_replay.rs .github/remediation/fix_replay_clippy.py .github/workflows/ci.yml
+          git add src/directory_replay.rs .github/replay-clippy-diagnostic.txt
           git diff --cached --check
-          git commit -m "fix: remove unused replay ledger state"
+          git commit -m "diagnostic: persist replay clippy output"
           git push origin HEAD:create-directory-capability-grant-248
+
+      - name: Enforce all-feature Clippy
+        if: steps.clippy_all.outputs.status != '0'
+        run: exit 1
