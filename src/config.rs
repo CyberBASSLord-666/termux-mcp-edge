@@ -535,16 +535,12 @@ fn validate_directory_grant_config(
         );
     }
     if grant.clock_skew_seconds > MAX_CLOCK_SKEW_SECONDS {
-        bail!(
-            "MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}"
-        );
+        bail!("MCP__DIRECTORY_GRANT__CLOCK_SKEW_SECONDS must not exceed {MAX_CLOCK_SKEW_SECONDS}");
     }
-    let replay_paths_configured = grant.replay_keyring_path.is_some()
-        || grant.replay_ledger_path.is_some();
+    let replay_paths_configured =
+        grant.replay_keyring_path.is_some() || grant.replay_ledger_path.is_some();
     if !grant.replay_enabled && replay_paths_configured {
-        bail!(
-            "directory replay paths require MCP__DIRECTORY_GRANT__REPLAY_ENABLED=true"
-        );
+        bail!("directory replay paths require MCP__DIRECTORY_GRANT__REPLAY_ENABLED=true");
     }
     if grant.replay_enabled {
         let keyring = grant

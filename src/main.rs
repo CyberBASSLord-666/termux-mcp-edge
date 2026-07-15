@@ -85,9 +85,10 @@ async fn main() -> anyhow::Result<()> {
         &config.directory_grant,
         config.auth.static_token.as_deref(),
         _directory_grant_verifier.as_ref(),
-        chrono::Utc::now().timestamp().try_into().map_err(|_| {
-            anyhow::anyhow!("system clock is before the Unix epoch")
-        })?,
+        chrono::Utc::now()
+            .timestamp()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?,
     )?;
 
     #[cfg(feature = "mcp-runtime")]

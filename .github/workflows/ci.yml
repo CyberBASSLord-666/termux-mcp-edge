@@ -1,6 +1,24 @@
 name: CI
 
 on:
+  push:
+    branches: [ main ]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "src/**"
+      - "tests/**"
+      - "benches/**"
+      - "examples/**"
+      - "scripts/**"
+      - "docs/*release-evidence-schema-v1.json"
+      - "docs/android-battery-emulated-evidence-schema-v*.json"
+      - "docs/android-volume-emulated-evidence-schema-v*.json"
+      - "docs/command-emulated-evidence-schema-v*.json"
+      - "docs/release-observation-requirement-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
+      - ".github/workflows/ci.yml"
   pull_request:
     branches: [ main ]
     paths:
@@ -9,86 +27,78 @@ on:
       - "rust-toolchain.toml"
       - "src/**"
       - "tests/**"
+      - "benches/**"
+      - "examples/**"
       - "scripts/**"
+      - "docs/*release-evidence-schema-v1.json"
+      - "docs/android-battery-emulated-evidence-schema-v*.json"
+      - "docs/android-volume-emulated-evidence-schema-v*.json"
+      - "docs/command-emulated-evidence-schema-v*.json"
+      - "docs/release-observation-requirement-schema-v1.json"
+      - "docs/release-observation-inheritance-schema-v1.json"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
-  group: replay-clippy-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   rust:
     name: Rust validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - name: Checkout exact branch head
+      - name: Checkout
+        # actions/checkout@v7.0.0 resolved 2026-07-10
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: create-directory-capability-grant-248
-          fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
       - name: Install pinned Rust toolchain
+        # dtolnay/rust-toolchain@stable resolved 2026-06-26
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
 
+      - name: Verify Rust toolchain
+        run: |
+          test "$(rustc --version | awk '{print $2}')" = "1.88.0"
+          test "$(cargo --version | awk '{print $2}')" = "1.88.0"
+          rustfmt --version
+          cargo clippy --version
+
       - name: Cache cargo registry and build outputs
+        # Swatinem/rust-cache@v2 resolved 2026-06-26
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      - name: Apply canonical formatting
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          git diff --check
+      - name: Format check
+        run: cargo fmt --all -- --check
 
-      - name: Clippy default posture
+      - name: Clippy (default posture)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy all features diagnostic
-        id: clippy_all
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-        run: |
-          set +e
-          cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | tee /tmp/replay-clippy-all.log
-          status=${PIPESTATUS[0]}
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          exit 0
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Publish all-feature Clippy diagnostic
-        if: steps.clippy_all.outputs.status != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          { printf 'Durable replay all-features Clippy diagnostic for `%s`:\n\n```text\n' "$GITHUB_SHA"; tail -n 260 /tmp/replay-clippy-all.log; printf '```\n'; } > /tmp/replay-diagnostic.md
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file /tmp/replay-diagnostic.md
+      - name: Tests (default posture)
+        run: cargo test --workspace --all-targets
 
-      - name: Publish canonical formatting and restore permanent CI
-        if: always() && steps.clippy_all.outcome != 'skipped'
-        run: |
-          set -euo pipefail
-          test "$(git branch --show-current)" = "create-directory-capability-grant-248"
-          git fetch --no-tags origin main
-          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/config.rs src/directory_grant.rs src/directory_replay.rs src/lib.rs src/main.rs .github/workflows/ci.yml
-          git diff --cached --check
-          if ! git diff --cached --quiet; then
-            git commit -m "style: format durable replay ledger implementation"
-            git push origin HEAD:create-directory-capability-grant-248
-          fi
+      - name: Tests (all features)
+        run: cargo test --workspace --all-targets --all-features
 
-      - name: Enforce all-feature Clippy
-        if: steps.clippy_all.outputs.status != '0'
-        run: exit 1
+      - name: Shell contract tests
+        run: |
+          bash tests/package_android_artifact_test.sh
+          bash tests/termux_deploy_test.sh
+          bash tests/termux_device_smoke_test.sh
+          bash tests/termux_emulated_gate_test.sh
+          bash tests/termux_release_validate_test.sh
+          bash tests/setup_named_tunnel_test.sh
+          bash -n scripts/termux_command_emulated_gate.sh
+          jq -e '.type == "object" and .additionalProperties == false' \
+            docs/command-emulated-evidence-schema-v1.json >/dev/null

@@ -21,9 +21,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use rustix::{
     fd::{AsFd, OwnedFd},
-    fs::{
-        self as descriptor_fs, AtFlags, FileType, FlockOperation, Mode, OFlags,
-    },
+    fs::{self as descriptor_fs, AtFlags, FileType, FlockOperation, Mode, OFlags},
     process,
 };
 use serde::Deserialize;
@@ -223,12 +221,8 @@ impl DirectoryReplayLedger {
             .map_err(|_| ReplayConsumeError::StorageUnavailable)?;
         let directory_fd = open_owner_only_directory(&self.inner.directory)
             .map_err(|_| ReplayConsumeError::StorageUnavailable)?;
-        let lock_fd = open_owner_only_file_at(
-            &directory_fd,
-            &self.inner.lock_name,
-            true,
-        )
-        .map_err(|_| ReplayConsumeError::StorageUnavailable)?;
+        let lock_fd = open_owner_only_file_at(&directory_fd, &self.inner.lock_name, true)
+            .map_err(|_| ReplayConsumeError::StorageUnavailable)?;
         descriptor_fs::flock(&lock_fd, FlockOperation::LockExclusive)
             .map_err(|_| ReplayConsumeError::StorageUnavailable)?;
 
@@ -332,8 +326,8 @@ impl DirectoryReplayLedger {
         let metadata = file
             .metadata()
             .map_err(|_| ReplayConsumeError::StorageUnavailable)?;
-        let size = usize::try_from(metadata.len())
-            .map_err(|_| ReplayConsumeError::CapacityExhausted)?;
+        let size =
+            usize::try_from(metadata.len()).map_err(|_| ReplayConsumeError::CapacityExhausted)?;
         if size < REPLAY_HEADER_BYTES
             || size > self.inner.max_bytes
             || (size - REPLAY_HEADER_BYTES) % REPLAY_RECORD_BYTES != 0
@@ -478,8 +472,7 @@ impl DirectoryReplayLedger {
             .records
             .iter()
             .filter(|record| {
-                record.kind == RECORD_KIND_CONSUME
-                    && record.retention_until_unix_seconds > now
+                record.kind == RECORD_KIND_CONSUME && record.retention_until_unix_seconds > now
             })
             .collect();
         if retained.len().saturating_add(1) >= self.inner.max_records
@@ -660,7 +653,10 @@ fn validate_single_filename(value: &OsStr) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn read_owner_only_bounded_file(path: &Path, max_bytes: usize) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+fn read_owner_only_bounded_file(
+    path: &Path,
+    max_bytes: usize,
+) -> anyhow::Result<Zeroizing<Vec<u8>>> {
     let fd = descriptor_fs::open(
         path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -710,21 +706,20 @@ fn open_owner_only_file_at(
     let flags = OFlags::RDWR
         | OFlags::NOFOLLOW
         | OFlags::CLOEXEC
-        | if create { OFlags::CREATE } else { OFlags::empty() };
-    let fd = descriptor_fs::openat(
-        directory_fd,
-        name,
-        flags,
-        Mode::from_bits_retain(0o600),
-    )
-    .map_err(|_| anyhow!("owner-only file could not be opened safely"))?;
+        | if create {
+            OFlags::CREATE
+        } else {
+            OFlags::empty()
+        };
+    let fd = descriptor_fs::openat(directory_fd, name, flags, Mode::from_bits_retain(0o600))
+        .map_err(|_| anyhow!("owner-only file could not be opened safely"))?;
     validate_owner_only_regular(&fd)?;
     Ok(fd)
 }
 
 fn validate_owner_only_regular(fd: &OwnedFd) -> anyhow::Result<()> {
-    let metadata = descriptor_fs::fstat(fd)
-        .map_err(|_| anyhow!("owner-only file metadata is unavailable"))?;
+    let metadata =
+        descriptor_fs::fstat(fd).map_err(|_| anyhow!("owner-only file metadata is unavailable"))?;
     if !FileType::from_raw_mode(metadata.st_mode).is_file()
         || metadata.st_uid != process::geteuid().as_raw()
         || metadata.st_mode & 0o077 != 0
@@ -775,8 +770,7 @@ fn encode_record(
 ) -> Result<[u8; REPLAY_RECORD_BYTES], ReplayConsumeError> {
     validate_key_id(replay_key_id).map_err(|_| ReplayConsumeError::KeyUnavailable)?;
     if kind == RECORD_KIND_CONSUME {
-        validate_key_id(verification_key_id)
-            .map_err(|_| ReplayConsumeError::CorruptLedger)?;
+        validate_key_id(verification_key_id).map_err(|_| ReplayConsumeError::CorruptLedger)?;
     } else if kind != RECORD_KIND_WATERMARK || !verification_key_id.is_empty() {
         return Err(ReplayConsumeError::CorruptLedger);
     }
@@ -801,8 +795,8 @@ fn decode_padded_id(field: &[u8], length: usize) -> Result<String, ReplayConsume
     if field[length..].iter().any(|byte| *byte != 0) {
         return Err(ReplayConsumeError::CorruptLedger);
     }
-    let value = std::str::from_utf8(&field[..length])
-        .map_err(|_| ReplayConsumeError::CorruptLedger)?;
+    let value =
+        std::str::from_utf8(&field[..length]).map_err(|_| ReplayConsumeError::CorruptLedger)?;
     if length == 0 {
         return Ok(String::new());
     }
@@ -906,7 +900,10 @@ mod tests {
         }
     }
 
-    fn verifier_and_grant(directory: &Path, grant_id: [u8; 32]) -> (DirectoryGrantVerifier, VerifiedDirectoryGrant) {
+    fn verifier_and_grant(
+        directory: &Path,
+        grant_id: [u8; 32],
+    ) -> (DirectoryGrantVerifier, VerifiedDirectoryGrant) {
         let verification_key = [0x31_u8; 32];
         let keyring = TestGrantKeyring::write(
             directory.join("verification-keys.json"),
@@ -1006,7 +1003,10 @@ mod tests {
                 ledger.consume(&grant, NOW)
             }));
         }
-        let outcomes: Vec<_> = handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
         assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
         assert_eq!(
             outcomes
@@ -1073,13 +1073,10 @@ mod tests {
 
         let auth = "a".repeat(32);
         write_replay_keyring(&replay_keyring, auth.as_bytes(), 0o600);
-        assert!(DirectoryReplayLedger::load_optional(
-            &config,
-            Some(&auth),
-            Some(&verifier),
-            NOW,
-        )
-        .is_err());
+        assert!(
+            DirectoryReplayLedger::load_optional(&config, Some(&auth), Some(&verifier), NOW,)
+                .is_err()
+        );
 
         write_replay_keyring(&replay_keyring, &[0x31_u8; 32], 0o600);
         assert!(DirectoryReplayLedger::load_optional(
