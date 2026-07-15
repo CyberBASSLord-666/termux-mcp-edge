@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: replay-rotation-test-diagnostic-${{ github.event.pull_request.number || github.ref }}
+  group: replay-fixture-repair-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
       - name: Cache cargo registry and build outputs
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
 
-      - name: Apply guarded replay rotation repair
+      - name: Apply guarded owner-only fixture repair
         run: |
           set -euo pipefail
           python3 -m py_compile .github/remediation/fix_replay_clippy.py
@@ -51,38 +51,45 @@ jobs:
           cargo fmt --all
           git diff --check
 
+      - name: Format check
+        run: cargo fmt --all -- --check
+
       - name: Clippy default posture
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy all features
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Tests all features diagnostic
-        id: tests_all
-        continue-on-error: true
-        env:
-          CARGO_TERM_COLOR: never
-        run: |
-          set +e
-          cargo test --workspace --all-targets --all-features 2>&1 | tee /tmp/replay-tests-all.log
-          status=${PIPESTATUS[0]}
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          exit 0
+      - name: Tests default posture
+        run: cargo test --workspace --all-targets
 
-      - name: Persist source and bounded test diagnostic
-        if: always() && steps.tests_all.outcome != 'skipped'
+      - name: Tests all features
+        run: cargo test --workspace --all-targets --all-features
+
+      - name: Shell contract tests
+        run: |
+          bash tests/package_android_artifact_test.sh
+          bash tests/termux_deploy_test.sh
+          bash tests/termux_device_smoke_test.sh
+          bash tests/termux_emulated_gate_test.sh
+          bash tests/termux_release_validate_test.sh
+          bash tests/setup_named_tunnel_test.sh
+          bash -n scripts/termux_command_emulated_gate.sh
+          jq -e '.type == "object" and .additionalProperties == false' docs/command-emulated-evidence-schema-v1.json >/dev/null
+
+      - name: Publish validated replay subsystem and restore permanent CI
         run: |
           set -euo pipefail
           test "$(git branch --show-current)" = "create-directory-capability-grant-248"
-          tail -n 320 /tmp/replay-tests-all.log > .github/replay-test-diagnostic.txt
-          rm -f .github/replay-clippy-diagnostic.txt
+          git fetch --no-tags origin main
+          rm -f .github/replay-test-diagnostic.txt .github/replay-clippy-diagnostic.txt
+          rm .github/remediation/fix_replay_clippy.py
+          rm -rf .github/remediation/__pycache__
+          rmdir .github/remediation
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/directory_replay.rs .github/replay-test-diagnostic.txt .github/replay-clippy-diagnostic.txt
+          git add -A src/directory_replay.rs .github/replay-test-diagnostic.txt .github/replay-clippy-diagnostic.txt .github/remediation .github/workflows/ci.yml
           git diff --cached --check
-          git commit -m "diagnostic: persist replay rotation test output"
+          git commit -m "fix: validate durable replay retention and fixtures"
           git push origin HEAD:create-directory-capability-grant-248
-
-      - name: Enforce all-feature tests
-        if: steps.tests_all.outputs.status != '0'
-        run: exit 1
