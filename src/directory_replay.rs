@@ -90,7 +90,6 @@ impl fmt::Debug for DirectoryReplayLedger {
 struct ReplayKeyring {
     active_key_id: String,
     keys: BTreeMap<String, ReplayKey>,
-    fingerprints: BTreeSet<[u8; DIGEST_BYTES]>,
 }
 
 struct ReplayKey {
@@ -151,9 +150,7 @@ impl std::error::Error for ReplayConsumeError {}
 struct ParsedRecord {
     raw: [u8; REPLAY_RECORD_BYTES],
     kind: u8,
-    grant_version: u8,
     replay_key_id: String,
-    verification_key_id: String,
     retention_until_unix_seconds: u64,
     observed_unix_seconds: u64,
     digest: [u8; DIGEST_BYTES],
@@ -422,9 +419,7 @@ impl DirectoryReplayLedger {
         Ok(ParsedRecord {
             raw,
             kind,
-            grant_version,
             replay_key_id,
-            verification_key_id,
             retention_until_unix_seconds,
             observed_unix_seconds,
             digest,
@@ -619,7 +614,6 @@ fn load_replay_keyring(
     Ok(ReplayKeyring {
         active_key_id: raw.active_kid,
         keys,
-        fingerprints,
     })
 }
 
