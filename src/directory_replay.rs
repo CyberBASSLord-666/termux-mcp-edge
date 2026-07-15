@@ -888,6 +888,7 @@ mod tests {
     }
 
     fn replay_config(directory: &Path, keyring_path: PathBuf) -> DirectoryGrantConfig {
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
         DirectoryGrantConfig {
             verification_enabled: true,
             issuer: Some("termux-grant-authority:v1".to_owned()),
