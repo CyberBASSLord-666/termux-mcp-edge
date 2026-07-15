@@ -20,7 +20,7 @@ use anyhow::{anyhow, bail, Context};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use rustix::{
-    fd::{AsFd, OwnedFd},
+    fd::OwnedFd,
     fs::{self as descriptor_fs, AtFlags, FileType, FlockOperation, Mode, OFlags},
     process,
 };
@@ -299,13 +299,19 @@ impl DirectoryReplayLedger {
         }
 
         let active_key = self.active_key(now)?;
+        let retention_until_unix_seconds = grant.replay_retention_until_unix_seconds();
+        if retention_until_unix_seconds <= now
+            || retention_until_unix_seconds > active_key.digest_until_unix_seconds
+        {
+            return Err(ReplayConsumeError::KeyUnavailable);
+        }
         let digest = replay_digest(&active_key.material, grant.grant_identifier());
         let record = encode_record(
             RECORD_KIND_CONSUME,
             grant.format_version(),
             &self.inner.keyring.active_key_id,
             grant.verification_key_id(),
-            grant.replay_retention_until_unix_seconds(),
+            retention_until_unix_seconds,
             now,
             digest,
             &active_key.material,
@@ -411,6 +417,10 @@ impl DirectoryReplayLedger {
         let observed_unix_seconds = u64::from_be_bytes(raw[24..32].try_into().unwrap());
         if observed_unix_seconds < key.not_before_unix_seconds
             || observed_unix_seconds > key.digest_until_unix_seconds
+            || (kind == RECORD_KIND_CONSUME
+                && (retention_until_unix_seconds <= observed_unix_seconds
+                    || retention_until_unix_seconds > key.digest_until_unix_seconds))
+            || (kind == RECORD_KIND_WATERMARK && retention_until_unix_seconds != 0)
         {
             return Err(ReplayConsumeError::CorruptLedger);
         }
@@ -1073,6 +1083,59 @@ mod tests {
         );
 
         write_replay_keyring(&replay_keyring, &[0x31_u8; 32], 0o600);
+        assert!(DirectoryReplayLedger::load_optional(
+            &config,
+            Some("authentication-token"),
+            Some(&verifier),
+            NOW,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn retained_record_rejects_early_digest_key_retirement() {
+        let directory = tempfile::tempdir().unwrap();
+        let replay_keyring = directory.path().join("replay-keys.json");
+        let old_key = [0x74_u8; 32];
+        let new_key = [0x75_u8; 32];
+        write_replay_keyring(&replay_keyring, &old_key, 0o600);
+        let (verifier, grant) = verifier_and_grant(directory.path(), [0x86_u8; 32]);
+        let config = replay_config(directory.path(), replay_keyring.clone());
+        let ledger = DirectoryReplayLedger::load_optional(
+            &config,
+            Some("authentication-token"),
+            Some(&verifier),
+            NOW,
+        )
+        .unwrap()
+        .unwrap();
+        ledger.consume(&grant, NOW).unwrap();
+
+        fs::write(
+            &replay_keyring,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "active_kid": "replay-key-02",
+                "keys": [
+                    {
+                        "kid": "replay-key-01",
+                        "key_b64url": URL_SAFE_NO_PAD.encode(old_key),
+                        "not_before_unix_seconds": NOW - 60,
+                        "digest_until_unix_seconds": NOW + 1,
+                    },
+                    {
+                        "kid": "replay-key-02",
+                        "key_b64url": URL_SAFE_NO_PAD.encode(new_key),
+                        "not_before_unix_seconds": NOW - 60,
+                        "digest_until_unix_seconds": NOW + 600,
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&replay_keyring, fs::Permissions::from_mode(0o600)).unwrap();
+
         assert!(DirectoryReplayLedger::load_optional(
             &config,
             Some("authentication-token"),

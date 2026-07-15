@@ -1,0 +1,267 @@
+   Compiling termux-mcp-server v0.6.0 (/home/runner/work/termux-mcp-edge/termux-mcp-edge)
+    Finished `test` profile [optimized + debuginfo] target(s) in 48.60s
+     Running unittests src/lib.rs (target/debug/deps/termux_mcp_server-d4164c1e0a52ccf5)
+
+running 228 tests
+test android_battery::tests::caller_cancellation_cannot_detach_cleanup_after_reserve_exhaustion ... ok
+test android_battery::tests::caller_cancellation_kills_and_reaps_each_process_group ... ok
+test android_battery::tests::cleanup_reserve_exhaustion_overrides_each_primary_failure_after_reaping ... ok
+test android_battery::tests::parser_rejects_non_objects_empty_known_shapes_and_bad_fields ... ok
+test android_battery::tests::parser_returns_only_allowlisted_normalized_fields ... ok
+test android_battery::tests::endless_output_fails_promptly_and_does_not_accumulate_supervisors ... ok
+test android_battery::tests::reason_codes_are_stable_and_non_sensitive ... ok
+test android_battery::tests::exact_stdout_and_stderr_limits_are_accepted ... ok
+test android_battery::tests::fixed_program_receives_no_arguments_and_returns_bounded_status ... ok
+test android_provider::tests::construction_rejects_timeouts_without_a_nonzero_cleanup_reserve ... ok
+test android_status::tests::allowlist_and_denylist_do_not_overlap ... ok
+test android_status::tests::android_status_contains_only_allowlisted_fields ... ok
+test android_status::tests::android_status_distinguishes_read_only_status_from_control ... ok
+test android_status::tests::android_status_serialization_excludes_denied_fields ... ok
+test android_status::tests::command_posture_is_explicit_without_enabling_android_control ... ok
+test android_battery::tests::pipe_holding_descendants_are_killed_without_unbounded_reader_joins ... ok
+test android_battery::tests::stdout_and_stderr_overflow_fail_without_returning_output ... ok
+test android_volume::tests::parser_rejects_malformed_missing_duplicate_unknown_and_out_of_policy_values ... ok
+test android_volume::tests::parser_requires_exact_stream_set_and_returns_canonical_public_shape ... ok
+test android_volume::tests::reason_codes_are_stable_and_non_sensitive ... ok
+test audit::tests::audit_counters_record_allowed_and_denied_totals_by_stable_labels ... ok
+test audit::tests::audit_counters_serialize_deterministically_without_event_metadata ... ok
+test audit::tests::audit_event_serializes_stable_non_sensitive_shape ... ok
+test audit::tests::audit_event_shape_does_not_include_sensitive_fields ... ok
+test audit::tests::empty_audit_counters_omit_sparse_maps ... ok
+test audit::tests::empty_metadata_is_omitted ... ok
+test audit::tests::filesystem_helper_events_feed_counters_by_stable_labels_only ... ok
+test audit::tests::filesystem_helpers_cover_staged_modes_without_sensitive_values ... ok
+test audit::tests::read_only_allowed_helper_uses_standard_shape_without_metadata ... ok
+test audit::tests::read_only_denied_helper_uses_standard_shape_without_sensitive_argument_capture ... ok
+test auth::tests::bearer_authentication_precedes_grant_context_validation ... ok
+test auth::tests::bearer_scheme_is_case_insensitive ... ok
+test auth::tests::caller_principal_header_is_never_an_identity_source ... ok
+test auth::tests::configured_principal_is_inserted_only_after_successful_authentication ... ok
+test auth::tests::correct_bearer_token_is_allowed_without_implicit_shared_principal ... ok
+test auth::tests::fixed_work_comparison_matches_only_equal_tokens ... ok
+test auth::tests::grant_context_requires_authentication_and_is_removed_before_dispatch ... ok
+test auth::tests::invalid_configured_tokens_and_principals_are_rejected ... ok
+test auth::tests::localhost_development_policy_allows_request_without_header ... ok
+test auth::tests::malformed_and_incorrect_authorization_are_rejected ... ok
+test auth::tests::missing_authorization_is_rejected_without_sensitive_details ... ok
+test auth::tests::policy_debug_output_redacts_static_token_and_principal ... ok
+test android_battery::tests::timeout_nonzero_invalid_utf8_and_missing_program_are_stable ... ok
+test android_volume::tests::fixed_provider_receives_no_arguments_or_environment ... ok
+test bounded_process::tests::construction_rejects_timeouts_without_a_nonzero_cleanup_reserve ... ok
+test android_volume::tests::output_limits_and_provider_failures_use_stable_errors ... ok
+test bounded_process::tests::caller_cancellation_terminates_direct_child_and_descendant ... ok
+test capability_token::tests::accepts_exact_byte_limits ... ok
+test capability_token::tests::allows_matching_active_unexpired_confirmed_grant ... ok
+test capability_token::tests::denial_precedence_remains_stable ... ok
+test capability_token::tests::preserves_stable_serialized_shape ... ok
+test capability_token::tests::rejects_empty_oversized_and_malformed_metadata ... ok
+test command_execution::tests::client_requires_absolute_program_and_narrow_existing_working_directory ... ok
+test bounded_process::tests::caller_drop_cannot_detach_shared_process_cleanup ... ok
+test bounded_process::tests::late_reaping_is_authoritative_for_shared_process_clients ... ok
+test bounded_process::tests::pipe_holding_descendant_is_terminated_with_its_process_group ... ok
+test command_execution::tests::command_specific_concurrency_limit_rejects_without_queueing ... ok
+test command_policy::tests::audit_events_use_only_stable_profile_ordinal_and_reason ... ok
+test command_policy::tests::disabled_gate_does_not_disclose_profile_membership ... ok
+test command_policy::tests::enabled_gate_resolves_only_fixed_allowlisted_profiles ... ok
+test command_policy::tests::oversized_profile_identifier_is_rejected_before_comparison ... ok
+test command_policy::tests::profile_helpers_preserve_canonical_registry_order ... ok
+test command_policy::tests::profile_registry_is_unique_fixed_and_bounded ... ok
+test command_policy::tests::raw_commands_and_injection_shapes_are_not_profiles ... ok
+test command_policy::tests::safe_root_is_required_after_allowlist_resolution ... ok
+test config::tests::absent_environment_values_use_documented_defaults ... ok
+test config::tests::android_battery_status_rejects_invalid_runtime_flag ... ok
+test config::tests::android_battery_status_requires_compile_and_runtime_opt_in ... ok
+test config::tests::android_volume_status_rejects_invalid_runtime_flag ... ok
+test config::tests::android_volume_status_requires_compile_and_runtime_opt_in ... ok
+test config::tests::auth_config_debug_output_redacts_static_token ... ok
+test command_execution::tests::fixed_profile_clears_environment_nulls_stdin_and_uses_safe_root_cwd ... ok
+test config::tests::command_execution_rejects_invalid_runtime_flag ... ok
+test config::tests::command_execution_requires_compile_and_runtime_opt_in ... ok
+test config::tests::configured_server_port_must_be_between_one_and_65535 ... ok
+test config::tests::configured_static_principal_identity_is_validated_without_disclosure ... ok
+test config::tests::default_file_safe_root_is_narrow_termux_home_directory ... ok
+test config::tests::directory_grant_debug_output_does_not_disclose_authority_or_keyring_path ... ok
+test config::tests::directory_grant_settings_are_default_disabled_and_fail_closed_when_partial ... ok
+test config::tests::directory_grant_verification_requires_complete_trusted_configuration ... ok
+test config::tests::empty_safe_roots_are_rejected ... ok
+test config::tests::empty_static_token_is_rejected ... ok
+test config::tests::exact_transport_list_parser_preserves_invalid_whitespace_for_validation ... ok
+test config::tests::exact_transport_list_parser_rejects_empty_entries_instead_of_dropping_them ... ok
+test config::tests::filesystem_root_is_rejected ... ok
+test config::tests::malformed_boolean_is_rejected ... ok
+test config::tests::missing_token_requires_explicit_localhost_only_opt_in ... ok
+test config::tests::present_non_unicode_security_environment_values_fail_closed ... ok
+test config::tests::relative_safe_roots_are_rejected ... ok
+test config::tests::static_principal_identity_requires_static_token_authentication ... ok
+test config::tests::safe_root_list_rejects_empty_entries_without_trimming_paths ... ok
+test config::tests::static_token_auth_posture_is_accepted_for_non_loopback_hosts ... ok
+test config::tests::transport_request_limits_reject_zero_and_excessive_values ... ok
+test config::tests::transport_security_config_accepts_exact_hosts_origins_and_safe_limits ... ok
+test config::tests::transport_security_config_rejects_empty_allowed_hosts ... ok
+test config::tests::transport_security_config_rejects_empty_allowed_origins ... ok
+test config::tests::transport_security_config_rejects_non_http_origins ... ok
+test config::tests::transport_security_config_rejects_origin_paths_queries_fragments_and_userinfo ... ok
+test config::tests::transport_security_config_rejects_wildcard_hosts ... ok
+test command_execution::tests::nonzero_and_invalid_utf8_outputs_are_not_reflected ... ok
+test config::tests::transport_security_config_uses_request_authority_contract ... ok
+test config::tests::unauthenticated_localhost_only_mode_accepts_loopback_hosts ... ok
+test config::tests::unauthenticated_localhost_only_mode_rejects_non_loopback_hosts ... ok
+test config::tests::unsigned_limit_parsers_trim_and_reject_invalid_values ... ok
+test directory_grant::tests::raw_header_is_removed_and_duplicate_or_malformed_context_is_rejected ... ok
+test directory_grant::tests::rejects_signature_algorithm_key_issuer_audience_and_binding_mismatches ... ok
+test directory_grant::tests::rejects_time_window_and_clock_rollback_failures ... ok
+test directory_grant::tests::keyring_is_owner_only_bounded_unique_and_separate_from_authentication ... ok
+test directory_replay::tests::clock_rollback_torn_records_and_permission_drift_fail_closed ... FAILED
+test directory_replay::tests::concurrent_consumers_have_exactly_one_winner ... FAILED
+test directory_grant::tests::verifies_exact_canonical_request_binding_without_exposing_identifier ... ok
+test directory_replay::tests::consumes_once_and_survives_reopen_without_disclosing_identifier ... FAILED
+test directory_replay::tests::replay_keys_are_independent_from_authentication_and_verification_keys ... ok
+test directory_replay::tests::retained_record_rejects_early_digest_key_retirement ... FAILED
+test error::tests::bounded_input_errors_keep_distinct_safe_contracts ... ok
+test error::tests::io_http_response_redacts_operating_system_error_text ... ok
+test error::tests::path_traversal_http_response_redacts_attempted_path ... ok
+test health::tests::readiness_response_uses_package_version_feature_state_and_limits ... ok
+test health::tests::readiness_response_omits_limits_when_runtime_is_not_configured ... ok
+test json_rpc::tests::accepts_notifications_without_ids ... ok
+test json_rpc::tests::accepts_requests_with_string_or_integer_ids ... ok
+test json_rpc::tests::accepts_success_and_error_responses ... ok
+test json_rpc::tests::malformed_json_is_parse_error ... ok
+test json_rpc::tests::mcp_params_must_be_objects_when_present ... ok
+test json_rpc::tests::rejects_malformed_or_ambiguous_responses ... ok
+test json_rpc::tests::rejects_invalid_mcp_request_id_types_without_echoing_them ... ok
+test mcp_session::tests::activation_is_idempotent_and_scoped_to_one_session ... ok
+test json_rpc::tests::valid_non_object_json_is_invalid_request ... ok
+test json_rpc::tests::requires_exact_json_rpc_version_and_string_method ... ok
+test mcp_session::tests::creates_visible_ascii_uuid_sessions_in_pending_phase ... ok
+test mcp_session::tests::capacity_is_bounded_until_a_session_is_terminated ... ok
+test mcp_session::tests::idle_sessions_expire_and_release_capacity ... ok
+test mcp_session::tests::terminated_and_unknown_sessions_are_not_found ... ok
+test mcp_session::tests::unbound_sessions_reject_later_principal_injection ... ok
+test mcp_transport::tests::create_directory_mutation_fails_closed_without_authorization_gate ... ok
+test mcp_session::tests::principal_bound_sessions_reject_missing_and_cross_principal_access ... ok
+test mcp_transport::tests::combined_read_only_android_posture_is_deterministic ... ok
+test mcp_transport::tests::disabled_battery_tool_is_hidden_and_returns_stable_audited_error ... ok
+test mcp_transport::tests::disabled_volume_tool_is_hidden_and_returns_stable_audited_error ... ok
+test mcp_transport::tests::disabled_command_tool_is_hidden_and_direct_calls_never_spawn ... ok
+test command_execution::tests::timeout_and_output_caps_fail_closed ... ok
+test mcp_transport::tests::filesystem_audit_recorder_counts_allowed_and_denied_decisions ... ok
+test mcp_transport::tests::filesystem_audit_snapshot_uses_stable_low_cardinality_values_only ... ok
+test mcp_transport::tests::filesystem_write_audit_mode_and_reason_follow_dry_run_state ... ok
+test mcp_transport::tests::raw_command_override_fields_are_rejected_before_spawn ... ok
+test mcp_transport::tests::read_only_audit_recorder_counts_allowed_status_call ... ok
+test mcp_transport::tests::read_only_audit_recorder_counts_denied_status_call_without_sensitive_values ... ok
+test mcp_transport::tests::enabled_battery_tool_returns_allowlisted_telemetry_and_audits_success ... ok
+test platform_info::tests::platform_info_contains_expected_non_sensitive_metadata ... ok
+test request_limits::tests::debug_output_contains_only_non_sensitive_limit_values ... ok
+test platform_info::tests::platform_info_serialization_does_not_include_sensitive_host_details ... ok
+test request_limits::tests::invalid_zero_limits_are_rejected ... ok
+test request_limits::tests::oversized_chunked_body_is_rejected_with_non_sensitive_response ... ok
+test request_limits::tests::oversized_content_length_is_rejected_before_handler ... ok
+test request_limits::tests::request_inside_limits_reaches_handler ... ok
+test request_limits::tests::saturated_concurrency_fails_fast ... ok
+test service_status::tests::allowlist_and_denylist_do_not_overlap ... ok
+test service_status::tests::project_service_status_returns_allowlisted_runtime_only ... ok
+test service_status::tests::service_status_contains_only_allowlisted_fields ... ok
+test service_status::tests::service_status_serialization_excludes_process_and_control_fields ... ok
+test service_status::tests::unsupported_services_return_structured_errors ... ok
+test mcp_transport::tests::enabled_command_tool_is_discovered_executes_and_audits_fixed_profile ... ok
+test tools::filesystem::tests::armed_temp_file_cleanup_removes_file_on_drop ... ok
+test tools::filesystem::tests::create_directory_defaults_to_validated_dry_run ... ok
+test tools::filesystem::tests::create_directory_rejects_existing_and_missing_parent_targets ... ok
+test tools::filesystem::tests::create_directory_rejects_root_outside_and_symlink_boundaries ... ok
+test mcp_transport::tests::enabled_volume_tool_returns_canonical_streams_and_audits_success ... ok
+test tools::filesystem::tests::descriptor_walk_rejects_parent_swapped_to_symlink_after_validation ... ok
+test tools::filesystem::tests::directory_cleanup_removes_matching_empty_directory ... ok
+test tools::filesystem::tests::directory_cleanup_removes_only_the_created_identity ... ok
+test tools::filesystem::tests::disarmed_temp_file_cleanup_preserves_file ... ok
+test tools::filesystem::tests::directory_cleanup_without_captured_identity_preserves_unknown_directory ... ok
+test tools::filesystem::tests::create_directory_requires_explicit_false_and_publishes_mode_0700 ... ok
+test tools::filesystem::tests::held_directory_descriptor_prevents_search_redirection_after_swap ... ok
+test request_limits::tests::request_timeout_returns_gateway_timeout ... ok
+test tools::filesystem::tests::held_metadata_descriptor_prevents_final_object_exchange_redirection ... ok
+test tools::filesystem::tests::no_replace_publication_rejects_concurrent_final_target ... ok
+test tools::filesystem::tests::held_parent_descriptor_prevents_directory_creation_redirection ... ok
+test tools::filesystem::tests::read_file_rejects_existing_file_outside_safe_root ... ok
+test tools::filesystem::tests::sanitize_allows_new_file_under_existing_safe_root_parent ... ok
+test tools::filesystem::tests::sanitize_rejects_empty_relative_nul_and_parent_components ... ok
+test tools::filesystem::tests::path_metadata_rejects_outside_missing_symlink_and_socket_targets ... ok
+test tools::filesystem::tests::path_metadata_reports_only_bounded_file_and_directory_fields ... ok
+test tools::filesystem::tests::sanitize_rejects_new_file_when_parent_does_not_exist ... ok
+test tools::filesystem::tests::held_parent_descriptor_prevents_write_redirection_after_swap ... ok
+test tools::filesystem::tests::search_query_contract_accepts_exact_limit_and_rejects_unsafe_shapes ... ok
+test tools::filesystem::tests::sanitize_rejects_new_file_when_existing_parent_is_outside_safe_root ... ok
+test tools::filesystem::tests::search_text_rejects_outside_root_and_skips_symlink_escape ... ok
+test tools::filesystem::tests::search_text_returns_deterministic_locations_without_echoing_content ... ok
+test tools::filesystem::tests::write_file_audit_defaults_to_dry_run_without_sensitive_fields ... ok
+test tools::filesystem::tests::write_file_audit_tracks_explicit_mutation_without_runtime_surface_change ... ok
+test tools::filesystem::tests::search_text_skips_oversized_and_invalid_utf8_files ... ok
+test tools::filesystem::tests::write_file_defaults_to_dry_run_without_creating_file ... ok
+test tools::filesystem::tests::write_file_rejects_missing_parent_even_with_explicit_mutation ... ok
+test tools::filesystem::tests::write_file_rejects_outside_root_even_with_explicit_mutation ... ok
+test tools::filesystem::tests::write_file_rejects_oversized_dry_run_payload_before_path_resolution ... ok
+test tools::filesystem::tests::write_file_rejects_oversized_explicit_mutation_without_creating_file ... ok
+test tools::filesystem::tests::write_policy_error_maps_to_payload_too_large_app_error ... ok
+test transport_security::tests::allows_case_insensitive_origin_scheme_and_authority ... ok
+test transport_security::tests::allows_expected_localhost_host_and_origin ... ok
+test transport_security::tests::can_allow_missing_origin ... ok
+test transport_security::tests::constructor_fails_closed_for_invalid_allowlist_entries ... ok
+test transport_security::tests::localhost_constructor_rejects_ephemeral_port_without_panicking ... ok
+test transport_security::tests::rejects_ascii_whitespace_and_controls_without_trimming ... ok
+test transport_security::tests::rejects_missing_host ... ok
+test transport_security::tests::rejects_origin_url_components_beyond_exact_origin ... ok
+test transport_security::tests::rejects_unlisted_host ... ok
+test transport_security::tests::rejects_unlisted_origin ... ok
+test transport_security::tests::requires_http_origin_scheme ... ok
+test transport_security::tests::requires_origin_when_configured ... ok
+test transport_security::tests::transport_security_display_does_not_reflect_received_header_values ... ok
+test transport_security::tests::transport_security_errors_render_stable_reason_codes ... ok
+test transport_security::tests::transport_security_policy_errors_render_stable_reason_codes ... ok
+test transport_security::tests::uses_identical_authority_normalization_for_hosts_and_origins ... ok
+test write_policy::tests::write_mode_defaults_to_dry_run_when_omitted ... ok
+test write_policy::tests::write_mode_requires_explicit_false_for_mutation ... ok
+test write_policy::tests::write_payload_size_allows_exact_limit ... ok
+test write_policy::tests::write_payload_size_rejects_above_limit ... ok
+test write_policy::tests::write_payload_size_zero_limit_accepts_zero_bytes ... ok
+test write_policy::tests::write_payload_size_zero_limit_rejects_nonzero_bytes ... ok
+test write_policy::tests::write_policy_audits_default_dry_run_preview ... ok
+test write_policy::tests::write_policy_audits_explicit_mutation ... ok
+test write_policy::tests::write_policy_audits_oversized_payload_denial_without_content ... ok
+test write_policy::tests::write_policy_error_formats_payload_limit ... ok
+test write_policy::tests::write_policy_error_formats_singular_payload_size ... ok
+test tools::filesystem::tests::write_file_requires_explicit_false_to_mutate_safe_rooted_file ... ok
+test tools::filesystem::tests::search_text_enforces_match_and_aggregate_byte_budgets ... ok
+test tools::filesystem::tests::search_text_truncates_long_path_matches_to_response_budget ... ok
+
+failures:
+
+---- directory_replay::tests::clock_rollback_torn_records_and_permission_drift_fail_closed stdout ----
+
+thread 'directory_replay::tests::clock_rollback_torn_records_and_permission_drift_fail_closed' panicked at src/directory_replay.rs:1037:10:
+called `Result::unwrap()` on an `Err` value: directory replay parent must be owner-only and owned by the server user
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- directory_replay::tests::concurrent_consumers_have_exactly_one_winner stdout ----
+
+thread 'directory_replay::tests::concurrent_consumers_have_exactly_one_winner' panicked at src/directory_replay.rs:995:14:
+called `Result::unwrap()` on an `Err` value: directory replay parent must be owner-only and owned by the server user
+
+---- directory_replay::tests::consumes_once_and_survives_reopen_without_disclosing_identifier stdout ----
+
+thread 'directory_replay::tests::consumes_once_and_survives_reopen_without_disclosing_identifier' panicked at src/directory_replay.rs:957:10:
+called `Result::unwrap()` on an `Err` value: directory replay parent must be owner-only and owned by the server user
+
+---- directory_replay::tests::retained_record_rejects_early_digest_key_retirement stdout ----
+
+thread 'directory_replay::tests::retained_record_rejects_early_digest_key_retirement' panicked at src/directory_replay.rs:1110:10:
+called `Result::unwrap()` on an `Err` value: directory replay parent must be owner-only and owned by the server user
+
+
+failures:
+    directory_replay::tests::clock_rollback_torn_records_and_permission_drift_fail_closed
+    directory_replay::tests::concurrent_consumers_have_exactly_one_winner
+    directory_replay::tests::consumes_once_and_survives_reopen_without_disclosing_identifier
+    directory_replay::tests::retained_record_rejects_early_digest_key_retirement
+
+test result: FAILED. 224 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.22s
+
+error: test failed, to rerun pass `--lib`
