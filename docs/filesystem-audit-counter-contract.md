@@ -22,7 +22,7 @@ The runtime should count:
 
 - allowed safe-rooted directory listings
 - allowed directory-creation dry runs and explicit one-directory mutations
-- denied directory creation, including invalid arguments, safe-root rejection, missing parents, existing destinations, response bounds, and internal failures
+- denied directory creation, including invalid arguments, disabled mutation, stable grant authorization failures, safe-root rejection, missing parents, existing destinations, response bounds, and internal failures
 - allowed bounded file-copy previews and explicit fixed-mode mutations
 - denied file copy, including invalid arguments, safe-root rejection, missing source/parent, same path, existing destination, unsupported source, size/response bounds, and internal failures
 - denied directory-listing requests, including invalid arguments and safe-root rejections
@@ -66,6 +66,7 @@ Audit events and counters must not store:
 - host identifiers
 - user identifiers
 - service-specific private metadata
+- bearer or capability secrets, principal fingerprints, session identifiers, JTIs, target digests, grant timestamps, or replay-state contents
 
 Counters may store only stable tool names and stable reason codes. Event metadata, when used by future sinks, must be limited to bounded numeric values such as byte limits or argument counts. The in-memory `AuditCounters` implementation intentionally ignores event metadata and records only aggregate totals by tool and reason code.
 
@@ -85,6 +86,8 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 | `write_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
 
 A directory or file mutation call is a dry-run preview unless `dry_run=false` resolves to an explicit mutation. Audit wiring must use the resolved mode, not merely the raw caller argument.
+
+For `create_directory`, mutating mode is only the requested posture. It does not imply authorization: the dedicated runtime gate and exact request grant are checked separately. A denied grant records the mutating mode and one stable `capability_*` reason only; successful grant consumption adds no secret or caller-derived label.
 
 ## Stable reason-code guidance
 
@@ -112,6 +115,8 @@ Recommended denied reason codes:
 - `filesystem_parent_not_found`
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
+- `create_directory_mutation_disabled`
+- stable `capability_*` authorization reasons defined by [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md)
 - `filesystem_copy_source_not_found`
 - `filesystem_copy_parent_not_found`
 - `filesystem_copy_same_path`
@@ -143,7 +148,7 @@ In particular, runtime wiring must preserve:
 
 A focused runtime wiring PR should verify all of the following:
 
-1. `create_directory` records allowed dry-run and mutating decisions and denied missing/existing/boundary/failure decisions without retaining path or temporary-name data.
+1. `create_directory` records allowed dry-run and authorized mutating decisions and denied gate/grant/missing/existing/boundary/failure decisions without retaining keys, grants, principal/session/root/target bindings, replay state, paths, or temporary-name data.
 2. `copy_file` records allowed preview and explicit-copy decisions plus every stable copy-specific denial without retaining paths, bytes, request ids, source metadata, or temporary names.
 3. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.
 4. `list_directory` records a denied read-only filesystem event for invalid arguments, invalid depth, safe-root rejection, and internal operation failure.

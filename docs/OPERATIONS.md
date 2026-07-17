@@ -15,7 +15,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Two-MiB request-body ceiling by default.
 - Versioned Termux release directories with atomic `current` and `previous` links.
 - Fixed `mcp_runtime` runit service only.
-- Dedicated safe-root defaults and staged capability expansion.
+- Dedicated safe-root defaults, default-disabled directory mutation, and request-scoped authorization for each directory creation attempt.
 
 ## Android hardening
 
@@ -159,7 +159,7 @@ Authenticated discovery currently exposes:
 2. `platform_info` — non-sensitive platform metadata.
 3. `android_status` — read-only allowlisted Android/Termux status metadata.
 4. `project_service_status` — read-only allowlisted project service metadata for `mcp_runtime`.
-5. `create_directory` — one safe-rooted mode-`0700` directory, atomic no-replace, dry-run first.
+5. `create_directory` — safe-rooted preview by default; one mode-`0700` atomic no-replace mutation only after the dedicated gate and a target-bound single-use grant authorize it.
 6. `copy_file` — one binary-safe regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run first.
 7. `list_directory` — bounded safe-rooted listing.
 8. `path_metadata` — bounded safe-rooted regular-file or directory metadata without content or host identifiers.
@@ -177,7 +177,7 @@ The runtime does not expose Android platform control, an arbitrary shell or comm
 
 Filesystem responses have explicit mobile-oriented ceilings:
 
-- `create_directory` validates one absent child by default and mutates only with explicit `dry_run:false`. It requires an existing descriptor-resolved parent, creates fixed mode `0700`, publishes atomically without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
+- `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
 - `copy_file` validates one regular source and absent destination by default and mutates only with explicit `dry_run:false`. It copies at most 1 MiB from the exact held source descriptor, publishes fixed mode `0600` atomically without replacement, verifies identities and sizes, syncs file and parent descriptors, returns no content, and caps the complete response at 16 KiB; see [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
 - `list_directory` returns at most 4,096 entries and at most 256 KiB for the complete JSON-RPC response. Entries are ordered deterministically by path before publication. `structuredContent.truncated` reports when either ceiling prevented a complete result and the response publishes both limits.
 - `path_metadata` returns exactly normalized path, regular-file/directory kind, nullable file size, nullable RFC 3339 modification time, and the fixed 16 KiB full-response ceiling. It does not return content, inode/device/UID/GID/mode/access-time data, link targets, or unsupported object types; see [`SAFE_ROOT_PATH_METADATA.md`](SAFE_ROOT_PATH_METADATA.md).

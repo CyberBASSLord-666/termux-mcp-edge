@@ -40,6 +40,8 @@ Android platform control, shell fallback, arbitrary command execution, global pr
 
 Startup requires `MCP__AUTH__STATIC_TOKEN` by default. Empty or whitespace-only values are rejected before the HTTP listener starts. The configured token is redacted from debug output and must not be logged or copied into issue reports.
 
+Bearer authentication does not by itself authorize `create_directory` mutation. That mutation requires the default-disabled `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED` gate, a paired 32-byte HMAC key configuration, and one 60-second, single-use `MCP-Capability-Grant` bound to the principal, active session, anchored safe root, normalized target, and mutating posture. The runtime consumes the JTI immediately before its first filesystem mutation attempt and retains consumption after downstream failure. Grants are header-only and must never appear in arguments, URLs, responses, logs, audit labels, tickets, or screenshots. See [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
+
 Only an absent environment variable may select its documented default. Present non-Unicode values for the bearer token, listener host/port, safe roots, transport allowlists, compatibility switch, or request limits fail startup with non-sensitive errors. `MCP__SERVER__PORT` accepts only `1–65535`; port `0` is not a supported supervised-listener configuration.
 
 The only supported exception is explicit local development mode:
@@ -72,7 +74,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `android_volume_status` | Disabled | Available only in the `android-volume-status` build with explicit runtime opt-in; bounded read-only telemetry |
 | `run_command_profile` | Disabled | Available only in the `command-execution` build with explicit runtime opt-in; three fixed read-only server diagnostics |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
-| `create_directory` | Disabled | One safe-rooted directory, fixed mode `0700`, atomic no-replace, dry-run by default |
+| `create_directory` | Disabled | Preview is available; mutation is separately default-disabled and requires fixed mode `0700`, atomic no-replace, and one request-scoped single-use grant |
 | `copy_file` | Disabled | One regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run by default |
 | `list_directory` | Disabled | Bounded and safe-rooted |
 | `path_metadata` | Disabled | Bounded, content-free, descriptor-relative metadata |
@@ -126,7 +128,7 @@ The default safe root is deliberately narrow:
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
-`create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview, requires explicit `dry_run:false`, creates one absent child with fixed mode `0700`, stages under an unpredictable name, publishes with atomic no-replace semantics, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent destination with an existing safe-rooted parent, defaults to preview, fixes explicit destinations to mode `0600`, stages unpredictably, publishes atomically without replacement, returns no content, and caps the complete response at 16 KiB before mutation. Directory listings are deterministic and response bounded. Metadata is content-free; reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked for directory and copy publication; successful parent sync defines their crash-durability boundary. The complete copy boundary and in-place same-size source-writer caveat are documented in [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
+`create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview; explicit `dry_run:false` selects mutation but the independent runtime gate and exact request grant still must authorize it. The runtime validates the absent descriptor-relative target before matching the grant, atomically consumes the grant immediately before `mkdirat`, publishes fixed mode `0700` without replacement, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent safe-rooted destination, defaults to preview, publishes mode `0600` without replacement, returns no content, and preflights its 16 KiB response. Directory listings are deterministic and response bounded. Metadata is content-free; reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked; successful parent sync defines the crash-durability boundary.
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
 
@@ -136,7 +138,7 @@ The battery and volume providers are not general command runners. Callers cannot
 
 The staged runtime exposes in-memory aggregate audit counters through `runtime_status`. Counters retain stable tool names, allowed/denied totals, and low-cardinality reason codes only.
 
-They must not retain raw paths, file contents, command arguments or output, environment names or values, bearer tokens, capability-token values, hostnames, usernames, Android identifiers, or arbitrary caller strings.
+They must not retain raw paths, file contents, command arguments or output, environment names or values, bearer tokens, capability grants or keys, principal fingerprints, sessions, JTIs, target digests, timestamps, hostnames, usernames, Android identifiers, or arbitrary caller strings.
 
 Audit counters provide evidence of gate decisions; they are not authorization and reset when the process restarts. Authentication failures are deliberately handled before MCP tool audit counters because unauthorized callers must not enter the MCP dispatch path.
 
@@ -144,7 +146,7 @@ Audit counters provide evidence of gate decisions; they are not authorization an
 
 The fixed-profile command gate is live only in its separate build and only after runtime opt-in. It authorizes three read-only diagnostics of the exact server binary, not a shell or general process launcher. Its complete boundary is documented in [`command-execution-gate.md`](command-execution-gate.md).
 
-Capability-token primitives remain inert policy scaffolding. Any new executable, parameterized profile, mutating command, Android/service/package/network control, or other high-impact surface requires its own focused gate with compile-time and runtime opt-in, threat review, fixed allowlists, bounded execution, structured denial behavior, audit coverage, tests, and operator documentation.
+The narrowly scoped `create_directory` request-grant primitive is live only for that one already-confined mutation. The separate general-purpose capability-token policy module remains inert scaffolding. Any new executable, parameterized profile, mutating command, Android/service/package/network control, or other high-impact surface requires its own focused gate with compile-time and runtime opt-in, threat review, fixed allowlists, bounded execution, structured denial behavior, audit coverage, tests, and operator documentation.
 
 ## Dependency Advisory Policy
 

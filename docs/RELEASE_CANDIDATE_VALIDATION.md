@@ -117,7 +117,7 @@ bash scripts/termux_release_validate.sh \
   --confirm-runtime-mutation
 ```
 
-The phase starts each artifact directly on loopback, one at a time, using a private token and a unique validation child below `SAFE_ROOT`.
+The phase starts each artifact directly on loopback, one at a time, using a private token and a unique validation child below `SAFE_ROOT`. The validator creates a private random capability key, enables only the `mcp-runtime` candidate's directory-mutation gate, invokes that exact binary's offline issuer, and destroys grant material with its isolated workspace.
 
 The default artifact must:
 
@@ -132,10 +132,11 @@ The `mcp-runtime` artifact must prove:
 - authentication before Host/Origin validation, plus rejected unexpected Host, missing Origin, and unexpected Origin values;
 - stable `2025-11-25` initialize/initialized lifecycle;
 - required protocol and session headers plus unknown-session rejection;
-- the exact eleven-tool allowlist, including dry-run-first `create_directory`, bounded content-private `copy_file`, content-free `path_metadata`, and bounded literal `search_text`;
+- the exact eleven-tool allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, content-free `path_metadata`, and bounded literal `search_text`;
 - command execution, Android control, and high-impact gates disabled;
 - bounded read-only platform, Android, and project-service metadata with the project-service allowlist enforced;
-- dry-run and explicit mode-`0700` one-directory creation, deterministic bounded listing, and descriptor-relative path metadata;
+- enabled directory-mutation discovery/status, missing-grant denial, wrong-target binding denial, dry-run non-consumption, one locally issued exact-target mode-`0700` creation, and replay denial;
+- deterministic bounded listing and descriptor-relative path metadata;
 - bounded safe-root read plus rejection of JSON expansion beyond the response ceiling;
 - default-preview and explicit binary `copy_file`, fixed mode `0600`, exact content, existing-destination preservation, symlink denial, one-byte-over rejection, and content-free results;
 - dry-run-first write and an explicit mode-`0600` write;
@@ -145,7 +146,7 @@ The `mcp-runtime` artifact must prove:
 - documented non-SSE GET 405;
 - explicit session deletion.
 
-Response bodies, safe-root paths, test file contents, bearer tokens, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence.
+Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v2 runtime result includes `request_scoped_single_use_grant_enforced`.
 
 ## Phase 3: deployment validation
 
@@ -210,9 +211,9 @@ Reports conform to [`release-evidence-schema-v1.json`](release-evidence-schema-v
 It intentionally excludes:
 
 - artifact, configuration, token, report, safe-root, deployment, and service paths;
-- bearer tokens and environment values;
+- bearer tokens, capability keys/grants, and environment values;
 - request/response bodies and file contents;
-- MCP session identifiers;
+- MCP session identifiers, grant identifiers/bindings, and replay state;
 - PIDs, hostnames, usernames, and persistent device identifiers;
 - arbitrary operator notes.
 

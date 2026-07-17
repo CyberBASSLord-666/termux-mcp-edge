@@ -8,7 +8,7 @@ The default build exposes operational health/readiness endpoints only. The optio
 
 In static-token mode, `/mcp` requires `Authorization: Bearer <configured-token>` before JSON-RPC parsing, discovery, or invocation. Explicit unauthenticated development mode is allowed only when startup validation confirms a loopback bind.
 
-The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, dry-run-first `create_directory`, dry-run-first `copy_file`, `list_directory`, `path_metadata`, `read_file`, literal `search_text`, and dry-run-first `write_file`. `create_directory` is a Class 2 safe-rooted mutation only when `dry_run: false`. `copy_file` is also Class 2 only under its fixed contract: one no-follow regular source no larger than 1 MiB, one independently authorized absent destination with an existing safe-rooted parent, held descriptor-relative traversal, in-process bounded binary transfer, fixed mode `0600`, unpredictable exclusive staging, atomic no-replace publication, identity/size verification, file and parent durability sync, identity-checked cleanup, no content in response/audit, and pre-mutation 16 KiB full-response enforcement. It does not recurse, overwrite, append, copy links/directories, preserve metadata, or accept caller-selected resource or permission controls. `path_metadata` and `search_text` remain read-only and content-private. Independent battery, volume, and fixed-command builds may additionally register their single bounded read-only tool only after the corresponding runtime flag is explicitly enabled. No Android or audio control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
+The baseline staged registry contains `runtime_status`, `platform_info`, `android_status`, `project_service_status`, dry-run-first `create_directory`, dry-run-first `copy_file`, `list_directory`, `path_metadata`, `read_file`, literal `search_text`, and dry-run-first `write_file`. `create_directory` is a Class 2 mutation only when `dry_run:false`, its dedicated runtime gate is enabled, and one request-scoped single-use grant authorizes the authenticated principal/session and exact confined target. `copy_file` is also Class 2 only under its fixed one-file, 1 MiB, mode-`0600`, no-replace, content-private contract. `path_metadata` and `search_text` remain read-only and content-private. Independent battery, volume, and fixed-command builds may additionally register their single bounded read-only tool only after the corresponding runtime flag is explicitly enabled. No Android or audio control, shell, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, or high-impact tool is registered.
 
 ## Default Deny Rule
 
@@ -55,6 +55,7 @@ Examples: writing generated artifacts inside a project-owned output directory.
 Rules:
 
 - Require authenticated transport and explicit feature enablement.
+- Require an operation-scoped authorization grant when the mutation's impact exceeds the bearer principal's baseline preview posture; `create_directory` uses the contract in [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 - Must default to dry-run or preview behavior where practical.
 - Must write only inside a configured safe root.
 - Must reject overwrite, delete, chmod, rename, and recursive operations unless separately authorized.
@@ -78,11 +79,11 @@ Rules:
 Tool registration must be authorization-aware:
 
 1. Register or return no tools to an unauthenticated caller.
-2. Filter the tool list by authorization scope before returning discovery results when scoped authorization is introduced.
+2. Reflect the gate posture in discovery before returning tool schemas. The disabled `create_directory` posture constrains `dry_run` to `true`; the enabled posture advertises that a request grant is still required.
 3. Deny invocation when the requested tool is absent from the caller's authorized scope, even if the tool exists in the binary.
 4. Avoid logging secrets, bearer tokens, session identifiers, command arguments containing credentials, or denied path values that may reveal sensitive host layout.
 
-The current static-token stage authenticates the complete MCP route before discovery or invocation. Future per-tool scopes must be additive and fail closed.
+The static token authenticates the complete MCP route before discovery or invocation. The live `create_directory` request grant is additive, header-only, target-bound, and fail closed; a session ID or `dry_run:false` never substitutes for it.
 
 ## Feature-Gate Requirements
 

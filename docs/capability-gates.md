@@ -10,7 +10,7 @@ Enabled staged tools:
 - `platform_info`
 - `android_status`
 - `project_service_status`
-- `create_directory` for exactly one absent safe-rooted directory, dry-run by default, fixed mode `0700`, and atomic no-replace publication
+- `create_directory` preview for exactly one absent safe-rooted directory; mutation additionally requires the default-disabled runtime gate and one request-scoped single-use grant, then uses fixed mode `0700` and atomic no-replace publication
 - `copy_file` for exactly one no-follow regular source of at most 1 MiB and one absent safe-rooted destination, dry-run by default, fixed mode `0600`, content-private response/audit surfaces, and atomic no-replace publication
 - `list_directory`
 - `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers
@@ -33,6 +33,21 @@ Still disabled:
 - Global process listing and arbitrary service inspection
 - Service mutation or control
 - High-impact device or host controls
+
+### `create_directory` request grant
+
+Status: implemented as a narrowly scoped Class 2 authorization layer.
+
+- Runtime gate: `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED`, default `false`.
+- Key configuration: one paired lowercase key ID and 32-byte HMAC-SHA-256 key; static-token authentication is mandatory.
+- Issuance: local exact-binary `--issue-create-directory-grant`, never an MCP tool.
+- Transport: exactly one bounded `MCP-Capability-Grant` header, accepted only on `tools/call` for `create_directory`.
+- Binding: static principal, canonical session UUID, capability, root device/inode, normalized target digest, mutating posture, format/key ID, JTI, issuance, and expiry.
+- Consumption: atomic immediately before the first mutation attempt; dry runs and pre-authorization failures do not consume, while every later failure retains consumption.
+- Lifetime/state: 60-second grants, five-second future skew, 120-second hard lifetime ceiling, and 4,096 unexpired replay entries.
+- Privacy: no key, grant, fingerprint, session, JTI, target digest, path, or timestamp in responses, logs, or audit labels.
+
+The complete contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 
 ## Gate 1: non-sensitive platform metadata
 

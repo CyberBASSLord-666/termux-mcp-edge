@@ -1,15 +1,21 @@
 # Safe-rooted directory creation contract
 
-`create_directory` creates exactly one project-owned directory inside a configured filesystem safe root. It is part of the authenticated baseline `mcp-runtime` posture and does not enable shell access, recursive creation, deletion, rename, permission selection, or writes outside the existing safe-root authority.
+`create_directory` validates exactly one project-owned directory target inside a configured filesystem safe root. Mutation is separately default-disabled and requires one request-scoped, single-use capability grant. It does not enable shell access, recursive creation, deletion, rename, permission selection, or writes outside the existing safe-root authority. The complete grant format, issuance workflow, denial contract, and rotation procedure are defined in [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 
 ## Input schema
 
 The closed MCP argument object accepts:
 
 - `path` — required absolute path inside one configured `MCP__FILE__SAFE_ROOTS` entry;
-- `dry_run` — optional boolean. Omitted or `true` validates the request without mutation. Only explicit `false` authorizes creation.
+- `dry_run` — optional boolean. Omitted or `true` validates the request without mutation. Explicit `false` selects the mutating posture but does not authorize it by itself.
 
 Unknown fields, missing `path`, wrong JSON types, relative paths, NUL bytes, parent traversal, the safe root itself, and outside-root paths are rejected. The tool creates one directory only: every parent component must already exist.
+
+With `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false` (the default), discovery constrains `dry_run` to `true` and dispatch denies explicit mutation. When the gate is enabled, explicit mutation additionally requires exactly one valid `MCP-Capability-Grant` header bound to the authenticated static principal, active MCP session, safe-root identity, normalized target, and mutating posture. Grant material is never accepted in the argument object.
+
+## Authorization boundary
+
+Confinement and response-size validation complete before grant matching. The runtime then atomically consumes the grant immediately before the first `mkdirat` attempt. Dry runs, invalid paths, target mismatches, and wrong-context header use do not consume a valid grant. Once consumed, a grant stays consumed after any later staging, verification, sync, publication, response, or cleanup failure. Reuse and concurrent replay fail closed.
 
 ## Descriptor and publication boundary
 
@@ -52,9 +58,9 @@ Only aggregate in-memory counters are retained. Events use stable labels such as
 - gate: `filesystem_write`;
 - mode: `dry_run` or `mutating`;
 - allowed reasons: `dry_run_preview`, `safe_root_directory_created`;
-- denied reasons: `missing_arguments`, `invalid_arguments`, `safe_root_rejected`, `filesystem_parent_not_found`, `filesystem_destination_exists`, `response_size_limit_exceeded`, or `filesystem_directory_create_failed`.
+- denied reasons: `missing_arguments`, `invalid_arguments`, `safe_root_rejected`, `filesystem_parent_not_found`, `filesystem_destination_exists`, `response_size_limit_exceeded`, `create_directory_mutation_disabled`, stable `capability_*` authorization reasons, or `filesystem_directory_create_failed`.
 
-Paths, names, temporary identifiers, OS errors, and request identifiers are never stored in audit counters.
+Paths, names, temporary identifiers, OS errors, request identifiers, grants, keys, sessions, JTIs, and target digests are never stored in audit counters.
 
 ## Explicit non-goals
 

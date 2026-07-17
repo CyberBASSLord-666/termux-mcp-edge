@@ -11,7 +11,7 @@ The expected posture is narrow and fail-closed:
 - In static-token mode, the complete `/mcp` route requires the configured bearer token before transport validation, JSON-RPC parsing, discovery, or invocation.
 - Explicit unauthenticated development mode is accepted only when startup validates a loopback bind.
 - `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status`, `android_volume_status`, and `run_command_profile` are expected only when their respective compile-time and runtime gates are enabled.
-- `create_directory`, `copy_file`, and `write_file` remain dry-run by default and must require explicit `dry_run:false` plus safe-root validation before mutation.
+- `create_directory`, `copy_file`, and `write_file` remain dry-run by default. Directory mutation additionally requires its default-disabled runtime gate and one target-bound request grant; `dry_run:false` alone must fail. Copy and write retain their existing explicit posture and safe-root controls.
 - Filesystem creation, reads, listings, searches, and writes remain bounded to configured safe roots.
 - `project_service_status` remains limited to explicitly allowlisted project-owned logical services.
 - Android status remains read-only allowlisted metadata, not Android platform control.
@@ -27,6 +27,7 @@ Before validating behavior, confirm the operator configuration is deliberately n
 4. Use localhost-only unauthenticated mode only when the server is bound to a loopback address and not exposed through a tunnel, LAN listener, or reverse proxy.
 5. Keep `MCP__TRANSPORT__ALLOWED_HOSTS` and `MCP__TRANSPORT__ALLOWED_ORIGINS` exact and minimal.
 6. Keep filesystem safe roots limited to a dedicated project directory, not broad shared storage such as `/storage/emulated/0` or `/sdcard`.
+7. Leave `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false` unless directory mutation is operationally required. When enabled, require static-token auth and a paired lowercase `MCP__CAPABILITY__KEY_ID` plus 64-lowercase-hex `MCP__CAPABILITY__HMAC_KEY_HEX`; keep both secrets owner-readable and out of transcripts.
 
 ## Authentication checks
 
@@ -74,6 +75,7 @@ A valid runtime discovery pass proves presence and absence:
 - An authenticated `tools/list` call includes the eleven baseline tools. Battery, volume, and fixed-command tools are absent by default; each appears only in its explicitly enabled posture. An all-feature test build has fourteen tools only when all three runtime flags are enabled.
 - `tools/list` does not include arbitrary command execution, shells, Android control, process listing, service mutation, package management, arbitrary network mutation, environment inspection, or token-management tools.
 - Tool descriptions and schemas continue to communicate safe-root, read-only, dry-run, and allowlist boundaries where applicable.
+- With the directory mutation gate disabled, the `create_directory` schema constrains `dry_run` to `true`. With it enabled, that constraint is absent and the description names the header grant requirement; neither posture exposes an issuer tool.
 
 Discovery is not sufficient by itself. A tool being absent from discovery is the first guardrail, but each boundary below should also be checked through representative authenticated calls.
 
@@ -90,6 +92,7 @@ Expected evidence:
 - `by_reason_code` uses stable low-cardinality reason codes.
 - Counters do not include raw paths, file contents, command output, command arguments, environment values, hostnames, usernames, Android identifiers, private device metadata, bearer values, raw capability tokens, or arbitrary caller-provided strings.
 - Restarting the process resets the in-memory counters.
+- `createDirectoryMutationEnabled`, `createDirectoryMutationMode`, `createDirectoryGrantRequired`, `createDirectoryGrantHeader`, and `createDirectoryGrantTtlSeconds` accurately report only the public posture and never key, token, target, session, or replay state.
 
 Audit counters are evidence of gate decisions, not an authorization mechanism and not a retained activity log. The authoritative counter contract is maintained in [`runtime-audit-counters.md`](runtime-audit-counters.md).
 
@@ -98,7 +101,8 @@ Audit counters are evidence of gate decisions, not an authorization mechanism an
 Use a dedicated safe-root test directory. Validate all of the following with authenticated calls in static-token mode:
 
 - Listing a safe-rooted directory succeeds with a `safe_root_listing`-style allowed decision.
-- `create_directory` with omitted `dry_run` or `dry_run:true` validates one absent target without mutation; explicit `dry_run:false` creates exactly that directory with mode `0700`, while missing parents, existing objects, links, and outside-root paths remain denied.
+- `create_directory` with omitted `dry_run` or `dry_run:true` validates one absent target without mutation. With the gate disabled, explicit mutation returns HTTP 403. With it enabled, prove that missing, malformed, wrong-context, other-session, other-principal, other-root, other-target, expired, future-issued, unknown-version/key, invalid-signature, and replayed grants all fail closed without mutation or reflection.
+- Use the exact candidate's local `--issue-create-directory-grant` flow for one absent target. Send that grant on a dry run and then on `dry_run:false` to prove preview does not consume it; verify mode `0700`; remove the created empty test directory and replay the grant to prove HTTP 403 `capability_grant_replayed`. Run the concurrent replay regression or canonical validator to prove at most one mutation attempt. See [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 - `copy_file` with omitted `dry_run` or `dry_run:true` validates one regular source and absent destination without mutation; explicit `dry_run:false` copies exact binary bytes with mode `0600`. Prove the 1 MiB boundary, same/existing/missing/directory/link/outside denials, cross-root operation, response preflight before mutation, no content reflection, and stable private audit reasons; see [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
 - `path_metadata` returns only normalized path, `regular_file`/`directory` kind, nullable file size and RFC 3339 modification time, and `maxResponseBytes:16384`; links, unsupported types, content, inode/device/UID/GID/mode/access-time fields, and oversized envelopes fail closed.
 - Reading a bounded UTF-8 file under a safe root succeeds with a `safe_root_read`-style allowed decision.
@@ -223,7 +227,7 @@ Treat any of the following as a blocker for a staged runtime PR or release candi
 - The battery tool is discovered without both opt-ins, accepts caller-selected process inputs, exceeds its fixed time/output ceilings, or reflects a dropped upstream field.
 - The volume tool is discovered without both opt-ins, accepts any argument, reaches volume mutation, returns a non-canonical/partial stream set, exceeds its fixed bounds, or reflects unrecognized upstream data.
 - The command tool is discovered without both opt-ins, accepts any caller-controlled process field, invokes a non-current executable, inherits environment or stdin, escapes its safe-root cwd, exceeds its fixed bounds, reflects failed output, or enables arbitrary/high-impact execution.
-- Filesystem tools can escape configured safe roots or mutate without explicit `dry_run:false`.
+- Filesystem tools can escape configured safe roots; any mutation occurs without its explicit posture; or `create_directory` mutation occurs without the enabled gate and exact single-use request grant.
 - Audit counters serialize raw caller values or high-cardinality private metadata.
 - Capability-token primitives become a live high-impact authorization surface without a separate focused gate.
 - Any executable authority beyond the fixed diagnostic profiles, Android control, service mutation, package management, network mutation, or high-impact action appears without its own documented opt-in gate, tests, and audit contract.

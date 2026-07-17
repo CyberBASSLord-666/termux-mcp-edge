@@ -55,7 +55,7 @@ if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPOSITORY_URL="https://github.com/CyberBASSLord-666/termux-mcp-edge.git"
-HARNESS_VERSION="1"
+HARNESS_VERSION="2"
 HEAD_LABEL="${EXPECTED_HEAD:0:12}"
 SMOKE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_ROOT="$HOME/termux-mcp-device-smoke-$HEAD_LABEL-$SMOKE_ID"
@@ -81,6 +81,9 @@ SAFE_ROOT=""
 RUNSVDIR_PID=""
 MCP_TOKEN=""
 MCP_SESSION_ID=""
+CAPABILITY_KEY_ID="device-smoke-1"
+CAPABILITY_KEY_HEX=""
+CAPABILITY_GRANT_FILE=""
 SMOKE_SUCCEEDED=0
 
 mkdir -p -- "$WORK_ROOT" "$ARTIFACT_DIR" "$LOG_DIR"
@@ -143,7 +146,7 @@ cleanup() {
     kill "$RUNSVDIR_PID" >/dev/null 2>&1 || true
     wait "$RUNSVDIR_PID" >/dev/null 2>&1 || true
   fi
-  unset MCP_TOKEN MCP_SESSION_ID MCP__AUTH__STATIC_TOKEN TOKEN 2>/dev/null || true
+  unset MCP_TOKEN MCP_SESSION_ID CAPABILITY_KEY_HEX MCP__AUTH__STATIC_TOKEN TOKEN 2>/dev/null || true
   if ((cleanup_confirmed == 1)); then
     safe_cleanup_roots
     cleanup_roots_absent || cleanup_confirmed=0
@@ -283,7 +286,7 @@ choose_port() {
 }
 
 mcp_post() {
-  local output="$1" payload="$2" session_id="${3:-}"
+  local output="$1" payload="$2" session_id="${3:-}" grant_file="${4:-}" grant=""
   local -a args=(
     -sS
     -o "$output"
@@ -300,12 +303,40 @@ mcp_post() {
       -H "MCP-Session-Id: $session_id"
     )
   fi
+  if [[ -n "$grant_file" ]]; then
+    [[ -f "$grant_file" && ! -L "$grant_file" && "$(stat -c '%a' "$grant_file")" == 600 ]] || fail "capability grant staging is invalid"
+    grant="$(<"$grant_file")"
+    [[ "$grant" =~ ^v1\.${CAPABILITY_KEY_ID}\.[0-9a-f]{260}\.[0-9a-f]{64}$ ]] || fail "candidate emitted an invalid capability grant"
+    args+=( -H "MCP-Capability-Grant: $grant" )
+  fi
   curl "${args[@]}" --data-binary "$payload" "$MCP_URL"
+}
+
+issue_create_directory_grant() {
+  local target="$1" grant=""
+  : >"$CAPABILITY_GRANT_FILE"
+  chmod 600 "$CAPABILITY_GRANT_FILE"
+  if ! MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
+    MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
+    MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+    MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true \
+    MCP__CAPABILITY__KEY_ID="$CAPABILITY_KEY_ID" \
+    MCP__CAPABILITY__HMAC_KEY_HEX="$CAPABILITY_KEY_HEX" \
+    MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+    MCP__CAPABILITY__CREATE_DIRECTORY_TARGET="$target" \
+      "$CANDIDATE_ARTIFACT" --issue-create-directory-grant >"$CAPABILITY_GRANT_FILE" 2>/dev/null
+  then
+    fail "exact candidate could not issue a create_directory grant"
+  fi
+  [[ "$(wc -l <"$CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid capability grant"
+  grant="$(<"$CAPABILITY_GRANT_FILE")"
+  [[ "$grant" =~ ^v1\.${CAPABILITY_KEY_ID}\.[0-9a-f]{260}\.[0-9a-f]{64}$ ]] || fail "candidate emitted an invalid capability grant"
+  unset grant
 }
 
 protocol_smoke() {
   local label="$1"
-  local body headers status payload target outside oversized copy_source copy_target copy_bytes
+  local body headers status payload target outside oversized copy_source copy_target copy_bytes directory_target
   headers="$LOG_DIR/$label-initialize.headers"
   body="$LOG_DIR/$label-response.json"
 
@@ -343,11 +374,12 @@ protocol_smoke() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
   assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]'
+  assert_json "${label}_create_directory_grant_discovery" "$body" '.result.tools | map(select(.name == "create_directory"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant"))'
 
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_runtime_status_http" "$status" 200
-  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false'
+  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60'
 
   payload="$(jq -cn --arg path "$SAFE_ROOT" '{"jsonrpc":"2.0","id":"list-directory","method":"tools/call","params":{"name":"list_directory","arguments":{"path":$path,"max_depth":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -384,19 +416,32 @@ protocol_smoke() {
   log "PASS ${label}_search_text_content=redacted"
 
   directory_target="$SAFE_ROOT/created-directory"
-  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory-dry","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path}}}')"
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory-missing-grant","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_create_directory_missing_grant_http" "$status" 403
+  assert_json "${label}_create_directory_missing_grant_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_missing"'
+  assert_absent "${label}_create_directory_missing_grant_target" "$directory_target"
+
+  issue_create_directory_grant "$directory_target"
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory-dry","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_create_directory_dry_run_http" "$status" 200
   assert_json "${label}_create_directory_dry_run_body" "$body" '.result.structuredContent.dryRun == true and .result.structuredContent.mode == "0700" and .result.structuredContent.maxResponseBytes == 16384'
   assert_absent "${label}_create_directory_dry_run_target" "$directory_target"
 
   payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_create_directory_http" "$status" 200
   assert_json "${label}_create_directory_body" "$body" '.result.structuredContent.dryRun == false and .result.structuredContent.mode == "0700"'
   [[ -d "$directory_target" ]] || fail "explicit create_directory call did not create its target"
   log "PASS ${label}_create_directory_target=directory"
   assert_eq "${label}_create_directory_mode" "$(stat -c '%a' "$directory_target")" 700
+
+  rmdir -- "$directory_target" || fail "could not prepare the create_directory replay check"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_create_directory_replay_http" "$status" 403
+  assert_json "${label}_create_directory_replay_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"'
+  assert_absent "${label}_create_directory_replay_target" "$directory_target"
 
   copy_source="$SAFE_ROOT/copy-source.bin"
   copy_target="$SAFE_ROOT/copy-target.bin"
@@ -632,6 +677,9 @@ printf '%s' 'device-smoke-visible' >"$SAFE_ROOT/visible.txt"
 chmod 600 "$SAFE_ROOT/visible.txt"
 MCP_TOKEN="$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
 [[ -n "$MCP_TOKEN" && "$MCP_TOKEN" != *[[:space:]]* ]] || fail "could not generate a private runtime token"
+CAPABILITY_KEY_HEX="$(head -c 32 /dev/urandom | sha256sum | awk '{print $1}')"
+[[ "$CAPABILITY_KEY_HEX" =~ ^[0-9a-f]{64}$ ]] || fail "could not generate a private capability key"
+CAPABILITY_GRANT_FILE="$CONFIG_ROOT/create-directory-grant"
 cat >"$CONFIG_ROOT/runtime.env" <<EOF
 MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN
 MCP__SERVER__HOST=127.0.0.1
@@ -642,6 +690,9 @@ MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=1024
 MCP__FILE__SAFE_ROOTS=$SAFE_ROOT
+MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
+MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID
+MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX
 RUST_LOG=termux_mcp_server=info
 EOF
 chmod 600 "$CONFIG_ROOT/runtime.env"

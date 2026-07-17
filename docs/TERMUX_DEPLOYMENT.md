@@ -44,6 +44,7 @@ MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
 MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=2097152
+MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false
 RUST_LOG=termux_mcp_server=info
 EOF
 chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
@@ -76,6 +77,24 @@ MCP__COMMAND__ENABLED=true
 Do not add this setting to a build without the matching feature; startup fails closed. The tool accepts only the reviewed `server_version`, `server_help`, and `execution_boundary` profiles and does not authorize a shell or caller-selected program, argv, path, environment, stdin, timeout, or output limit. See [`command-execution-gate.md`](command-execution-gate.md).
 
 Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
+
+Directory preview remains available while `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false`. If one-directory mutation is operationally required, generate a separate 32-byte HMAC key, keep it private, and atomically add the complete paired configuration:
+
+```bash
+umask 077
+CAPABILITY_KEY_HEX="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
+sed -i \
+  's/^MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false$/MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true/' \
+  "$HOME/.config/termux-mcp-edge/runtime.env"
+printf '%s\n' \
+  'MCP__CAPABILITY__KEY_ID=primary-1' \
+  "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
+  >>"$HOME/.config/termux-mcp-edge/runtime.env"
+unset CAPABILITY_KEY_HEX
+chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
+```
+
+Replace the existing `false` line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and an enabled directory-mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, exact-target `MCP-Capability-Grant`; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md). Never print, commit, or attach either the HMAC key or issued grants.
 
 ## Validate the candidate
 
@@ -180,7 +199,7 @@ cargo test --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 ```
 
-The test suite covers the binary CLI contract, verified install, invalid operation modes, checksum and version failures, active and stale locks, dry-run immutability, literal configuration handling, failed-candidate recovery, failed-rollback recovery, invalid links, unsafe roots, configuration preservation, and explicit purge.
+The test suite covers the binary CLI contract, verified install, invalid operation modes, checksum and version failures, active and stale locks, dry-run immutability, literal and duplicate configuration handling, capability-key pairing and format enforcement, failed-candidate recovery, failed-rollback recovery, invalid links, unsafe roots, configuration preservation, and explicit purge.
 
 ## On-device production gate
 
@@ -195,7 +214,7 @@ Use [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md) for dow
 5. Confirm `runtime.env` is private and contains the intended authentication and transport settings.
 6. Install or upgrade through `termux_deploy.sh`.
 7. Confirm deployment status, runit status, `/health`, and `/ready`.
-8. Run authenticated MCP discovery and representative allowed and denied calls.
+8. Run authenticated MCP discovery and representative allowed and denied calls, including default-disabled directory mutation and the exact-target grant/replay contract when enabled.
 9. Exercise rollback and restoration behavior.
 10. Preserve the prior known-good release until sustained device validation is complete under realistic battery, thermal, and process-restriction conditions.
 

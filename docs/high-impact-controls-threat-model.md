@@ -6,6 +6,8 @@ This document defines the threat model and approval gate for any future high-imp
 
 This document does not enable high-impact controls.
 
+The live `create_directory` request grant is a narrower, purpose-built authorization layer for one already-confined filesystem mutation. It is not a general high-impact token and grants no package, service, Android, network, process, secret, deletion, permission, or shell authority. Its independent contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
+
 ## High-impact action categories
 
 A future tool must be treated as high-impact if it can perform any of the following:

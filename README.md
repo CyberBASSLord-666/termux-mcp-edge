@@ -15,7 +15,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
-- **Filesystem surface:** deterministic bounded directory listing, single-object metadata, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, and file writes. Mutations are descriptor-relative, crash-durable, and dry-run by default. Directory creation requires an existing parent, fixed mode `0700`, and atomic no-replace publication. File copy accepts one regular source up to 1 MiB, requires an absent destination with an existing parent, publishes fixed mode `0600` without replacement, and never returns content or preserves source metadata. Metadata and search remain content-private under fixed response and traversal ceilings. Deterministic descriptor-exchange tests preserve the no-follow race-hardening delivered through #200.
+- **Filesystem surface:** deterministic bounded directory listing, single-object metadata, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, and file writes. Mutations are descriptor-relative, crash-durable, and dry-run by default. Directory creation is additionally default-disabled and requires a 60-second request-scoped single-use grant bound to the authenticated principal, active session, anchored root, and normalized target. File copy accepts one regular source up to 1 MiB, requires an absent destination with an existing parent, publishes fixed mode `0600` without replacement, and never returns content or preserves source metadata. Metadata and search remain content-private under fixed response and traversal ceilings.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
@@ -42,6 +42,18 @@ Authorization: Bearer <configured-token>
 ```
 
 Missing, malformed, oversized, or incorrect credentials receive HTTP 401 before MCP resource consumption or discovery. `/health` and `/ready` remain unauthenticated coarse operational probes.
+
+## Directory mutation authorization
+
+`create_directory` preview remains available in the baseline tool registry, but mutation is disabled by default. Explicit `dry_run:false` is necessary and not sufficient. Production mutation requires:
+
+```dotenv
+MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
+MCP__CAPABILITY__KEY_ID=primary-1
+MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
+```
+
+It also requires static-token authentication and one locally issued, target-bound grant in the `MCP-Capability-Grant` request header. The exact server binary issues a grant with `--issue-create-directory-grant` after the caller supplies the active canonical session ID and absent target through `MCP__CAPABILITY__SESSION_ID` and `MCP__CAPABILITY__CREATE_DIRECTORY_TARGET`. Grants are never tool arguments, are consumed immediately before the first mutation attempt, cannot be replayed, and remain consumed after downstream failure. See [`docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md) for secure configuration, issuance, use, rotation, denial reasons, and validation order.
 
 ## MCP transport contract
 
@@ -100,7 +112,7 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 ## Filesystem safe roots
 
-The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live create/copy/list/metadata/read/search/write operations walk from opened safe-root descriptors with no-follow semantics for every descendant instead of authorizing one pathname and using it later. [`docs/SAFE_ROOT_DIRECTORY_CREATION.md`](docs/SAFE_ROOT_DIRECTORY_CREATION.md) defines directory creation; [`docs/SAFE_ROOT_FILE_COPY.md`](docs/SAFE_ROOT_FILE_COPY.md) defines bounded content-private file copy; [`docs/SAFE_ROOT_PATH_METADATA.md`](docs/SAFE_ROOT_PATH_METADATA.md) defines metadata; [`docs/SAFE_ROOT_TEXT_SEARCH.md`](docs/SAFE_ROOT_TEXT_SEARCH.md) defines literal-search limits.
+The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live create/copy/list/metadata/read/search/write operations walk from opened safe-root descriptors with no-follow semantics for every descendant instead of authorizing one pathname and using it later. [`docs/SAFE_ROOT_DIRECTORY_CREATION.md`](docs/SAFE_ROOT_DIRECTORY_CREATION.md) defines directory creation; [`docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md) defines its separate authorization layer; [`docs/SAFE_ROOT_FILE_COPY.md`](docs/SAFE_ROOT_FILE_COPY.md) defines bounded content-private file copy; [`docs/SAFE_ROOT_PATH_METADATA.md`](docs/SAFE_ROOT_PATH_METADATA.md) defines metadata; [`docs/SAFE_ROOT_TEXT_SEARCH.md`](docs/SAFE_ROOT_TEXT_SEARCH.md) defines literal-search limits.
 
 ## Optional Android battery telemetry
 
@@ -197,6 +209,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [MCP runtime validation plan](docs/MCP_RESTORATION_VALIDATION.md)
 - [MCP runtime roadmap](docs/MCP_RUNTIME_ROADMAP.md)
 - [Safe-rooted directory creation contract](docs/SAFE_ROOT_DIRECTORY_CREATION.md)
+- [`create_directory` request-capability grants](docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md)
 - [Safe-rooted file copy contract](docs/SAFE_ROOT_FILE_COPY.md)
 - [Safe-rooted path metadata contract](docs/SAFE_ROOT_PATH_METADATA.md)
 - [Safe-rooted text-search contract](docs/SAFE_ROOT_TEXT_SEARCH.md)
