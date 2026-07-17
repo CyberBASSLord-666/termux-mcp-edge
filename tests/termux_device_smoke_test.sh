@@ -65,6 +65,7 @@ for protocol_marker in \
   'create_directory_missing_grant_http' \
   'create_directory_replay_http' \
   '--issue-create-directory-grant' \
+  'MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env"' \
   'copy_dry_run_http' \
   'copy_existing=unchanged' \
   '"name":"shell"' \

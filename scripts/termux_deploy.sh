@@ -304,11 +304,14 @@ CONFIG_FILE="$CONFIG_ROOT/runtime.env"
 mode=\$(stat -c '%a' "\$CONFIG_FILE") || exit 111
 permissions=\$((0\$mode))
 [ \$((permissions & 077)) -eq 0 ] || exit 111
+seen_keys='|'
 while IFS= read -r line || [ -n "\$line" ]; do
   case "\$line" in ''|'#'*) continue ;; *=*) ;; *) exit 111 ;; esac
   key=\${line%%=*}; value=\${line#*=}
   case "\$key" in ''|[0-9]*|*[!A-Za-z0-9_]*) exit 111 ;; esac
   case "\$key" in MCP__*|RUST_LOG|RUST_BACKTRACE) ;; *) exit 111 ;; esac
+  case "\$seen_keys" in *"|\$key|"*) exit 111 ;; esac
+  seen_keys="\${seen_keys}\${key}|"
   export "\$key=\$value"
 done <"\$CONFIG_FILE"
 exec "$DEPLOY_ROOT/current/$PROGRAM"

@@ -526,6 +526,8 @@ async fn handle_mcp_request(
             })),
         )
             .into_response()
+    } else if method != Method::POST && headers.contains_key(CREATE_DIRECTORY_GRANT_HEADER) {
+        capability_context_not_allowed(None)
     } else {
         match method {
             Method::POST => handle_mcp_post(&state, &headers, body).await,
@@ -2552,6 +2554,16 @@ async fn handle_create_directory_call(
 
     let dry_run = args.dry_run.unwrap_or(true);
     let mode = filesystem_write_mode(dry_run);
+    if !dry_run && state.create_directory_authority.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_CREATE_MUTATION_DISABLED,
+        );
+        return capability_authorization_denied(id, FILESYSTEM_CREATE_MUTATION_DISABLED);
+    }
     let success_text = if dry_run {
         "Validated one safe-rooted directory creation without mutation."
     } else {
@@ -2593,16 +2605,10 @@ async fn handle_create_directory_call(
             Ok(prepared) => prepared,
             Err(error) => return create_directory_filesystem_error(id, audit_counters, mode, error),
         };
-        let Some(authority) = state.create_directory_authority.clone() else {
-            record_filesystem_denied(
-                audit_counters,
-                CREATE_DIRECTORY_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_CREATE_MUTATION_DISABLED,
-            );
-            return capability_authorization_denied(id, FILESYSTEM_CREATE_MUTATION_DISABLED);
-        };
+        let authority = state
+            .create_directory_authority
+            .clone()
+            .expect("enabled create_directory mutation owns an authority");
         let session_id = session_id.to_owned();
         let capability_grant = capability_grant.map(str::to_owned);
         match tokio::task::spawn_blocking(move || {

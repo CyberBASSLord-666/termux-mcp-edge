@@ -53,7 +53,7 @@ MCP__CAPABILITY__KEY_ID=primary-1
 MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
 ```
 
-It also requires static-token authentication and one locally issued, target-bound grant in the `MCP-Capability-Grant` request header. The exact server binary issues a grant with `--issue-create-directory-grant` after the caller supplies the active canonical session ID and absent target through `MCP__CAPABILITY__SESSION_ID` and `MCP__CAPABILITY__CREATE_DIRECTORY_TARGET`. Grants are never tool arguments, are consumed immediately before the first mutation attempt, cannot be replayed, and remain consumed after downstream failure. See [`docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md) for secure configuration, issuance, use, rotation, denial reasons, and validation order.
+It also requires static-token authentication and one locally issued, target-bound grant in the `MCP-Capability-Grant` request header. The exact server binary issues a grant with `--issue-create-directory-grant` after the caller supplies the active canonical session ID and absent target through `MCP__CAPABILITY__SESSION_ID` and `MCP__CAPABILITY__CREATE_DIRECTORY_TARGET`; `MCP__CAPABILITY__CONFIG_FILE` lets the offline issuer read the exact private deployed `runtime.env` through a bounded no-follow literal parser without shell evaluation. Grants are never tool arguments, are consumed immediately before the first mutation attempt, cannot be replayed, and remain consumed after downstream failure. See [`docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](docs/CREATE_DIRECTORY_CAPABILITY_GRANTS.md) for secure configuration, issuance, use, rotation, denial reasons, and validation order.
 
 ## MCP transport contract
 

@@ -21,6 +21,8 @@ Thumbs.db
 *.swo
 
 # Logs and generated artifacts
+__pycache__/
+*.py[cod]
 *.log
 logs/
 dist/

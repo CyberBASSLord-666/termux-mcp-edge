@@ -157,6 +157,7 @@ MCP_SESSION_ID=""
 CAPABILITY_KEY_ID="release-validator-1"
 CAPABILITY_KEY_HEX=""
 CAPABILITY_GRANT_FILE=""
+CAPABILITY_RUNTIME_CONFIG_FILE=""
 AUTH_HEADER_FILE=""
 REQUEST_FILE=""
 SESSION_HEADER_FILE=""
@@ -674,11 +675,13 @@ prepare_runtime_inputs() {
     REQUEST_FILE="$TEMP_ROOT/request.json"
     SESSION_HEADER_FILE="$TEMP_ROOT/session-headers.txt"
     CAPABILITY_GRANT_FILE="$TEMP_ROOT/create-directory-grant.txt"
+    CAPABILITY_RUNTIME_CONFIG_FILE="$TEMP_ROOT/capability-runtime.env"
     printf 'Authorization: Bearer %s\n' "$MCP_TOKEN" >"$AUTH_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
-    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
+    : >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
+    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
   fi
   [[ "$SAFE_ROOT" == /* && -d "$SAFE_ROOT" && ! -L "$SAFE_ROOT" ]] || fail safe_root_invalid
   SAFE_ROOT="${SAFE_ROOT%/}"
@@ -690,17 +693,26 @@ prepare_runtime_inputs() {
   fi
   if [[ -n "$VALIDATION_SAFE_ROOT" ]]; then
     [[ -d "$VALIDATION_SAFE_ROOT" && ! -L "$VALIDATION_SAFE_ROOT" ]] || fail validation_safe_root_invalid
-    return 0
+  else
+    VALIDATION_SAFE_ROOT="$SAFE_ROOT/.termux-mcp-release-validation-$RUN_ID"
+    [[ ! -e "$VALIDATION_SAFE_ROOT" && ! -L "$VALIDATION_SAFE_ROOT" ]] || fail validation_safe_root_exists
+    mkdir -m 700 -- "$VALIDATION_SAFE_ROOT" 2>/dev/null || fail validation_safe_root_create_failed
+    printf '%s' validation-visible >"$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
+    chmod 600 "$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
+    local index
+    for index in $(seq 1 64); do
+      printf 'entry-%03d' "$index" >"$VALIDATION_SAFE_ROOT/entry-$(printf '%03d' "$index").txt" 2>/dev/null || fail validation_safe_root_write_failed
+    done
   fi
-  VALIDATION_SAFE_ROOT="$SAFE_ROOT/.termux-mcp-release-validation-$RUN_ID"
-  [[ ! -e "$VALIDATION_SAFE_ROOT" && ! -L "$VALIDATION_SAFE_ROOT" ]] || fail validation_safe_root_exists
-  mkdir -m 700 -- "$VALIDATION_SAFE_ROOT" 2>/dev/null || fail validation_safe_root_create_failed
-  printf '%s' validation-visible >"$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
-  chmod 600 "$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
-  local index
-  for index in $(seq 1 64); do
-    printf 'entry-%03d' "$index" >"$VALIDATION_SAFE_ROOT/entry-$(printf '%03d' "$index").txt" 2>/dev/null || fail validation_safe_root_write_failed
-  done
+  printf '%s\n' \
+    "MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN" \
+    'MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false' \
+    "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT" \
+    'MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true' \
+    "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID" \
+    "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
+    >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail capability_runtime_config_failed
+  chmod 600 "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail capability_runtime_config_failed
 }
 
 curl_local() {
@@ -743,12 +755,7 @@ issue_create_directory_grant() {
   local target="$1"
   : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail capability_grant_staging_failed
   chmod 600 "$CAPABILITY_GRANT_FILE" 2>/dev/null || fail capability_grant_staging_failed
-  if ! MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
-    MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
-    MCP__FILE__SAFE_ROOTS="$VALIDATION_SAFE_ROOT" \
-    MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true \
-    MCP__CAPABILITY__KEY_ID="$CAPABILITY_KEY_ID" \
-    MCP__CAPABILITY__HMAC_KEY_HEX="$CAPABILITY_KEY_HEX" \
+  if ! MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_RUNTIME_CONFIG_FILE" \
     MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
     MCP__CAPABILITY__CREATE_DIRECTORY_TARGET="$target" \
       "$MCP_PINNED_ARTIFACT" --issue-create-directory-grant >"$CAPABILITY_GRANT_FILE" 2>/dev/null

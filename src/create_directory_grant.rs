@@ -40,7 +40,7 @@ const PAYLOAD_HEX_BYTES: usize = PAYLOAD_BYTES * 2;
 const MAC_BYTES: usize = 32;
 const MAC_HEX_BYTES: usize = MAC_BYTES * 2;
 const TARGET_DIGEST_DOMAIN: &[u8] = b"termux-mcp:create-directory-target:v1\0";
-const PRINCIPAL_DIGEST_DOMAIN: &[u8] = b"termux-mcp:static-principal:v1\0";
+const PRINCIPAL_BINDING_DOMAIN: &[u8] = b"termux-mcp:static-principal:v1\0";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct CreateDirectoryGrantTarget {
@@ -203,14 +203,20 @@ impl CreateDirectoryGrantAuthority {
         }
         let key = decode_hex_array::<CREATE_DIRECTORY_GRANT_KEY_BYTES>(key_hex)
             .ok_or(CreateDirectoryGrantError::ConfigurationInvalid)?;
-        let mut principal = Sha256::new();
-        principal.update(PRINCIPAL_DIGEST_DOMAIN);
+        // Keep the bearer principal non-enumerable even if an issued grant is
+        // disclosed. A plain digest would let a holder test weak bearer-token
+        // guesses offline; deriving the binding under the independent
+        // capability key preserves exact matching without exposing a verifier.
+        let mut principal =
+            HmacSha256::new_from_slice(&key).expect("fixed-size HMAC key is always valid");
+        principal.update(PRINCIPAL_BINDING_DOMAIN);
         principal.update(static_principal_secret.as_bytes());
+        let principal_digest = principal.finalize().into_bytes().into();
 
         Ok(Self {
             key_id: Arc::from(key_id),
             key: Arc::new(key),
-            principal_digest: principal.finalize().into(),
+            principal_digest,
             replay: Arc::new(Mutex::new(ReplayState::default())),
             replay_capacity,
         })
@@ -551,6 +557,21 @@ mod tests {
                 .unwrap_err(),
             CreateDirectoryGrantError::Replayed
         );
+    }
+
+    #[test]
+    fn principal_binding_is_keyed_and_does_not_expose_a_bearer_token_verifier() {
+        let authority = authority();
+        let mut unkeyed = Sha256::new();
+        unkeyed.update(PRINCIPAL_BINDING_DOMAIN);
+        unkeyed.update(PRINCIPAL.as_bytes());
+        let unkeyed: [u8; DIGEST_BYTES] = unkeyed.finalize().into();
+        assert_ne!(authority.principal_digest, unkeyed);
+
+        let other_key = "11".repeat(CREATE_DIRECTORY_GRANT_KEY_BYTES);
+        let other = CreateDirectoryGrantAuthority::from_hex_key("primary-1", &other_key, PRINCIPAL)
+            .unwrap();
+        assert_ne!(authority.principal_digest, other.principal_digest);
     }
 
     #[test]

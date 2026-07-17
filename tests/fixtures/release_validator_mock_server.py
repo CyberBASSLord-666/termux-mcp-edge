@@ -8,6 +8,8 @@ import hashlib
 import hmac
 import os
 import pathlib
+import re
+import stat
 import struct
 import sys
 import time
@@ -15,18 +17,86 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
+def load_literal_runtime_config() -> tuple[bool, dict[str, str]]:
+    raw_path = os.environ.get("MCP__CAPABILITY__CONFIG_FILE")
+    if raw_path is None:
+        return False, {}
+    path = pathlib.Path(raw_path)
+    if not path.is_absolute():
+        raise SystemExit(2)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o077
+                or not metadata.st_mode & 0o400
+                or metadata.st_size > 65_536
+            ):
+                raise SystemExit(2)
+            chunks: list[bytes] = []
+            total = 0
+            while total < 65_537:
+                chunk = os.read(descriptor, 65_537 - total)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            content = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        raise SystemExit(2) from error
+    if len(content) > 65_536 or b"\r" in content or b"\0" in content:
+        raise SystemExit(2)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SystemExit(2) from error
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise SystemExit(2)
+        name, value = line.split("=", 1)
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None
+            or not (name.startswith("MCP__") or name in {"RUST_LOG", "RUST_BACKTRACE"})
+            or name in values
+        ):
+            raise SystemExit(2)
+        values[name] = value
+    return True, values
+
+
+CONFIG_FILE_ACTIVE, RUNTIME_CONFIG = load_literal_runtime_config()
+
+
+def runtime_value(name: str, default: str | None = None) -> str | None:
+    if CONFIG_FILE_ACTIVE:
+        return RUNTIME_CONFIG.get(name, default)
+    return os.environ.get(name, default)
+
+
 POSTURE = sys.argv[1]
 VERSION = sys.argv[2] if len(sys.argv) > 2 else ""
-PORT = int(os.environ.get("MCP__SERVER__PORT", "0"))
-TOKEN = os.environ["MCP__AUTH__STATIC_TOKEN"]
-SAFE_ROOT = pathlib.Path(os.environ["MCP__FILE__SAFE_ROOTS"]).resolve()
-MAX_BODY = int(os.environ.get("MCP__TRANSPORT__MAX_BODY_BYTES", "1024"))
+PORT = int(runtime_value("MCP__SERVER__PORT", "0") or "0")
+TOKEN = runtime_value("MCP__AUTH__STATIC_TOKEN")
+SAFE_ROOT_VALUE = runtime_value("MCP__FILE__SAFE_ROOTS")
+if TOKEN is None or SAFE_ROOT_VALUE is None:
+    raise SystemExit(2)
+SAFE_ROOT = pathlib.Path(SAFE_ROOT_VALUE).resolve()
+MAX_BODY = int(runtime_value("MCP__TRANSPORT__MAX_BODY_BYTES", "1024") or "1024")
 SESSION_ID = "fixture-session-00000000"
 CAPABILITY_ENABLED = (
-    os.environ.get("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED", "false") == "true"
+    runtime_value("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED", "false") == "true"
 )
-CAPABILITY_KEY_ID = os.environ.get("MCP__CAPABILITY__KEY_ID", "")
-CAPABILITY_KEY_HEX = os.environ.get("MCP__CAPABILITY__HMAC_KEY_HEX", "")
+CAPABILITY_KEY_ID = runtime_value("MCP__CAPABILITY__KEY_ID", "") or ""
+CAPABILITY_KEY_HEX = runtime_value("MCP__CAPABILITY__HMAC_KEY_HEX", "") or ""
 CAPABILITY_HEADER = "MCP-Capability-Grant"
 CONSUMED_GRANTS: set[bytes] = set()
 TOOLS = [
@@ -97,9 +167,15 @@ def safe_path(raw: str) -> pathlib.Path | None:
 def grant_binding(session_id: str, target: pathlib.Path) -> bytes:
     relative = target.relative_to(SAFE_ROOT)
     root_stat = SAFE_ROOT.stat()
+    key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    principal = hmac.new(
+        key,
+        b"termux-mcp:static-principal:v1\0" + TOKEN.encode(),
+        hashlib.sha256,
+    ).digest()
     digest = hashlib.sha256()
     digest.update(b"termux-mcp-release-fixture:create-directory:v1\0")
-    for value in (TOKEN.encode(), session_id.encode()):
+    for value in (principal, session_id.encode()):
         digest.update(struct.pack(">I", len(value)))
         digest.update(value)
     digest.update(struct.pack(">QQ", root_stat.st_dev, root_stat.st_ino))

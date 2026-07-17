@@ -147,6 +147,7 @@ GRANT_FILE="$(mktemp)"
 chmod 600 "$GRANT_FILE"
 MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
 MCP__CAPABILITY__CREATE_DIRECTORY_TARGET="$ABSENT_SAFE_ROOT_TARGET" \
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
   /absolute/path/to/termux-mcp-server \
   --issue-create-directory-grant >"$GRANT_FILE"
 ```

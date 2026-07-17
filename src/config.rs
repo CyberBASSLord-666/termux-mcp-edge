@@ -2,7 +2,13 @@
 
 use std::{env, fmt, net::IpAddr, path::PathBuf};
 
+#[cfg(feature = "mcp-runtime")]
+use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+
 use anyhow::{anyhow, bail};
+
+#[cfg(feature = "mcp-runtime")]
+use rustix::fs::{fstat, open, FileType, Mode, OFlags};
 
 use crate::request_limits::{
     DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -131,6 +137,78 @@ pub struct TransportConfig {
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
         Self::load_with(|name| env::var(name))
+    }
+
+    /// Load the deployed literal `NAME=value` runtime file for an offline
+    /// capability-issuance process. The file is opened without following its
+    /// final component, bounded before parsing, and never evaluated as shell.
+    #[cfg(feature = "mcp-runtime")]
+    pub fn load_from_literal_file(path: &Path) -> anyhow::Result<Self> {
+        const MAX_RUNTIME_CONFIG_BYTES: usize = 65_536;
+
+        if !path.is_absolute() {
+            bail!("offline issuer runtime configuration path must be absolute");
+        }
+        let descriptor = open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| anyhow!("offline issuer runtime configuration could not be opened"))?;
+        let metadata = fstat(&descriptor)
+            .map_err(|_| anyhow!("offline issuer runtime configuration could not be inspected"))?;
+        if !FileType::from_raw_mode(metadata.st_mode).is_file() {
+            bail!("offline issuer runtime configuration must be a regular non-symlink file");
+        }
+        if metadata.st_mode & 0o077 != 0 || metadata.st_mode & 0o400 == 0 {
+            bail!(
+                "offline issuer runtime configuration must be owner-readable and inaccessible to group/other"
+            );
+        }
+        let configured_bytes = usize::try_from(metadata.st_size)
+            .map_err(|_| anyhow!("offline issuer runtime configuration size is invalid"))?;
+        if configured_bytes > MAX_RUNTIME_CONFIG_BYTES {
+            bail!("offline issuer runtime configuration exceeds its byte limit");
+        }
+
+        let mut contents = String::new();
+        File::from(descriptor)
+            .take((MAX_RUNTIME_CONFIG_BYTES + 1) as u64)
+            .read_to_string(&mut contents)
+            .map_err(|_| anyhow!("offline issuer runtime configuration is not valid UTF-8"))?;
+        if contents.len() > MAX_RUNTIME_CONFIG_BYTES {
+            bail!("offline issuer runtime configuration exceeds its byte limit");
+        }
+        if contents.contains('\r') || contents.contains('\0') {
+            bail!("offline issuer runtime configuration contains an invalid byte");
+        }
+
+        let mut values = BTreeMap::new();
+        for line in contents.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name, value) = line.split_once('=').ok_or_else(|| {
+                anyhow!("offline issuer runtime configuration must use NAME=value records")
+            })?;
+            if name.is_empty()
+                || !name.bytes().enumerate().all(|(index, byte)| match byte {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+                    b'0'..=b'9' => index > 0,
+                    _ => false,
+                })
+            {
+                bail!("offline issuer runtime configuration contains an invalid variable name");
+            }
+            if !(name.starts_with("MCP__") || matches!(name, "RUST_LOG" | "RUST_BACKTRACE")) {
+                bail!("offline issuer runtime configuration variable is not allowlisted");
+            }
+            if values.insert(name.to_owned(), value.to_owned()).is_some() {
+                bail!("offline issuer runtime configuration contains a duplicate variable");
+            }
+        }
+
+        Self::load_with(|name| values.get(name).cloned().ok_or(env::VarError::NotPresent))
     }
 
     fn load_with(
@@ -624,6 +702,60 @@ mod tests {
         assert!(debug.contains("primary-1"));
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains(&"a".repeat(64)));
+    }
+
+    #[cfg(all(feature = "mcp-runtime", unix))]
+    #[test]
+    fn offline_issuer_literal_config_is_private_bounded_and_never_evaluated() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = tempfile::tempdir().unwrap();
+        let safe_root = root.path().join("safe-root");
+        std::fs::create_dir(&safe_root).unwrap();
+        let config_path = root.path().join("runtime.env");
+        let valid = format!(
+            "MCP__AUTH__STATIC_TOKEN=private-issuer-principal\n\
+             MCP__FILE__SAFE_ROOTS={}\n\
+             MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true\n\
+             MCP__CAPABILITY__KEY_ID=offline-1\n\
+             MCP__CAPABILITY__HMAC_KEY_HEX={}\n\
+             RUST_LOG=termux_mcp_server=info\n",
+            safe_root.display(),
+            "a".repeat(64),
+        );
+        std::fs::write(&config_path, &valid).unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let config = AppConfig::load_from_literal_file(&config_path).unwrap();
+        assert_eq!(
+            config.auth.static_token.as_deref(),
+            Some("private-issuer-principal")
+        );
+        assert_eq!(config.capability.key_id.as_deref(), Some("offline-1"));
+        assert!(config.file.create_directory_mutation_enabled);
+        assert_eq!(config.file.safe_roots, vec![safe_root]);
+
+        std::fs::write(
+            &config_path,
+            format!("{valid}MCP__CAPABILITY__KEY_ID=duplicate\n"),
+        )
+        .unwrap();
+        assert!(AppConfig::load_from_literal_file(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate variable"));
+
+        std::fs::write(&config_path, &valid).unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(AppConfig::load_from_literal_file(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("inaccessible to group/other"));
+
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link_path = root.path().join("runtime-link.env");
+        symlink(&config_path, &link_path).unwrap();
+        assert!(AppConfig::load_from_literal_file(&link_path).is_err());
     }
 
     #[test]

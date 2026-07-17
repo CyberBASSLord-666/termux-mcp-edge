@@ -38,6 +38,8 @@ const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux
 const CAPABILITY_SESSION_ENV: &str = "MCP__CAPABILITY__SESSION_ID";
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DIRECTORY_TARGET";
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_CONFIG_FILE_ENV: &str = "MCP__CAPABILITY__CONFIG_FILE";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -270,7 +272,7 @@ fn configured_create_directory_authority(
 
 #[cfg(feature = "mcp-runtime")]
 fn issue_create_directory_grant() -> anyhow::Result<()> {
-    let config = AppConfig::load()?;
+    let config = load_offline_issuer_config()?;
     if !config.file.create_directory_mutation_enabled {
         anyhow::bail!("create_directory mutation gate is disabled");
     }
@@ -293,6 +295,17 @@ fn issue_create_directory_grant() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("create_directory grant issuance failed"))?;
     println!("{grant}");
     Ok(())
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn load_offline_issuer_config() -> anyhow::Result<AppConfig> {
+    let Some(config_file) = std::env::var_os(CAPABILITY_CONFIG_FILE_ENV) else {
+        return AppConfig::load();
+    };
+    if config_file.is_empty() {
+        anyhow::bail!("{CAPABILITY_CONFIG_FILE_ENV} must not be empty");
+    }
+    AppConfig::load_from_literal_file(&PathBuf::from(config_file))
 }
 
 #[cfg(feature = "mcp-runtime")]

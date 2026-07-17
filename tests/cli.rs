@@ -140,6 +140,50 @@ fn exact_cli_issuer_outputs_one_private_target_bound_grant() {
     );
 }
 
+#[cfg(all(feature = "mcp-runtime", unix))]
+#[test]
+fn cli_issuer_loads_the_private_deployed_literal_config_without_shell_evaluation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("literal-config-target");
+    let config_file = root.path().join("runtime.env");
+    std::fs::write(
+        &config_file,
+        format!(
+            "MCP__AUTH__STATIC_TOKEN=literal-private-principal\n\
+             MCP__FILE__SAFE_ROOTS={}\n\
+             MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true\n\
+             MCP__CAPABILITY__KEY_ID=literal-1\n\
+             MCP__CAPABILITY__HMAC_KEY_HEX={}\n",
+            root.path().display(),
+            "0123456789abcdef".repeat(4),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let output = isolated_binary()
+        .arg("--issue-create-directory-grant")
+        .env("MCP__CAPABILITY__CONFIG_FILE", &config_file)
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", &target)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let grant = String::from_utf8(output.stdout).unwrap();
+    assert!(grant.starts_with("v1.literal-1."));
+    assert_eq!(grant.lines().count(), 1);
+    assert!(!grant.contains("literal-private-principal"));
+    assert!(!grant.contains("literal-config-target"));
+    assert!(!target.exists());
+}
+
 #[cfg(feature = "mcp-runtime")]
 #[test]
 fn cli_issuer_fails_closed_without_gate_or_for_invalid_target_without_reflection() {

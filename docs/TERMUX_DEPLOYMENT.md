@@ -96,6 +96,8 @@ chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 
 Replace the existing `false` line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and an enabled directory-mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, exact-target `MCP-Capability-Grant`; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md). Never print, commit, or attach either the HMAC key or issued grants.
 
+For issuance, set `MCP__CAPABILITY__CONFIG_FILE` to this private `runtime.env`. The exact binary opens it without following the final component, enforces the same private mode and a 64 KiB ceiling, rejects duplicate or non-allowlisted records, and parses literal values without shell evaluation.
+
 ## Validate the candidate
 
 ```bash

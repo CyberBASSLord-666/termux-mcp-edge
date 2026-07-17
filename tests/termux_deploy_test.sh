@@ -80,6 +80,9 @@ PWNED="$ROOT/config-was-executed"
 printf 'RUST_BACKTRACE=$(touch %s)\n' "$PWNED" >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 "$SERVICE_DIR/run"
 [[ ! -e "$PWNED" ]]
+printf '%s\n' 'MCP__AUTH__STATIC_TOKEN=duplicate-runtime-token' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+assert_fails "$SERVICE_DIR/run"
+sed -i '$d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 
 assert_fails bash "$SCRIPT" install --artifact "$ARTIFACT_100" --version 1.0.0 --sha256 "$SHA_100"
 TERMUX_MCP_START_ATTEMPTS=0 assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_110" --version 1.1.0 --sha256 "$SHA_110"

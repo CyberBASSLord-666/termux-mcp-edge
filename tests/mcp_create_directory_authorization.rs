@@ -4,14 +4,21 @@ mod support;
 
 use std::{sync::Arc, time::SystemTime};
 
-use axum::{body::to_bytes, http::StatusCode};
+use axum::{
+    body::{to_bytes, Body},
+    http::{header, Method, Request, StatusCode},
+};
 use serde_json::{json, Value};
 use support::{
     create_directory_authorized_test_router, empty_test_file_tools, initialize_session,
     issue_create_directory_grant, post_json_to_session, post_json_to_session_with_grant,
     test_router, TEST_CAPABILITY_KEY,
 };
-use termux_mcp_server::create_directory_grant::CreateDirectoryGrantAuthority;
+use termux_mcp_server::{
+    create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
+    mcp_transport::{MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER},
+};
+use tower::ServiceExt;
 
 fn create_call(id: impl Into<Value>, path: &str, dry_run: bool) -> Value {
     json!({
@@ -91,6 +98,25 @@ async fn disabled_gate_is_discoverable_only_as_dry_run_and_denies_mutation() {
         "create_directory_mutation_disabled"
     );
     assert!(!target.exists());
+
+    let outside_root = tempfile::tempdir().unwrap();
+    let outside = outside_root.path().join("disabled-outside");
+    let outside_denied = post_json_to_session(
+        router.clone(),
+        &session_id,
+        create_call(
+            "disabled-outside",
+            outside.to_string_lossy().as_ref(),
+            false,
+        ),
+    )
+    .await;
+    assert_eq!(outside_denied.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(outside_denied).await["error"]["data"]["reason"],
+        "create_directory_mutation_disabled"
+    );
+    assert!(!outside.exists());
 
     let status = post_json_to_session(
         router,
@@ -206,9 +232,6 @@ async fn malformed_expired_future_and_mismatched_grants_are_private_and_unconsum
     let target_three = issuer_tools
         .create_directory_grant_target(targets[3].to_string_lossy().as_ref())
         .unwrap();
-    let target_four = issuer_tools
-        .create_directory_grant_target(targets[4].to_string_lossy().as_ref())
-        .unwrap();
     let target_five = issuer_tools
         .create_directory_grant_target(targets[5].to_string_lossy().as_ref())
         .unwrap();
@@ -274,8 +297,6 @@ async fn malformed_expired_future_and_mismatched_grants_are_private_and_unconsum
             "capability_grant_version_unknown",
         ),
     ];
-    let _ = target_four;
-
     let mut reflected = String::new();
     for (index, (grant, expected_reason)) in cases.into_iter().enumerate() {
         let response = match grant.as_deref() {
@@ -473,6 +494,37 @@ async fn capability_header_is_rejected_outside_exact_tool_context_without_consum
     let argument_smuggling = response_json(argument_smuggling).await;
     assert_eq!(argument_smuggling["error"]["code"], -32602);
     assert!(!argument_smuggling.to_string().contains(&grant));
+
+    for method in [Method::GET, Method::DELETE] {
+        let request = Request::builder()
+            .method(method)
+            .uri("/mcp")
+            .header(header::HOST, "localhost:8000")
+            .header(header::ORIGIN, "http://localhost:8000")
+            .header(header::ACCEPT, "text/event-stream")
+            .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
+            .header(MCP_SESSION_ID_HEADER, &session_id)
+            .header(CREATE_DIRECTORY_GRANT_HEADER, &grant)
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["error"]["code"], -32600);
+    }
+
+    let preview = post_json_to_session_with_grant(
+        router.clone(),
+        &session_id,
+        create_call("preview", target.to_string_lossy().as_ref(), true),
+        &grant,
+    )
+    .await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(preview).await["result"]["structuredContent"]["dryRun"],
+        true
+    );
+    assert!(!target.exists());
 
     let allowed = post_json_to_session_with_grant(
         router,

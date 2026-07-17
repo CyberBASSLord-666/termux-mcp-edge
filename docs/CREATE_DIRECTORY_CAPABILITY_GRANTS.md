@@ -38,11 +38,14 @@ chmod 600 "$GRANT_FILE"
 
 MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
 MCP__CAPABILITY__CREATE_DIRECTORY_TARGET="$ABSOLUTE_ABSENT_TARGET" \
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
   "$HOME/.local/share/termux-mcp-edge/current/termux-mcp-server" \
   --issue-create-directory-grant >"$GRANT_FILE"
 ```
 
-The issuer loads the same static principal, safe roots, mutation gate, key identifier, and HMAC key as the service. It anchors the configured roots, resolves the exact existing parent without following links, rejects an existing or out-of-root target, and writes exactly one grant line to standard output. Errors are generic and do not echo the target, session, key, or bearer token.
+The optional `MCP__CAPABILITY__CONFIG_FILE` points the issuer at the exact deployed literal configuration. The loader requires an absolute, regular, final-component-no-follow, owner-readable file that is inaccessible to group/other and at most 64 KiB; it accepts unique allowlisted `NAME=value` records without sourcing or evaluating shell text. When the variable is omitted, the issuer reads configuration from its process environment for isolated validator and development workflows.
+
+The issuer therefore loads the same static principal, safe roots, mutation gate, key identifier, and HMAC key as the service. It anchors the configured roots, resolves the exact existing parent without following links, rejects an existing or out-of-root target, and writes exactly one grant line to standard output. Errors are generic and do not echo the target, session, key, or bearer token.
 
 Submit the mutating request once:
 
@@ -69,7 +72,7 @@ Do not paste grants into tickets, terminal transcripts, command history, process
 The fixed-shape `v1.<kid>.<payload>.<mac>` grant uses HMAC-SHA-256. The authenticated payload binds all of:
 
 - a random 128-bit JTI;
-- the SHA-256 fingerprint of the configured static bearer principal;
+- an HMAC-SHA-256 principal binding keyed by the independent capability secret, so a disclosed grant is not an offline bearer-token verifier;
 - the canonical MCP session UUID;
 - the `filesystem.create-directory` capability identifier;
 - the selected safe root's device and inode identity;
