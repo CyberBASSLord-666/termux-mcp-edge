@@ -164,6 +164,43 @@ async fn copy_file_is_dry_run_first_and_explicit_binary_copy_is_exact() {
 }
 
 #[tokio::test]
+async fn copy_file_transport_accepts_the_exact_one_mib_limit() {
+    let (root, file_tools) = empty_test_file_tools();
+    let source = root.path().join("exact-limit.bin");
+    let destination = root.path().join("exact-limit-copy.bin");
+    std::fs::write(&source, vec![0x5a; MAX_COPY_FILE_BYTES]).unwrap();
+    let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+
+    let response = post_json_to_session(
+        router,
+        &session_id,
+        copy_call(
+            json!("exact-limit"),
+            source.to_string_lossy().as_ref(),
+            destination.to_string_lossy().as_ref(),
+            Some(false),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), MAX_COPY_FILE_RESPONSE_BYTES + 1)
+        .await
+        .unwrap();
+    assert!(body.len() <= MAX_COPY_FILE_RESPONSE_BYTES);
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        payload["result"]["structuredContent"]["sizeBytes"],
+        MAX_COPY_FILE_BYTES
+    );
+    assert_eq!(std::fs::metadata(&destination).unwrap().len(), 1_048_576);
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        vec![0x5a; MAX_COPY_FILE_BYTES]
+    );
+}
+
+#[tokio::test]
 async fn copy_file_rejects_invalid_existing_missing_and_unsupported_requests() {
     let (root, file_tools) = empty_test_file_tools();
     let source = root.path().join("private-source.txt");

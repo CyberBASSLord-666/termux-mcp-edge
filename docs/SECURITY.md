@@ -21,6 +21,7 @@ The optional runtime is not a broad host-control surface. After authentication, 
 - `android_status`
 - `project_service_status`
 - `create_directory`
+- `copy_file`
 - `list_directory`
 - `path_metadata`
 - `read_file`
@@ -72,6 +73,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `run_command_profile` | Disabled | Available only in the `command-execution` build with explicit runtime opt-in; three fixed read-only server diagnostics |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
 | `create_directory` | Disabled | One safe-rooted directory, fixed mode `0700`, atomic no-replace, dry-run by default |
+| `copy_file` | Disabled | One regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run by default |
 | `list_directory` | Disabled | Bounded and safe-rooted |
 | `path_metadata` | Disabled | Bounded, content-free, descriptor-relative metadata |
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
@@ -114,7 +116,7 @@ The body ceiling is implemented with Axum's streaming extractor limit rather tha
 
 Filesystem requests must lexically identify a descendant of a configured safe root. The implementation rejects relative paths, NUL bytes, explicit parent traversal, missing parents, and every symlink component used by a live operation.
 
-Each live list, read, search, and write opens the selected safe root and resolves descendants one component at a time with descriptor-relative `openat` plus `O_NOFOLLOW`; directory enumeration and metadata lookup remain relative to the held directory descriptor. Search additionally rechecks the opened object is a regular file before reading. A concurrent directory/symlink exchange can therefore produce a bounded failure or continue against the already-open safe directory capability, but cannot redirect the operation through the replacement symlink. Deterministic adversarial tests cover swaps both before and after the parent descriptor is opened.
+Each live create, copy, list, metadata, read, search, and write opens the selected safe root and resolves descendants one component at a time with descriptor-relative `openat` plus `O_NOFOLLOW`; directory enumeration, source reads, staging, publication, cleanup, and metadata lookup remain relative to held descriptors. Copy additionally verifies source identity and size around its bounded read and verifies both held and published destination identities. A concurrent directory/symlink exchange can therefore produce a bounded failure or continue against an already-open safe directory or file capability, but cannot redirect the operation through the replacement symlink. Deterministic adversarial tests cover swaps before and after descriptors are opened.
 
 The default safe root is deliberately narrow:
 
@@ -124,7 +126,7 @@ The default safe root is deliberately narrow:
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
-`create_directory`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview, requires explicit `dry_run:false`, creates one absent child with fixed mode `0700`, stages under an unpredictable name, publishes with atomic no-replace semantics, and caps the complete response at 16 KiB. Directory listings are deterministic, capped at 4,096 entries and a 256 KiB full response, and explicitly report truncation. Metadata classifies one opened regular file or directory, returns no content or host identifiers, and caps the full response at 16 KiB. Reads accept at most 1 MiB of valid UTF-8 while the full response is capped at 1,114,112 bytes; file content is emitted once rather than duplicated into the summary. Search uses fixed traversal/file/byte/match ceilings, returns only locations, and caps the full response at 256 KiB. `write_file` defaults to preview behavior; mutation requires explicit `dry_run:false` and still passes safe-root and payload validation. Explicit writes create an exclusive mode-0600 temporary file in the opened destination directory, sync its contents, rename relative to that same descriptor, and sync the parent directory. Mutation cleanup remains descriptor-relative and identity-checked where directory publication has occurred; successful parent sync defines the crash-durability boundary.
+`create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview, requires explicit `dry_run:false`, creates one absent child with fixed mode `0700`, stages under an unpredictable name, publishes with atomic no-replace semantics, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent destination with an existing safe-rooted parent, defaults to preview, fixes explicit destinations to mode `0600`, stages unpredictably, publishes atomically without replacement, returns no content, and caps the complete response at 16 KiB before mutation. Directory listings are deterministic and response bounded. Metadata is content-free; reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked for directory and copy publication; successful parent sync defines their crash-durability boundary. The complete copy boundary and in-place same-size source-writer caveat are documented in [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
 

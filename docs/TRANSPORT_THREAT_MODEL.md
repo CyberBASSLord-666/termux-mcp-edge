@@ -14,7 +14,7 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - strict single-message JSON-RPC request, notification, and response classification;
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
-- the ten-tool baseline allowlist, plus only those read-only battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled, as documented in README and the authorization policy;
+- the eleven-tool baseline allowlist, plus only those read-only battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.
@@ -93,7 +93,7 @@ Current controls:
 - bounded directory-creation responses, file reads, write payloads, directory depth, and entry count;
 - a separate two-permit non-queueing semaphore plus fixed deadlines and stream ceilings for command diagnostics.
 
-Deterministic filesystem response-byte budgets and single-content serialization landed through #206. One-directory creation has a 16 KiB full-response ceiling, no caller-selected resource controls, and a fixed-size result. Single-object metadata has a 16 KiB full-response ceiling and never reads content or returns inode/device/UID/GID/mode/access-time values. Literal search adds fixed query, entry, file, per-file, aggregate-byte, match, and response ceilings; returns no content; and performs no regex or subprocess evaluation. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
+Deterministic filesystem response-byte budgets and single-content serialization landed through #206. One-directory creation has a 16 KiB full-response ceiling. One-file copy has a 1 MiB source ceiling, a pre-mutation 16 KiB full-response ceiling, a fixed-size content-free result, and no subprocess or caller-selected resource controls. Single-object metadata has a 16 KiB full-response ceiling and never reads content or returns host identifiers. Literal search adds fixed query, traversal, byte, match, and response ceilings and returns no content. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
 
 ### Filesystem escape and mutation
 
@@ -109,7 +109,7 @@ Current controls:
 - one-directory creation with existing parents, fixed mode `0700`, unpredictable staging, atomic no-replace publication, descriptor sync, and identity-checked cleanup;
 - payload-bounded descriptor-relative mode-0600 temporary files, file sync, atomic rename, and parent-directory sync.
 
-The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, and #203. Any future filesystem expansion must preserve these descriptor, response, and deployment boundaries.
+The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, #247, and #203. Any future filesystem expansion must preserve these descriptor, response, and deployment boundaries.
 
 ### Schema confusion and response reflection
 

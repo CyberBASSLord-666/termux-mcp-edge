@@ -448,8 +448,8 @@ struct RunCommandProfileArguments {
 /// deterministic runtime metadata, non-sensitive platform metadata,
 /// read-only Android/Termux status metadata, read-only project-owned service
 /// status metadata, safe-rooted directory listing and object metadata, bounded
-/// safe-rooted UTF-8 reads, default-dry-run safe-rooted directory/file writes, and optionally
-/// compiled and enabled fixed-profile command diagnostics. Android platform control,
+/// safe-rooted UTF-8 reads, default-dry-run directory creation, bounded binary file copy and
+/// file writes, and optionally compiled and enabled fixed-profile command diagnostics. Android platform control,
 /// arbitrary command execution, and high-impact actions remain unavailable.
 #[rustfmt::skip]
 pub fn router(

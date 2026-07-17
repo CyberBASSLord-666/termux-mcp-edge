@@ -71,18 +71,19 @@ The harness records and verifies:
 10. health and readiness;
 11. unauthenticated MCP rejection;
 12. stable `2025-11-25` initialization, notification, and session deletion;
-13. the exact ten-tool discovery allowlist, including dry-run-first `create_directory` and bounded `path_metadata` and `search_text`;
+13. the exact eleven-tool discovery allowlist, including dry-run-first `create_directory`, bounded content-private `copy_file`, and bounded `path_metadata` and `search_text`;
 14. disabled command, Android-control, and high-impact gates;
 15. default-dry-run and explicit mode-`0700` directory creation, safe-rooted listing, content-free path metadata, and UTF-8 read;
-16. default dry-run file write and explicit mutation with final mode `0600`;
-17. out-of-root read denial without content reflection;
-18. unavailable shell/high-impact invocation;
-19. authenticated request-body limiting and unauthenticated-before-limit ordering;
-20. rollback dry-run immutability;
-21. injected rollback-readiness failure with original-candidate restoration;
-22. successful rollback;
-23. uninstall with configuration-preservation behavior;
-24. isolated-state cleanup.
+16. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
+17. default dry-run file write and explicit mutation with final mode `0600`;
+18. out-of-root read denial without content reflection;
+19. unavailable shell/high-impact invocation;
+20. authenticated request-body limiting and unauthenticated-before-limit ordering;
+21. rollback dry-run immutability;
+22. injected rollback-readiness failure with original-candidate restoration;
+23. successful rollback;
+24. uninstall with configuration-preservation behavior;
+25. isolated-state cleanup.
 
 The final report must contain all of:
 

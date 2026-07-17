@@ -11,6 +11,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `android_status`
 - `project_service_status`
 - `create_directory`
+- `copy_file`
 - `list_directory`
 - `path_metadata`
 - `read_file`
@@ -21,7 +22,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search, and dry-run-by-default directory/file mutation. Their audit counters record only stable tool names and reason codes for allowed or denied decisions; they do not store raw paths, filenames, metadata values, search queries, file contents, match data, temporary names, or caller-provided values.
+Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search/copy, and dry-run-by-default mutation. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -139,6 +140,13 @@ Current runtime/status/filesystem examples include:
 - `safe_root_read`
 - `safe_root_text_searched`
 - `safe_root_directory_created`
+- `safe_root_file_copied`
+- `filesystem_copy_source_not_found`
+- `filesystem_copy_parent_not_found`
+- `filesystem_copy_same_path`
+- `filesystem_copy_source_type_unsupported`
+- `filesystem_copy_source_too_large`
+- `filesystem_copy_failed`
 - `filesystem_parent_not_found`
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
