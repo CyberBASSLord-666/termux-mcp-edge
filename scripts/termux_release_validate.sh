@@ -886,7 +886,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1041,6 +1041,63 @@ run_mcp_runtime_checks() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status create_directory_existing "$status" 400 create_directory_existing_rejected
   jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail create_directory_existing_body_invalid
+
+  printf 'validation-copy\000\377binary' >"$VALIDATION_SAFE_ROOT/copy-source.bin" 2>/dev/null || fail copy_file_fixture_create_failed
+  chmod 777 "$VALIDATION_SAFE_ROOT/copy-source.bin" 2>/dev/null || fail copy_file_fixture_create_failed
+  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy-dry.bin" '{"jsonrpc":"2.0","id":"copy-dry","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status copy_file_dry_run "$status" 200 copy_file_dry_run_succeeded
+  jq -e --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy-dry.bin" '
+    .result.structuredContent == {
+      sourcePath:$source,
+      destinationPath:$destination,
+      dryRun:true,
+      sizeBytes:23,
+      mode:"0600",
+      maxFileBytes:1048576,
+      maxResponseBytes:16384
+    }
+  ' "$body" >/dev/null 2>&1 || fail copy_file_dry_run_contract_invalid
+  grep -Fq validation-copy "$body" && fail copy_file_content_reflected
+  [[ ! -e "$VALIDATION_SAFE_ROOT/copy-dry.bin" ]] || fail copy_file_dry_run_mutated
+
+  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy.bin" '{"jsonrpc":"2.0","id":"copy","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status copy_file_explicit "$status" 200 copy_file_explicit_succeeded
+  jq -e --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy.bin" '
+    .result.structuredContent == {
+      sourcePath:$source,
+      destinationPath:$destination,
+      dryRun:false,
+      sizeBytes:23,
+      mode:"0600",
+      maxFileBytes:1048576,
+      maxResponseBytes:16384
+    }
+  ' "$body" >/dev/null 2>&1 || fail copy_file_contract_invalid
+  grep -Fq validation-copy "$body" && fail copy_file_content_reflected
+  cmp -s "$VALIDATION_SAFE_ROOT/copy-source.bin" "$VALIDATION_SAFE_ROOT/copy.bin" || fail copy_file_content_invalid
+  [[ "$(stat -c '%a' "$VALIDATION_SAFE_ROOT/copy.bin" 2>/dev/null)" == 600 ]] || fail copy_file_mode_invalid
+
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status copy_file_existing "$status" 400 copy_file_existing_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail copy_file_existing_body_invalid
+  cmp -s "$VALIDATION_SAFE_ROOT/copy-source.bin" "$VALIDATION_SAFE_ROOT/copy.bin" || fail copy_file_existing_modified
+
+  ln -s -- "$VALIDATION_SAFE_ROOT/copy-source.bin" "$VALIDATION_SAFE_ROOT/copy-source-link" 2>/dev/null || fail copy_file_symlink_fixture_create_failed
+  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-source-link" --arg destination "$VALIDATION_SAFE_ROOT/copy-from-link.bin" '{"jsonrpc":"2.0","id":"copy-link","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status copy_file_symlink "$status" 400 copy_file_symlink_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail copy_file_symlink_body_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/copy-from-link.bin" ]] || fail copy_file_symlink_mutated
+
+  dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/copy-oversized.bin" bs=1048577 count=1 status=none 2>/dev/null || fail copy_file_oversized_fixture_create_failed
+  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-oversized.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy-oversized-destination.bin" '{"jsonrpc":"2.0","id":"copy-oversized","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status copy_file_oversized "$status" 413 copy_file_oversized_rejected
+  jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail copy_file_oversized_body_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/copy-oversized-destination.bin" ]] || fail copy_file_oversized_mutated
+  record_result runtime copy_file pass safe_root_file_copy_verified
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/expanded-response.bin" bs=200000 count=1 status=none 2>/dev/null || fail read_bound_fixture_create_failed
   chmod 600 "$VALIDATION_SAFE_ROOT/expanded-response.bin" 2>/dev/null || fail read_bound_fixture_create_failed

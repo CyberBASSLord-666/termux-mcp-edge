@@ -305,7 +305,7 @@ mcp_post() {
 
 protocol_smoke() {
   local label="$1"
-  local body headers status payload target outside oversized
+  local body headers status payload target outside oversized copy_source copy_target copy_bytes
   headers="$LOG_DIR/$label-initialize.headers"
   body="$LOG_DIR/$label-response.json"
 
@@ -342,7 +342,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","list_directory","path_metadata","read_file","search_text","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]'
 
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -397,6 +397,33 @@ protocol_smoke() {
   [[ -d "$directory_target" ]] || fail "explicit create_directory call did not create its target"
   log "PASS ${label}_create_directory_target=directory"
   assert_eq "${label}_create_directory_mode" "$(stat -c '%a' "$directory_target")" 700
+
+  copy_source="$SAFE_ROOT/copy-source.bin"
+  copy_target="$SAFE_ROOT/copy-target.bin"
+  printf 'device-smoke-copy\000\377binary' >"$copy_source"
+  chmod 777 "$copy_source"
+  copy_bytes="$(wc -c <"$copy_source")"
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-dry-run","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_copy_dry_run_http" "$status" 200
+  assert_json "${label}_copy_dry_run_body" "$body" ".result.structuredContent.dryRun == true and .result.structuredContent.sizeBytes == $copy_bytes and .result.structuredContent.mode == \"0600\" and .result.structuredContent.maxFileBytes == 1048576 and .result.structuredContent.maxResponseBytes == 16384"
+  grep -Fq device-smoke-copy "$body" && fail "copy_file dry-run response reflected file content"
+  assert_absent "${label}_copy_dry_run_target" "$copy_target"
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-explicit","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_copy_explicit_http" "$status" 200
+  assert_json "${label}_copy_explicit_body" "$body" ".result.structuredContent.dryRun == false and .result.structuredContent.sizeBytes == $copy_bytes and .result.structuredContent.mode == \"0600\""
+  grep -Fq device-smoke-copy "$body" && fail "copy_file response reflected file content"
+  cmp -s "$copy_source" "$copy_target" || fail "copy_file did not preserve exact binary content"
+  log "PASS ${label}_copy_content=exact"
+  assert_eq "${label}_copy_mode" "$(stat -c '%a' "$copy_target")" 600
+
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_copy_existing_http" "$status" 400
+  assert_json "${label}_copy_existing_body" "$body" '.error.code == -32602'
+  cmp -s "$copy_source" "$copy_target" || fail "copy_file existing-destination denial modified content"
+  log "PASS ${label}_copy_existing=unchanged"
 
   target="$SAFE_ROOT/write-target.txt"
   payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"

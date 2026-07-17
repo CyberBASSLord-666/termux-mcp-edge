@@ -2035,6 +2035,375 @@ mod tests {
         assert!(!outside.path().join("redirected").exists());
     }
 
+    #[tokio::test]
+    async fn copy_file_defaults_to_dry_run_and_explicit_copy_is_binary_exact_and_private() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.bin");
+        let preview = root.path().join("preview.bin");
+        let destination = root.path().join("destination.bin");
+        let empty_source = root.path().join("empty-source.bin");
+        let empty_destination = root.path().join("empty-destination.bin");
+        let bytes = [0, 1, 2, 0xff, b'\n', 0, 0x80];
+        std::fs::write(&source, bytes).unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::write(&empty_source, []).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let dry_run = tools
+            .copy_file(
+                source.to_string_lossy().to_string(),
+                preview.to_string_lossy().to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(dry_run.dry_run);
+        assert_eq!(dry_run.size_bytes, bytes.len());
+        assert_eq!(dry_run.mode, "0600");
+        assert_eq!(dry_run.max_file_bytes, MAX_COPY_FILE_BYTES);
+        assert_eq!(dry_run.max_response_bytes, MAX_COPY_FILE_RESPONSE_BYTES);
+        assert!(!preview.exists());
+
+        let copied = tools
+            .copy_file(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await
+            .unwrap();
+        assert!(!copied.dry_run);
+        assert_eq!(copied.source_path, source.to_string_lossy());
+        assert_eq!(copied.destination_path, destination.to_string_lossy());
+        assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+        assert_eq!(
+            std::fs::symlink_metadata(&destination)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            COPY_FILE_MODE
+        );
+
+        let empty = tools
+            .copy_file(
+                empty_source.to_string_lossy().to_string(),
+                empty_destination.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty.size_bytes, 0);
+        assert_eq!(std::fs::read(&empty_destination).unwrap(), Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn copy_file_accepts_exact_limit_and_rejects_one_byte_over() {
+        let root = tempfile::tempdir().unwrap();
+        let exact = root.path().join("exact.bin");
+        let oversized = root.path().join("oversized.bin");
+        let exact_destination = root.path().join("exact-copy.bin");
+        let oversized_destination = root.path().join("oversized-copy.bin");
+        std::fs::write(&exact, vec![0x5a; MAX_COPY_FILE_BYTES]).unwrap();
+        std::fs::write(&oversized, vec![0x5b; MAX_COPY_FILE_BYTES + 1]).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let result = tools
+            .copy_file(
+                exact.to_string_lossy().to_string(),
+                exact_destination.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.size_bytes, MAX_COPY_FILE_BYTES);
+        assert_eq!(
+            std::fs::metadata(exact_destination).unwrap().len(),
+            1_048_576
+        );
+
+        let result = tools
+            .copy_file(
+                oversized.to_string_lossy().to_string(),
+                oversized_destination.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(AppError::FileTooLarge { size, max_size })
+                if size == (MAX_COPY_FILE_BYTES + 1) as u64
+                    && max_size == MAX_COPY_FILE_BYTES as u64
+        ));
+        assert!(!oversized_destination.exists());
+    }
+
+    #[tokio::test]
+    async fn copy_file_rejects_missing_same_existing_and_unsupported_objects() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let existing = root.path().join("existing.txt");
+        let directory_source = root.path().join("directory-source");
+        std::fs::write(&source, "source").unwrap();
+        std::fs::write(&existing, "unchanged").unwrap();
+        std::fs::create_dir(&directory_source).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let missing_source = tools
+            .copy_file(
+                root.path().join("missing").to_string_lossy().to_string(),
+                root.path().join("unused").to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await;
+        assert!(matches!(missing_source, Err(AppError::CopySourceNotFound)));
+
+        let missing_parent = tools
+            .copy_file(
+                source.to_string_lossy().to_string(),
+                root.path()
+                    .join("missing-parent")
+                    .join("copy")
+                    .to_string_lossy()
+                    .to_string(),
+                Some(false),
+            )
+            .await;
+        assert!(matches!(
+            missing_parent,
+            Err(AppError::CopyDestinationParentNotFound)
+        ));
+
+        let same = tools
+            .copy_file(
+                source.to_string_lossy().to_string(),
+                source.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await;
+        assert!(matches!(same, Err(AppError::CopySourceDestinationSame)));
+
+        let existing_result = tools
+            .copy_file(
+                source.to_string_lossy().to_string(),
+                existing.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await;
+        assert!(matches!(existing_result, Err(AppError::PathAlreadyExists)));
+        assert_eq!(std::fs::read_to_string(existing).unwrap(), "unchanged");
+
+        let directory_result = tools
+            .copy_file(
+                directory_source.to_string_lossy().to_string(),
+                root.path()
+                    .join("directory-copy")
+                    .to_string_lossy()
+                    .to_string(),
+                Some(false),
+            )
+            .await;
+        assert!(matches!(
+            directory_result,
+            Err(AppError::UnsupportedPathType)
+        ));
+    }
+
+    #[tokio::test]
+    async fn copy_file_rejects_outside_and_symlink_boundaries_and_allows_cross_root_copy() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = first.path().join("source.txt");
+        let cross_root_destination = second.path().join("copied.txt");
+        let source_link = first.path().join("source-link");
+        let destination_link = first.path().join("destination-link");
+        let linked_parent = first.path().join("linked-parent");
+        std::fs::write(&source, "cross-root").unwrap();
+        symlink(&source, &source_link).unwrap();
+        symlink(outside.path().join("destination"), &destination_link).unwrap();
+        symlink(outside.path(), &linked_parent).unwrap();
+        let tools = FileSystemTools::new(vec![
+            first.path().to_path_buf(),
+            second.path().to_path_buf(),
+        ]);
+
+        for (copy_source, copy_destination) in [
+            (
+                outside.path().join("outside-source"),
+                first.path().join("copy-a"),
+            ),
+            (source.clone(), outside.path().join("outside-destination")),
+            (source_link, first.path().join("copy-b")),
+            (source.clone(), destination_link),
+            (source.clone(), linked_parent.join("copy-c")),
+        ] {
+            let result = tools
+                .copy_file(
+                    copy_source.to_string_lossy().to_string(),
+                    copy_destination.to_string_lossy().to_string(),
+                    Some(false),
+                )
+                .await;
+            assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+        }
+
+        let result = tools
+            .copy_file(
+                source.to_string_lossy().to_string(),
+                cross_root_destination.to_string_lossy().to_string(),
+                Some(false),
+            )
+            .await
+            .unwrap();
+        assert!(!result.dry_run);
+        assert_eq!(
+            std::fs::read_to_string(cross_root_destination).unwrap(),
+            "cross-root"
+        );
+        assert!(!outside.path().join("outside-destination").exists());
+        assert!(!outside.path().join("destination").exists());
+        assert!(!outside.path().join("copy-c").exists());
+    }
+
+    #[test]
+    fn copied_file_cleanup_removes_only_the_captured_regular_file_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("copy.tmp");
+        let parked = root.path().join("copy.parked");
+        std::fs::write(&original, "original").unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let metadata =
+            descriptor_fs::statat(&root_fd, "copy.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+
+        {
+            let mut cleanup =
+                DescriptorCopiedFileCleanup::new(&root_fd, OsString::from("copy.tmp"));
+            cleanup.set_expected_identity(metadata.st_dev, metadata.st_ino);
+            std::fs::rename(&original, &parked).unwrap();
+            std::fs::write(&original, "replacement").unwrap();
+        }
+
+        assert_eq!(std::fs::read_to_string(original).unwrap(), "replacement");
+        assert_eq!(std::fs::read_to_string(parked).unwrap(), "original");
+    }
+
+    #[test]
+    fn copied_file_cleanup_removes_matching_file_and_preserves_unknown_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let matching = root.path().join("matching.tmp");
+        let unknown = root.path().join("unknown.tmp");
+        std::fs::write(&matching, "matching").unwrap();
+        std::fs::write(&unknown, "unknown").unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let metadata =
+            descriptor_fs::statat(&root_fd, "matching.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
+
+        {
+            let mut cleanup =
+                DescriptorCopiedFileCleanup::new(&root_fd, OsString::from("matching.tmp"));
+            cleanup.set_expected_identity(metadata.st_dev, metadata.st_ino);
+        }
+        {
+            let _cleanup =
+                DescriptorCopiedFileCleanup::new(&root_fd, OsString::from("unknown.tmp"));
+        }
+
+        assert!(!matching.exists());
+        assert!(unknown.exists());
+    }
+
+    #[test]
+    fn held_source_descriptor_prevents_copy_redirection_after_path_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let parked = root.path().join("source-parked");
+        let outside_source = outside.path().join("outside-source");
+        std::fs::write(&source, "inside-source").unwrap();
+        std::fs::write(&outside_source, "outside-source").unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let source_fd = descriptor_fs::openat(
+            &root_fd,
+            "source",
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        std::fs::rename(&source, &parked).unwrap();
+        symlink(&outside_source, &source).unwrap();
+
+        let mut content = String::new();
+        File::from(source_fd).read_to_string(&mut content).unwrap();
+        assert_eq!(content, "inside-source");
+        assert_eq!(
+            std::fs::read_to_string(outside_source).unwrap(),
+            "outside-source"
+        );
+    }
+
+    #[test]
+    fn held_destination_parent_descriptor_prevents_copy_redirection() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let parked = root.path().join("parent-parked");
+        std::fs::create_dir(&parent).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let parent_fd = open_mutation_parent_directory(root_fd, Path::new("parent")).unwrap();
+        std::fs::rename(&parent, &parked).unwrap();
+        symlink(outside.path(), &parent).unwrap();
+
+        let staged = descriptor_fs::openat(
+            &parent_fd,
+            "copy.tmp",
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap();
+        File::from(staged).write_all(b"inside-copy").unwrap();
+        descriptor_fs::renameat_with(
+            &parent_fd,
+            "copy.tmp",
+            &parent_fd,
+            "copy",
+            RenameFlags::NOREPLACE,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(parked.join("copy")).unwrap(),
+            "inside-copy"
+        );
+        assert!(!outside.path().join("copy").exists());
+    }
+
+    #[test]
+    fn copy_no_replace_publication_rejects_concurrent_final_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        std::fs::write(root.path().join("prepared.tmp"), "prepared").unwrap();
+        std::fs::write(root.path().join("destination"), "concurrent").unwrap();
+
+        let result = descriptor_fs::renameat_with(
+            &root_fd,
+            "prepared.tmp",
+            &root_fd,
+            "destination",
+            RenameFlags::NOREPLACE,
+        );
+
+        assert_eq!(result, Err(rustix::io::Errno::EXIST));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("prepared.tmp")).unwrap(),
+            "prepared"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("destination")).unwrap(),
+            "concurrent"
+        );
+    }
+
     #[test]
     fn held_parent_descriptor_prevents_directory_creation_redirection() {
         let root = tempfile::tempdir().unwrap();
