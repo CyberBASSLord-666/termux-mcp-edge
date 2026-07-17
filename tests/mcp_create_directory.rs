@@ -200,13 +200,30 @@ async fn create_directory_rejects_invalid_existing_and_boundary_requests() {
             }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "case {index}");
+        let mutation_gate_denial = index >= 7;
+        assert_eq!(
+            response.status(),
+            if mutation_gate_denial {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            "case {index}"
+        );
         let body = to_bytes(response.into_body(), 8 * 1024).await.unwrap();
         let text = std::str::from_utf8(&body).unwrap();
         assert!(!text.contains(outside.path().to_string_lossy().as_ref()));
         let payload: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["error"]["code"], -32602);
-        assert_eq!(payload["error"]["message"], "Invalid params");
+        if mutation_gate_denial {
+            assert_eq!(payload["error"]["code"], -32003);
+            assert_eq!(
+                payload["error"]["data"]["reason"],
+                "create_directory_mutation_disabled"
+            );
+        } else {
+            assert_eq!(payload["error"]["code"], -32602);
+            assert_eq!(payload["error"]["message"], "Invalid params");
+        }
     }
 
     assert_eq!(std::fs::read_to_string(existing_file).unwrap(), "unchanged");
