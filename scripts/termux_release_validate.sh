@@ -732,6 +732,19 @@ stage_request() {
   printf '%s' "$1" >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
 }
 
+valid_capability_grant() {
+  local grant="$1" prefix remainder payload signature
+  prefix="v1.${CAPABILITY_KEY_ID}."
+  [[ "$grant" == "$prefix"* ]] || return 1
+  remainder="${grant#"$prefix"}"
+  [[ "$remainder" == *.* ]] || return 1
+  payload="${remainder%%.*}"
+  signature="${remainder#*.}"
+  [[ "$signature" != *.* ]] || return 1
+  ((${#payload} == 260 && ${#signature} == 64)) || return 1
+  [[ "$payload$signature" != *[!0-9a-f]* ]]
+}
+
 stage_session_headers() {
   local session_id="${1:-}" include_protocol="${2:-1}" grant_file="${3:-}" grant=""
   {
@@ -743,7 +756,7 @@ stage_session_headers() {
     if [[ -n "$grant_file" ]]; then
       validate_private_file "$grant_file" capability_grant_file_invalid
       grant="$(<"$grant_file")"
-      [[ "$grant" =~ ^v1\.${CAPABILITY_KEY_ID}\.[0-9a-f]{260}\.[0-9a-f]{64}$ ]] || fail capability_grant_output_invalid
+      valid_capability_grant "$grant" || fail capability_grant_output_invalid
       printf 'MCP-Capability-Grant: %s\n' "$grant"
     fi
   } >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
@@ -765,7 +778,7 @@ issue_create_directory_grant() {
   [[ "$(wc -l <"$CAPABILITY_GRANT_FILE" 2>/dev/null)" == 1 ]] || fail capability_grant_output_invalid
   local grant
   grant="$(<"$CAPABILITY_GRANT_FILE")"
-  [[ "$grant" =~ ^v1\.${CAPABILITY_KEY_ID}\.[0-9a-f]{260}\.[0-9a-f]{64}$ ]] || fail capability_grant_output_invalid
+  valid_capability_grant "$grant" || fail capability_grant_output_invalid
   unset grant
 }
 

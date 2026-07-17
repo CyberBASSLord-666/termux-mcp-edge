@@ -213,6 +213,10 @@ run_validator() {
 }
 
 bash -n "$SCRIPT"
+grep -Fq 'valid_capability_grant()' "$SCRIPT"
+if grep -Fq -- '{260}' "$SCRIPT"; then
+  fail_test "release validator uses a non-portable ERE repetition above Android RE_DUP_MAX"
+fi
 jq -e '
   .["$schema"] == "https://json-schema.org/draft/2020-12/schema"
   and .additionalProperties == false

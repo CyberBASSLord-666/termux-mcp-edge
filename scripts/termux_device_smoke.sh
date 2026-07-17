@@ -285,6 +285,19 @@ choose_port() {
   return 1
 }
 
+valid_capability_grant() {
+  local grant="$1" prefix remainder payload signature
+  prefix="v1.${CAPABILITY_KEY_ID}."
+  [[ "$grant" == "$prefix"* ]] || return 1
+  remainder="${grant#"$prefix"}"
+  [[ "$remainder" == *.* ]] || return 1
+  payload="${remainder%%.*}"
+  signature="${remainder#*.}"
+  [[ "$signature" != *.* ]] || return 1
+  ((${#payload} == 260 && ${#signature} == 64)) || return 1
+  [[ "$payload$signature" != *[!0-9a-f]* ]]
+}
+
 mcp_post() {
   local output="$1" payload="$2" session_id="${3:-}" grant_file="${4:-}" grant=""
   local -a args=(
@@ -306,7 +319,7 @@ mcp_post() {
   if [[ -n "$grant_file" ]]; then
     [[ -f "$grant_file" && ! -L "$grant_file" && "$(stat -c '%a' "$grant_file")" == 600 ]] || fail "capability grant staging is invalid"
     grant="$(<"$grant_file")"
-    [[ "$grant" =~ ^v1\.${CAPABILITY_KEY_ID}\.[0-9a-f]{260}\.[0-9a-f]{64}$ ]] || fail "candidate emitted an invalid capability grant"
+    valid_capability_grant "$grant" || fail "candidate emitted an invalid capability grant"
     args+=( -H "MCP-Capability-Grant: $grant" )
   fi
   curl "${args[@]}" --data-binary "$payload" "$MCP_URL"
@@ -325,7 +338,7 @@ issue_create_directory_grant() {
   fi
   [[ "$(wc -l <"$CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid capability grant"
   grant="$(<"$CAPABILITY_GRANT_FILE")"
-  [[ "$grant" =~ ^v1\.${CAPABILITY_KEY_ID}\.[0-9a-f]{260}\.[0-9a-f]{64}$ ]] || fail "candidate emitted an invalid capability grant"
+  valid_capability_grant "$grant" || fail "candidate emitted an invalid capability grant"
   unset grant
 }
 

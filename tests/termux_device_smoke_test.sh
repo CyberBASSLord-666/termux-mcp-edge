@@ -19,6 +19,10 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
+assert_contains 'valid_capability_grant()' "$SCRIPT"
+if grep -Fq -- '{260}' "$SCRIPT"; then
+  fail "device harness uses a non-portable ERE repetition above Android RE_DUP_MAX"
+fi
 
 mkdir -p "$TMP/home"
 HOME="$TMP/home" bash "$SCRIPT" --help >"$TMP/help"
