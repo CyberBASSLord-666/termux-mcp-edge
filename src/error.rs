@@ -26,6 +26,15 @@ pub enum AppError {
     #[error("Requested filesystem destination already exists")]
     PathAlreadyExists,
 
+    #[error("Requested copy source does not exist")]
+    CopySourceNotFound,
+
+    #[error("Requested copy destination parent does not exist")]
+    CopyDestinationParentNotFound,
+
+    #[error("Copy source and destination must be different paths")]
+    CopySourceDestinationSame,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -71,6 +80,18 @@ impl AppError {
             AppError::PathAlreadyExists => (
                 StatusCode::CONFLICT,
                 "Requested filesystem destination already exists",
+            ),
+            AppError::CopySourceNotFound => (
+                StatusCode::NOT_FOUND,
+                "Requested copy source does not exist",
+            ),
+            AppError::CopyDestinationParentNotFound => (
+                StatusCode::NOT_FOUND,
+                "Requested copy destination parent does not exist",
+            ),
+            AppError::CopySourceDestinationSame => (
+                StatusCode::BAD_REQUEST,
+                "Copy source and destination must be different paths",
             ),
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
@@ -179,6 +200,27 @@ mod tests {
             (
                 StatusCode::CONFLICT,
                 "Requested filesystem destination already exists",
+            )
+        );
+        assert_eq!(
+            AppError::CopySourceNotFound.public_response(),
+            (
+                StatusCode::NOT_FOUND,
+                "Requested copy source does not exist",
+            )
+        );
+        assert_eq!(
+            AppError::CopyDestinationParentNotFound.public_response(),
+            (
+                StatusCode::NOT_FOUND,
+                "Requested copy destination parent does not exist",
+            )
+        );
+        assert_eq!(
+            AppError::CopySourceDestinationSame.public_response(),
+            (
+                StatusCode::BAD_REQUEST,
+                "Copy source and destination must be different paths",
             )
         );
     }

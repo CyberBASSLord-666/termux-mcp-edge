@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf};
@@ -27,6 +27,9 @@ pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
 pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
 pub const MAX_CREATE_DIRECTORY_RESPONSE_BYTES: usize = 16_384;
 pub const CREATE_DIRECTORY_MODE: u32 = 0o700;
+pub const MAX_COPY_FILE_BYTES: usize = 1_048_576;
+pub const MAX_COPY_FILE_RESPONSE_BYTES: usize = 16_384;
+pub const COPY_FILE_MODE: u32 = 0o600;
 pub const MIN_SEARCH_DEPTH: u32 = 1;
 pub const MAX_SEARCH_DEPTH: u32 = 5;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
@@ -54,6 +57,63 @@ struct DescriptorDirectoryCleanup<'a> {
     name: OsString,
     expected_identity: Option<(u64, u64)>,
     armed: bool,
+}
+
+struct DescriptorCopiedFileCleanup<'a> {
+    parent: &'a OwnedFd,
+    name: OsString,
+    expected_identity: Option<(u64, u64)>,
+    armed: bool,
+}
+
+impl<'a> DescriptorCopiedFileCleanup<'a> {
+    fn new(parent: &'a OwnedFd, name: OsString) -> Self {
+        Self {
+            parent,
+            name,
+            expected_identity: None,
+            armed: true,
+        }
+    }
+
+    fn set_expected_identity(&mut self, device: u64, inode: u64) {
+        self.expected_identity = Some((device, inode));
+    }
+
+    fn published_as(&mut self, name: OsString) {
+        self.name = name;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DescriptorCopiedFileCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let Some((expected_device, expected_inode)) = self.expected_identity else {
+            return;
+        };
+        let Ok(metadata) =
+            descriptor_fs::statat(self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+        else {
+            return;
+        };
+        let file_type = FileType::from_raw_mode(metadata.st_mode);
+        if !file_type.is_file()
+            || metadata.st_dev != expected_device
+            || metadata.st_ino != expected_inode
+        {
+            return;
+        }
+        if descriptor_fs::unlinkat(self.parent, &self.name, AtFlags::empty()).is_ok() {
+            let _ = descriptor_fs::fsync(self.parent);
+        }
+    }
 }
 
 impl<'a> DescriptorDirectoryCleanup<'a> {
@@ -683,6 +743,237 @@ impl FileSystemTools {
         Ok(create_directory_result(&anchored, dry_run))
     }
 
+    pub async fn copy_file(
+        &self,
+        source_path: String,
+        destination_path: String,
+        dry_run: Option<bool>,
+    ) -> Result<CopyFileResult, AppError> {
+        let start = Instant::now();
+        let source = self.anchor(&source_path)?;
+        let destination = self.anchor(&destination_path)?;
+        if source.display_path == destination.display_path {
+            return Err(AppError::CopySourceDestinationSame);
+        }
+        let dry_run = dry_run.unwrap_or(true);
+
+        let result = tokio::task::spawn_blocking(move || {
+            let (source_parent_relative, source_name) =
+                split_parent_and_name(&source.relative_path)?;
+            let source_root_fd = open_root_directory(&source.root_path)?;
+            let source_parent_fd =
+                open_metadata_parent_directory(source_root_fd, &source_parent_relative)
+                    .map_err(copy_source_parent_error)?;
+            let source_before = match descriptor_fs::statat(
+                &source_parent_fd,
+                &source_name,
+                AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Ok(metadata) => metadata,
+                Err(rustix::io::Errno::NOENT) => return Err(AppError::CopySourceNotFound),
+                Err(error) => return Err(descriptor_error(error)),
+            };
+            let source_type = FileType::from_raw_mode(source_before.st_mode);
+            if source_type.is_symlink() {
+                return Err(path_rejected(
+                    source.display_path.to_string_lossy().as_ref(),
+                ));
+            }
+            if !source_type.is_file() {
+                return Err(AppError::UnsupportedPathType);
+            }
+            let source_size = copy_source_size(&source_before)?;
+            if source_size > MAX_COPY_FILE_BYTES as u64 {
+                return Err(AppError::FileTooLarge {
+                    size: source_size,
+                    max_size: MAX_COPY_FILE_BYTES as u64,
+                });
+            }
+
+            let source_fd = descriptor_fs::openat(
+                &source_parent_fd,
+                &source_name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| match error {
+                rustix::io::Errno::NOENT => AppError::CopySourceNotFound,
+                rustix::io::Errno::LOOP => {
+                    path_rejected(source.display_path.to_string_lossy().as_ref())
+                }
+                _ => descriptor_error(error),
+            })?;
+            let source_opened = descriptor_fs::fstat(&source_fd).map_err(descriptor_error)?;
+            if !FileType::from_raw_mode(source_opened.st_mode).is_file() {
+                return Err(AppError::UnsupportedPathType);
+            }
+            if source_opened.st_dev != source_before.st_dev
+                || source_opened.st_ino != source_before.st_ino
+                || source_opened.st_size != source_before.st_size
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "copy source changed before it was opened",
+                )));
+            }
+
+            let mut source_file = File::from(source_fd);
+            let mut bytes = Vec::with_capacity(MAX_COPY_FILE_BYTES.min(64 * 1_024));
+            (&mut source_file)
+                .take((MAX_COPY_FILE_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > MAX_COPY_FILE_BYTES {
+                return Err(AppError::FileTooLarge {
+                    size: bytes.len() as u64,
+                    max_size: MAX_COPY_FILE_BYTES as u64,
+                });
+            }
+            let source_after = descriptor_fs::fstat(&source_file).map_err(descriptor_error)?;
+            if !FileType::from_raw_mode(source_after.st_mode).is_file()
+                || source_after.st_dev != source_opened.st_dev
+                || source_after.st_ino != source_opened.st_ino
+                || source_after.st_size != source_opened.st_size
+                || copy_source_size(&source_after)? != bytes.len() as u64
+            {
+                return Err(AppError::Io(std::io::Error::other(
+                    "copy source changed while it was read",
+                )));
+            }
+
+            let (destination_parent_relative, destination_name) =
+                split_parent_and_name(&destination.relative_path)?;
+            let destination_root_fd = open_root_directory(&destination.root_path)?;
+            let destination_parent_fd =
+                open_mutation_parent_directory(destination_root_fd, &destination_parent_relative)
+                    .map_err(copy_destination_parent_error)?;
+            match descriptor_fs::statat(
+                &destination_parent_fd,
+                &destination_name,
+                AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
+                    return Err(path_rejected(
+                        destination.display_path.to_string_lossy().as_ref(),
+                    ));
+                }
+                Ok(_) => return Err(AppError::PathAlreadyExists),
+                Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(descriptor_error(error)),
+            }
+
+            let result = copy_file_result(&source, &destination, dry_run, bytes.len());
+            if dry_run {
+                return Ok(result);
+            }
+
+            let temp_name = OsString::from(format!(
+                ".termux-mcp-copy-file-{}.tmp",
+                uuid::Uuid::new_v4()
+            ));
+            let temp_fd = descriptor_fs::openat(
+                &destination_parent_fd,
+                &temp_name,
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(descriptor_error)?;
+            let mut cleanup =
+                DescriptorCopiedFileCleanup::new(&destination_parent_fd, temp_name.clone());
+            let created_metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
+            if !FileType::from_raw_mode(created_metadata.st_mode).is_file() {
+                return Err(AppError::Io(std::io::Error::other(
+                    "copy destination staging verification failed",
+                )));
+            }
+            cleanup.set_expected_identity(created_metadata.st_dev, created_metadata.st_ino);
+            descriptor_fs::fchmod(&temp_fd, Mode::RUSR | Mode::WUSR).map_err(descriptor_error)?;
+
+            let mut destination_file = File::from(temp_fd);
+            destination_file.write_all(&bytes)?;
+            destination_file.sync_all()?;
+            let staged_metadata =
+                descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
+            if !copy_file_identity_and_contract_match(
+                &staged_metadata,
+                created_metadata.st_dev,
+                created_metadata.st_ino,
+                bytes.len(),
+            ) {
+                return Err(AppError::Io(std::io::Error::other(
+                    "copy destination staging verification failed",
+                )));
+            }
+
+            match descriptor_fs::renameat_with(
+                &destination_parent_fd,
+                &temp_name,
+                &destination_parent_fd,
+                &destination_name,
+                RenameFlags::NOREPLACE,
+            ) {
+                Ok(()) => cleanup.published_as(destination_name),
+                Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
+                Err(error) => return Err(descriptor_error(error)),
+            }
+            let published_metadata = descriptor_fs::statat(
+                &destination_parent_fd,
+                &cleanup.name,
+                AtFlags::SYMLINK_NOFOLLOW,
+            )
+            .map_err(descriptor_error)?;
+            let held_metadata =
+                descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
+            if !copy_file_identity_and_contract_match(
+                &published_metadata,
+                created_metadata.st_dev,
+                created_metadata.st_ino,
+                bytes.len(),
+            ) || !copy_file_identity_and_contract_match(
+                &held_metadata,
+                created_metadata.st_dev,
+                created_metadata.st_ino,
+                bytes.len(),
+            ) {
+                return Err(AppError::Io(std::io::Error::other(
+                    "published copy destination verification failed",
+                )));
+            }
+            descriptor_fs::fsync(&destination_parent_fd).map_err(descriptor_error)?;
+            cleanup.disarm();
+            Ok(result)
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.copy_file.latency_seconds").record(start.elapsed().as_secs_f64());
+        if result.dry_run {
+            counter!("mcp.fs.copy_file.dry_runs_total").increment(1);
+        } else {
+            counter!("mcp.fs.copy_file.copied_total").increment(1);
+            counter!("mcp.fs.copy_file.bytes_total").increment(result.size_bytes as u64);
+        }
+
+        Ok(result)
+    }
+
+    pub(crate) fn copy_file_response_preview(
+        &self,
+        source_path: &str,
+        destination_path: &str,
+        dry_run: bool,
+    ) -> Result<CopyFileResult, AppError> {
+        let source = self.anchor(source_path)?;
+        let destination = self.anchor(destination_path)?;
+        if source.display_path == destination.display_path {
+            return Err(AppError::CopySourceDestinationSame);
+        }
+        Ok(copy_file_result(
+            &source,
+            &destination,
+            dry_run,
+            MAX_COPY_FILE_BYTES,
+        ))
+    }
+
     pub async fn search_text(
         &self,
         path: String,
@@ -1131,6 +1422,58 @@ fn create_directory_result(anchored: &AnchoredPath, dry_run: bool) -> CreateDire
     }
 }
 
+fn copy_file_result(
+    source: &AnchoredPath,
+    destination: &AnchoredPath,
+    dry_run: bool,
+    size_bytes: usize,
+) -> CopyFileResult {
+    CopyFileResult {
+        source_path: source.display_path.to_string_lossy().to_string(),
+        destination_path: destination.display_path.to_string_lossy().to_string(),
+        dry_run,
+        size_bytes,
+        mode: "0600".to_owned(),
+        max_file_bytes: MAX_COPY_FILE_BYTES,
+        max_response_bytes: MAX_COPY_FILE_RESPONSE_BYTES,
+    }
+}
+
+fn copy_source_parent_error(error: AppError) -> AppError {
+    match error {
+        AppError::PathNotFound => AppError::CopySourceNotFound,
+        other => other,
+    }
+}
+
+fn copy_destination_parent_error(error: AppError) -> AppError {
+    match error {
+        AppError::PathNotFound => AppError::CopyDestinationParentNotFound,
+        other => other,
+    }
+}
+
+fn copy_source_size(metadata: &descriptor_fs::Stat) -> Result<u64, AppError> {
+    u64::try_from(metadata.st_size).map_err(|_| {
+        AppError::Io(std::io::Error::other(
+            "copy source reported an invalid size",
+        ))
+    })
+}
+
+fn copy_file_identity_and_contract_match(
+    metadata: &descriptor_fs::Stat,
+    expected_device: u64,
+    expected_inode: u64,
+    expected_size: usize,
+) -> bool {
+    FileType::from_raw_mode(metadata.st_mode).is_file()
+        && metadata.st_dev == expected_device
+        && metadata.st_ino == expected_inode
+        && (metadata.st_mode & 0o7777) == COPY_FILE_MODE
+        && u64::try_from(metadata.st_size).ok() == Some(expected_size as u64)
+}
+
 fn stat_modified_time(metadata: &descriptor_fs::Stat) -> Option<String> {
     let seconds = u64::try_from(metadata.st_mtime).ok()?;
     let modified = UNIX_EPOCH.checked_add(Duration::from_secs(seconds))?;
@@ -1205,6 +1548,18 @@ pub struct CreateDirectoryResult {
     pub path: String,
     pub dry_run: bool,
     pub mode: String,
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyFileResult {
+    pub source_path: String,
+    pub destination_path: String,
+    pub dry_run: bool,
+    pub size_bytes: usize,
+    pub mode: String,
+    pub max_file_bytes: usize,
     pub max_response_bytes: usize,
 }
 
