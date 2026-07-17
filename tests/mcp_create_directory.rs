@@ -6,7 +6,11 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
+use support::{
+    create_directory_authorized_test_router, empty_test_file_tools, initialize_session,
+    issue_create_directory_grant, post_json_to_session, post_json_to_session_with_grant,
+    test_router,
+};
 use termux_mcp_server::tools::{CREATE_DIRECTORY_MODE, MAX_CREATE_DIRECTORY_RESPONSE_BYTES};
 
 fn create_call(id: Value, path: &str, dry_run: Option<bool>) -> Value {
@@ -62,6 +66,7 @@ async fn discovery_advertises_one_closed_create_directory_schema() {
     assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
     assert_eq!(schema["properties"]["path"]["type"], "string");
     assert_eq!(schema["properties"]["dry_run"]["type"], "boolean");
+    assert_eq!(schema["properties"]["dry_run"]["const"], true);
 }
 
 #[tokio::test]
@@ -69,11 +74,18 @@ async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
     let (root, file_tools) = empty_test_file_tools();
     let preview = root.path().join("preview-only");
     let created = root.path().join("created");
-    let router = test_router(file_tools);
+    let issuer_tools = file_tools.clone();
+    let (router, authority) = create_directory_authorized_test_router(file_tools);
     let session_id = initialize_session(&router).await;
+    let grant = issue_create_directory_grant(
+        &authority,
+        &issuer_tools,
+        &session_id,
+        created.to_string_lossy().as_ref(),
+    );
 
     for dry_run in [None, Some(true)] {
-        let response = post_json_to_session(
+        let response = post_json_to_session_with_grant(
             router.clone(),
             &session_id,
             create_call(
@@ -81,6 +93,7 @@ async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
                 preview.to_string_lossy().as_ref(),
                 dry_run,
             ),
+            &grant,
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -103,7 +116,7 @@ async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
         assert!(!preview.exists());
     }
 
-    let response = post_json_to_session(
+    let response = post_json_to_session_with_grant(
         router,
         &session_id,
         create_call(
@@ -111,6 +124,7 @@ async fn create_directory_is_dry_run_first_and_explicit_mutation_is_exact() {
             created.to_string_lossy().as_ref(),
             Some(false),
         ),
+        &grant,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -208,7 +222,8 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
     let preview = root.path().join("private-preview-name");
     let created = root.path().join("private-created-name");
     let outside = tempfile::tempdir().unwrap();
-    let router = test_router(file_tools);
+    let issuer_tools = file_tools.clone();
+    let (router, authority) = create_directory_authorized_test_router(file_tools);
     let session_id = initialize_session(&router).await;
 
     let preview_response = post_json_to_session(
@@ -218,7 +233,13 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
     )
     .await;
     assert_eq!(preview_response.status(), StatusCode::OK);
-    let create_response = post_json_to_session(
+    let grant = issue_create_directory_grant(
+        &authority,
+        &issuer_tools,
+        &session_id,
+        created.to_string_lossy().as_ref(),
+    );
+    let create_response = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
         create_call(
@@ -226,6 +247,7 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
             created.to_string_lossy().as_ref(),
             Some(false),
         ),
+        &grant,
     )
     .await;
     assert_eq!(create_response.status(), StatusCode::OK);

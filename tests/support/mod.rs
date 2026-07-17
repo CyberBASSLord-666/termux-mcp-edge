@@ -10,14 +10,19 @@ use axum::{
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use termux_mcp_server::{
+    create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        router, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
-        MCP_SESSION_ID_HEADER,
+        router, router_with_create_directory_authority, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
+        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
 };
 use tower::ServiceExt;
+
+pub(super) const TEST_CAPABILITY_KEY: &str =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+pub(super) const TEST_STATIC_PRINCIPAL: &str = "test-static-principal";
 
 pub(super) fn test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
@@ -41,6 +46,43 @@ pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
         false,
         false,
     )
+}
+
+pub(super) fn create_directory_authorized_test_router(
+    file_tools: FileSystemTools,
+) -> (Router, CreateDirectoryGrantAuthority) {
+    let authority = CreateDirectoryGrantAuthority::from_hex_key(
+        "test-key-1",
+        TEST_CAPABILITY_KEY,
+        TEST_STATIC_PRINCIPAL,
+    )
+    .unwrap();
+    let router = router_with_create_directory_authority(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+        false,
+        false,
+        false,
+        authority.clone(),
+    );
+    (router, authority)
+}
+
+pub(super) fn issue_create_directory_grant(
+    authority: &CreateDirectoryGrantAuthority,
+    file_tools: &FileSystemTools,
+    session_id: &str,
+    target_path: &str,
+) -> String {
+    let target = file_tools
+        .create_directory_grant_target(target_path)
+        .expect("test grant target must be valid");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    authority.issue_at(session_id, &target, now).unwrap()
 }
 
 #[cfg(feature = "command-execution")]
@@ -119,6 +161,20 @@ pub(super) async fn post_json_to_session(
         .oneshot(session_request(request_body, session_id))
         .await
         .unwrap()
+}
+
+pub(super) async fn post_json_to_session_with_grant(
+    router: Router,
+    session_id: &str,
+    request_body: Value,
+    grant: &str,
+) -> Response {
+    let mut request = session_request(request_body, session_id);
+    request.headers_mut().insert(
+        CREATE_DIRECTORY_GRANT_HEADER,
+        header::HeaderValue::try_from(grant).unwrap(),
+    );
+    router.oneshot(request).await.unwrap()
 }
 
 pub(super) async fn post_raw_to_session(

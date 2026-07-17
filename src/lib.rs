@@ -20,6 +20,8 @@ pub mod capability_token;
 pub mod command_execution;
 pub mod command_policy;
 pub mod config;
+#[cfg(feature = "mcp-runtime")]
+pub mod create_directory_grant;
 pub mod error;
 pub mod health;
 pub mod json_rpc;

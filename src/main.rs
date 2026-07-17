@@ -19,6 +19,7 @@ use termux_mcp_server::health::McpRequestLimitReadiness;
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
+    create_directory_grant::CreateDirectoryGrantAuthority,
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     transport_security::TransportSecurityPolicy,
 };
@@ -31,7 +32,12 @@ use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n";
+const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n";
+
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_SESSION_ENV: &str = "MCP__CAPABILITY__SESSION_ID";
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DIRECTORY_TARGET";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -103,6 +109,9 @@ async fn main() -> anyhow::Result<()> {
     let file_tools = FileSystemTools::new(safe_roots);
 
     #[cfg(feature = "mcp-runtime")]
+    let create_directory_authority = configured_create_directory_authority(&config)?;
+
+    #[cfg(feature = "mcp-runtime")]
     let readiness_limits = Some(McpRequestLimitReadiness {
         max_concurrent_requests: config.transport.max_concurrent_requests,
         request_timeout_seconds: config.transport.request_timeout_seconds,
@@ -121,17 +130,30 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "mcp-runtime")]
     let app = {
-        let mcp_app = termux_mcp_server::mcp_transport::router(
-            TransportSecurityPolicy::new(
-                config.transport.allowed_hosts.clone(),
-                config.transport.allowed_origins.clone(),
-                config.transport.allow_missing_origin,
-            )?,
-            file_tools,
-            config.android.battery_status_enabled,
-            config.android.volume_status_enabled,
-            config.command.enabled,
-        )
+        let transport_security = TransportSecurityPolicy::new(
+            config.transport.allowed_hosts.clone(),
+            config.transport.allowed_origins.clone(),
+            config.transport.allow_missing_origin,
+        )?;
+        let mcp_app = match create_directory_authority {
+            Some(authority) => {
+                termux_mcp_server::mcp_transport::router_with_create_directory_authority(
+                    transport_security,
+                    file_tools,
+                    config.android.battery_status_enabled,
+                    config.android.volume_status_enabled,
+                    config.command.enabled,
+                    authority,
+                )
+            }
+            None => termux_mcp_server::mcp_transport::router(
+                transport_security,
+                file_tools,
+                config.android.battery_status_enabled,
+                config.android.volume_status_enabled,
+                config.command.enabled,
+            ),
+        }
         .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
         .route_layer(middleware::from_fn_with_state(
             mcp_request_limits,
@@ -208,7 +230,80 @@ fn handle_cli() -> anyhow::Result<bool> {
             println!("termux-mcp-command-boundary ok");
             Ok(true)
         }
+        (Some(argument), None) if argument == OsStr::new("--issue-create-directory-grant") => {
+            #[cfg(feature = "mcp-runtime")]
+            {
+                issue_create_directory_grant()?;
+                Ok(true)
+            }
+            #[cfg(not(feature = "mcp-runtime"))]
+            {
+                anyhow::bail!(
+                    "create_directory grant issuance requires a binary built with the mcp-runtime feature"
+                )
+            }
+        }
         _ => anyhow::bail!("unsupported command-line arguments; use --help"),
+    }
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn configured_create_directory_authority(
+    config: &AppConfig,
+) -> anyhow::Result<Option<CreateDirectoryGrantAuthority>> {
+    if !config.file.create_directory_mutation_enabled {
+        return Ok(None);
+    }
+    let key_id = config.capability.key_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("create_directory capability configuration is incomplete")
+    })?;
+    let key = config.capability.hmac_key_hex().ok_or_else(|| {
+        anyhow::anyhow!("create_directory capability configuration is incomplete")
+    })?;
+    let principal = config.auth.static_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("create_directory capability requires static-token authentication")
+    })?;
+    CreateDirectoryGrantAuthority::from_hex_key(key_id, key, principal)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("create_directory capability configuration is invalid"))
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn issue_create_directory_grant() -> anyhow::Result<()> {
+    let config = AppConfig::load()?;
+    if !config.file.create_directory_mutation_enabled {
+        anyhow::bail!("create_directory mutation gate is disabled");
+    }
+    let _ = validate_runtime_auth_posture(&config)?;
+    let authority = configured_create_directory_authority(&config)?
+        .ok_or_else(|| anyhow::anyhow!("create_directory mutation gate is disabled"))?;
+    let session_id = required_grant_environment(CAPABILITY_SESSION_ENV)?;
+    let target_path = required_grant_environment(CAPABILITY_CREATE_DIRECTORY_TARGET_ENV)?;
+    let safe_roots = anchor_safe_roots(config.file.safe_roots)?;
+    let file_tools = FileSystemTools::new(safe_roots);
+    let target = file_tools
+        .create_directory_grant_target(&target_path)
+        .map_err(|_| anyhow::anyhow!("create_directory grant target validation failed"))?;
+    let now_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
+        .as_secs();
+    let grant = authority
+        .issue_at(&session_id, &target, now_unix_seconds)
+        .map_err(|_| anyhow::anyhow!("create_directory grant issuance failed"))?;
+    println!("{grant}");
+    Ok(())
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn required_grant_environment(name: &str) -> anyhow::Result<String> {
+    match std::env::var(name) {
+        Ok(value) if !value.is_empty() => Ok(value),
+        Ok(_) => anyhow::bail!("{name} must not be empty"),
+        Err(std::env::VarError::NotPresent) => anyhow::bail!("{name} is required"),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{name} must contain valid Unicode text")
+        }
     }
 }
 

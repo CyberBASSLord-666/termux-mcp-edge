@@ -40,6 +40,10 @@ use crate::{
         command_profile_ids, COMMAND_EXECUTION_GATE, COMMAND_INVALID_ARGUMENTS_REASON,
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
     },
+    create_directory_grant::{
+        CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER,
+        CREATE_DIRECTORY_GRANT_TTL_SECONDS, MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES,
+    },
     error::AppError,
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
     mcp_session::{McpSessionStore, SessionPhase, SessionStoreError},
@@ -48,9 +52,10 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        FileSystemTools, MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
-        MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES,
-        MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+        AuthorizedCreateDirectoryError, FileSystemTools, PreparedCreateDirectoryMutation,
+        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES,
+        MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
+        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -147,6 +152,7 @@ const FILESYSTEM_CREATE_ALLOWED: &str = "safe_root_directory_created";
 const FILESYSTEM_CREATE_EXISTS: &str = "filesystem_destination_exists";
 const FILESYSTEM_CREATE_PARENT_NOT_FOUND: &str = "filesystem_parent_not_found";
 const FILESYSTEM_CREATE_FAILED: &str = "filesystem_directory_create_failed";
+const FILESYSTEM_CREATE_MUTATION_DISABLED: &str = "create_directory_mutation_disabled";
 const FILESYSTEM_COPY_ALLOWED: &str = "safe_root_file_copied";
 const FILESYSTEM_COPY_SOURCE_NOT_FOUND: &str = "filesystem_copy_source_not_found";
 const FILESYSTEM_COPY_PARENT_NOT_FOUND: &str = "filesystem_copy_parent_not_found";
@@ -176,6 +182,7 @@ struct McpTransportState {
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
     #[cfg(feature = "android-volume-status")]
@@ -191,6 +198,7 @@ impl McpTransportState {
         android_battery_status_enabled: bool,
         android_volume_status_enabled: bool,
         command_execution_enabled: bool,
+        create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     ) -> Self {
         #[cfg(feature = "command-execution")]
         let command_execution_client = CommandExecutionClient::current_server(
@@ -213,6 +221,7 @@ impl McpTransportState {
                 && cfg!(feature = "android-volume-status"),
             command_execution_enabled: command_execution_enabled
                 && cfg!(feature = "command-execution"),
+            create_directory_authority,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
@@ -247,6 +256,7 @@ impl McpTransportState {
             android_battery_status_enabled,
             android_volume_status_enabled: false,
             command_execution_enabled: false,
+            create_directory_authority: None,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
@@ -280,6 +290,7 @@ impl McpTransportState {
             android_battery_status_enabled: false,
             android_volume_status_enabled,
             command_execution_enabled: false,
+            create_directory_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             android_volume_client,
@@ -303,6 +314,7 @@ impl McpTransportState {
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
             command_execution_enabled,
+            create_directory_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
@@ -465,6 +477,28 @@ pub fn router(
         android_battery_status_enabled,
         android_volume_status_enabled,
         command_execution_enabled,
+        None,
+    ))
+}
+
+/// Build the MCP transport with the dedicated `create_directory` mutation gate
+/// enabled. Every mutating call still requires one valid request-scoped grant.
+#[rustfmt::skip]
+pub fn router_with_create_directory_authority(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: CreateDirectoryGrantAuthority,
+) -> Router {
+    router_from_state(McpTransportState::new(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        Some(create_directory_authority),
     ))
 }
 
@@ -525,6 +559,24 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
         );
     }
 
+    let capability_grant = match single_header_value(headers, CREATE_DIRECTORY_GRANT_HEADER) {
+        Ok(Some(value))
+            if !value.is_empty()
+                && value.len() <= MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
+                && value.is_ascii() =>
+        {
+            Some(value.to_owned())
+        }
+        Ok(None) => None,
+        Ok(Some(_)) | Err(()) => {
+            return transport_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_capability_grant_header",
+                "MCP-Capability-Grant must contain exactly one bounded ASCII value.",
+            );
+        }
+    };
+
     let message = match parse_incoming_message(&body) {
         Ok(message) => message,
         Err(JsonRpcEnvelopeError::ParseError { detail }) => {
@@ -549,6 +601,13 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
 
     if let IncomingJsonRpcMessage::Request { id, method, params } = &message {
         if method == "initialize" {
+            if capability_grant.is_some() {
+                return transport_error(
+                    StatusCode::BAD_REQUEST,
+                    "capability_context_not_allowed",
+                    "A request-scoped capability grant is not accepted during initialization.",
+                );
+            }
             if headers.contains_key(MCP_SESSION_ID_HEADER) {
                 return transport_error(
                     StatusCode::BAD_REQUEST,
@@ -567,6 +626,9 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
 
     match message {
         IncomingJsonRpcMessage::Request { id, method, params } => {
+            if capability_grant.is_some() && method != "tools/call" {
+                return capability_context_not_allowed(Some(id));
+            }
             if method == "ping" {
                 return ping_response(Some(id));
             }
@@ -576,7 +638,16 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
 
             match method.as_str() {
                 "tools/list" => tools_list_response(Some(id), state),
-                "tools/call" => handle_tool_call(Some(id), params, state).await,
+                "tools/call" => {
+                    handle_tool_call(
+                        Some(id),
+                        params,
+                        state,
+                        &session_id,
+                        capability_grant.as_deref(),
+                    )
+                    .await
+                }
                 _ => method_not_available(
                     Some(id),
                     "Only ping, tools/list, and tools/call are available after initialization.",
@@ -584,6 +655,9 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
             }
         }
         IncomingJsonRpcMessage::Notification { method, params: _ } => {
+            if capability_grant.is_some() {
+                return capability_context_not_allowed(None);
+            }
             if method == "notifications/initialized" {
                 return match state.sessions.activate(&session_id) {
                     Ok(()) => StatusCode::ACCEPTED.into_response(),
@@ -596,6 +670,9 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
             StatusCode::ACCEPTED.into_response()
         }
         IncomingJsonRpcMessage::Response => {
+            if capability_grant.is_some() {
+                return capability_context_not_allowed(None);
+            }
             if phase != SessionPhase::Active {
                 return server_not_initialized(None);
             }
@@ -1039,6 +1116,45 @@ fn server_not_initialized(id: Option<Value>) -> Response {
 }
 
 #[rustfmt::skip]
+fn capability_context_not_allowed(id: Option<Value>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32600,
+                "message": "Invalid Request",
+                "data": "A request-scoped capability grant is accepted only for create_directory calls.",
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
+fn capability_authorization_denied(
+    id: Option<Value>,
+    reason_code: &'static str,
+) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32003,
+                "message": "Capability authorization denied",
+                "data": {
+                    "reason": reason_code,
+                },
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
 fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response {
     let mut body = json!({
             "jsonrpc": "2.0",
@@ -1240,6 +1356,38 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             },
         });
 
+    let create_directory_tool = body
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+        .and_then(|tools| {
+            tools
+                .iter_mut()
+                .find(|tool| tool.get("name") == Some(&json!(CREATE_DIRECTORY_TOOL)))
+        })
+        .expect("baseline discovery owns create_directory");
+    if state.create_directory_authority.is_some() {
+        create_directory_tool["description"] = json!(
+            "Validate one safe-rooted directory creation, or create it with fixed mode 0700 only when dry_run=false and one request-scoped MCP-Capability-Grant is valid."
+        );
+        let dry_run_schema = create_directory_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("create_directory owns a dry_run schema");
+        dry_run_schema["description"] = json!(
+            "Defaults to true. Explicit false additionally requires the enabled mutation gate and one request-scoped grant."
+        );
+    } else {
+        create_directory_tool["description"] = json!(
+            "Validate one safe-rooted directory creation without mutation; the dedicated mutation gate is disabled."
+        );
+        let dry_run_schema = create_directory_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("create_directory owns a dry_run schema");
+        dry_run_schema["const"] = json!(true);
+        dry_run_schema["description"] = json!(
+            "Mutation is disabled in this runtime posture; omitted dry_run and explicit true are accepted."
+        );
+    }
+
     if state.android_battery_status_enabled {
         body.pointer_mut("/result/tools")
             .and_then(Value::as_array_mut)
@@ -1300,6 +1448,8 @@ async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
     state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
 ) -> Response {
     let params = match params {
         Some(params) => params,
@@ -1310,6 +1460,10 @@ async fn handle_tool_call(
         Ok(call) => call,
         Err(_error) => return invalid_params(id, TOOL_CALL_PARAMS_INVALID),
     };
+
+    if capability_grant.is_some() && call.name != CREATE_DIRECTORY_TOOL {
+        return capability_context_not_allowed(id);
+    }
 
     match call.name.as_str() {
         RUNTIME_STATUS_TOOL => handle_runtime_status_call(id, call.arguments, state),
@@ -1356,8 +1510,9 @@ async fn handle_tool_call(
             handle_create_directory_call(
                 id,
                 call.arguments.into_value(),
-                &state.file_tools,
-                &state.audit_counters,
+                state,
+                session_id,
+                capability_grant,
             )
             .await
         }
@@ -1451,6 +1606,7 @@ fn handle_runtime_status_call(
     runtime_status_response(
         id,
         &state.audit_counters,
+        state.create_directory_authority.is_some(),
         state.android_battery_status_enabled,
         state.android_volume_status_enabled,
         state.command_execution_enabled,
@@ -1795,6 +1951,7 @@ fn available_tools(
 fn runtime_status_response(
     id: Option<Value>,
     audit_counters: &SharedAuditCounters,
+    create_directory_mutation_enabled: bool,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
@@ -1829,6 +1986,11 @@ fn runtime_status_response(
     } else {
         "disabled"
     };
+    let create_directory_mode = if create_directory_mutation_enabled {
+        "dry_run_or_request_scoped_single_use_grant"
+    } else {
+        "dry_run_only_mutation_disabled"
+    };
 
     (
         StatusCode::OK,
@@ -1840,10 +2002,11 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, filesystem=create-directory-copy-file-list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
+                            create_directory_mode,
                             command_execution_mode,
                         ),
                     },
@@ -1863,6 +2026,11 @@ fn runtime_status_response(
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
                     "filesystemToolMode": "create_directory_copy_file_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "createDirectoryMutationEnabled": create_directory_mutation_enabled,
+                    "createDirectoryMutationMode": create_directory_mode,
+                    "createDirectoryGrantRequired": create_directory_mutation_enabled,
+                    "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+                    "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
                     "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled,
@@ -2348,9 +2516,12 @@ async fn handle_read_file_call(
 async fn handle_create_directory_call(
     id: Option<Value>,
     arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-    audit_counters: &SharedAuditCounters,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
 ) -> Response {
+    let file_tools = &state.file_tools;
+    let audit_counters = &state.audit_counters;
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => {
@@ -2412,7 +2583,59 @@ async fn handle_create_directory_call(
             MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
         );
     }
-    match file_tools.create_directory(args.path, Some(dry_run)).await {
+    let operation = if dry_run {
+        file_tools.create_directory(args.path, Some(true)).await
+    } else {
+        let prepared: PreparedCreateDirectoryMutation = match file_tools
+            .prepare_create_directory_mutation(args.path)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return create_directory_filesystem_error(id, audit_counters, mode, error),
+        };
+        let Some(authority) = state.create_directory_authority.clone() else {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_MUTATION_DISABLED,
+            );
+            return capability_authorization_denied(id, FILESYSTEM_CREATE_MUTATION_DISABLED);
+        };
+        let session_id = session_id.to_owned();
+        let capability_grant = capability_grant.map(str::to_owned);
+        match tokio::task::spawn_blocking(move || {
+            prepared.execute_authorized(|target| {
+                authority.consume_at(
+                    capability_grant.as_deref(),
+                    &session_id,
+                    target,
+                    current_unix_seconds(),
+                )
+            })
+        })
+        .await
+        {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(AuthorizedCreateDirectoryError::Authorization(error))) => {
+                record_filesystem_denied(
+                    audit_counters,
+                    CREATE_DIRECTORY_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    error.reason_code(),
+                );
+                return capability_authorization_denied(id, error.reason_code());
+            }
+            Ok(Err(AuthorizedCreateDirectoryError::Filesystem(error))) => Err(error),
+            Err(_error) => Err(AppError::Io(std::io::Error::other(
+                "create directory worker failed",
+            ))),
+        }
+    };
+
+    match operation {
         Ok(result) => {
             let error_id = id.clone();
             let Some(response) = bounded_ok_result(
@@ -2447,7 +2670,19 @@ async fn handle_create_directory_call(
             );
             response
         }
-        Err(AppError::PathTraversal { .. }) => {
+        Err(error) => create_directory_filesystem_error(id, audit_counters, mode, error),
+    }
+}
+
+#[rustfmt::skip]
+fn create_directory_filesystem_error(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    mode: AuditMode,
+    error: AppError,
+) -> Response {
+    match error {
+        AppError::PathTraversal { .. } => {
             record_filesystem_denied(
                 audit_counters,
                 CREATE_DIRECTORY_TOOL,
@@ -2460,7 +2695,7 @@ async fn handle_create_directory_call(
                 "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
             )
         }
-        Err(AppError::PathNotFound) => {
+        AppError::PathNotFound => {
             record_filesystem_denied(
                 audit_counters,
                 CREATE_DIRECTORY_TOOL,
@@ -2470,7 +2705,7 @@ async fn handle_create_directory_call(
             );
             invalid_params(id, "Filesystem parent directory does not exist.")
         }
-        Err(AppError::PathAlreadyExists) => {
+        AppError::PathAlreadyExists => {
             record_filesystem_denied(
                 audit_counters,
                 CREATE_DIRECTORY_TOOL,
@@ -2480,7 +2715,7 @@ async fn handle_create_directory_call(
             );
             invalid_params(id, "Filesystem destination already exists.")
         }
-        Err(_error) => {
+        _error => {
             record_filesystem_denied(
                 audit_counters,
                 CREATE_DIRECTORY_TOOL,
@@ -3262,6 +3497,7 @@ mod tests {
             true,
             true,
             false,
+            None,
         );
 
         let tools = tools_list_response(Some(json!("tools")), &state);
@@ -3296,6 +3532,7 @@ mod tests {
         let runtime = runtime_status_response(
             Some(json!("runtime")),
             &state.audit_counters,
+            state.create_directory_authority.is_some(),
             state.android_battery_status_enabled,
             state.android_volume_status_enabled,
             state.command_execution_enabled,
