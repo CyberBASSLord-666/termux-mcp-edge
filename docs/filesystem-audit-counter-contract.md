@@ -5,6 +5,7 @@ This document defines the staged runtime contract for counting filesystem tool d
 The contract applies to the existing staged filesystem tools:
 
 - `create_directory`
+- `copy_file`
 - `list_directory`
 - `path_metadata`
 - `read_file`
@@ -22,6 +23,8 @@ The runtime should count:
 - allowed safe-rooted directory listings
 - allowed directory-creation dry runs and explicit one-directory mutations
 - denied directory creation, including invalid arguments, safe-root rejection, missing parents, existing destinations, response bounds, and internal failures
+- allowed bounded file-copy previews and explicit fixed-mode mutations
+- denied file copy, including invalid arguments, safe-root rejection, missing source/parent, same path, existing destination, unsupported source, size/response bounds, and internal failures
 - denied directory-listing requests, including invalid arguments and safe-root rejections
 - allowed bounded metadata reads for one safe-rooted regular file or directory
 - denied metadata requests, including invalid arguments, missing objects, unsupported types, safe-root rejections, response bounds, and internal failures
@@ -72,6 +75,8 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 | --- | --- | --- | --- |
 | `create_directory` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
 | `create_directory` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
+| `copy_file` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
+| `copy_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
 | `list_directory` | `read_only` | `read_only` | `filesystem_read` |
 | `path_metadata` | `read_only` | `read_only` | `filesystem_metadata` |
 | `read_file` | `read_only` | `read_only` | `filesystem_read` |
@@ -92,6 +97,7 @@ Recommended allowed reason codes:
 - `safe_root_read`
 - `safe_root_text_searched`
 - `safe_root_directory_created`
+- `safe_root_file_copied`
 - `dry_run_preview`
 - `explicit_write_allowed`
 
@@ -106,6 +112,12 @@ Recommended denied reason codes:
 - `filesystem_parent_not_found`
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
+- `filesystem_copy_source_not_found`
+- `filesystem_copy_parent_not_found`
+- `filesystem_copy_same_path`
+- `filesystem_copy_source_type_unsupported`
+- `filesystem_copy_source_too_large`
+- `filesystem_copy_failed`
 - `path_outside_safe_root`
 - `read_byte_limit_exceeded`
 - `write_byte_limit_exceeded`
@@ -115,7 +127,7 @@ The final runtime implementation may consolidate equivalent failures under fewer
 
 ## Response-contract preservation
 
-Audit counter wiring must not change existing JSON-RPC response shapes for `create_directory`, `list_directory`, `path_metadata`, `read_file`, `search_text`, or `write_file`.
+Audit counter wiring must not change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, or `write_file`.
 
 In particular, runtime wiring must preserve:
 
@@ -132,16 +144,17 @@ In particular, runtime wiring must preserve:
 A focused runtime wiring PR should verify all of the following:
 
 1. `create_directory` records allowed dry-run and mutating decisions and denied missing/existing/boundary/failure decisions without retaining path or temporary-name data.
-2. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.
-3. `list_directory` records a denied read-only filesystem event for invalid arguments, invalid depth, safe-root rejection, and internal operation failure.
-4. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
-5. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
-6. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
-7. `write_file` records an allowed mutating filesystem event for successful explicit writes.
-8. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
-9. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
-10. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
-11. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content.
+2. `copy_file` records allowed preview and explicit-copy decisions plus every stable copy-specific denial without retaining paths, bytes, request ids, source metadata, or temporary names.
+3. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.
+4. `list_directory` records a denied read-only filesystem event for invalid arguments, invalid depth, safe-root rejection, and internal operation failure.
+5. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
+6. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
+7. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
+8. `write_file` records an allowed mutating filesystem event for successful explicit writes.
+9. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
+10. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
+11. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
+12. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content.
 
 ## Security invariant
 

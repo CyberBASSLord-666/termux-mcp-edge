@@ -4,7 +4,7 @@
 
 The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its current limited tool surface.
 
-The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, or the fixed server-diagnostic `run_command_profile`. Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
+The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, or the fixed server-diagnostic `run_command_profile`. Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
 
 The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling.
 
@@ -135,10 +135,10 @@ curl -sS \
   -H 'MCP-Protocol-Version: 2025-11-25' \
   -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 10'
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 11'
 ```
 
-Confirm a normal `mcp-runtime` build returns exactly the ten baseline tools. An optional build still returns ten unless its corresponding runtime flag is true; then its one additional tool is eleventh. An all-feature validation build returns thirteen only when the battery, volume, and command runtime flags are all true. Exercise `create_directory` first with omitted `dry_run` and prove the target remains absent, then with explicit `dry_run: false` and prove one mode-`0700` directory is created without parents or replacement. Exercise `path_metadata` against a regular file and prove the result has exactly the five documented fields, a 16 KiB ceiling, and no content or host identifiers. Exercise `search_text` with a literal match and prove its response contains only bounded path/line/byte-column locations. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
+Confirm a normal `mcp-runtime` build returns exactly the eleven baseline tools. An optional build still returns eleven unless its corresponding runtime flag is true; then its one additional tool is twelfth. An all-feature validation build returns fourteen only when the battery, volume, and command runtime flags are all true. Exercise `create_directory` in preview and explicit mode. Exercise `copy_file` with binary content in preview and explicit mode, prove fixed mode `0600`, exact bytes, absent-destination/no-replace behavior, one-byte-over rejection, content-private responses, and pre-mutation full-response bounding. Exercise `path_metadata` and literal `search_text` under their documented content-free ceilings. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
 
 Validate the project-owned service status tool with the current allowlisted service name:
 

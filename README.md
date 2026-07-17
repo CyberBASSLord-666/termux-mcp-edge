@@ -14,8 +14,8 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
-- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
-- **Filesystem surface:** deterministic bounded directory listing, single-object metadata, UTF-8 reads, literal text search, one-directory creation, and file writes. Both mutations are descriptor-relative, crash-durable, and dry-run by default. Directory creation requires an existing parent, fixed mode `0700`, and atomic no-replace publication; it never creates parents or replaces an object. Metadata returns only normalized path, regular-file/directory kind, file size, and optional modification time under a 16 KiB response ceiling. Search returns only file/line/byte-column locations under fixed traversal, file, aggregate-byte, match, and response ceilings. Deterministic pre-open and post-open exchange tests preserve the no-follow race-hardening delivered through #200.
+- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
+- **Filesystem surface:** deterministic bounded directory listing, single-object metadata, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, and file writes. Mutations are descriptor-relative, crash-durable, and dry-run by default. Directory creation requires an existing parent, fixed mode `0700`, and atomic no-replace publication. File copy accepts one regular source up to 1 MiB, requires an absent destination with an existing parent, publishes fixed mode `0600` without replacement, and never returns content or preserves source metadata. Metadata and search remain content-private under fixed response and traversal ceilings. Deterministic descriptor-exchange tests preserve the no-follow race-hardening delivered through #200.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
@@ -100,7 +100,7 @@ Authentication is the outer gate, so unauthenticated traffic does not consume MC
 
 ## Filesystem safe roots
 
-The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live create/list/metadata/read/search/write operations walk from an opened safe-root descriptor with no-follow semantics for every descendant instead of authorizing one pathname and using it later. [`docs/SAFE_ROOT_DIRECTORY_CREATION.md`](docs/SAFE_ROOT_DIRECTORY_CREATION.md) defines the single-directory dry-run and atomic-publication boundary; [`docs/SAFE_ROOT_PATH_METADATA.md`](docs/SAFE_ROOT_PATH_METADATA.md) defines metadata; [`docs/SAFE_ROOT_TEXT_SEARCH.md`](docs/SAFE_ROOT_TEXT_SEARCH.md) defines literal-search limits.
+The service does not default to broad Android shared storage. Keep `MCP__FILE__SAFE_ROOTS` limited to dedicated project directories. Empty root lists or entries, relative roots, filesystem root `/`, traversal, and symlink components are rejected. Live create/copy/list/metadata/read/search/write operations walk from opened safe-root descriptors with no-follow semantics for every descendant instead of authorizing one pathname and using it later. [`docs/SAFE_ROOT_DIRECTORY_CREATION.md`](docs/SAFE_ROOT_DIRECTORY_CREATION.md) defines directory creation; [`docs/SAFE_ROOT_FILE_COPY.md`](docs/SAFE_ROOT_FILE_COPY.md) defines bounded content-private file copy; [`docs/SAFE_ROOT_PATH_METADATA.md`](docs/SAFE_ROOT_PATH_METADATA.md) defines metadata; [`docs/SAFE_ROOT_TEXT_SEARCH.md`](docs/SAFE_ROOT_TEXT_SEARCH.md) defines literal-search limits.
 
 ## Optional Android battery telemetry
 
@@ -197,6 +197,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [MCP runtime validation plan](docs/MCP_RESTORATION_VALIDATION.md)
 - [MCP runtime roadmap](docs/MCP_RUNTIME_ROADMAP.md)
 - [Safe-rooted directory creation contract](docs/SAFE_ROOT_DIRECTORY_CREATION.md)
+- [Safe-rooted file copy contract](docs/SAFE_ROOT_FILE_COPY.md)
 - [Safe-rooted path metadata contract](docs/SAFE_ROOT_PATH_METADATA.md)
 - [Safe-rooted text-search contract](docs/SAFE_ROOT_TEXT_SEARCH.md)
 - [Android artifact contract](docs/ANDROID_ARTIFACTS.md)

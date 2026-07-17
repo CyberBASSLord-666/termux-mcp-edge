@@ -27,6 +27,7 @@ The confirmed implementation lanes have focused merge evidence:
 - #206: deterministic response byte/cardinality bounds and happy/boundary coverage.
 - #240: descriptor-relative literal text search with fixed traversal, file, byte, match, response, and audit bounds.
 - #242: descriptor-relative single-object metadata with content/identifier minimization and a fixed full-response bound.
+- #247: bounded binary-safe file copy with held source/destination descriptors, atomic no-replace publication, fixed mode, response preflight, identity-safe cleanup, and content-private audit evidence.
 - #244: dry-run-first one-directory creation with fixed mode, no-replace publication, durability sync, and identity-checked cleanup.
 
 Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, every published Android posture is retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
@@ -102,9 +103,9 @@ A change to the stable transport or staged tool registry must prove:
 - notifications and client responses receive HTTP 202 with no body, batches remain rejected, and GET returns the documented 405 without creating SSE/replay state;
 - notification-shaped tool calls cannot dispatch or mutate state;
 - unauthenticated callers cannot discover or invoke tools;
-- discovery lists exactly ten baseline tools, plus only those battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled (eleven with one, twelve with two, thirteen with all three);
+- discovery lists exactly eleven baseline tools, plus only those battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled (twelve with one, thirteen with two, fourteen with all three);
 - every tool call enforces its advertised closed input schema, including the omitted-or-empty contract for no-argument tools;
-- filesystem tools remain safe-rooted and bounded; directory/file mutations remain dry-run-first, directory creation is fixed-mode/no-replace/non-recursive, metadata is descriptor-classified/content-free, and search is literal/content-free;
+- filesystem tools remain safe-rooted and bounded; mutations remain dry-run-first; directory creation is fixed-mode/no-replace/non-recursive; file copy is single-regular-file, 1 MiB, binary-safe, fixed-mode, content-private, and no-replace; metadata is descriptor-classified/content-free; and search is literal/content-free;
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
 - errors and audit counters retain only stable non-sensitive data;
 - arbitrary command execution, Android control, shell fallback, and other high-impact tools remain absent; fixed server diagnostics appear only in their explicit posture.

@@ -111,6 +111,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
             "create_directory",
             "create_directory requires a path argument.",
         ),
+        (
+            "copy_file",
+            "copy_file requires source_path and destination_path arguments.",
+        ),
         ("list_directory", "list_directory requires a path argument."),
         ("path_metadata", "path_metadata requires a path argument."),
         ("read_file", "read_file requires a path argument."),
@@ -173,6 +177,8 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     let source = root.path().join("source.txt");
     let directory_preview = root.path().join("directory-preview");
     let directory_mutation = root.path().join("directory-mutation");
+    let copy_preview = root.path().join("copy-preview.txt");
+    let copy_mutation = root.path().join("copy-mutation.txt");
     let dry_run_target = root.path().join("dry-run-target.txt");
     let mutation_target = root.path().join("mutation-target.txt");
     tokio::fs::write(&source, "safe content").await.unwrap();
@@ -192,6 +198,23 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             "create-directory-full",
             "create_directory",
             json!({"path": directory_mutation.to_string_lossy(), "dry_run": false}),
+        ),
+        (
+            "copy-file-minimal",
+            "copy_file",
+            json!({
+                "source_path": source.to_string_lossy(),
+                "destination_path": copy_preview.to_string_lossy()
+            }),
+        ),
+        (
+            "copy-file-full",
+            "copy_file",
+            json!({
+                "source_path": source.to_string_lossy(),
+                "destination_path": copy_mutation.to_string_lossy(),
+                "dry_run": false
+            }),
         ),
         (
             "list-minimal",
@@ -251,6 +274,11 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     assert!(!dry_run_target.exists());
     assert!(!directory_preview.exists());
     assert!(directory_mutation.is_dir());
+    assert!(!copy_preview.exists());
+    assert_eq!(
+        tokio::fs::read_to_string(&copy_mutation).await.unwrap(),
+        "safe content"
+    );
     assert_eq!(
         tokio::fs::read_to_string(&mutation_target).await.unwrap(),
         "explicit mutation"
@@ -277,6 +305,14 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
         (
             "create_directory",
             json!({"path": root.path().join("directory").to_string_lossy(), "unexpected": true}),
+        ),
+        (
+            "copy_file",
+            json!({
+                "source_path": source.to_string_lossy(),
+                "destination_path": root.path().join("copy").to_string_lossy(),
+                "unexpected": true
+            }),
         ),
         (
             "list_directory",
@@ -335,6 +371,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
     for tool_name in [
         "project_service_status",
         "create_directory",
+        "copy_file",
         "list_directory",
         "path_metadata",
         "read_file",
@@ -367,6 +404,28 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         (
             "create_directory",
             json!({"path": root.path().join("directory").to_string_lossy(), "dry_run": "false"}),
+        ),
+        (
+            "copy_file",
+            json!({
+                "source_path": false,
+                "destination_path": root.path().join("copy-a").to_string_lossy()
+            }),
+        ),
+        (
+            "copy_file",
+            json!({
+                "source_path": source.to_string_lossy(),
+                "destination_path": false
+            }),
+        ),
+        (
+            "copy_file",
+            json!({
+                "source_path": source.to_string_lossy(),
+                "destination_path": root.path().join("copy-b").to_string_lossy(),
+                "dry_run": "false"
+            }),
         ),
         ("list_directory", json!({"path": false})),
         (

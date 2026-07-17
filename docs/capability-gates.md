@@ -11,6 +11,7 @@ Enabled staged tools:
 - `android_status`
 - `project_service_status`
 - `create_directory` for exactly one absent safe-rooted directory, dry-run by default, fixed mode `0700`, and atomic no-replace publication
+- `copy_file` for exactly one no-follow regular source of at most 1 MiB and one absent safe-rooted destination, dry-run by default, fixed mode `0600`, content-private response/audit surfaces, and atomic no-replace publication
 - `list_directory`
 - `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers
 - `read_file`

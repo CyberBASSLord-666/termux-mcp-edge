@@ -376,7 +376,7 @@ for sample in $(seq 1 "$SAMPLES"); do
 
   post_mcp '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}' "$SESSION_ID"
   [[ "$MCP_STATUS" == 200 ]] || fail stress_tools_status_invalid
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","list_directory","path_metadata","read_file","search_text","write_file"]' "$BODY_FILE" >/dev/null || fail stress_tool_allowlist_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$BODY_FILE" >/dev/null || fail stress_tool_allowlist_invalid
 
   if ((sample % 16 == 0)); then
     post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"

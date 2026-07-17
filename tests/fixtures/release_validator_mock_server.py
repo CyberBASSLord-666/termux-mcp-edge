@@ -24,6 +24,7 @@ TOOLS = [
     "android_status",
     "project_service_status",
     "create_directory",
+    "copy_file",
     "list_directory",
     "path_metadata",
     "read_file",
@@ -358,6 +359,56 @@ class Handler(BaseHTTPRequestHandler):
                         "path": str(target),
                         "dryRun": dry_run,
                         "mode": "0700",
+                        "maxResponseBytes": 16384,
+                    },
+                ),
+            )
+            return
+        if name == "copy_file":
+            source = safe_path(str(arguments.get("source_path", "")))
+            destination = safe_path(str(arguments.get("destination_path", "")))
+            dry_run = arguments.get("dry_run", True)
+            if (
+                source is None
+                or destination is None
+                or not isinstance(dry_run, bool)
+                or source == destination
+                or source.is_symlink()
+                or not source.is_file()
+                or not destination.parent.is_dir()
+                or destination.exists()
+                or destination.is_symlink()
+            ):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "File copy invalid."),
+                )
+                return
+            content = source.read_bytes()
+            if len(content) > 1048576:
+                self.send_json(
+                    413,
+                    rpc_error(identifier, -32001, "Payload too large", "File copy too large."),
+                )
+                return
+            if not dry_run:
+                descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                destination.chmod(0o600)
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "sourcePath": str(source),
+                        "destinationPath": str(destination),
+                        "dryRun": dry_run,
+                        "sizeBytes": len(content),
+                        "mode": "0600",
+                        "maxFileBytes": 1048576,
                         "maxResponseBytes": 16384,
                     },
                 ),
