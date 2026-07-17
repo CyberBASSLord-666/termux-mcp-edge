@@ -1,6 +1,8 @@
 # Capability-token evaluation contract
 
-Termux MCP Edge treats high-impact capability tokens as future authorization metadata, not as an enabled runtime surface. The current primitives in `src/capability_token.rs` are intentionally inert: they model decisions for later review without accepting, generating, persisting, serializing, or validating raw bearer tokens or secrets.
+Termux MCP Edge treats the general high-impact capability-token model as future authorization metadata, not as an enabled runtime surface. The primitives in `src/capability_token.rs` remain intentionally inert: they model decisions for later review without accepting, generating, persisting, serializing, or validating raw bearer tokens or secrets.
+
+This module is distinct from the live, purpose-built `create_directory` request grant in `src/create_directory_grant.rs`. That narrow HMAC primitive authorizes only one already-confined absent directory target and is specified in [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md); it does not activate this general high-impact framework.
 
 This contract defines the minimum integration boundary for any later PR that evaluates high-impact capability grants.
 

@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="1"
+readonly VALIDATOR_VERSION="2"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -26,7 +26,8 @@ Options:
       all         Run preflight, isolated runtime checks, and deployment checks.
   --confirm-runtime-mutation
       Permit creation of a dedicated temporary directory below the configured safe root,
-      direct candidate process startup, and one explicit write inside that directory.
+      direct candidate process startup, and bounded isolated filesystem mutations,
+      including one request-granted directory creation, inside that directory.
   --confirm-deployment-mutation
       Permit termux_deploy.sh to exercise install/upgrade/recovery/rollback/uninstall.
   --production-action install|upgrade|upgrade-failure|rollback|uninstall
@@ -153,6 +154,10 @@ COMPLETED=0
 CURRENT_PHASE="preflight"
 MCP_TOKEN=""
 MCP_SESSION_ID=""
+CAPABILITY_KEY_ID="release-validator-1"
+CAPABILITY_KEY_HEX=""
+CAPABILITY_GRANT_FILE=""
+CAPABILITY_RUNTIME_CONFIG_FILE=""
 AUTH_HEADER_FILE=""
 REQUEST_FILE=""
 SESSION_HEADER_FILE=""
@@ -209,7 +214,7 @@ early_cleanup() {
   exit "$status"
 }
 
-for command_name in bash awk curl date dd dirname file grep install jq ln mktemp mkdir mv readlink realpath rm sha256sum stat timeout uname wc cmp chmod kill seq sleep tr; do
+for command_name in bash awk curl date dd dirname env file grep install jq ln mktemp mkdir mv readlink realpath rm rmdir sha256sum stat timeout uname wc cmp chmod kill seq sleep tr; do
   require_command "$command_name"
 done
 
@@ -521,7 +526,7 @@ cleanup() {
   if [[ -z "$PRODUCTION_ACTION" ]]; then
     cleanup_dedicated_deployment || cleanup_failed=1
   fi
-  unset MCP_TOKEN MCP_SESSION_ID 2>/dev/null || true
+  unset MCP_TOKEN MCP_SESSION_ID CAPABILITY_KEY_HEX 2>/dev/null || true
   if ((cleanup_failed != 0)); then
     FAILURE_CODE=cleanup_unconfirmed
     status=1
@@ -661,14 +666,22 @@ prepare_runtime_inputs() {
   MCP_TOKEN="$(<"$AUTH_TOKEN_FILE")"
   ((${#MCP_TOKEN} == token_bytes)) || fail auth_token_invalid
   [[ "$MCP_TOKEN" =~ ^[!-~]+$ ]] || fail auth_token_invalid
+  if [[ -z "$CAPABILITY_KEY_HEX" ]]; then
+    CAPABILITY_KEY_HEX="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')" || fail capability_key_generation_failed
+    [[ "$CAPABILITY_KEY_HEX" =~ ^[0-9a-f]{64}$ ]] || fail capability_key_generation_failed
+  fi
   if [[ -z "$AUTH_HEADER_FILE" ]]; then
     AUTH_HEADER_FILE="$TEMP_ROOT/auth-header.txt"
     REQUEST_FILE="$TEMP_ROOT/request.json"
     SESSION_HEADER_FILE="$TEMP_ROOT/session-headers.txt"
+    CAPABILITY_GRANT_FILE="$TEMP_ROOT/create-directory-grant.txt"
+    CAPABILITY_RUNTIME_CONFIG_FILE="$TEMP_ROOT/capability-runtime.env"
     printf 'Authorization: Bearer %s\n' "$MCP_TOKEN" >"$AUTH_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
-    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
+    : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
+    : >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
+    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
   fi
   [[ "$SAFE_ROOT" == /* && -d "$SAFE_ROOT" && ! -L "$SAFE_ROOT" ]] || fail safe_root_invalid
   SAFE_ROOT="${SAFE_ROOT%/}"
@@ -680,17 +693,26 @@ prepare_runtime_inputs() {
   fi
   if [[ -n "$VALIDATION_SAFE_ROOT" ]]; then
     [[ -d "$VALIDATION_SAFE_ROOT" && ! -L "$VALIDATION_SAFE_ROOT" ]] || fail validation_safe_root_invalid
-    return 0
+  else
+    VALIDATION_SAFE_ROOT="$SAFE_ROOT/.termux-mcp-release-validation-$RUN_ID"
+    [[ ! -e "$VALIDATION_SAFE_ROOT" && ! -L "$VALIDATION_SAFE_ROOT" ]] || fail validation_safe_root_exists
+    mkdir -m 700 -- "$VALIDATION_SAFE_ROOT" 2>/dev/null || fail validation_safe_root_create_failed
+    printf '%s' validation-visible >"$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
+    chmod 600 "$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
+    local index
+    for index in $(seq 1 64); do
+      printf 'entry-%03d' "$index" >"$VALIDATION_SAFE_ROOT/entry-$(printf '%03d' "$index").txt" 2>/dev/null || fail validation_safe_root_write_failed
+    done
   fi
-  VALIDATION_SAFE_ROOT="$SAFE_ROOT/.termux-mcp-release-validation-$RUN_ID"
-  [[ ! -e "$VALIDATION_SAFE_ROOT" && ! -L "$VALIDATION_SAFE_ROOT" ]] || fail validation_safe_root_exists
-  mkdir -m 700 -- "$VALIDATION_SAFE_ROOT" 2>/dev/null || fail validation_safe_root_create_failed
-  printf '%s' validation-visible >"$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
-  chmod 600 "$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null || fail validation_safe_root_write_failed
-  local index
-  for index in $(seq 1 64); do
-    printf 'entry-%03d' "$index" >"$VALIDATION_SAFE_ROOT/entry-$(printf '%03d' "$index").txt" 2>/dev/null || fail validation_safe_root_write_failed
-  done
+  printf '%s\n' \
+    "MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN" \
+    'MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false' \
+    "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT" \
+    'MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true' \
+    "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID" \
+    "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
+    >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail capability_runtime_config_failed
+  chmod 600 "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail capability_runtime_config_failed
 }
 
 curl_local() {
@@ -710,34 +732,81 @@ stage_request() {
   printf '%s' "$1" >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
 }
 
+valid_capability_grant() {
+  local grant="$1" prefix remainder payload signature
+  prefix="v1.${CAPABILITY_KEY_ID}."
+  [[ "$grant" == "$prefix"* ]] || return 1
+  remainder="${grant#"$prefix"}"
+  [[ "$remainder" == *.* ]] || return 1
+  payload="${remainder%%.*}"
+  signature="${remainder#*.}"
+  [[ "$signature" != *.* ]] || return 1
+  ((${#payload} == 260 && ${#signature} == 64)) || return 1
+  [[ "$payload$signature" != *[!0-9a-f]* ]]
+}
+
 stage_session_headers() {
-  local session_id="${1:-}" include_protocol="${2:-1}"
+  local session_id="${1:-}" include_protocol="${2:-1}" grant_file="${3:-}" grant=""
   {
     printf 'Authorization: Bearer %s\n' "$MCP_TOKEN"
     [[ -z "$session_id" ]] || printf 'MCP-Session-Id: %s\n' "$session_id"
     if [[ -n "$session_id" && "$include_protocol" != 0 ]]; then
       printf 'MCP-Protocol-Version: %s\n' "$MCP_PROTOCOL_VERSION"
     fi
+    if [[ -n "$grant_file" ]]; then
+      validate_private_file "$grant_file" capability_grant_file_invalid
+      grant="$(<"$grant_file")"
+      valid_capability_grant "$grant" || fail capability_grant_output_invalid
+      printf 'MCP-Capability-Grant: %s\n' "$grant"
+    fi
   } >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
+  unset grant
   chmod 600 "$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
+}
+
+issue_create_directory_grant() {
+  local target="$1"
+  : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail capability_grant_staging_failed
+  chmod 600 "$CAPABILITY_GRANT_FILE" 2>/dev/null || fail capability_grant_staging_failed
+  if ! MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_RUNTIME_CONFIG_FILE" \
+    MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+    MCP__CAPABILITY__CREATE_DIRECTORY_TARGET="$target" \
+      "$MCP_PINNED_ARTIFACT" --issue-create-directory-grant >"$CAPABILITY_GRANT_FILE" 2>/dev/null
+  then
+    fail capability_grant_issue_failed
+  fi
+  [[ "$(wc -l <"$CAPABILITY_GRANT_FILE" 2>/dev/null)" == 1 ]] || fail capability_grant_output_invalid
+  local grant
+  grant="$(<"$CAPABILITY_GRANT_FILE")"
+  valid_capability_grant "$grant" || fail capability_grant_output_invalid
+  unset grant
 }
 
 start_server() {
   local artifact="$1" posture="$2"
   local log_file="$TEMP_ROOT/server-$posture.log"
-  MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
-  MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
-  MCP__SERVER__HOST="$BIND_HOST" \
-  MCP__SERVER__PORT="$PORT" \
-  MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT" \
-  MCP__TRANSPORT__ALLOWED_ORIGINS="http://localhost:$PORT,http://127.0.0.1:$PORT" \
-  MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false \
-  MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4 \
-  MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
-  MCP__TRANSPORT__MAX_BODY_BYTES=1024 \
-  MCP__FILE__SAFE_ROOTS="$VALIDATION_SAFE_ROOT" \
-  RUST_LOG=termux_mcp_server=info \
-    "$artifact" >"$log_file" 2>&1 &
+  local -a environment=(
+    "MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN"
+    "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false"
+    "MCP__SERVER__HOST=$BIND_HOST"
+    "MCP__SERVER__PORT=$PORT"
+    "MCP__TRANSPORT__ALLOWED_HOSTS=localhost:$PORT,127.0.0.1:$PORT"
+    "MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:$PORT,http://127.0.0.1:$PORT"
+    "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false"
+    "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4"
+    "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30"
+    "MCP__TRANSPORT__MAX_BODY_BYTES=1024"
+    "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT"
+    "RUST_LOG=termux_mcp_server=info"
+  )
+  if [[ "$posture" == mcp ]]; then
+    environment+=(
+      "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true"
+      "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
+      "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
+    )
+  fi
+  env "${environment[@]}" "$artifact" >"$log_file" 2>&1 &
   SERVER_PID=$!
   local attempt
   for attempt in $(seq 1 80); do
@@ -758,9 +827,9 @@ expect_status() {
 }
 
 mcp_post() {
-  local output="$1" payload="$2" session_id="${3:-}" include_protocol="${4:-1}"
+  local output="$1" payload="$2" session_id="${3:-}" include_protocol="${4:-1}" grant_file="${5:-}"
   stage_request "$payload"
-  stage_session_headers "$session_id" "$include_protocol"
+  stage_session_headers "$session_id" "$include_protocol" "$grant_file"
   local -a args=(
     -sS -o "$output" -w '%{http_code}'
     -H "@$SESSION_HEADER_FILE"
@@ -800,7 +869,7 @@ run_default_runtime_checks() {
 
 run_mcp_runtime_checks() {
   local body="$TEMP_ROOT/mcp-response.json" headers="$TEMP_ROOT/mcp-headers.txt"
-  local second="$TEMP_ROOT/mcp-second.json" status payload oversized bytes
+  local second="$TEMP_ROOT/mcp-second.json" status payload oversized bytes directory_target mismatch_target
   start_server "$MCP_PINNED_ARTIFACT" mcp
   curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null || fail mcp_readiness_failed
   jq -e --arg version "$EXPECTED_VERSION" '
@@ -887,12 +956,28 @@ run_mcp_runtime_checks() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
   jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '
+    .result.tools
+    | map(select(.name == "create_directory"))[0] as $tool
+    | ($tool.inputSchema.properties.dry_run | has("const") | not)
+      and ($tool.inputSchema.additionalProperties == false)
+      and ($tool.description | contains("MCP-Capability-Grant"))
+  ' "$body" >/dev/null 2>&1 || fail create_directory_grant_discovery_invalid
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status high_impact_gates "$status" 200 high_impact_status_read
-  jq -e '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false' "$body" >/dev/null 2>&1 || fail high_impact_gate_enabled
+  jq -e '
+    .result.structuredContent.commandExecution == false
+    and .result.structuredContent.androidPlatformTools == false
+    and .result.structuredContent.highImpactTools == false
+    and .result.structuredContent.createDirectoryMutationEnabled == true
+    and .result.structuredContent.createDirectoryGrantRequired == true
+    and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.createDirectoryGrantTtlSeconds == 60
+    and .result.structuredContent.createDirectoryMutationMode == "dry_run_or_request_scoped_single_use_grant"
+  ' "$body" >/dev/null 2>&1 || fail high_impact_gate_enabled
 
   payload='{"jsonrpc":"2.0","id":"platform","method":"tools/call","params":{"name":"platform_info","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1010,10 +1095,31 @@ run_mcp_runtime_checks() {
   ' "$body" >/dev/null 2>&1 || fail search_response_contract_invalid
   grep -Fq validation-visible "$body" && fail search_query_or_content_reflected
 
-  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/created-directory" '{"jsonrpc":"2.0","id":"create-directory-dry","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path}}}')"
+  directory_target="$VALIDATION_SAFE_ROOT/created-directory"
+  mismatch_target="$VALIDATION_SAFE_ROOT/create-directory-mismatch"
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory-missing-grant","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status create_directory_missing_grant "$status" 403 create_directory_missing_grant_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_missing"' "$body" >/dev/null 2>&1 || fail create_directory_missing_grant_body_invalid
+  [[ ! -e "$directory_target" ]] || fail create_directory_missing_grant_mutated
+
+  issue_create_directory_grant "$directory_target"
+
+  payload='{"jsonrpc":"2.0","id":"grant-wrong-context","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
+  expect_status create_directory_grant_context "$status" 400 create_directory_grant_wrong_context_rejected
+  jq -e '.error.code == -32600' "$body" >/dev/null 2>&1 || fail create_directory_grant_context_body_invalid
+
+  payload="$(jq -cn --arg path "$mismatch_target" '{"jsonrpc":"2.0","id":"create-directory-mismatch","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
+  expect_status create_directory_grant_binding "$status" 403 create_directory_grant_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail create_directory_grant_binding_body_invalid
+  [[ ! -e "$mismatch_target" ]] || fail create_directory_grant_binding_mutated
+
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory-dry","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
   expect_status create_directory_dry_run "$status" 200 create_directory_dry_run_succeeded
-  jq -e --arg path "$VALIDATION_SAFE_ROOT/created-directory" '
+  jq -e --arg path "$directory_target" '
     .result.structuredContent == {
       path:$path,
       dryRun:true,
@@ -1021,12 +1127,12 @@ run_mcp_runtime_checks() {
       maxResponseBytes:16384
     }
   ' "$body" >/dev/null 2>&1 || fail create_directory_dry_run_contract_invalid
-  [[ ! -e "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_dry_run_mutated
+  [[ ! -e "$directory_target" ]] || fail create_directory_dry_run_mutated
 
-  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/created-directory" '{"jsonrpc":"2.0","id":"create-directory","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  payload="$(jq -cn --arg path "$directory_target" '{"jsonrpc":"2.0","id":"create-directory","method":"tools/call","params":{"name":"create_directory","arguments":{"path":$path,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
   expect_status create_directory "$status" 200 create_directory_succeeded
-  jq -e --arg path "$VALIDATION_SAFE_ROOT/created-directory" '
+  jq -e --arg path "$directory_target" '
     .result.structuredContent == {
       path:$path,
       dryRun:false,
@@ -1034,13 +1140,20 @@ run_mcp_runtime_checks() {
       maxResponseBytes:16384
     }
   ' "$body" >/dev/null 2>&1 || fail create_directory_contract_invalid
-  [[ -d "$VALIDATION_SAFE_ROOT/created-directory" ]] || fail create_directory_target_missing
-  [[ "$(stat -c '%a' "$VALIDATION_SAFE_ROOT/created-directory" 2>/dev/null)" == 700 ]] || fail create_directory_mode_invalid
+  [[ -d "$directory_target" ]] || fail create_directory_target_missing
+  [[ "$(stat -c '%a' "$directory_target" 2>/dev/null)" == 700 ]] || fail create_directory_mode_invalid
   record_result runtime create_directory pass safe_root_directory_creation_verified
 
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
   expect_status create_directory_existing "$status" 400 create_directory_existing_rejected
   jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail create_directory_existing_body_invalid
+
+  rmdir -- "$directory_target" 2>/dev/null || fail create_directory_replay_fixture_cleanup_failed
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
+  expect_status create_directory_replay "$status" 403 create_directory_grant_replay_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"' "$body" >/dev/null 2>&1 || fail create_directory_replay_body_invalid
+  [[ ! -e "$directory_target" ]] || fail create_directory_replay_mutated
+  record_result runtime create_directory_grant pass request_scoped_single_use_grant_enforced
 
   printf 'validation-copy\000\377binary' >"$VALIDATION_SAFE_ROOT/copy-source.bin" 2>/dev/null || fail copy_file_fixture_create_failed
   chmod 777 "$VALIDATION_SAFE_ROOT/copy-source.bin" 2>/dev/null || fail copy_file_fixture_create_failed

@@ -4,20 +4,101 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import pathlib
+import re
+import stat
+import struct
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
+def load_literal_runtime_config() -> tuple[bool, dict[str, str]]:
+    raw_path = os.environ.get("MCP__CAPABILITY__CONFIG_FILE")
+    if raw_path is None:
+        return False, {}
+    path = pathlib.Path(raw_path)
+    if not path.is_absolute():
+        raise SystemExit(2)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o077
+                or not metadata.st_mode & 0o400
+                or metadata.st_size > 65_536
+            ):
+                raise SystemExit(2)
+            chunks: list[bytes] = []
+            total = 0
+            while total < 65_537:
+                chunk = os.read(descriptor, 65_537 - total)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            content = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        raise SystemExit(2) from error
+    if len(content) > 65_536 or b"\r" in content or b"\0" in content:
+        raise SystemExit(2)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SystemExit(2) from error
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise SystemExit(2)
+        name, value = line.split("=", 1)
+        if (
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None
+            or not (name.startswith("MCP__") or name in {"RUST_LOG", "RUST_BACKTRACE"})
+            or name in values
+        ):
+            raise SystemExit(2)
+        values[name] = value
+    return True, values
+
+
+CONFIG_FILE_ACTIVE, RUNTIME_CONFIG = load_literal_runtime_config()
+
+
+def runtime_value(name: str, default: str | None = None) -> str | None:
+    if CONFIG_FILE_ACTIVE:
+        return RUNTIME_CONFIG.get(name, default)
+    return os.environ.get(name, default)
+
+
 POSTURE = sys.argv[1]
-VERSION = sys.argv[2]
-PORT = int(os.environ["MCP__SERVER__PORT"])
-TOKEN = os.environ["MCP__AUTH__STATIC_TOKEN"]
-SAFE_ROOT = pathlib.Path(os.environ["MCP__FILE__SAFE_ROOTS"]).resolve()
-MAX_BODY = int(os.environ["MCP__TRANSPORT__MAX_BODY_BYTES"])
+VERSION = sys.argv[2] if len(sys.argv) > 2 else ""
+PORT = int(runtime_value("MCP__SERVER__PORT", "0") or "0")
+TOKEN = runtime_value("MCP__AUTH__STATIC_TOKEN")
+SAFE_ROOT_VALUE = runtime_value("MCP__FILE__SAFE_ROOTS")
+if TOKEN is None or SAFE_ROOT_VALUE is None:
+    raise SystemExit(2)
+SAFE_ROOT = pathlib.Path(SAFE_ROOT_VALUE).resolve()
+MAX_BODY = int(runtime_value("MCP__TRANSPORT__MAX_BODY_BYTES", "1024") or "1024")
 SESSION_ID = "fixture-session-00000000"
+CAPABILITY_ENABLED = (
+    runtime_value("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED", "false") == "true"
+)
+CAPABILITY_KEY_ID = runtime_value("MCP__CAPABILITY__KEY_ID", "") or ""
+CAPABILITY_KEY_HEX = runtime_value("MCP__CAPABILITY__HMAC_KEY_HEX", "") or ""
+CAPABILITY_HEADER = "MCP-Capability-Grant"
+CONSUMED_GRANTS: set[bytes] = set()
 TOOLS = [
     "runtime_status",
     "platform_info",
@@ -57,6 +138,18 @@ def rpc_error(identifier: Any, code: int, message: str, data: str) -> dict[str, 
     }
 
 
+def capability_error(identifier: Any, reason: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": identifier,
+        "error": {
+            "code": -32003,
+            "message": "Capability authorization denied",
+            "data": {"reason": reason},
+        },
+    }
+
+
 def safe_path(raw: str) -> pathlib.Path | None:
     try:
         candidate = pathlib.Path(raw)
@@ -69,6 +162,99 @@ def safe_path(raw: str) -> pathlib.Path | None:
         return resolved
     except (OSError, ValueError):
         return None
+
+
+def grant_binding(session_id: str, target: pathlib.Path) -> bytes:
+    relative = target.relative_to(SAFE_ROOT)
+    root_stat = SAFE_ROOT.stat()
+    key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    principal = hmac.new(
+        key,
+        b"termux-mcp:static-principal:v1\0" + TOKEN.encode(),
+        hashlib.sha256,
+    ).digest()
+    digest = hashlib.sha256()
+    digest.update(b"termux-mcp-release-fixture:create-directory:v1\0")
+    for value in (principal, session_id.encode()):
+        digest.update(struct.pack(">I", len(value)))
+        digest.update(value)
+    digest.update(struct.pack(">QQ", root_stat.st_dev, root_stat.st_ino))
+    for component in relative.parts:
+        encoded = os.fsencode(component)
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+    digest.update(b"filesystem.create-directory\0mutating")
+    return digest.digest()
+
+
+def issue_fixture_grant() -> str:
+    if not CAPABILITY_ENABLED:
+        raise SystemExit(2)
+    try:
+        key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    except ValueError as error:
+        raise SystemExit(2) from error
+    if len(key) != 32 or not CAPABILITY_KEY_ID:
+        raise SystemExit(2)
+    session_id = os.environ.get("MCP__CAPABILITY__SESSION_ID", "")
+    target = safe_path(os.environ.get("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", ""))
+    if not session_id or target is None or target.exists() or not target.parent.is_dir():
+        raise SystemExit(2)
+    issued = int(time.time())
+    payload = (
+        os.urandom(16)
+        + grant_binding(session_id, target)
+        + struct.pack(">QQ", issued, issued + 60)
+        + bytes(66)
+    )
+    if len(payload) != 130:
+        raise SystemExit(2)
+    signed = f"v1.{CAPABILITY_KEY_ID}.{payload.hex()}"
+    signature = hmac.new(key, signed.encode(), hashlib.sha256).hexdigest()
+    return f"{signed}.{signature}"
+
+
+def consume_fixture_grant(
+    raw: str | None, session_id: str, target: pathlib.Path
+) -> str | None:
+    if raw is None:
+        return "capability_grant_missing"
+    parts = raw.split(".")
+    if len(parts) != 4:
+        return "capability_grant_malformed"
+    version, key_id, payload_hex, signature_hex = parts
+    if version != "v1":
+        return "capability_grant_version_unknown"
+    if key_id != CAPABILITY_KEY_ID:
+        return "capability_grant_key_unknown"
+    try:
+        payload = bytes.fromhex(payload_hex)
+        signature = bytes.fromhex(signature_hex)
+        key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    except ValueError:
+        return "capability_grant_malformed"
+    if len(payload) != 130 or len(signature) != 32 or len(key) != 32:
+        return "capability_grant_malformed"
+    signed = f"{version}.{key_id}.{payload_hex}".encode()
+    expected = hmac.new(key, signed, hashlib.sha256).digest()
+    if not hmac.compare_digest(signature, expected):
+        return "capability_grant_signature_invalid"
+    grant_id = payload[:16]
+    binding = payload[16:48]
+    issued, expires = struct.unpack(">QQ", payload[48:64])
+    current = int(time.time())
+    if binding != grant_binding(session_id, target):
+        return "capability_grant_binding_mismatch"
+    if issued > current + 5:
+        return "capability_grant_future_issued"
+    if expires <= issued or expires - issued > 120:
+        return "capability_grant_lifetime_exceeded"
+    if current >= expires:
+        return "capability_grant_expired"
+    if grant_id in CONSUMED_GRANTS:
+        return "capability_grant_replayed"
+    CONSUMED_GRANTS.add(grant_id)
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -210,7 +396,32 @@ class Handler(BaseHTTPRequestHandler):
 
         method = request.get("method")
         identifier = request.get("id")
+        grant_values = self.headers.get_all(CAPABILITY_HEADER) or []
+        if len(grant_values) > 1 or any(
+            not value.isascii() or not value or len(value) > 384
+            for value in grant_values
+        ):
+            self.send_json(
+                400,
+                {
+                    "error": "invalid_capability_grant_header",
+                    "message": "Capability grant header is invalid.",
+                },
+            )
+            return
+        grant = grant_values[0] if grant_values else None
         if method == "initialize":
+            if grant is not None:
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32600,
+                        "Invalid Request",
+                        "Capability context is not allowed.",
+                    ),
+                )
+                return
             self.send_json(
                 200,
                 {
@@ -228,23 +439,62 @@ class Handler(BaseHTTPRequestHandler):
         if not self.active_session():
             return
         if method == "notifications/initialized":
+            if grant is not None:
+                self.send_json(
+                    400,
+                    rpc_error(None, -32600, "Invalid Request", "Capability context is not allowed."),
+                )
+                return
             self.send_bytes(202)
             return
         if method == "tools/list":
+            if grant is not None:
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32600,
+                        "Invalid Request",
+                        "Capability context is not allowed.",
+                    ),
+                )
+                return
+            tools = []
+            for name in TOOLS:
+                if name == "create_directory":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": (
+                                "Fixture create_directory requires MCP-Capability-Grant "
+                                "for explicit mutation."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "dry_run": {"type": "boolean"},
+                                },
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
+                else:
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "fixture",
+                            "inputSchema": {"type": "object"},
+                        }
+                    )
             self.send_json(
                 200,
                 {
                     "jsonrpc": "2.0",
                     "id": identifier,
                     "result": {
-                        "tools": [
-                            {
-                                "name": name,
-                                "description": "fixture",
-                                "inputSchema": {"type": "object"},
-                            }
-                            for name in TOOLS
-                        ]
+                        "tools": tools
                     },
                 },
             )
@@ -256,6 +506,17 @@ class Handler(BaseHTTPRequestHandler):
         params = request.get("params") or {}
         name = params.get("name")
         arguments = params.get("arguments") or {}
+        if grant is not None and name != "create_directory":
+            self.send_json(
+                400,
+                rpc_error(
+                    identifier,
+                    -32600,
+                    "Invalid Request",
+                    "Capability context is not allowed.",
+                ),
+            )
+            return
         if name == "runtime_status":
             self.send_json(
                 200,
@@ -265,6 +526,15 @@ class Handler(BaseHTTPRequestHandler):
                         "commandExecution": False,
                         "androidPlatformTools": False,
                         "highImpactTools": False,
+                        "createDirectoryMutationEnabled": CAPABILITY_ENABLED,
+                        "createDirectoryGrantRequired": CAPABILITY_ENABLED,
+                        "createDirectoryGrantHeader": "mcp-capability-grant",
+                        "createDirectoryGrantTtlSeconds": 60,
+                        "createDirectoryMutationMode": (
+                            "dry_run_or_request_scoped_single_use_grant"
+                            if CAPABILITY_ENABLED
+                            else "dry_run_only_mutation_disabled"
+                        ),
                     },
                 ),
             )
@@ -349,6 +619,16 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             if not dry_run:
+                if not CAPABILITY_ENABLED:
+                    self.send_json(
+                        403,
+                        capability_error(identifier, "create_directory_mutation_disabled"),
+                    )
+                    return
+                denial = consume_fixture_grant(grant, SESSION_ID, target)
+                if denial is not None:
+                    self.send_json(403, capability_error(identifier, denial))
+                    return
                 target.mkdir(mode=0o700, parents=False, exist_ok=False)
                 target.chmod(0o700)
             self.send_json(
@@ -589,6 +869,10 @@ class Handler(BaseHTTPRequestHandler):
             rpc_error(identifier, -32601, "Method not found", "Tool unavailable."),
         )
 
+
+if POSTURE == "issue":
+    print(issue_fixture_grant())
+    raise SystemExit(0)
 
 if POSTURE not in {"default", "mcp"}:
     raise SystemExit(2)

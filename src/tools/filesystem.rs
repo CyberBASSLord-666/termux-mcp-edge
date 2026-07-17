@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::audit::AuditEvent;
+use crate::create_directory_grant::{CreateDirectoryGrantError, CreateDirectoryGrantTarget};
 use crate::error::AppError;
 use crate::write_policy::{WritePolicy, WritePolicyError};
 
@@ -192,6 +193,108 @@ struct AnchoredPath {
     display_path: PathBuf,
     root_path: PathBuf,
     relative_path: PathBuf,
+}
+
+pub(crate) struct PreparedCreateDirectoryMutation {
+    result: CreateDirectoryResult,
+    parent_fd: OwnedFd,
+    directory_name: OsString,
+    grant_target: CreateDirectoryGrantTarget,
+    started: Instant,
+}
+
+pub(crate) enum AuthorizedCreateDirectoryError {
+    Authorization(CreateDirectoryGrantError),
+    Filesystem(AppError),
+}
+
+impl PreparedCreateDirectoryMutation {
+    pub(crate) fn preview(self) -> CreateDirectoryResult {
+        histogram!("mcp.fs.create_directory.latency_seconds")
+            .record(self.started.elapsed().as_secs_f64());
+        counter!("mcp.fs.create_directory.dry_runs_total").increment(1);
+        self.result
+    }
+
+    pub(crate) fn execute_authorized(
+        self,
+        authorize: impl FnOnce(&CreateDirectoryGrantTarget) -> Result<(), CreateDirectoryGrantError>,
+    ) -> Result<CreateDirectoryResult, AuthorizedCreateDirectoryError> {
+        let temp_name = OsString::from(format!(
+            ".termux-mcp-create-directory-{}.tmp",
+            uuid::Uuid::new_v4()
+        ));
+        authorize(&self.grant_target).map_err(AuthorizedCreateDirectoryError::Authorization)?;
+
+        let started = self.started;
+        let result = self
+            .execute_after_authorization(temp_name)
+            .map_err(AuthorizedCreateDirectoryError::Filesystem)?;
+        histogram!("mcp.fs.create_directory.latency_seconds")
+            .record(started.elapsed().as_secs_f64());
+        counter!("mcp.fs.create_directory.created_total").increment(1);
+        Ok(result)
+    }
+
+    fn execute_after_authorization(
+        self,
+        temp_name: OsString,
+    ) -> Result<CreateDirectoryResult, AppError> {
+        descriptor_fs::mkdirat(
+            &self.parent_fd,
+            &temp_name,
+            Mode::RUSR | Mode::WUSR | Mode::XUSR,
+        )
+        .map_err(descriptor_error)?;
+        let mut cleanup = DescriptorDirectoryCleanup::new(&self.parent_fd, temp_name.clone());
+        let temp_fd = open_child_directory(&self.parent_fd, &temp_name)?;
+        let created_metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
+        if !FileType::from_raw_mode(created_metadata.st_mode).is_dir() {
+            return Err(AppError::Io(std::io::Error::other(
+                "created directory verification failed",
+            )));
+        }
+        cleanup.set_expected_identity(created_metadata.st_dev, created_metadata.st_ino);
+        descriptor_fs::fchmod(&temp_fd, Mode::RUSR | Mode::WUSR | Mode::XUSR)
+            .map_err(descriptor_error)?;
+        let metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
+        let file_type = FileType::from_raw_mode(metadata.st_mode);
+        if !file_type.is_dir()
+            || metadata.st_dev != created_metadata.st_dev
+            || metadata.st_ino != created_metadata.st_ino
+            || (metadata.st_mode & 0o7777) != CREATE_DIRECTORY_MODE
+        {
+            return Err(AppError::Io(std::io::Error::other(
+                "created directory verification failed",
+            )));
+        }
+        descriptor_fs::fsync(&temp_fd).map_err(descriptor_error)?;
+        match descriptor_fs::renameat_with(
+            &self.parent_fd,
+            &temp_name,
+            &self.parent_fd,
+            &self.directory_name,
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => cleanup.published_as(self.directory_name),
+            Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
+            Err(error) => return Err(descriptor_error(error)),
+        }
+        let published_metadata =
+            descriptor_fs::statat(&self.parent_fd, &cleanup.name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(descriptor_error)?;
+        if !FileType::from_raw_mode(published_metadata.st_mode).is_dir()
+            || published_metadata.st_dev != metadata.st_dev
+            || published_metadata.st_ino != metadata.st_ino
+        {
+            return Err(AppError::Io(std::io::Error::other(
+                "published directory verification failed",
+            )));
+        }
+        descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
+        cleanup.disarm();
+        Ok(self.result)
+    }
 }
 
 struct PendingEntry {
@@ -642,96 +745,46 @@ impl FileSystemTools {
         path: String,
         dry_run: Option<bool>,
     ) -> Result<CreateDirectoryResult, AppError> {
-        let start = Instant::now();
-        let anchored = self.anchor(&path)?;
         let dry_run = dry_run.unwrap_or(true);
-        let result = tokio::task::spawn_blocking(move || {
-            let (parent_relative, directory_name) = split_parent_and_name(&anchored.relative_path)?;
-            let root_fd = open_root_directory(&anchored.root_path)?;
-            let parent_fd = open_mutation_parent_directory(root_fd, &parent_relative)?;
-
-            match descriptor_fs::statat(&parent_fd, &directory_name, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
-                    return Err(path_rejected(
-                        anchored.display_path.to_string_lossy().as_ref(),
-                    ));
-                }
-                Ok(_) => return Err(AppError::PathAlreadyExists),
-                Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(descriptor_error(error)),
-            }
-
-            let result = create_directory_result(&anchored, dry_run);
-            if dry_run {
-                return Ok(result);
-            }
-
-            let temp_name = OsString::from(format!(
-                ".termux-mcp-create-directory-{}.tmp",
-                uuid::Uuid::new_v4()
-            ));
-            descriptor_fs::mkdirat(&parent_fd, &temp_name, Mode::RUSR | Mode::WUSR | Mode::XUSR)
-                .map_err(descriptor_error)?;
-            let mut cleanup = DescriptorDirectoryCleanup::new(&parent_fd, temp_name.clone());
-            let temp_fd = open_child_directory(&parent_fd, &temp_name)?;
-            let created_metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
-            if !FileType::from_raw_mode(created_metadata.st_mode).is_dir() {
-                return Err(AppError::Io(std::io::Error::other(
-                    "created directory verification failed",
-                )));
-            }
-            cleanup.set_expected_identity(created_metadata.st_dev, created_metadata.st_ino);
-            descriptor_fs::fchmod(&temp_fd, Mode::RUSR | Mode::WUSR | Mode::XUSR)
-                .map_err(descriptor_error)?;
-            let metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
-            let file_type = FileType::from_raw_mode(metadata.st_mode);
-            if !file_type.is_dir()
-                || metadata.st_dev != created_metadata.st_dev
-                || metadata.st_ino != created_metadata.st_ino
-                || (metadata.st_mode & 0o7777) != CREATE_DIRECTORY_MODE
-            {
-                return Err(AppError::Io(std::io::Error::other(
-                    "created directory verification failed",
-                )));
-            }
-            descriptor_fs::fsync(&temp_fd).map_err(descriptor_error)?;
-            match descriptor_fs::renameat_with(
-                &parent_fd,
-                &temp_name,
-                &parent_fd,
-                &directory_name,
-                RenameFlags::NOREPLACE,
-            ) {
-                Ok(()) => cleanup.published_as(directory_name),
-                Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
-                Err(error) => return Err(descriptor_error(error)),
-            }
-            let published_metadata =
-                descriptor_fs::statat(&parent_fd, &cleanup.name, AtFlags::SYMLINK_NOFOLLOW)
-                    .map_err(descriptor_error)?;
-            if !FileType::from_raw_mode(published_metadata.st_mode).is_dir()
-                || published_metadata.st_dev != metadata.st_dev
-                || published_metadata.st_ino != metadata.st_ino
-            {
-                return Err(AppError::Io(std::io::Error::other(
-                    "published directory verification failed",
-                )));
-            }
-            descriptor_fs::fsync(&parent_fd).map_err(descriptor_error)?;
-            cleanup.disarm();
-            Ok(result)
-        })
-        .await
-        .map_err(filesystem_worker_error)??;
-
-        histogram!("mcp.fs.create_directory.latency_seconds").record(start.elapsed().as_secs_f64());
-        if result.dry_run {
-            counter!("mcp.fs.create_directory.dry_runs_total").increment(1);
+        let prepared = self.prepare_create_directory(path, dry_run).await?;
+        if dry_run {
+            Ok(prepared.preview())
         } else {
-            counter!("mcp.fs.create_directory.created_total").increment(1);
+            prepared
+                .execute_authorized(|_| Ok(()))
+                .map_err(|error| match error {
+                    AuthorizedCreateDirectoryError::Authorization(_) => AppError::Io(
+                        std::io::Error::other("unexpected direct create authorization failure"),
+                    ),
+                    AuthorizedCreateDirectoryError::Filesystem(error) => error,
+                })
         }
+    }
 
-        Ok(result)
+    pub(crate) async fn prepare_create_directory_mutation(
+        &self,
+        path: String,
+    ) -> Result<PreparedCreateDirectoryMutation, AppError> {
+        self.prepare_create_directory(path, false).await
+    }
+
+    pub fn create_directory_grant_target(
+        &self,
+        path: &str,
+    ) -> Result<CreateDirectoryGrantTarget, AppError> {
+        let anchored = self.anchor(path)?;
+        Ok(prepare_create_directory(anchored, false)?.grant_target)
+    }
+
+    async fn prepare_create_directory(
+        &self,
+        path: String,
+        dry_run: bool,
+    ) -> Result<PreparedCreateDirectoryMutation, AppError> {
+        let anchored = self.anchor(&path)?;
+        tokio::task::spawn_blocking(move || prepare_create_directory(anchored, dry_run))
+            .await
+            .map_err(filesystem_worker_error)?
     }
 
     pub(crate) fn create_directory_response_preview(
@@ -1422,6 +1475,60 @@ fn create_directory_result(anchored: &AnchoredPath, dry_run: bool) -> CreateDire
     }
 }
 
+fn prepare_create_directory(
+    anchored: AnchoredPath,
+    dry_run: bool,
+) -> Result<PreparedCreateDirectoryMutation, AppError> {
+    let started = Instant::now();
+    let (parent_relative, directory_name) = split_parent_and_name(&anchored.relative_path)?;
+    let root_fd = open_root_directory(&anchored.root_path)?;
+    let root_metadata = descriptor_fs::fstat(&root_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(root_metadata.st_mode).is_dir() {
+        return Err(path_rejected(
+            anchored.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    let mut normalized_components = Vec::new();
+    for component in anchored.relative_path.components() {
+        let Component::Normal(component) = component else {
+            return Err(path_rejected(
+                anchored.display_path.to_string_lossy().as_ref(),
+            ));
+        };
+        normalized_components.push(component.as_bytes());
+    }
+    let grant_target = CreateDirectoryGrantTarget::from_normalized_components(
+        root_metadata.st_dev,
+        root_metadata.st_ino,
+        normalized_components,
+    )
+    .map_err(|_| {
+        AppError::Io(std::io::Error::other(
+            "create directory authorization target is invalid",
+        ))
+    })?;
+    let parent_fd = open_mutation_parent_directory(root_fd, &parent_relative)?;
+
+    match descriptor_fs::statat(&parent_fd, &directory_name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
+            return Err(path_rejected(
+                anchored.display_path.to_string_lossy().as_ref(),
+            ));
+        }
+        Ok(_) => return Err(AppError::PathAlreadyExists),
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(descriptor_error(error)),
+    }
+
+    Ok(PreparedCreateDirectoryMutation {
+        result: create_directory_result(&anchored, dry_run),
+        parent_fd,
+        directory_name,
+        grant_target,
+        started,
+    })
+}
+
 fn copy_file_result(
     source: &AnchoredPath,
     destination: &AnchoredPath,
@@ -2033,6 +2140,71 @@ mod tests {
         assert!(!outside.path().join("outside-created").exists());
         assert!(!outside.path().join("child").exists());
         assert!(!outside.path().join("redirected").exists());
+    }
+
+    #[tokio::test]
+    async fn create_directory_grant_stays_consumed_after_post_authorization_failure() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("post-authorization-failure");
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let authority = crate::create_directory_grant::CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let prepared = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let token = authority
+            .issue_at(
+                &session_id,
+                &prepared.grant_target,
+                unix_timestamp_seconds(),
+            )
+            .unwrap();
+
+        let first_attempt = prepared.execute_authorized(|grant_target| {
+            authority.consume_at(
+                Some(&token),
+                &session_id,
+                grant_target,
+                unix_timestamp_seconds(),
+            )?;
+            std::fs::create_dir(&target).unwrap();
+            Ok(())
+        });
+        assert!(matches!(
+            first_attempt,
+            Err(AuthorizedCreateDirectoryError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+
+        std::fs::remove_dir(&target).unwrap();
+        let replay = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(
+                    Some(&token),
+                    &session_id,
+                    grant_target,
+                    unix_timestamp_seconds(),
+                )
+            });
+        assert!(matches!(
+            replay,
+            Err(AuthorizedCreateDirectoryError::Authorization(
+                CreateDirectoryGrantError::Replayed
+            ))
+        ));
+        assert!(!target.exists());
     }
 
     #[tokio::test]

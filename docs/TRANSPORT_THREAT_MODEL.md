@@ -15,7 +15,7 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
 - the eleven-tool baseline allowlist, plus only those read-only battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled, as documented in README and the authorization policy;
-- safe-root, payload, dry-run, and audit-counter controls for the current filesystem surface.
+- safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.
 
@@ -28,6 +28,7 @@ POST requires JSON content and explicit client support for JSON and SSE response
 - Local-network resources reachable from the Android device.
 - Process, package, service, shell, Shizuku/rish, and Android-control boundaries.
 - MCP client identity, lifecycle state, request integrity, and tool authorization decisions.
+- The `create_directory` HMAC key, issued grants, consumed-JTI state, and target-binding integrity.
 - Mobile memory, CPU, battery, thermal, and process-lifetime budgets.
 
 ## Threats and Current Controls
@@ -106,10 +107,32 @@ Current controls:
 - safe-root descriptor anchoring and component-by-component no-follow descendant resolution;
 - bounded deterministic UTF-8 reads and directory traversal;
 - dry-run-by-default directory/file mutation and explicit `dry_run:false`;
+- a separately default-disabled directory-mutation gate plus one 60-second, single-use HMAC grant bound to the static principal, canonical session, exact root identity, normalized target, and mutating posture;
+- confinement and response preflight before grant matching, atomic JTI consumption immediately before the first mutation attempt, concurrent replay exclusion, and retained consumption after downstream failure;
 - one-directory creation with existing parents, fixed mode `0700`, unpredictable staging, atomic no-replace publication, descriptor sync, and identity-checked cleanup;
 - payload-bounded descriptor-relative mode-0600 temporary files, file sync, atomic rename, and parent-directory sync.
 
-The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, #247, and #203. Any future filesystem expansion must preserve these descriptor, response, and deployment boundaries.
+The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, #247, #248, and #203. Any future filesystem expansion must preserve these descriptor, response, authorization, and deployment boundaries.
+
+### Request-grant theft, replay, and confused deputy use
+
+An authenticated caller may try to reuse a grant for another session, root, target, posture, request method, tool, or time window; race the same JTI concurrently; smuggle it through arguments; or provoke a later failure and retry.
+
+Current controls:
+
+- grants are issued only by the local exact binary after it independently anchors the configured safe root and validates an absent target;
+- the signed fixed-shape payload includes principal/session/capability/root/target/posture/version/key/JTI/time bindings;
+- only one bounded ASCII `MCP-Capability-Grant` header is accepted, and only for an active-session `tools/call` targeting `create_directory`;
+- malformed, unknown-key/version, invalid-signature, expired, future, excessive-lifetime, mismatched, replayed, clock-rollback, full-state, and poisoned-state cases fail closed with non-sensitive stable reasons;
+- a mutex makes validation plus replay insertion atomic, so concurrent replay reaches at most one mutation attempt;
+- consumption precedes `mkdirat` and survives every subsequent filesystem or response failure;
+- dry-run and rejected-context requests cannot consume the grant;
+- responses, tracing, audit labels, CLI errors, and production evidence never serialize the header, key, principal fingerprint, session, JTI, target digest, or bound time.
+
+Residual boundary:
+
+- a process restart clears the bounded in-memory replay set. Grants expire after 60 seconds; rotate the key on restart when immediate invalidation is required.
+- a caller that steals the bearer token, active session ID, exact target knowledge, and an unexpired grant can attempt that one mutation. Protect all four and keep the listener/transport allowlists narrow.
 
 ### Schema confusion and response reflection
 
@@ -133,7 +156,7 @@ Current controls:
 - its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input;
 - empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced;
 - arbitrary commands, shells, Android/service/package/network mutation, broad inspection, credentials, and other high-impact capabilities are absent from discovery and dispatch;
-- capability-token modules remain inert policy scaffolding;
+- the narrow `create_directory` request-grant module is live only for that exact confined mutation; the separate general capability-token policy module remains inert;
 - read-only Android and service metadata use fixed allowlists and expose no control path.
 
 Required controls for expansion:

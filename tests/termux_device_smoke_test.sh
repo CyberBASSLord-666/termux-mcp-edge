@@ -19,6 +19,10 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
+assert_contains 'valid_capability_grant()' "$SCRIPT"
+if grep -Fq -- '{260}' "$SCRIPT"; then
+  fail "device harness uses a non-portable ERE repetition above Android RE_DUP_MAX"
+fi
 
 mkdir -p "$TMP/home"
 HOME="$TMP/home" bash "$SCRIPT" --help >"$TMP/help"
@@ -62,6 +66,10 @@ for protocol_marker in \
   '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
+  'create_directory_missing_grant_http' \
+  'create_directory_replay_http' \
+  '--issue-create-directory-grant' \
+  'MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env"' \
   'copy_dry_run_http' \
   'copy_existing=unchanged' \
   '"name":"shell"' \

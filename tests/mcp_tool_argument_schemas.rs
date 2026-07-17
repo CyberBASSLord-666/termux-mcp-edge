@@ -176,7 +176,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     let router = test_router(file_tools);
     let source = root.path().join("source.txt");
     let directory_preview = root.path().join("directory-preview");
-    let directory_mutation = root.path().join("directory-mutation");
+    let directory_full_preview = root.path().join("directory-full-preview");
     let copy_preview = root.path().join("copy-preview.txt");
     let copy_mutation = root.path().join("copy-mutation.txt");
     let dry_run_target = root.path().join("dry-run-target.txt");
@@ -197,7 +197,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
         (
             "create-directory-full",
             "create_directory",
-            json!({"path": directory_mutation.to_string_lossy(), "dry_run": false}),
+            json!({"path": directory_full_preview.to_string_lossy(), "dry_run": true}),
         ),
         (
             "copy-file-minimal",
@@ -273,7 +273,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
 
     assert!(!dry_run_target.exists());
     assert!(!directory_preview.exists());
-    assert!(directory_mutation.is_dir());
+    assert!(!directory_full_preview.exists());
     assert!(!copy_preview.exists());
     assert_eq!(
         tokio::fs::read_to_string(&copy_mutation).await.unwrap(),

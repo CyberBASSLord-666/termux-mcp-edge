@@ -2,7 +2,13 @@
 
 use std::{env, fmt, net::IpAddr, path::PathBuf};
 
+#[cfg(feature = "mcp-runtime")]
+use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+
 use anyhow::{anyhow, bail};
+
+#[cfg(feature = "mcp-runtime")]
+use rustix::fs::{fstat, open, FileType, Mode, OFlags};
 
 use crate::request_limits::{
     DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -23,6 +29,7 @@ const REMOTE_UNAUTHENTICATED_ERROR: &str =
 pub struct AppConfig {
     pub server: ServerConfig,
     pub auth: AuthConfig,
+    pub capability: CapabilityConfig,
     pub android: AndroidConfig,
     pub command: CommandConfig,
     pub file: FileConfig,
@@ -66,6 +73,35 @@ pub struct FileConfig {
     /// Whitelisted root directories for file operations.
     /// All paths are resolved absolutely and checked against these roots.
     pub safe_roots: Vec<PathBuf>,
+    /// Dedicated default-disabled runtime gate for `create_directory` mutation.
+    pub create_directory_mutation_enabled: bool,
+}
+
+#[derive(Clone)]
+pub struct CapabilityConfig {
+    /// Identifier for the one active request-capability signing key.
+    pub key_id: Option<String>,
+    /// Exact 32-byte HMAC key encoded as 64 lowercase hexadecimal characters.
+    hmac_key_hex: Option<String>,
+}
+
+impl CapabilityConfig {
+    pub fn hmac_key_hex(&self) -> Option<&str> {
+        self.hmac_key_hex.as_deref()
+    }
+}
+
+impl fmt::Debug for CapabilityConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityConfig")
+            .field("key_id", &self.key_id)
+            .field(
+                "hmac_key_hex",
+                &self.hmac_key_hex.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -103,6 +139,78 @@ impl AppConfig {
         Self::load_with(|name| env::var(name))
     }
 
+    /// Load the deployed literal `NAME=value` runtime file for an offline
+    /// capability-issuance process. The file is opened without following its
+    /// final component, bounded before parsing, and never evaluated as shell.
+    #[cfg(feature = "mcp-runtime")]
+    pub fn load_from_literal_file(path: &Path) -> anyhow::Result<Self> {
+        const MAX_RUNTIME_CONFIG_BYTES: usize = 65_536;
+
+        if !path.is_absolute() {
+            bail!("offline issuer runtime configuration path must be absolute");
+        }
+        let descriptor = open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| anyhow!("offline issuer runtime configuration could not be opened"))?;
+        let metadata = fstat(&descriptor)
+            .map_err(|_| anyhow!("offline issuer runtime configuration could not be inspected"))?;
+        if !FileType::from_raw_mode(metadata.st_mode).is_file() {
+            bail!("offline issuer runtime configuration must be a regular non-symlink file");
+        }
+        if metadata.st_mode & 0o077 != 0 || metadata.st_mode & 0o400 == 0 {
+            bail!(
+                "offline issuer runtime configuration must be owner-readable and inaccessible to group/other"
+            );
+        }
+        let configured_bytes = usize::try_from(metadata.st_size)
+            .map_err(|_| anyhow!("offline issuer runtime configuration size is invalid"))?;
+        if configured_bytes > MAX_RUNTIME_CONFIG_BYTES {
+            bail!("offline issuer runtime configuration exceeds its byte limit");
+        }
+
+        let mut contents = String::new();
+        File::from(descriptor)
+            .take((MAX_RUNTIME_CONFIG_BYTES + 1) as u64)
+            .read_to_string(&mut contents)
+            .map_err(|_| anyhow!("offline issuer runtime configuration is not valid UTF-8"))?;
+        if contents.len() > MAX_RUNTIME_CONFIG_BYTES {
+            bail!("offline issuer runtime configuration exceeds its byte limit");
+        }
+        if contents.contains('\r') || contents.contains('\0') {
+            bail!("offline issuer runtime configuration contains an invalid byte");
+        }
+
+        let mut values = BTreeMap::new();
+        for line in contents.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name, value) = line.split_once('=').ok_or_else(|| {
+                anyhow!("offline issuer runtime configuration must use NAME=value records")
+            })?;
+            if name.is_empty()
+                || !name.bytes().enumerate().all(|(index, byte)| match byte {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+                    b'0'..=b'9' => index > 0,
+                    _ => false,
+                })
+            {
+                bail!("offline issuer runtime configuration contains an invalid variable name");
+            }
+            if !(name.starts_with("MCP__") || matches!(name, "RUST_LOG" | "RUST_BACKTRACE")) {
+                bail!("offline issuer runtime configuration variable is not allowlisted");
+            }
+            if values.insert(name.to_owned(), value.to_owned()).is_some() {
+                bail!("offline issuer runtime configuration contains a duplicate variable");
+            }
+        }
+
+        Self::load_with(|name| values.get(name).cloned().ok_or(env::VarError::NotPresent))
+    }
+
     fn load_with(
         read_variable: impl Fn(&str) -> Result<String, env::VarError>,
     ) -> anyhow::Result<Self> {
@@ -118,6 +226,10 @@ impl AppConfig {
                     "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
                     false,
                 )?,
+            },
+            capability: CapabilityConfig {
+                key_id: optional_env_string(&read_variable, "MCP__CAPABILITY__KEY_ID")?,
+                hmac_key_hex: optional_env_string(&read_variable, "MCP__CAPABILITY__HMAC_KEY_HEX")?,
             },
             android: AndroidConfig {
                 battery_status_enabled: env_bool(
@@ -139,6 +251,11 @@ impl AppConfig {
                     &read_variable,
                     "MCP__FILE__SAFE_ROOTS",
                     &[DEFAULT_FILE_SAFE_ROOT],
+                )?,
+                create_directory_mutation_enabled: env_bool(
+                    &read_variable,
+                    "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+                    false,
                 )?,
             },
             transport: TransportConfig {
@@ -180,6 +297,7 @@ impl AppConfig {
         };
 
         validate_file_safe_roots(&config.file)?;
+        validate_create_directory_mutation_capability(&config)?;
         validate_android_capabilities(&config.android)?;
         validate_command_capability(&config.command)?;
         validate_transport_security(&config.transport)?;
@@ -380,6 +498,65 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_create_directory_mutation_capability(config: &AppConfig) -> anyhow::Result<()> {
+    const MAX_KEY_ID_BYTES: usize = 32;
+    const KEY_HEX_BYTES: usize = 64;
+
+    if let Some(key_id) = config.capability.key_id.as_deref() {
+        if key_id.is_empty()
+            || key_id.len() > MAX_KEY_ID_BYTES
+            || !key_id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            })
+        {
+            bail!(
+                "MCP__CAPABILITY__KEY_ID must contain 1 to {MAX_KEY_ID_BYTES} lowercase ASCII letters, digits, hyphens, or underscores"
+            );
+        }
+    }
+
+    if let Some(key) = config.capability.hmac_key_hex() {
+        if key.len() != KEY_HEX_BYTES
+            || !key
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            bail!(
+                "MCP__CAPABILITY__HMAC_KEY_HEX must contain exactly {KEY_HEX_BYTES} lowercase hexadecimal characters"
+            );
+        }
+    }
+
+    if config.capability.key_id.is_some() != config.capability.hmac_key_hex().is_some() {
+        bail!(
+            "MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX must be configured together"
+        );
+    }
+
+    if !config.file.create_directory_mutation_enabled {
+        return Ok(());
+    }
+    if !cfg!(feature = "mcp-runtime") {
+        bail!(
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+        );
+    }
+    if config
+        .auth
+        .static_token
+        .as_deref()
+        .is_none_or(|token| token.trim().is_empty())
+    {
+        bail!("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN");
+    }
+    if config.capability.key_id.is_none() {
+        bail!(
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
+    }
+    Ok(())
+}
+
 fn validate_android_capabilities(android: &AndroidConfig) -> anyhow::Result<()> {
     if android.battery_status_enabled && !cfg!(feature = "android-battery-status") {
         bail!(
@@ -474,6 +651,10 @@ mod tests {
                 static_token: static_token.map(str::to_owned),
                 allow_unauthenticated_localhost_only: allow_localhost_only,
             },
+            capability: CapabilityConfig {
+                key_id: None,
+                hmac_key_hex: None,
+            },
             android: AndroidConfig {
                 battery_status_enabled: false,
                 volume_status_enabled: false,
@@ -481,6 +662,7 @@ mod tests {
             command: CommandConfig { enabled: false },
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
+                create_directory_mutation_enabled: false,
             },
             transport: transport_config(),
         }
@@ -510,9 +692,77 @@ mod tests {
     }
 
     #[test]
+    fn capability_config_debug_output_redacts_hmac_key() {
+        let capability = CapabilityConfig {
+            key_id: Some("primary-1".to_owned()),
+            hmac_key_hex: Some("a".repeat(64)),
+        };
+        let debug = format!("{capability:?}");
+
+        assert!(debug.contains("primary-1"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(&"a".repeat(64)));
+    }
+
+    #[cfg(all(feature = "mcp-runtime", unix))]
+    #[test]
+    fn offline_issuer_literal_config_is_private_bounded_and_never_evaluated() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = tempfile::tempdir().unwrap();
+        let safe_root = root.path().join("safe-root");
+        std::fs::create_dir(&safe_root).unwrap();
+        let config_path = root.path().join("runtime.env");
+        let valid = format!(
+            "MCP__AUTH__STATIC_TOKEN=private-issuer-principal\n\
+             MCP__FILE__SAFE_ROOTS={}\n\
+             MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true\n\
+             MCP__CAPABILITY__KEY_ID=offline-1\n\
+             MCP__CAPABILITY__HMAC_KEY_HEX={}\n\
+             RUST_LOG=termux_mcp_server=info\n",
+            safe_root.display(),
+            "a".repeat(64),
+        );
+        std::fs::write(&config_path, &valid).unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let config = AppConfig::load_from_literal_file(&config_path).unwrap();
+        assert_eq!(
+            config.auth.static_token.as_deref(),
+            Some("private-issuer-principal")
+        );
+        assert_eq!(config.capability.key_id.as_deref(), Some("offline-1"));
+        assert!(config.file.create_directory_mutation_enabled);
+        assert_eq!(config.file.safe_roots, vec![safe_root]);
+
+        std::fs::write(
+            &config_path,
+            format!("{valid}MCP__CAPABILITY__KEY_ID=duplicate\n"),
+        )
+        .unwrap();
+        assert!(AppConfig::load_from_literal_file(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate variable"));
+
+        std::fs::write(&config_path, &valid).unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(AppConfig::load_from_literal_file(&config_path)
+            .unwrap_err()
+            .to_string()
+            .contains("inaccessible to group/other"));
+
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link_path = root.path().join("runtime-link.env");
+        symlink(&config_path, &link_path).unwrap();
+        assert!(AppConfig::load_from_literal_file(&link_path).is_err());
+    }
+
+    #[test]
     fn default_file_safe_root_is_narrow_termux_home_directory() {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
+            create_directory_mutation_enabled: false,
         };
         let broad_storage = PathBuf::from("/storage/emulated/0");
         let sdcard = PathBuf::from("/sdcard");
@@ -530,9 +780,12 @@ mod tests {
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8000);
         assert_eq!(config.auth.static_token, None);
+        assert_eq!(config.capability.key_id, None);
+        assert_eq!(config.capability.hmac_key_hex(), None);
         assert!(!config.android.battery_status_enabled);
         assert!(!config.android.volume_status_enabled);
         assert!(!config.command.enabled);
+        assert!(!config.file.create_directory_mutation_enabled);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
@@ -626,6 +879,114 @@ mod tests {
             .starts_with("MCP__COMMAND__ENABLED must be a boolean value"));
     }
 
+    #[test]
+    fn create_directory_mutation_requires_compile_gate_static_auth_and_exact_key_pair() {
+        let entries = [
+            (
+                "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+                OsString::from("true"),
+            ),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ];
+        let configured = load_from_os_values(entries);
+        if cfg!(feature = "mcp-runtime") {
+            let configured = configured.unwrap();
+            assert!(configured.file.create_directory_mutation_enabled);
+            assert_eq!(configured.capability.key_id.as_deref(), Some("primary-1"));
+            assert_eq!(
+                configured.capability.hmac_key_hex(),
+                Some("a".repeat(64).as_str())
+            );
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    #[test]
+    fn create_directory_mutation_rejects_missing_static_principal_or_key() {
+        let missing_principal = load_from_os_values([
+            (
+                "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+                OsString::from("true"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            missing_principal.to_string(),
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+        );
+
+        let missing_key = load_from_os_values([
+            (
+                "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+                OsString::from("true"),
+            ),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            missing_key.to_string(),
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
+    }
+
+    #[test]
+    fn capability_key_configuration_is_exact_and_fail_closed_even_while_gate_is_disabled() {
+        for key_id in ["", "Upper", "bad.key", &"a".repeat(33)] {
+            let error = load_from_os_values([
+                ("MCP__CAPABILITY__KEY_ID", OsString::from(key_id)),
+                (
+                    "MCP__CAPABILITY__HMAC_KEY_HEX",
+                    OsString::from("a".repeat(64)),
+                ),
+            ])
+            .unwrap_err();
+            assert!(error.to_string().starts_with("MCP__CAPABILITY__KEY_ID"));
+        }
+        for key in ["a".repeat(63), "A".repeat(64), "z".repeat(64)] {
+            let error = load_from_os_values([
+                ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+                ("MCP__CAPABILITY__HMAC_KEY_HEX", OsString::from(key)),
+            ])
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .starts_with("MCP__CAPABILITY__HMAC_KEY_HEX"));
+        }
+        for entries in [
+            vec![("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1"))],
+            vec![(
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            )],
+        ] {
+            assert_eq!(
+                load_from_os_values(entries).unwrap_err().to_string(),
+                "MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX must be configured together"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn present_non_unicode_security_environment_values_fail_closed() {
@@ -637,6 +998,9 @@ mod tests {
             "MCP__FILE__SAFE_ROOTS",
             "MCP__SERVER__PORT",
             "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+            "MCP__CAPABILITY__KEY_ID",
+            "MCP__CAPABILITY__HMAC_KEY_HEX",
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
             "MCP__COMMAND__ENABLED",
@@ -720,7 +1084,10 @@ mod tests {
 
     #[test]
     fn empty_safe_roots_are_rejected() {
-        let file = FileConfig { safe_roots: vec![] };
+        let file = FileConfig {
+            safe_roots: vec![],
+            create_directory_mutation_enabled: false,
+        };
 
         let err = validate_file_safe_roots(&file).expect_err("empty safe roots must fail closed");
         assert!(err.to_string().contains("at least one absolute safe root"));
@@ -730,6 +1097,7 @@ mod tests {
     fn relative_safe_roots_are_rejected() {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from("relative/path")],
+            create_directory_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("relative safe roots must fail");
@@ -740,6 +1108,7 @@ mod tests {
     fn filesystem_root_is_rejected() {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from("/")],
+            create_directory_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");

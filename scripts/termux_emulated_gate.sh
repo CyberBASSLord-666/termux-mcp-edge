@@ -289,6 +289,7 @@ jq -e \
     and ([.results[].code] | index("default_posture_verified") != null)
     and ([.results[].code] | index("mcp_posture_verified") != null)
     and ([.results[].code] | index("exact_tool_allowlist") != null)
+    and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
     and ([.results[].code] | index("symlink_escape_rejected") != null)
     and ([.results[].code] | index("authentication_precedes_body_limit") != null)
   ' "$RUNTIME_REPORT" >/dev/null || fail runtime_report_invalid
@@ -377,6 +378,12 @@ for sample in $(seq 1 "$SAMPLES"); do
   post_mcp '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}' "$SESSION_ID"
   [[ "$MCP_STATUS" == 200 ]] || fail stress_tools_status_invalid
   jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$BODY_FILE" >/dev/null || fail stress_tool_allowlist_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "create_directory"))[0] as $tool
+    | $tool.inputSchema.properties.dry_run.const == true
+      and ($tool.description | contains("mutation gate is disabled"))
+  ' "$BODY_FILE" >/dev/null || fail stress_create_directory_disabled_posture_invalid
 
   if ((sample % 16 == 0)); then
     post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
@@ -389,6 +396,9 @@ for sample in $(seq 1 "$SAMPLES"); do
       and .result.structuredContent.androidVolumeStatusCompiled == false
       and .result.structuredContent.androidVolumeStatusEnabled == false
       and .result.structuredContent.androidDeviceControl == false
+      and .result.structuredContent.createDirectoryMutationEnabled == false
+      and .result.structuredContent.createDirectoryGrantRequired == false
+      and .result.structuredContent.createDirectoryMutationMode == "dry_run_only_mutation_disabled"
       and .result.structuredContent.highImpactTools == false
     ' "$BODY_FILE" >/dev/null || fail stress_high_impact_gate_invalid
   fi

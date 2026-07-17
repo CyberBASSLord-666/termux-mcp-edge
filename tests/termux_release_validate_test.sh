@@ -106,6 +106,9 @@ if [[ "\${1:-}" == --version ]]; then
   printf 'termux-mcp-server %s\\n' '$version'
   exit 0
 fi
+if [[ "\${1:-}" == --issue-create-directory-grant ]]; then
+  exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue
+fi
 exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' '$posture' '$version'
 EOF
   chmod 700 "$path"
@@ -210,6 +213,10 @@ run_validator() {
 }
 
 bash -n "$SCRIPT"
+grep -Fq 'valid_capability_grant()' "$SCRIPT"
+if grep -Fq -- '{260}' "$SCRIPT"; then
+  fail_test "release validator uses a non-portable ERE repetition above Android RE_DUP_MAX"
+fi
 jq -e '
   .["$schema"] == "https://json-schema.org/draft/2020-12/schema"
   and .additionalProperties == false
@@ -266,7 +273,7 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "1"
+  and .validatorVersion == "2"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
@@ -524,6 +531,7 @@ jq -e '
   and ([.results[].code] | index("read_only_metadata_verified") != null)
   and ([.results[].code] | index("deterministic_bounded_list") != null)
   and ([.results[].code] | index("safe_root_directory_creation_verified") != null)
+  and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
   and ([.results[].code] | index("safe_root_file_copy_verified") != null)
   and ([.results[].code] | index("safe_root_path_metadata_succeeded") != null)
   and ([.results[].code] | index("safe_root_text_search_succeeded") != null)

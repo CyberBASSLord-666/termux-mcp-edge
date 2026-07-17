@@ -71,9 +71,9 @@ The harness records and verifies:
 10. health and readiness;
 11. unauthenticated MCP rejection;
 12. stable `2025-11-25` initialization, notification, and session deletion;
-13. the exact eleven-tool discovery allowlist, including dry-run-first `create_directory`, bounded content-private `copy_file`, and bounded `path_metadata` and `search_text`;
+13. the exact eleven-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, and bounded `path_metadata` and `search_text`;
 14. disabled command, Android-control, and high-impact gates;
-15. default-dry-run and explicit mode-`0700` directory creation, safe-rooted listing, content-free path metadata, and UTF-8 read;
+15. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, and UTF-8 read;
 16. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
 17. default dry-run file write and explicit mutation with final mode `0600`;
 18. out-of-root read denial without content reflection;

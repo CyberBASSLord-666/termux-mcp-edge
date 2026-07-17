@@ -8,7 +8,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and eleven baseline tools: deterministic runtime/platform/Android/project-service metadata, dry-run-first single-directory creation, dry-run-first bounded binary file copy, safe-rooted listing, descriptor-relative single-object metadata, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and eleven baseline tools: deterministic runtime/platform/Android/project-service metadata, preview-first and independently grant-gated single-directory creation, dry-run-first bounded binary file copy, safe-rooted listing, descriptor-relative single-object metadata, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
 
 The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 
@@ -81,13 +81,13 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, payload limits, explicit write controls, and non-sensitive audit counter coverage.
 
-Status: exposed behind the staged runtime gate. The surface includes dry-run-first one-directory creation, dry-run-first one-file binary copy, deterministic response-bounded listing, bounded single-object metadata, bounded UTF-8 reads, bounded literal text-location search, dry-run-first file writes, explicit crash-durable mutations, and non-sensitive audit counters. Live operations retain exact safe-root, source, and destination-parent descriptors through classification, bounded reads, staging, no-replace publication, cleanup, and durability sync. File copy is capped at 1 MiB, fixes destinations to mode `0600`, returns no content, and preflights its complete 16 KiB response before mutation. The response-bound work landed through #206, descriptor-relative race hardening through #200, bounded search through #240, bounded path metadata through #242, bounded directory creation through #244, and bounded file copy through #247.
+Status: exposed behind the staged runtime gate. The surface includes preview-first one-directory creation, dry-run-first one-file binary copy, deterministic response-bounded listing, bounded single-object metadata, bounded UTF-8 reads, bounded literal text-location search, dry-run-first file writes, explicit crash-durable mutations, and non-sensitive audit counters. Directory mutation is separately default-disabled and requires a 60-second, principal/session/root/target-bound, single-use header grant issued offline by the exact binary. Live operations retain exact safe-root, source, and destination-parent descriptors through classification, bounded reads, staging, no-replace publication, cleanup, and durability sync. File copy is capped at 1 MiB, fixes destinations to mode `0600`, returns no content, and preflights its complete 16 KiB response before mutation. The response-bound work landed through #206, descriptor-relative race hardening through #200, bounded search through #240, bounded path metadata through #242, bounded directory creation through #244, bounded file copy through #247, and directory request authorization through #248.
 
 Required gates:
 
 - Safe-root traversal tests.
 - Symlink escape tests.
-- Dry-run and explicit one-directory creation tests with fixed mode, existing-target denial, atomic no-replace publication, and identity-checked cleanup.
+- Default-disabled, missing/malformed/mismatched/expired/future/replay/concurrent grant tests plus dry-run non-consumption and explicit one-directory creation tests with fixed mode, existing-target denial, atomic no-replace publication, post-consumption failure semantics, and identity-checked cleanup.
 - Dry-run and explicit binary file-copy tests with exact-limit enforcement, fixed mode, absent-destination/no-replace behavior, descriptor exchange resistance, response preflight, identity-safe cleanup, and content-private audit counters.
 - Read-only directory listing test.
 - Bounded path-metadata test with identifier and unsupported-type redaction.

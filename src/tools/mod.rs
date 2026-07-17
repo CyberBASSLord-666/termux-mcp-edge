@@ -21,6 +21,9 @@ pub use filesystem::{
     MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_SEARCH_TOTAL_BYTES, MIN_SEARCH_DEPTH,
 };
 
+#[cfg(feature = "mcp-runtime")]
+pub(crate) use filesystem::{AuthorizedCreateDirectoryError, PreparedCreateDirectoryMutation};
+
 #[cfg(not(feature = "mcp-runtime"))]
 #[derive(Clone)]
 pub struct FileSystemTools {

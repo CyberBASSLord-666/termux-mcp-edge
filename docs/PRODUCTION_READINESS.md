@@ -9,7 +9,7 @@ This checklist defines the evidence required to merge, release, and operate the 
 | `GET /health` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, coarse response |
 | `GET /ready` | Enabled, unauthenticated, coarse response | Enabled, unauthenticated, includes non-sensitive request-limit metadata | Same as `mcp-runtime` | Same as `mcp-runtime` | Same as `mcp-runtime` |
 | `POST`, `GET`, `DELETE /mcp` | Not compiled | Authenticated, resource-bounded stable 2025-11-25 transport; GET deliberately returns 405 because SSE is not offered | Same transport; feature includes `mcp-runtime` | Same transport; feature includes `mcp-runtime` | Same transport; feature includes `mcp-runtime` |
-| MCP tools | None | Nine baseline tools | Nine baseline tools; `android_battery_status` appears only after explicit runtime opt-in | Nine baseline tools; `android_volume_status` appears only after explicit runtime opt-in | Nine baseline tools; `run_command_profile` appears only after explicit runtime opt-in |
+| MCP tools | None | Eleven baseline tools | Eleven baseline tools; `android_battery_status` appears only after explicit runtime opt-in | Eleven baseline tools; `android_volume_status` appears only after explicit runtime opt-in | Eleven baseline tools; `run_command_profile` appears only after explicit runtime opt-in |
 | Android or audio control, shell, arbitrary command execution, arbitrary service control, and other high-impact actions | Disabled | Disabled | Disabled | Disabled | Disabled |
 
 All postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
@@ -29,6 +29,7 @@ The confirmed implementation lanes have focused merge evidence:
 - #242: descriptor-relative single-object metadata with content/identifier minimization and a fixed full-response bound.
 - #247: bounded binary-safe file copy with held source/destination descriptors, atomic no-replace publication, fixed mode, response preflight, identity-safe cleanup, and content-private audit evidence.
 - #244: dry-run-first one-directory creation with fixed mode, no-replace publication, durability sync, and identity-checked cleanup.
+- #248: default-disabled one-directory mutation with exact-binary offline issuance, short-lived principal/session/root/target binding, atomic single-use consumption, private stable denials, and release/device evidence.
 
 Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, every published Android posture is retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
 
@@ -105,7 +106,7 @@ A change to the stable transport or staged tool registry must prove:
 - unauthenticated callers cannot discover or invoke tools;
 - discovery lists exactly eleven baseline tools, plus only those battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled (twelve with one, thirteen with two, fourteen with all three);
 - every tool call enforces its advertised closed input schema, including the omitted-or-empty contract for no-argument tools;
-- filesystem tools remain safe-rooted and bounded; mutations remain dry-run-first; directory creation is fixed-mode/no-replace/non-recursive; file copy is single-regular-file, 1 MiB, binary-safe, fixed-mode, content-private, and no-replace; metadata is descriptor-classified/content-free; and search is literal/content-free;
+- filesystem tools remain safe-rooted and bounded; mutations remain dry-run-first; directory creation is additionally default-disabled, exact-target grant-gated, fixed-mode/no-replace/non-recursive, and single-use; file copy is single-regular-file, 1 MiB, binary-safe, fixed-mode, content-private, and no-replace; metadata is descriptor-classified/content-free; and search is literal/content-free;
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
 - errors and audit counters retain only stable non-sensitive data;
 - arbitrary command execution, Android control, shell fallback, and other high-impact tools remain absent; fixed server diagnostics appear only in their explicit posture.
@@ -137,6 +138,6 @@ Do not merge or release when any applicable condition is true:
 - unauthenticated clients can reach MCP discovery or invocation in static-token mode;
 - browser-reachable MCP traffic lacks exact Host/Origin enforcement;
 - errors, logs, or audit data can expose tokens, private paths, raw I/O text, or caller payloads;
-- filesystem mutation can occur without explicit `dry_run:false` and safe-root validation;
+- filesystem mutation can occur without explicit `dry_run:false` and safe-root validation, or directory mutation can occur without its enabled gate and exact request-scoped single-use grant;
 - a dependency advisory is unresolved without a documented accepted-risk decision;
 - a high-impact capability appears without its independent gate and validation evidence.

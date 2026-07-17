@@ -231,6 +231,8 @@ validate_runtime_config() {
   local config_file="$CONFIG_ROOT/runtime.env"
   [[ -f "$config_file" && ! -L "$config_file" ]] || fail "runtime configuration must be a regular non-symlink file"
   local mode permissions line key value token_present=0 allow_local=0 server_host="127.0.0.1" server_port="8000"
+  local create_directory_mutation_enabled=0 capability_key_id_present=0 capability_key_present=0
+  local -A seen_keys=()
   mode="$(stat -c '%a' "$config_file")"; permissions=$((8#$mode))
   (((permissions & 077) == 0 && (permissions & 0400) != 0)) || fail "runtime configuration must be owner-readable and inaccessible to group/other"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -238,15 +240,25 @@ validate_runtime_config() {
     case "$line" in ''|'#'*) continue ;; *=*) ;; *) fail "runtime configuration lines must use KEY=value syntax" ;; esac
     key="${line%%=*}"; value="${line#*=}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "runtime configuration contains an invalid variable name"
+    [[ -z "${seen_keys[$key]+present}" ]] || fail "runtime configuration contains a duplicate variable"
+    seen_keys["$key"]=1
     case "$key" in MCP__*|RUST_LOG|RUST_BACKTRACE) ;; *) fail "runtime configuration variable is not allowlisted" ;; esac
     case "$key" in
       MCP__AUTH__STATIC_TOKEN) [[ -n "$value" && "$value" != *[[:space:]]* ]] || fail "runtime bearer token must be non-empty and contain no whitespace"; token_present=1 ;;
       MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY) is_boolean "$value" || fail "localhost-only authentication setting must be boolean"; is_true "$value" && allow_local=1 ;;
       MCP__SERVER__HOST) server_host="$value" ;;
       MCP__SERVER__PORT) server_port="$value" ;;
+      MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED) is_boolean "$value" || fail "create_directory mutation setting must be boolean"; is_true "$value" && create_directory_mutation_enabled=1 ;;
+      MCP__CAPABILITY__KEY_ID) [[ "$value" =~ ^[a-z0-9_-]{1,32}$ ]] || fail "capability key identifier is invalid"; capability_key_id_present=1 ;;
+      MCP__CAPABILITY__HMAC_KEY_HEX) [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "capability HMAC key is invalid"; capability_key_present=1 ;;
     esac
   done <"$config_file"
   validate_integer_range MCP__SERVER__PORT "$server_port" 1 65535
+  ((capability_key_id_present == capability_key_present)) || fail "capability key configuration must define both key identifier and HMAC key"
+  if ((create_directory_mutation_enabled == 1)); then
+    ((token_present == 1)) || fail "create_directory mutation requires static-token authentication"
+    ((capability_key_id_present == 1 && capability_key_present == 1)) || fail "create_directory mutation requires capability key configuration"
+  fi
   if ((token_present == 0)); then
     ((allow_local == 1)) || fail "runtime configuration must define a bearer token or explicit localhost-only mode"
     case "$server_host" in localhost|127.0.0.1|::1) ;; *) fail "unauthenticated runtime configuration must bind to loopback" ;; esac
@@ -292,11 +304,14 @@ CONFIG_FILE="$CONFIG_ROOT/runtime.env"
 mode=\$(stat -c '%a' "\$CONFIG_FILE") || exit 111
 permissions=\$((0\$mode))
 [ \$((permissions & 077)) -eq 0 ] || exit 111
+seen_keys='|'
 while IFS= read -r line || [ -n "\$line" ]; do
   case "\$line" in ''|'#'*) continue ;; *=*) ;; *) exit 111 ;; esac
   key=\${line%%=*}; value=\${line#*=}
   case "\$key" in ''|[0-9]*|*[!A-Za-z0-9_]*) exit 111 ;; esac
   case "\$key" in MCP__*|RUST_LOG|RUST_BACKTRACE) ;; *) exit 111 ;; esac
+  case "\$seen_keys" in *"|\$key|"*) exit 111 ;; esac
+  seen_keys="\${seen_keys}\${key}|"
   export "\$key=\$value"
 done <"\$CONFIG_FILE"
 exec "$DEPLOY_ROOT/current/$PROGRAM"

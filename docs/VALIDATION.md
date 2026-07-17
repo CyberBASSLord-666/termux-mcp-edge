@@ -4,7 +4,7 @@
 
 The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its current limited tool surface.
 
-The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, or the fixed server-diagnostic `run_command_profile`. Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
+The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, or the fixed server-diagnostic `run_command_profile`. Directory preview is baseline, but directory mutation is independently default-disabled and requires one request-scoped grant. Android or audio control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and high-impact tools remain out of scope for the live runtime.
 
 The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling.
 
@@ -138,7 +138,21 @@ curl -sS \
   http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 11'
 ```
 
-Confirm a normal `mcp-runtime` build returns exactly the eleven baseline tools. An optional build still returns eleven unless its corresponding runtime flag is true; then its one additional tool is twelfth. An all-feature validation build returns fourteen only when the battery, volume, and command runtime flags are all true. Exercise `create_directory` in preview and explicit mode. Exercise `copy_file` with binary content in preview and explicit mode, prove fixed mode `0600`, exact bytes, absent-destination/no-replace behavior, one-byte-over rejection, content-private responses, and pre-mutation full-response bounding. Exercise `path_metadata` and literal `search_text` under their documented content-free ceilings. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
+Confirm a normal `mcp-runtime` build returns exactly the eleven baseline tools. An optional build still returns eleven unless its corresponding runtime flag is true; then its one additional tool is twelfth. An all-feature validation build returns fourteen only when the battery, volume, and command runtime flags are all true. With `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false`, prove `create_directory` discovery constrains `dry_run` to `true` and explicit mutation is denied. With the gate, static authentication, and paired capability key enabled, exercise preview and explicit mode through an exact-binary locally issued grant. Prove missing/wrong-context/wrong-binding grants fail, dry run does not consume, one exact target succeeds at mode `0700`, and replay is denied. Exercise `copy_file` with binary content in preview and explicit mode, prove fixed mode `0600`, exact bytes, absent-destination/no-replace behavior, one-byte-over rejection, content-private responses, and pre-mutation full-response bounding. Exercise `path_metadata` and literal `search_text` under their documented content-free ceilings. Also verify a GET with `Accept: text/event-stream` plus the active protocol/session headers returns HTTP 405; this is the documented non-SSE Streamable HTTP posture.
+
+Use the exact candidate's offline issuer only after the session is initialized:
+
+```bash
+GRANT_FILE="$(mktemp)"
+chmod 600 "$GRANT_FILE"
+MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+MCP__CAPABILITY__CREATE_DIRECTORY_TARGET="$ABSENT_SAFE_ROOT_TARGET" \
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
+  /absolute/path/to/termux-mcp-server \
+  --issue-create-directory-grant >"$GRANT_FILE"
+```
+
+Send the single line from that private file only as `MCP-Capability-Grant` on the matching `tools/call` request, then remove the file. Do not put grant material in JSON, URLs, process arguments, logs, reports, screenshots, or tickets. The complete configuration, issuance, denial, rotation, and validation contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 
 Validate the project-owned service status tool with the current allowlisted service name:
 
@@ -225,6 +239,8 @@ Clear the temporary token variable and restore defaults after validation:
 ```bash
 unset MCP_TEST_TOKEN
 unset MCP_SESSION_ID
+unset MCP__CAPABILITY__SESSION_ID
+unset MCP__CAPABILITY__CREATE_DIRECTORY_TARGET
 rm -f "$MCP_RESPONSE_HEADERS"
 unset MCP_RESPONSE_HEADERS
 unset MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS

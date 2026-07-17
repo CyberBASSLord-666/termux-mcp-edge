@@ -22,7 +22,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search/copy, and dry-run-by-default mutation. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
+Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search/copy, and dry-run-by-default mutation. Directory mutation is additionally default-disabled and request-grant gated. Its counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target digests, timestamps, or replay state. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -116,7 +116,7 @@ Audit counters must not store or serialize:
 - command arguments
 - environment variable names or values
 - hostnames, usernames, Android identifiers, or private device metadata
-- secrets, bearer values, passwords, API keys, or raw capability tokens
+- secrets, bearer values, passwords, API keys, capability keys/grants, principal fingerprints, sessions, JTIs, target digests, grant timestamps, or replay state
 - arbitrary caller-supplied strings
 
 The `AuditCounters` implementation deliberately ignores event metadata so bounded metadata used in local policy tests cannot accidentally become a runtime telemetry payload.
@@ -150,6 +150,20 @@ Current runtime/status/filesystem examples include:
 - `filesystem_parent_not_found`
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
+- `create_directory_mutation_disabled`
+- `capability_grant_missing`
+- `capability_grant_malformed`
+- `capability_grant_version_unknown`
+- `capability_grant_key_unknown`
+- `capability_grant_signature_invalid`
+- `capability_grant_expired`
+- `capability_grant_future_issued`
+- `capability_grant_lifetime_exceeded`
+- `capability_grant_binding_mismatch`
+- `capability_grant_replayed`
+- `capability_clock_rollback`
+- `capability_replay_capacity_exhausted`
+- `capability_state_unavailable`
 - `search_query_invalid`
 - `filesystem_search_failed`
 - `dry_run_preview`
