@@ -100,6 +100,21 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "validatorVersion": {"pattern": "^([3-9]|[1-9][0-9]+)$"}
+        },
+        "required": ["validatorVersion"]
+      },
+      "then": {
+        "properties": {
+          "artifacts": {
+            "required": ["default", "mcpRuntime", "androidVolumeControl", "baseline"]
+          }
+        }
+      }
     }
   ],
   "properties": {
@@ -191,6 +206,7 @@
       "properties": {
         "default": {"$ref": "#/$defs/artifact"},
         "mcpRuntime": {"$ref": "#/$defs/artifact"},
+        "androidVolumeControl": {"$ref": "#/$defs/artifact"},
         "baseline": {
           "oneOf": [
             {"type": "null"},

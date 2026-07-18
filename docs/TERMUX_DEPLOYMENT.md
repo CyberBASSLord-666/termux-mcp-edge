@@ -68,6 +68,14 @@ MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 
 Do not add this setting to a build without the matching feature. The provider uses only the fixed zero-argument `termux-volume` status mode and does not authorize volume mutation. See [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md).
 
+An artifact built with `--features android-volume-control` may expose the separately authorized preview-first control tool:
+
+```text
+MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
+```
+
+This gate requires static-token authentication and the complete capability key pair described below. It does not implicitly enable read-only `android_volume_status` discovery. Every `dry_run:false` request still needs one exact-session, exact-stream, exact-level grant issued locally by the deployed binary; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
+
 An artifact built with `--features command-execution` may opt into fixed read-only server diagnostics:
 
 ```text
@@ -78,7 +86,7 @@ Do not add this setting to a build without the matching feature; startup fails c
 
 Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
 
-Directory preview remains available while `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false`. If one-directory mutation is operationally required, generate a separate 32-byte HMAC key, keep it private, and atomically add the complete paired configuration:
+Directory preview remains available while `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false`, and volume control remains hidden while `MCP__ANDROID__VOLUME_CONTROL_ENABLED=false`. If either request-authorized mutation is operationally required, generate a separate 32-byte HMAC key, keep it private, and atomically add the complete paired configuration:
 
 ```bash
 umask 077
@@ -94,7 +102,7 @@ unset CAPABILITY_KEY_HEX
 chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 ```
 
-Replace the existing `false` line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and an enabled directory-mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, exact-target `MCP-Capability-Grant`; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md). Never print, commit, or attach either the HMAC key or issued grants.
+Replace an existing `false` gate line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and either enabled request-authorized mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, exact-target `MCP-Capability-Grant`; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md). Never print, commit, or attach either the HMAC key or issued grants.
 
 For issuance, set `MCP__CAPABILITY__CONFIG_FILE` to this private `runtime.env`. The exact binary opens it without following the final component, enforces the same private mode and a 64 KiB ceiling, rejects duplicate or non-allowlisted records, and parses literal values without shell evaluation.
 

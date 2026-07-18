@@ -4,9 +4,11 @@
 
 This document defines the threat model and approval gate for any future high-impact MCP capability. Termux MCP Edge is intended for developers and advanced power users, but high-impact actions can change host, Android, service, package, network, or filesystem state in ways that are difficult to reverse. These actions require a stronger gate than read-only metadata, safe-rooted file access, or bounded command profiles.
 
-This document does not enable high-impact controls.
+This document does not enable general high-impact controls. One separately reviewed exact-stream volume capability satisfies a deliberately narrower subset of this model; its authoritative contract is [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
 The live `create_directory` request grant is a narrower, purpose-built authorization layer for one already-confined filesystem mutation. It is not a general high-impact token and grants no package, service, Android, network, process, secret, deletion, permission, or shell authority. Its independent contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
+
+The live Android volume grant is likewise purpose-built. It grants only one exact stream/level mutation in one authenticated session, uses a distinct signed capability code, expires after 60 seconds, and cannot authorize filesystem, shell, package, service, network, microphone, routing, playback, or other Android actions.
 
 ## High-impact action categories
 
@@ -164,6 +166,8 @@ Minimum reason codes:
 7. Add operator documentation and manual recovery notes.
 8. Only then expose MCP discovery/tool-call handling for that family.
 
+The exact-stream volume slice completed this sequence with a preview-first model, offline exact-binary grants, fixed execution, non-queueing concurrency, verification, automatic restoration, cancellation-independent recovery, and aggregate privacy-preserving counters. Aggregate counters are the intentionally bounded audit design for this slice; they retain stable decision/recovery labels and no per-request timestamps or targets.
+
 ## Required tests before any high-impact tool is enabled
 
 - Disabled-by-default runtime status.
@@ -197,6 +201,6 @@ The checklist must confirm:
 - No package installation/removal implementation.
 - No service restart/stop implementation.
 - No network or tunnel mutation implementation.
-- No Android device-control implementation.
+- No Android device-control implementation beyond the separately authorized exact-stream volume slice.
 - No raw shell execution.
 - No broad host-control tool.

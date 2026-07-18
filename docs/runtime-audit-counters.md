@@ -18,7 +18,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `search_text`
 - `write_file`
 
-When a separately compiled and runtime-enabled optional posture is active, the same counter path also records `android_battery_status`, `android_volume_status`, or `run_command_profile`. Disabled direct calls and provider/process failures are denied decisions; successful normalized reads or fixed diagnostics are allowed decisions. No raw Termux:API or command output is retained. Command policy events may carry a numeric profile ordinal internally, but `AuditCounters` deliberately ignores all event metadata.
+When a separately compiled and runtime-enabled optional posture is active, the same counter path also records `android_battery_status`, `android_volume_status`, `set_android_volume`, or `run_command_profile`. Disabled direct calls and provider/process failures are denied decisions; successful normalized reads, previews, verified volume mutations, or fixed diagnostics are allowed decisions. No raw Termux:API or command output is retained. Volume counters retain only stable gate/mode/decision/reason labels; command policy events may carry a numeric profile ordinal internally, but `AuditCounters` deliberately ignores all event metadata.
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
@@ -201,6 +201,20 @@ Current runtime/status/filesystem examples include:
 - `volume_output_invalid_utf8`
 - `volume_output_invalid_json`
 - `volume_output_invalid_field`
+- `volume_control_arguments_invalid`
+- `volume_control_feature_not_compiled`
+- `volume_control_runtime_disabled`
+- `volume_control_preview`
+- `volume_control_mutation_verified`
+- `volume_control_stream_invalid`
+- `volume_control_level_out_of_range`
+- `volume_control_concurrency_limit`
+- `volume_control_set_failed_rollback_confirmed`
+- `volume_control_set_failed_rollback_unconfirmed`
+- `volume_control_verification_failed_rollback_confirmed`
+- `volume_control_verification_failed_rollback_unconfirmed`
+- `volume_control_worker_failed`
+- the bounded shared `capability_*` authorization reasons
 - `command_profile_execution_allowed`
 - `command_feature_not_compiled`
 - `command_runtime_disabled`
@@ -243,6 +257,6 @@ Future audit expansion must remain staged and explicit:
 
 ## Relationship to higher-risk surfaces
 
-Audit counters are not an authorization mechanism. They provide visibility into decisions made by staged gates. Command execution, Android platform control, package or service mutation, network mutation, and other high-impact controls remain unavailable until separately implemented behind explicit opt-in policy and capability gates.
+Audit counters are not an authorization mechanism. They provide visibility into decisions made by staged gates. Exact-stream volume control is separately implemented behind explicit opt-in and request grants; broader Android control, arbitrary command execution, package/service/network mutation, and unrelated high-impact controls remain unavailable.
 
 Originally added for #135; updated by #142.

@@ -3,7 +3,7 @@
 `scripts/termux_release_validate.sh` validates downloaded Android release candidates without downloading anything or installing packages. It complements the source-building gate in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md):
 
 - the device-production gate proves an exact source commit can build and survive a comprehensive isolated Termux lifecycle;
-- the release-candidate validator proves the exact downloaded default and `mcp-runtime` artifacts, their checksums, feature postures, runtime behavior, and deployment behavior.
+- the release-candidate validator proves the exact downloaded default, `mcp-runtime`, and `android-volume-control` artifacts, their checksums, feature postures, fail-closed control posture, runtime behavior, and deployment behavior.
 
 Neither gate creates a tag or GitHub Release. Publishing remains a separate maintainer decision under [`RELEASE_GOVERNANCE.md`](RELEASE_GOVERNANCE.md).
 
@@ -33,7 +33,7 @@ for script in termux_release_validate.sh termux_deploy.sh; do
 done
 ```
 
-Download the default and `mcp-runtime` workflow artifacts from the recorded Android run and extract them into separate mode-`0700` directories. In each directory, run `sha256sum -c SHA256SUMS`, then set the extracted binary to mode `0700`. Downloading scripts or artifacts is deliberately outside the validator's authority and should finish before preflight begins.
+Download the default, `mcp-runtime`, and `android-volume-control` workflow artifacts from the recorded Android run and extract them into separate mode-`0700` directories. In each directory, run `sha256sum -c SHA256SUMS`, then set the extracted binary to mode `0700`. Downloading scripts or artifacts is deliberately outside the validator's authority and should finish before preflight begins.
 
 ## Private literal configuration
 
@@ -56,6 +56,9 @@ DEFAULT_MANIFEST=$HOME/artifacts/default/artifact-manifest.json
 MCP_ARTIFACT=$HOME/artifacts/mcp-runtime/termux-mcp-server
 MCP_SHA256=<64-lowercase-hex>
 MCP_MANIFEST=$HOME/artifacts/mcp-runtime/artifact-manifest.json
+VOLUME_CONTROL_ARTIFACT=$HOME/artifacts/android-volume-control/termux-mcp-server
+VOLUME_CONTROL_SHA256=<64-lowercase-hex>
+VOLUME_CONTROL_MANIFEST=$HOME/artifacts/android-volume-control/artifact-manifest.json
 BASELINE_ARTIFACT=$HOME/artifacts/termux-mcp-server-v0.5.1-aarch64-linux-android-mcp-runtime
 BASELINE_VERSION=0.5.1
 BASELINE_SHA256=<64-lowercase-hex>
@@ -91,12 +94,12 @@ bash scripts/termux_release_validate.sh \
   --phase preflight
 ```
 
-For both downloaded artifacts it verifies:
+For all three downloaded artifacts it verifies:
 
 - regular, executable, non-symlink state;
 - nonzero size no greater than 64 MiB;
 - exact supplied SHA-256 digest;
-- distinct default and `mcp-runtime` files and digests;
+- pairwise-distinct default, `mcp-runtime`, and `android-volume-control` files, manifests, and digests;
 - AArch64 Android ELF identity from `file`;
 - an exact workflow-generated manifest matching repository, commit, Android run ID, artifact name, posture, feature set, target, version, digest, size, and ELF classification;
 - exact embedded `--version` output.
@@ -117,7 +120,7 @@ bash scripts/termux_release_validate.sh \
   --confirm-runtime-mutation
 ```
 
-The phase starts each artifact directly on loopback, one at a time, using a private token and a unique validation child below `SAFE_ROOT`. The validator creates a private random capability key, enables only the `mcp-runtime` candidate's directory-mutation gate, invokes that exact binary's offline issuer, and destroys grant material with its isolated workspace.
+The phase starts each artifact directly on loopback, one at a time, using a private token and a unique validation child below `SAFE_ROOT`. Child environments are rebuilt from an explicit allowlist so ambient `MCP__*` settings cannot broaden the test. The validator creates a private random capability key, enables only the `mcp-runtime` candidate's directory-mutation gate, invokes that exact binary's offline issuer, and destroys grant material with its isolated workspace.
 
 The default artifact must:
 
@@ -146,7 +149,15 @@ The `mcp-runtime` artifact must prove:
 - documented non-SSE GET 405;
 - explicit session deletion.
 
-Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v2 runtime result includes `request_scoped_single_use_grant_enforced`.
+The `android-volume-control` artifact must additionally prove:
+
+- the incompatible `mcp-runtime` artifact rejects `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true` before listener startup;
+- the control artifact starts with its runtime gate omitted and reports `androidVolumeControlCompiled=true`, `androidVolumeControlEnabled=false`, and no active grant requirement;
+- `set_android_volume` is absent from the exact discovery allowlist while disabled;
+- a direct call returns the stable `volume_control_runtime_disabled` result;
+- no control grant is issued, `termux-volume` is never invoked, and device audio is never changed by the canonical validator.
+
+Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v3 runtime result includes `request_scoped_single_use_grant_enforced`, `incompatible_volume_control_artifact_rejected`, `volume_control_hidden_while_disabled`, and `volume_control_disabled_call_rejected`.
 
 ## Phase 3: deployment validation
 

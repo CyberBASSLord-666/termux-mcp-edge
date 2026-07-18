@@ -1,6 +1,6 @@
 # Exact-Commit Termux Device Production Gate
 
-`scripts/termux_device_smoke.sh` is the canonical no-clone device gate for an AArch64 Termux release candidate. It bootstraps the required packages, fetches one Git ref, refuses to proceed unless that ref resolves to the required full commit SHA, builds the native `mcp-runtime` posture, and exercises the release through an isolated real `runsvdir`.
+`scripts/termux_device_smoke.sh` is the canonical no-clone device gate for an AArch64 Termux release candidate. It bootstraps the required packages, fetches one Git ref, refuses to proceed unless that ref resolves to the required full commit SHA, builds the native `mcp-runtime` and `android-volume-control` postures, and exercises the deployable release through an isolated real `runsvdir`.
 
 Passing host CI or Android cross-compilation does not replace this gate. Passing this gate also does not replace a sustained operational soak under the target device's real battery, thermal, network, and process-restriction conditions.
 
@@ -62,7 +62,7 @@ The harness records and verifies:
 1. exact fetched and built commit SHA;
 2. Termux architecture and native Rust/Clang versions;
 3. candidate package version and `--version` output;
-4. AArch64 Android ELF identity and SHA-256 digest;
+4. AArch64 Android ELF identity and SHA-256 digest for both exact-head feature postures;
 5. private runtime configuration mode;
 6. same-filesystem atomic-publication prerequisite;
 7. initial versioned install under a real isolated `runsvdir`;
@@ -72,24 +72,26 @@ The harness records and verifies:
 11. unauthenticated MCP rejection;
 12. stable `2025-11-25` initialization, notification, and session deletion;
 13. the exact eleven-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, and bounded `path_metadata` and `search_text`;
-14. disabled command, Android-control, and high-impact gates;
-15. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, and UTF-8 read;
-16. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
-17. default dry-run file write and explicit mutation with final mode `0600`;
-18. out-of-root read denial without content reflection;
-19. unavailable shell/high-impact invocation;
-20. authenticated request-body limiting and unauthenticated-before-limit ordering;
-21. rollback dry-run immutability;
-22. injected rollback-readiness failure with original-candidate restoration;
-23. successful rollback;
-24. uninstall with configuration-preservation behavior;
-25. isolated-state cleanup.
+14. volume-control compile-gate rejection by the incompatible `mcp-runtime` artifact, plus disabled-by-default control-artifact discovery, runtime truth, and direct-call rejection without invoking `termux-volume` or changing device audio;
+15. disabled command, Android-control, and high-impact gates;
+16. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, and UTF-8 read;
+17. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
+18. default dry-run file write and explicit mutation with final mode `0600`;
+19. out-of-root read denial without content reflection;
+20. unavailable shell/high-impact invocation;
+21. authenticated request-body limiting and unauthenticated-before-limit ordering;
+22. rollback dry-run immutability;
+23. injected rollback-readiness failure with original-candidate restoration;
+24. successful rollback;
+25. uninstall with configuration-preservation behavior;
+26. isolated-state cleanup.
 
 The final report must contain all of:
 
 ```text
 exact_head=<expected-sha>
 candidate_sha256=<artifact-sha256>
+volume_control_sha256=<artifact-sha256>
 TERMUX_MCP_DEVICE_RESULT=PASS
 cleanup_complete=true
 final_status=PASS

@@ -171,9 +171,11 @@ An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=tr
 
 An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the twelfth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the eleven baseline tools. It offers only the exact `server_version`, `server_help`, and `execution_boundary` profiles of the current server binary. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes fourteen tools only when all three runtime flags are explicitly enabled.
+An `android-volume-control` binary with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and the capability key pair exposes `set_android_volume`. It defaults to fresh validated preview. Explicit mutation requires one exact request grant and performs fixed execution, verification, and restoration on failure; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
-The runtime does not expose Android platform control, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or high-impact controls.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the eleven baseline tools. It offers only the exact `server_version`, `server_help`, and `execution_boundary` profiles of the current server binary. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes fifteen tools only when all four optional runtime flags are explicitly enabled.
+
+The runtime does not expose Android platform control beyond exact request-authorized volume, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or unrelated high-impact controls.
 
 Filesystem responses have explicit mobile-oriented ceilings:
 
@@ -213,9 +215,9 @@ Do not manually repoint release links outside the project releases directory. Pr
 ## Release process
 
 1. Run format, workspace/all-target/all-feature Clippy, workspace/all-target/all-feature tests, and deployment shell tests.
-2. Build the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, and `command-execution` release postures.
+2. Build the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` release postures.
 3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
-4. Cross-compile and validate all five Android postures, including native ARM64 official-Termux execution and the command/default compile-gate truth table.
+4. Cross-compile and validate all six Android postures, including native ARM64 official-Termux execution and the control/command compile-gate truth tables.
 5. Record and verify each posture-specific artifact's SHA-256 digest.
 6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.
@@ -224,4 +226,4 @@ Do not manually repoint release links outside the project releases directory. Pr
 10. Exercise rollback before declaring production readiness.
 11. Preserve the prior known-good release through sustained battery, thermal, and process-restriction validation.
 
-Do not describe fixed server diagnostics as arbitrary command execution. Android control, shells, caller-selected commands, and high-impact tools remain unavailable until their independent gates, tests, audit behavior, and recovery semantics are complete.
+Do not describe fixed server diagnostics as arbitrary command execution or exact-stream volume control as general Android authority. Shells, caller-selected commands, and unrelated high-impact tools remain unavailable until their independent gates, tests, audit behavior, and recovery semantics are complete.

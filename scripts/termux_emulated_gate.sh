@@ -11,6 +11,7 @@ DEFAULT_PORT=18766
 
 DEFAULT_DIR=''
 MCP_DIR=''
+VOLUME_CONTROL_DIR=''
 EXPECTED_COMMIT=''
 EXPECTED_VERSION=''
 CI_RUN_ID=''
@@ -38,6 +39,7 @@ usage() {
 Usage: termux_emulated_gate.sh \
   --default-dir DIR \
   --mcp-dir DIR \
+  --volume-control-dir DIR \
   --expected-commit SHA \
   --expected-version VERSION \
   --ci-run-id ID \
@@ -79,6 +81,11 @@ while (($#)); do
     --mcp-dir)
       (($# >= 2)) || fail missing_mcp_dir
       MCP_DIR="$2"
+      shift 2
+      ;;
+    --volume-control-dir)
+      (($# >= 2)) || fail missing_volume_control_dir
+      VOLUME_CONTROL_DIR="$2"
       shift 2
       ;;
     --expected-commit)
@@ -138,7 +145,7 @@ done
 ((SAMPLES >= 32 && SAMPLES <= MAX_SAMPLES)) || fail samples_out_of_range
 [[ "$PORT" =~ ^[0-9]+$ ]] || fail port_invalid
 ((PORT >= 1024 && PORT <= 65535)) || fail port_invalid
-[[ "$DEFAULT_DIR" == /* && "$MCP_DIR" == /* && "$OUTPUT_REPORT" == /* ]] || fail absolute_paths_required
+[[ "$DEFAULT_DIR" == /* && "$MCP_DIR" == /* && "$VOLUME_CONTROL_DIR" == /* && "$OUTPUT_REPORT" == /* ]] || fail absolute_paths_required
 
 [[ "${TERMUX_MCP_EMULATED_ENVIRONMENT:-}" == official-termux-docker-native-arm64 ]] || fail environment_attestation_missing
 IMAGE_DIGEST="${TERMUX_MCP_TERMUX_IMAGE_DIGEST:-}"
@@ -166,17 +173,23 @@ DEFAULT_CHECKSUMS="$DEFAULT_DIR/SHA256SUMS"
 MCP_ARTIFACT="$MCP_DIR/termux-mcp-server"
 MCP_MANIFEST="$MCP_DIR/artifact-manifest.json"
 MCP_CHECKSUMS="$MCP_DIR/SHA256SUMS"
+VOLUME_CONTROL_ARTIFACT="$VOLUME_CONTROL_DIR/termux-mcp-server"
+VOLUME_CONTROL_MANIFEST="$VOLUME_CONTROL_DIR/artifact-manifest.json"
+VOLUME_CONTROL_CHECKSUMS="$VOLUME_CONTROL_DIR/SHA256SUMS"
 
 for path in \
   "$DEFAULT_ARTIFACT" "$DEFAULT_MANIFEST" "$DEFAULT_CHECKSUMS" \
-  "$MCP_ARTIFACT" "$MCP_MANIFEST" "$MCP_CHECKSUMS"; do
+  "$MCP_ARTIFACT" "$MCP_MANIFEST" "$MCP_CHECKSUMS" \
+  "$VOLUME_CONTROL_ARTIFACT" "$VOLUME_CONTROL_MANIFEST" "$VOLUME_CONTROL_CHECKSUMS"; do
   [[ -f "$path" && ! -L "$path" ]] || fail artifact_bundle_member_invalid
 done
-[[ -x "$DEFAULT_ARTIFACT" && -x "$MCP_ARTIFACT" ]] || fail artifact_binary_not_executable
+[[ -x "$DEFAULT_ARTIFACT" && -x "$MCP_ARTIFACT" && -x "$VOLUME_CONTROL_ARTIFACT" ]] || fail artifact_binary_not_executable
 [[ "$(find "$DEFAULT_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l)" == 3 ]] || fail default_bundle_member_count_invalid
 [[ "$(find "$MCP_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l)" == 3 ]] || fail mcp_bundle_member_count_invalid
+[[ "$(find "$VOLUME_CONTROL_DIR" -mindepth 1 -maxdepth 1 -type f | wc -l)" == 3 ]] || fail volume_control_bundle_member_count_invalid
 (cd "$DEFAULT_DIR" && sha256sum -c SHA256SUMS >/dev/null) || fail default_checksum_invalid
 (cd "$MCP_DIR" && sha256sum -c SHA256SUMS >/dev/null) || fail mcp_checksum_invalid
+(cd "$VOLUME_CONTROL_DIR" && sha256sum -c SHA256SUMS >/dev/null) || fail volume_control_checksum_invalid
 
 validate_manifest() {
   local manifest="$1" artifact_name="$2" posture="$3" expected_features="$4"
@@ -206,18 +219,24 @@ validate_manifest() {
 
 validate_manifest "$DEFAULT_MANIFEST" termux-mcp-server-aarch64-linux-android-default default '[]' || fail default_manifest_invalid
 validate_manifest "$MCP_MANIFEST" termux-mcp-server-aarch64-linux-android-mcp-runtime mcp-runtime '["mcp-runtime"]' || fail mcp_manifest_invalid
+validate_manifest "$VOLUME_CONTROL_MANIFEST" termux-mcp-server-aarch64-linux-android-android-volume-control android-volume-control '["android-volume-control"]' || fail volume_control_manifest_invalid
 
 DEFAULT_SHA="$(jq -r .sha256 "$DEFAULT_MANIFEST")"
 MCP_SHA="$(jq -r .sha256 "$MCP_MANIFEST")"
+VOLUME_CONTROL_SHA="$(jq -r .sha256 "$VOLUME_CONTROL_MANIFEST")"
 DEFAULT_BYTES="$(jq -r .bytes "$DEFAULT_MANIFEST")"
 MCP_BYTES="$(jq -r .bytes "$MCP_MANIFEST")"
-[[ "$DEFAULT_SHA" != "$MCP_SHA" ]] || fail artifact_postures_not_distinct
+VOLUME_CONTROL_BYTES="$(jq -r .bytes "$VOLUME_CONTROL_MANIFEST")"
+[[ "$DEFAULT_SHA" != "$MCP_SHA" && "$DEFAULT_SHA" != "$VOLUME_CONTROL_SHA" && "$MCP_SHA" != "$VOLUME_CONTROL_SHA" ]] || fail artifact_postures_not_distinct
 [[ "$(sha256sum "$DEFAULT_ARTIFACT" | awk '{print $1}')" == "$DEFAULT_SHA" ]] || fail default_digest_mismatch
 [[ "$(sha256sum "$MCP_ARTIFACT" | awk '{print $1}')" == "$MCP_SHA" ]] || fail mcp_digest_mismatch
+[[ "$(sha256sum "$VOLUME_CONTROL_ARTIFACT" | awk '{print $1}')" == "$VOLUME_CONTROL_SHA" ]] || fail volume_control_digest_mismatch
 [[ "$(stat -c %s "$DEFAULT_ARTIFACT")" == "$DEFAULT_BYTES" ]] || fail default_size_mismatch
 [[ "$(stat -c %s "$MCP_ARTIFACT")" == "$MCP_BYTES" ]] || fail mcp_size_mismatch
+[[ "$(stat -c %s "$VOLUME_CONTROL_ARTIFACT")" == "$VOLUME_CONTROL_BYTES" ]] || fail volume_control_size_mismatch
 [[ "$(timeout -k 2 5 "$DEFAULT_ARTIFACT" --version)" == "termux-mcp-server $EXPECTED_VERSION" ]] || fail default_version_mismatch
 [[ "$(timeout -k 2 5 "$MCP_ARTIFACT" --version)" == "termux-mcp-server $EXPECTED_VERSION" ]] || fail mcp_version_mismatch
+[[ "$(timeout -k 2 5 "$VOLUME_CONTROL_ARTIFACT" --version)" == "termux-mcp-server $EXPECTED_VERSION" ]] || fail volume_control_version_mismatch
 
 OUTPUT_PARENT="$(dirname "$OUTPUT_REPORT")"
 [[ -d "$OUTPUT_PARENT" && ! -L "$OUTPUT_PARENT" ]] || fail output_parent_invalid
@@ -253,6 +272,9 @@ DEFAULT_MANIFEST=$DEFAULT_MANIFEST
 MCP_ARTIFACT=$MCP_ARTIFACT
 MCP_SHA256=$MCP_SHA
 MCP_MANIFEST=$MCP_MANIFEST
+VOLUME_CONTROL_ARTIFACT=$VOLUME_CONTROL_ARTIFACT
+VOLUME_CONTROL_SHA256=$VOLUME_CONTROL_SHA
+VOLUME_CONTROL_MANIFEST=$VOLUME_CONTROL_MANIFEST
 AUTH_TOKEN_FILE=$TOKEN_FILE
 SAFE_ROOT=$SAFE_ROOT
 BIND_HOST=127.0.0.1
@@ -288,6 +310,9 @@ jq -e \
     and .sustainedObservation.status == "not_run"
     and ([.results[].code] | index("default_posture_verified") != null)
     and ([.results[].code] | index("mcp_posture_verified") != null)
+    and ([.results[].code] | index("volume_control_posture_verified") != null)
+    and ([.results[].code] | index("volume_control_hidden_while_disabled") != null)
+    and ([.results[].code] | index("volume_control_disabled_call_rejected") != null)
     and ([.results[].code] | index("exact_tool_allowlist") != null)
     and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
     and ([.results[].code] | index("symlink_escape_rejected") != null)
@@ -450,6 +475,8 @@ jq -n \
   --argjson default_bytes "$DEFAULT_BYTES" \
   --arg mcp_sha "$MCP_SHA" \
   --argjson mcp_bytes "$MCP_BYTES" \
+  --arg volume_control_sha "$VOLUME_CONTROL_SHA" \
+  --argjson volume_control_bytes "$VOLUME_CONTROL_BYTES" \
   --arg architecture "$(uname -m)" \
   --arg image "$EXPECTED_IMAGE" \
   --arg image_digest "$IMAGE_DIGEST" \
@@ -471,7 +498,8 @@ jq -n \
       securityRunId: $security_run_id,
       androidRunId: $android_run_id,
       defaultArtifact: {sha256: $default_sha, bytes: $default_bytes},
-      mcpRuntimeArtifact: {sha256: $mcp_sha, bytes: $mcp_bytes}
+      mcpRuntimeArtifact: {sha256: $mcp_sha, bytes: $mcp_bytes},
+      androidVolumeControlArtifact: {sha256: $volume_control_sha, bytes: $volume_control_bytes}
     },
     environment: {
       executionMode: "official-termux-docker-native-arm64",
@@ -502,6 +530,9 @@ chmod 600 "$REPORT_NEXT"
 jq -e '
   .schemaVersion == 1 and .gateVersion == "1" and .status == "pass" and .failureCode == null
   and .environment.executionMode == "official-termux-docker-native-arm64"
+  and (.candidate.androidVolumeControlArtifact.sha256 | test("^[0-9a-f]{64}$"))
+  and .candidate.androidVolumeControlArtifact.sha256 != .candidate.defaultArtifact.sha256
+  and .candidate.androidVolumeControlArtifact.sha256 != .candidate.mcpRuntimeArtifact.sha256
   and (.environment.architecture == "aarch64" or .environment.architecture == "arm64")
   and .environment.androidLinker == true
   and .runtimeValidation.status == "pass"

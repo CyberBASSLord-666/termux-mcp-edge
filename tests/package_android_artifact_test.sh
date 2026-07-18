@@ -104,6 +104,17 @@ jq -e '
   and .features == ["android-volume-status"]
 ' "$VOLUME_BUNDLE/artifact-manifest.json" >/dev/null
 
+VOLUME_CONTROL_BUNDLE="$ROOT/output/android-volume-control"
+run_package \
+  "$BINARY" \
+  "$VOLUME_CONTROL_BUNDLE" \
+  termux-mcp-server-aarch64-linux-android-android-volume-control \
+  android-volume-control >/dev/null
+jq -e '
+  .posture == "android-volume-control"
+  and .features == ["android-volume-control"]
+' "$VOLUME_CONTROL_BUNDLE/artifact-manifest.json" >/dev/null
+
 COMMAND_BUNDLE="$ROOT/output/command-execution"
 run_package \
   "$BINARY" \

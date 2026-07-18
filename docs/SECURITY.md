@@ -2,12 +2,13 @@
 
 ## Current Security Posture
 
-Termux MCP Edge has five deliberate compile-time postures:
+Termux MCP Edge has six deliberate compile-time postures:
 
 - The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
 - The optional `mcp-runtime` feature additionally exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its narrowly scoped staged tool registry.
 - The optional `android-battery-status` feature includes `mcp-runtime` and permits a separately runtime-gated read-only battery tool.
 - The optional `android-volume-status` feature includes `mcp-runtime` and permits a separately runtime-gated read-only audio-stream volume-status tool.
+- The optional `android-volume-control` feature permits only separately runtime-gated, preview-first, exact-stream volume mutation with a fresh live bound and one exact single-use request grant.
 - The optional `command-execution` feature includes `mcp-runtime` and permits a separately runtime-gated fixed-profile server diagnostic tool.
 
 The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 because optional server-initiated SSE, replay, and resumption are not implemented.
@@ -32,15 +33,19 @@ An `android-battery-status` build may additionally expose `android_battery_statu
 
 An `android-volume-status` build may additionally expose `android_volume_status` only when `MCP__ANDROID__VOLUME_STATUS_ENABLED=true`. Its runtime flag has the same compile/runtime fail-closed relationship. It directly executes only the fixed `termux-volume` path with zero arguments, so callers cannot reach the upstream command's mutation mode. The shared Android provider supervisor applies the same environment, process-group, cancellation, cleanup, and reaping guarantees with 8 KiB/4 KiB output ceilings. Parsing requires the exact six official streams and exact integer fields; it canonicalizes output order and rejects unknown, duplicate, missing, extra, or range-invalid data without reflection.
 
+An `android-volume-control` build may expose `set_android_volume` only when `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and a complete capability key pair are active. Preview is the default and reads fresh strict status without invoking the setter. Live mutation requires one 60-second grant bound to the keyed principal, canonical session, capability, exact stream, exact level, and mutating posture. The grant is consumed immediately before fixed two-argument execution and remains consumed. One non-queueing permit rejects conflicts; fresh status verifies success; setter or verification failure triggers restoration to the captured prior level. An owned worker continues verification/recovery after caller cancellation. See [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
+
 A `command-execution` build may additionally expose `run_command_profile` only when `MCP__COMMAND__ENABLED=true`. Its only profiles run the exact current server binary with project-owned argv for version, help, or boundary self-check output. The working directory is an anchored safe root; the inherited environment is empty; stdin is null; time, both output streams, concurrency, process groups, cancellation cleanup, and direct-child reaping are bounded. The request cannot select a program, argv, cwd, environment, stdin, timeout, or limit. Failures suppress child output and use stable reasons.
 
-Android platform control, shell fallback, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and other high-impact controls remain disabled.
+Android controls beyond the request-authorized exact-stream volume capability, shell fallback, arbitrary command execution, global process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and unrelated high-impact controls remain disabled.
 
 ## Authentication and Startup Behavior
 
 Startup requires `MCP__AUTH__STATIC_TOKEN` by default. Empty or whitespace-only values are rejected before the HTTP listener starts. The configured token is redacted from debug output and must not be logged or copied into issue reports.
 
 Bearer authentication does not by itself authorize `create_directory` mutation. That mutation requires the default-disabled `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED` gate, a paired 32-byte HMAC key configuration, and one 60-second, single-use `MCP-Capability-Grant` bound to the principal, active session, anchored safe root, normalized target, and mutating posture. The runtime consumes the JTI immediately before its first filesystem mutation attempt and retains consumption after downstream failure. Grants are header-only and must never appear in arguments, URLs, responses, logs, audit labels, tickets, or screenshots. See [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
+
+Bearer authentication likewise does not authorize Android volume mutation by itself. The volume-control runtime gate and the same private key configuration are required, but its signed capability code and exact stream/level binding are distinct from directory grants. See [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
 Only an absent environment variable may select its documented default. Present non-Unicode values for the bearer token, listener host/port, safe roots, transport allowlists, compatibility switch, or request limits fail startup with non-sensitive errors. `MCP__SERVER__PORT` accepts only `1–65535`; port `0` is not a supported supervised-listener configuration.
 
@@ -72,6 +77,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `android_status` | Disabled | Read-only allowlisted metadata |
 | `android_battery_status` | Disabled | Available only in the `android-battery-status` build with explicit runtime opt-in; bounded read-only telemetry |
 | `android_volume_status` | Disabled | Available only in the `android-volume-status` build with explicit runtime opt-in; bounded read-only telemetry |
+| `set_android_volume` | Disabled | Available only in the `android-volume-control` build with explicit runtime opt-in; preview by default, live mutation requires one exact single-use grant and verified recovery semantics |
 | `run_command_profile` | Disabled | Available only in the `command-execution` build with explicit runtime opt-in; three fixed read-only server diagnostics |
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
 | `create_directory` | Disabled | Preview is available; mutation is separately default-disabled and requires fixed mode `0700`, atomic no-replace, and one request-scoped single-use grant |
@@ -81,7 +87,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
 | `search_text` | Disabled | Bounded literal locations without content excerpts |
 | `write_file` | Disabled | Payload-bounded, safe-rooted, dry-run by default |
-| Android control / arbitrary command execution / high-impact controls | Disabled | Disabled |
+| Other Android control / arbitrary command execution / unrelated high-impact controls | Disabled | Disabled |
 
 The unauthenticated operational endpoints are intentionally coarse. They must not return secrets, raw configuration, private paths, tool discovery, or tool results.
 
@@ -146,7 +152,7 @@ Audit counters provide evidence of gate decisions; they are not authorization an
 
 The fixed-profile command gate is live only in its separate build and only after runtime opt-in. It authorizes three read-only diagnostics of the exact server binary, not a shell or general process launcher. Its complete boundary is documented in [`command-execution-gate.md`](command-execution-gate.md).
 
-The narrowly scoped `create_directory` request-grant primitive is live only for that one already-confined mutation. The separate general-purpose capability-token policy module remains inert scaffolding. Any new executable, parameterized profile, mutating command, Android/service/package/network control, or other high-impact surface requires its own focused gate with compile-time and runtime opt-in, threat review, fixed allowlists, bounded execution, structured denial behavior, audit coverage, tests, and operator documentation.
+The narrowly scoped `create_directory` and Android-volume request-grant primitives are live only for their exact bound operations. They share a private key configuration and public header name but use distinct signed capability codes and target encodings, so a grant cannot cross-authorize them. The separate general-purpose capability-token policy module remains inert scaffolding. Any new executable, parameterized profile, mutating command, Android/service/package/network control, or other high-impact surface requires its own focused gate with compile-time and runtime opt-in, threat review, fixed allowlists, bounded execution, structured denial behavior, audit coverage, tests, and operator documentation.
 
 ## Dependency Advisory Policy
 

@@ -36,7 +36,22 @@ fn help_is_successful_and_describes_supported_commands() {
     assert!(stdout.contains("termux-mcp-server --version"));
     assert!(stdout.contains("termux-mcp-server --help"));
     assert!(stdout.contains("termux-mcp-server --issue-create-directory-grant"));
+    assert!(stdout.contains("termux-mcp-server --issue-android-volume-grant"));
     assert!(output.stderr.is_empty());
+}
+
+#[cfg(not(feature = "android-volume-control"))]
+#[test]
+fn volume_grant_issuance_fails_closed_without_the_compiled_capability() {
+    let output = isolated_binary()
+        .arg("--issue-android-volume-grant")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("requires a binary built with the android-volume-control feature"));
 }
 
 #[cfg(not(feature = "mcp-runtime"))]
@@ -71,6 +86,174 @@ fn configured_issuer(root: &std::path::Path, target: &std::path::Path) -> Comman
         )
         .env("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", target);
     command
+}
+
+#[cfg(feature = "android-volume-control")]
+fn configured_volume_issuer(stream: &str, level: &str) -> Command {
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let mut command = isolated_binary();
+    command
+        .arg("--issue-android-volume-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-volume-cli-principal")
+        .env("MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY", "false")
+        .env("MCP__ANDROID__VOLUME_CONTROL_ENABLED", "true")
+        .env("MCP__CAPABILITY__KEY_ID", "volume-cli-1")
+        .env("MCP__CAPABILITY__HMAC_KEY_HEX", KEY)
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__VOLUME_STREAM", stream)
+        .env("MCP__CAPABILITY__VOLUME_LEVEL", level);
+    command
+}
+
+#[cfg(feature = "android-volume-control")]
+#[test]
+fn exact_volume_cli_issuer_outputs_one_private_target_bound_grant() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use termux_mcp_server::{
+        android_volume_control::AndroidVolumeStreamName,
+        android_volume_grant::{
+            AndroidVolumeGrantAuthority, AndroidVolumeGrantError, AndroidVolumeGrantTarget,
+            MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES,
+        },
+    };
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    let output = configured_volume_issuer("music", "9").output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    let grant = stdout.trim_end();
+    assert!(grant.len() <= MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES);
+    let segments = grant.split('.').collect::<Vec<_>>();
+    assert_eq!(segments.len(), 4);
+    assert_eq!(segments[0], "v1");
+    assert_eq!(segments[1], "volume-cli-1");
+    assert_eq!(segments[2].len(), 182);
+    assert_eq!(segments[3].len(), 64);
+    assert!(segments[2..].iter().all(|segment| segment
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))));
+    for private_value in ["private-volume-cli-principal", SESSION, "music"] {
+        assert!(!stdout.contains(private_value));
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+    let authority = AndroidVolumeGrantAuthority::from_hex_key(
+        "volume-cli-1",
+        KEY,
+        "private-volume-cli-principal",
+    )
+    .unwrap();
+    authority
+        .consume_at(Some(grant), SESSION, target, now)
+        .unwrap();
+
+    let other_authority = AndroidVolumeGrantAuthority::from_hex_key(
+        "volume-cli-1",
+        KEY,
+        "private-volume-cli-principal",
+    )
+    .unwrap();
+    let other_target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Ring, 9).unwrap();
+    assert_eq!(
+        other_authority
+            .consume_at(Some(grant), SESSION, other_target, now)
+            .unwrap_err(),
+        AndroidVolumeGrantError::BindingMismatch
+    );
+}
+
+#[cfg(all(feature = "android-volume-control", unix))]
+#[test]
+fn volume_cli_issuer_loads_private_literal_config_without_shell_evaluation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let config_file = root.path().join("runtime.env");
+    std::fs::write(
+        &config_file,
+        format!(
+            "MCP__AUTH__STATIC_TOKEN=literal-private-volume-principal\n\
+             MCP__ANDROID__VOLUME_CONTROL_ENABLED=true\n\
+             MCP__CAPABILITY__KEY_ID=literal-volume-1\n\
+             MCP__CAPABILITY__HMAC_KEY_HEX={}\n",
+            "0123456789abcdef".repeat(4),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let output = isolated_binary()
+        .arg("--issue-android-volume-grant")
+        .env("MCP__CAPABILITY__CONFIG_FILE", &config_file)
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__VOLUME_STREAM", "notification")
+        .env("MCP__CAPABILITY__VOLUME_LEVEL", "6")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let grant = String::from_utf8(output.stdout).unwrap();
+    assert!(grant.starts_with("v1.literal-volume-1."));
+    assert_eq!(grant.lines().count(), 1);
+    assert!(!grant.contains("literal-private-volume-principal"));
+    assert!(!grant.contains("notification"));
+}
+
+#[cfg(feature = "android-volume-control")]
+#[test]
+fn volume_cli_issuer_fails_closed_and_never_reflects_private_inputs() {
+    const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    const PRINCIPAL: &str = "private-volume-cli-principal";
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    let disabled = isolated_binary()
+        .arg("--issue-android-volume-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", PRINCIPAL)
+        .env("MCP__CAPABILITY__SESSION_ID", SESSION)
+        .env("MCP__CAPABILITY__VOLUME_STREAM", "music")
+        .env("MCP__CAPABILITY__VOLUME_LEVEL", "9")
+        .output()
+        .unwrap();
+    assert!(!disabled.status.success());
+    assert!(disabled.stdout.is_empty());
+    let disabled_stderr = String::from_utf8(disabled.stderr).unwrap();
+    assert!(disabled_stderr.contains("volume control gate is disabled"));
+
+    let invalid_stream = configured_volume_issuer("private-invalid-stream", "9")
+        .output()
+        .unwrap();
+    assert!(!invalid_stream.status.success());
+    assert!(invalid_stream.stdout.is_empty());
+    let invalid_stream_stderr = String::from_utf8(invalid_stream.stderr).unwrap();
+    assert!(invalid_stream_stderr.contains("grant stream validation failed"));
+
+    let invalid_level = configured_volume_issuer("music", "-1").output().unwrap();
+    assert!(!invalid_level.status.success());
+    assert!(invalid_level.stdout.is_empty());
+    let invalid_level_stderr = String::from_utf8(invalid_level.stderr).unwrap();
+    assert!(invalid_level_stderr.contains("grant target validation failed"));
+
+    for stderr in [disabled_stderr, invalid_stream_stderr, invalid_level_stderr] {
+        for private_value in [PRINCIPAL, SESSION, KEY, "private-invalid-stream"] {
+            assert!(!stderr.contains(private_value));
+        }
+    }
 }
 
 #[cfg(feature = "mcp-runtime")]

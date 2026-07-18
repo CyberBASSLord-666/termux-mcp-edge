@@ -34,7 +34,7 @@ use crate::{
     android_status::collect_android_status,
     audit::{
         filesystem_allowed_event, filesystem_denied_event, read_only_allowed_event,
-        read_only_denied_event, AuditCounters, AuditMode,
+        read_only_denied_event, AuditCounters, AuditDecision, AuditEvent, AuditMode,
     },
     command_policy::{
         command_profile_ids, COMMAND_EXECUTION_GATE, COMMAND_INVALID_ARGUMENTS_REASON,
@@ -60,6 +60,15 @@ use crate::{
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
 };
+#[cfg(feature = "android-volume-control")]
+use crate::{
+    android_volume_control::{
+        AndroidVolumeControlClient, AndroidVolumeControlError, AndroidVolumeStreamName,
+    },
+    android_volume_grant::{
+        AndroidVolumeGrantAuthority, AndroidVolumeGrantTarget, ANDROID_VOLUME_GRANT_TTL_SECONDS,
+    },
+};
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
@@ -69,11 +78,17 @@ pub const MCP_POST_ACCEPT: &str = "application/json, text/event-stream";
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
 
+#[cfg(feature = "android-volume-control")]
+const ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED: u64 = ANDROID_VOLUME_GRANT_TTL_SECONDS;
+#[cfg(not(feature = "android-volume-control"))]
+const ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED: u64 = 0;
+
 const RUNTIME_STATUS_TOOL: &str = "runtime_status";
 const PLATFORM_INFO_TOOL: &str = "platform_info";
 const ANDROID_STATUS_TOOL: &str = "android_status";
 const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
+const SET_ANDROID_VOLUME_TOOL: &str = "set_android_volume";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const COPY_FILE_TOOL: &str = "copy_file";
@@ -103,6 +118,7 @@ const PLATFORM_INFO_GATE: &str = "platform_metadata";
 const ANDROID_STATUS_GATE: &str = "android_read_only_status";
 const ANDROID_BATTERY_STATUS_GATE: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_GATE: &str = "android_volume_status";
+const ANDROID_VOLUME_CONTROL_GATE: &str = "android_volume_control";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
 const FILESYSTEM_METADATA_GATE: &str = "filesystem_metadata";
 const FILESYSTEM_READ_GATE: &str = "filesystem_read";
@@ -124,10 +140,17 @@ const ANDROID_BATTERY_STATUS_RUNTIME_DISABLED: &str = "battery_runtime_disabled"
 #[cfg(feature = "android-volume-status")]
 const ANDROID_VOLUME_STATUS_ALLOWED: &str = "volume_status_read";
 const ANDROID_VOLUME_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
+const ANDROID_VOLUME_CONTROL_INVALID_ARGUMENTS: &str = "volume_control_arguments_invalid";
+const ANDROID_VOLUME_CONTROL_PREVIEW_ALLOWED: &str = "volume_control_preview";
+const ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED: &str = "volume_control_mutation_verified";
 #[cfg(not(feature = "android-volume-status"))]
 const ANDROID_VOLUME_STATUS_FEATURE_DISABLED: &str = "volume_feature_not_compiled";
 #[cfg(feature = "android-volume-status")]
 const ANDROID_VOLUME_STATUS_RUNTIME_DISABLED: &str = "volume_runtime_disabled";
+#[cfg(not(feature = "android-volume-control"))]
+const ANDROID_VOLUME_CONTROL_FEATURE_DISABLED: &str = "volume_control_feature_not_compiled";
+#[cfg(feature = "android-volume-control")]
+const ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED: &str = "volume_control_runtime_disabled";
 const PROJECT_SERVICE_STATUS_ALLOWED: &str = "allowlisted_project_service";
 const PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS: &str = "missing_service_name";
 const PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS: &str = "invalid_service_arguments";
@@ -181,12 +204,17 @@ struct McpTransportState {
     sessions: McpSessionStore,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    android_volume_control_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
     #[cfg(feature = "android-volume-status")]
     android_volume_client: AndroidVolumeClient,
+    #[cfg(feature = "android-volume-control")]
+    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
+    #[cfg(feature = "android-volume-control")]
+    android_volume_control_client: AndroidVolumeControlClient,
     #[cfg(feature = "command-execution")]
     command_execution_client: CommandExecutionClient,
 }
@@ -219,6 +247,7 @@ impl McpTransportState {
                 && cfg!(feature = "android-battery-status"),
             android_volume_status_enabled: android_volume_status_enabled
                 && cfg!(feature = "android-volume-status"),
+            android_volume_control_enabled: false,
             command_execution_enabled: command_execution_enabled
                 && cfg!(feature = "command-execution"),
             create_directory_authority,
@@ -226,9 +255,23 @@ impl McpTransportState {
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority: None,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
             command_execution_client,
         }
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    fn with_android_volume_control_authority(
+        mut self,
+        authority: Option<AndroidVolumeGrantAuthority>,
+    ) -> Self {
+        self.android_volume_control_enabled = authority.is_some();
+        self.android_volume_control_authority = authority;
+        self
     }
 
     #[cfg(all(test, feature = "android-battery-status"))]
@@ -255,11 +298,16 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             android_battery_status_enabled,
             android_volume_status_enabled: false,
+            android_volume_control_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority: None,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
             command_execution_client,
         }
@@ -289,11 +337,16 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             android_battery_status_enabled: false,
             android_volume_status_enabled,
+            android_volume_control_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             android_volume_client,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority: None,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
             command_execution_client,
         }
@@ -313,14 +366,32 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
+            android_volume_control_enabled: false,
             command_execution_enabled,
             create_directory_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority: None,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_client: AndroidVolumeControlClient::termux(),
             command_execution_client,
         }
+    }
+
+    #[cfg(all(test, feature = "android-volume-control"))]
+    fn with_android_volume_control_client(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        authority: Option<AndroidVolumeGrantAuthority>,
+        client: AndroidVolumeControlClient,
+    ) -> Self {
+        let mut state = Self::new(security_policy, file_tools, false, false, false, None)
+            .with_android_volume_control_authority(authority);
+        state.android_volume_control_client = client;
+        state
     }
 }
 
@@ -454,6 +525,15 @@ struct RunCommandProfileArguments {
     profile: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetAndroidVolumeArguments {
+    stream: String,
+    level: i64,
+    #[serde(default)]
+    dry_run: Option<bool>,
+}
+
 /// Build the stable MCP 2025-11-25 Streamable HTTP transport.
 ///
 /// The runtime exposes negotiated, session-scoped MCP discovery,
@@ -500,6 +580,34 @@ pub fn router_with_create_directory_authority(
         command_execution_enabled,
         Some(create_directory_authority),
     ))
+}
+
+/// Build the MCP transport with independently optional filesystem and Android
+/// mutation authorities. The volume-control tool remains hidden unless the
+/// volume authority is present; every live call still requires an exact
+/// request-scoped grant.
+#[cfg(feature = "android-volume-control")]
+#[rustfmt::skip]
+pub fn router_with_capability_authorities(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
+) -> Router {
+    router_from_state(
+        McpTransportState::new(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            create_directory_authority,
+        )
+        .with_android_volume_control_authority(android_volume_control_authority),
+    )
 }
 
 fn router_from_state(state: McpTransportState) -> Router {
@@ -1127,7 +1235,7 @@ fn capability_context_not_allowed(id: Option<Value>) -> Response {
             "error": {
                 "code": -32600,
                 "message": "Invalid Request",
-                "data": "A request-scoped capability grant is accepted only for create_directory calls.",
+                "data": "A request-scoped capability grant is accepted only for an exact grant-authorized tool call.",
             },
         })),
     )
@@ -1420,6 +1528,37 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             }));
     }
 
+    if state.android_volume_control_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": SET_ANDROID_VOLUME_TOOL,
+                "description": "Preview one exact Android audio-stream level, or apply it with fresh bounds validation and one principal/session/stream/level-bound single-use MCP-Capability-Grant.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "stream": {
+                            "type": "string",
+                            "enum": ["alarm", "call", "music", "notification", "ring", "system"],
+                            "description": "Exact documented Termux:API audio stream.",
+                        },
+                        "level": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Exact target level; a fresh status read enforces the live stream maximum.",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Defaults to true. Explicit false additionally requires one exact request-scoped grant.",
+                        },
+                    },
+                    "required": ["stream", "level"],
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
     if state.command_execution_enabled {
         body.pointer_mut("/result/tools")
             .and_then(Value::as_array_mut)
@@ -1463,7 +1602,12 @@ async fn handle_tool_call(
         Err(_error) => return invalid_params(id, TOOL_CALL_PARAMS_INVALID),
     };
 
-    if capability_grant.is_some() && call.name != CREATE_DIRECTORY_TOOL {
+    if capability_grant.is_some()
+        && !matches!(
+            call.name.as_str(),
+            CREATE_DIRECTORY_TOOL | SET_ANDROID_VOLUME_TOOL
+        )
+    {
         return capability_context_not_allowed(id);
     }
 
@@ -1500,6 +1644,16 @@ async fn handle_tool_call(
         }
         ANDROID_VOLUME_STATUS_TOOL => {
             handle_android_volume_status_call(id, call.arguments, state).await
+        }
+        SET_ANDROID_VOLUME_TOOL => {
+            handle_set_android_volume_call(
+                id,
+                call.arguments.into_value(),
+                state,
+                session_id,
+                capability_grant,
+            )
+            .await
         }
         PROJECT_SERVICE_STATUS_TOOL => {
             project_service_status_response(
@@ -1611,6 +1765,7 @@ fn handle_runtime_status_call(
         state.create_directory_authority.is_some(),
         state.android_battery_status_enabled,
         state.android_volume_status_enabled,
+        state.android_volume_control_enabled,
         state.command_execution_enabled,
     )
 }
@@ -1779,6 +1934,197 @@ async fn handle_android_volume_status_call(
     }
 }
 
+async fn handle_set_android_volume_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
+) -> Response {
+    let args = match arguments
+        .and_then(|arguments| serde_json::from_value::<SetAndroidVolumeArguments>(arguments).ok())
+    {
+        Some(args) => args,
+        None => {
+            record_volume_control_decision(
+                &state.audit_counters,
+                AuditMode::DryRun,
+                AuditDecision::Denied,
+                ANDROID_VOLUME_CONTROL_INVALID_ARGUMENTS,
+            );
+            return invalid_params(
+                id,
+                "set_android_volume requires exact stream, level, and optional dry_run arguments.",
+            );
+        }
+    };
+    let dry_run = args.dry_run.unwrap_or(true);
+    let mode = if dry_run {
+        AuditMode::DryRun
+    } else {
+        AuditMode::Mutating
+    };
+
+    #[cfg(not(feature = "android-volume-control"))]
+    {
+        let _ = (args, session_id, capability_grant);
+        record_volume_control_decision(
+            &state.audit_counters,
+            mode,
+            AuditDecision::Denied,
+            ANDROID_VOLUME_CONTROL_FEATURE_DISABLED,
+        );
+        tool_error_result(
+            id,
+            SET_ANDROID_VOLUME_TOOL,
+            "android_volume_control_unavailable",
+            ANDROID_VOLUME_CONTROL_FEATURE_DISABLED,
+        )
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    {
+        if !state.android_volume_control_enabled {
+            record_volume_control_decision(
+                &state.audit_counters,
+                mode,
+                AuditDecision::Denied,
+                ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED,
+            );
+            return tool_error_result(
+                id,
+                SET_ANDROID_VOLUME_TOOL,
+                "android_volume_control_unavailable",
+                ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED,
+            );
+        }
+
+        let stream = match args.stream.parse::<AndroidVolumeStreamName>() {
+            Ok(stream) => stream,
+            Err(error) => {
+                record_volume_control_decision(
+                    &state.audit_counters,
+                    mode,
+                    AuditDecision::Denied,
+                    error.reason_code(),
+                );
+                return invalid_params(id, "set_android_volume stream is not allowlisted.");
+            }
+        };
+
+        if dry_run {
+            return match state
+                .android_volume_control_client
+                .preview(stream, args.level)
+                .await
+            {
+                Ok(result) => {
+                    record_volume_control_decision(
+                        &state.audit_counters,
+                        mode,
+                        AuditDecision::Allowed,
+                        ANDROID_VOLUME_CONTROL_PREVIEW_ALLOWED,
+                    );
+                    ok_result(
+                        id,
+                        "set_android_volume: validated one exact stream and level without mutation."
+                            .to_owned(),
+                        json!(result),
+                    )
+                }
+                Err(error) => volume_control_error_response(id, state, mode, error),
+            };
+        }
+
+        let prepared = match state
+            .android_volume_control_client
+            .prepare_mutation(stream, args.level)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return volume_control_error_response(id, state, mode, error),
+        };
+        let target = match AndroidVolumeGrantTarget::new(stream, args.level) {
+            Ok(target) => target,
+            Err(error) => {
+                record_volume_control_decision(
+                    &state.audit_counters,
+                    mode,
+                    AuditDecision::Denied,
+                    error.reason_code(),
+                );
+                return capability_authorization_denied(id, error.reason_code());
+            }
+        };
+        let authority = state
+            .android_volume_control_authority
+            .as_ref()
+            .expect("enabled Android volume control owns an authority");
+        if let Err(error) =
+            authority.consume_at(capability_grant, session_id, target, current_unix_seconds())
+        {
+            record_volume_control_decision(
+                &state.audit_counters,
+                mode,
+                AuditDecision::Denied,
+                error.reason_code(),
+            );
+            return capability_authorization_denied(id, error.reason_code());
+        }
+
+        // The prepared operation owns the one mutation permit and is detached
+        // from request cancellation. If the HTTP future is dropped after grant
+        // consumption, the fixed command, verification, and rollback sequence
+        // still runs to completion under its own strict process deadlines.
+        let worker = tokio::spawn(prepared.execute());
+        match worker.await {
+            Ok(Ok(result)) => {
+                record_volume_control_decision(
+                    &state.audit_counters,
+                    mode,
+                    AuditDecision::Allowed,
+                    ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "set_android_volume: exact stream mutation completed and was verified."
+                        .to_owned(),
+                    json!(result),
+                )
+            }
+            Ok(Err(error)) => volume_control_error_response(id, state, mode, error),
+            Err(_error) => volume_control_error_response(
+                id,
+                state,
+                mode,
+                AndroidVolumeControlError::WorkerFailed,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "android-volume-control")]
+fn volume_control_error_response(
+    id: Option<Value>,
+    state: &McpTransportState,
+    mode: AuditMode,
+    error: AndroidVolumeControlError,
+) -> Response {
+    let reason_code = error.reason_code();
+    record_volume_control_decision(
+        &state.audit_counters,
+        mode,
+        AuditDecision::Denied,
+        reason_code,
+    );
+    tool_error_result(
+        id,
+        SET_ANDROID_VOLUME_TOOL,
+        "android_volume_control_failed",
+        reason_code,
+    )
+}
+
 async fn handle_run_command_profile_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -1934,6 +2280,7 @@ fn handle_no_argument_tool_call(
 fn available_tools(
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    android_volume_control_enabled: bool,
     command_execution_enabled: bool,
 ) -> Vec<&'static str> {
     let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
@@ -1942,6 +2289,9 @@ fn available_tools(
     }
     if android_volume_status_enabled {
         tools.push(ANDROID_VOLUME_STATUS_TOOL);
+    }
+    if android_volume_control_enabled {
+        tools.push(SET_ANDROID_VOLUME_TOOL);
     }
     if command_execution_enabled {
         tools.push(RUN_COMMAND_PROFILE_TOOL);
@@ -1956,12 +2306,14 @@ fn runtime_status_response(
     create_directory_mutation_enabled: bool,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
+    android_volume_control_enabled: bool,
     command_execution_enabled: bool,
 ) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
     let available_tools = available_tools(
         android_battery_status_enabled,
         android_volume_status_enabled,
+        android_volume_control_enabled,
         command_execution_enabled,
     );
     let battery_mode = if android_battery_status_enabled {
@@ -1974,14 +2326,26 @@ fn runtime_status_response(
     } else {
         "disabled"
     };
+    let volume_control_mode = if android_volume_control_enabled {
+        "preview_or_request_scoped_single_use_grant"
+    } else {
+        "disabled"
+    };
     let android_platform_mode = match (
         android_battery_status_enabled,
         android_volume_status_enabled,
+        android_volume_control_enabled,
     ) {
-        (true, true) => "read_only_battery_and_volume_telemetry",
-        (true, false) => "read_only_battery_telemetry",
-        (false, true) => "read_only_volume_telemetry",
-        (false, false) => "disabled",
+        (true, true, true) => {
+            "read_only_battery_and_volume_telemetry_plus_bounded_volume_control"
+        }
+        (true, false, true) => "read_only_battery_telemetry_plus_bounded_volume_control",
+        (false, true, true) => "read_only_volume_telemetry_plus_bounded_volume_control",
+        (false, false, true) => "bounded_request_authorized_volume_control",
+        (true, true, false) => "read_only_battery_and_volume_telemetry",
+        (true, false, false) => "read_only_battery_telemetry",
+        (false, true, false) => "read_only_volume_telemetry",
+        (false, false, false) => "disabled",
     };
     let command_execution_mode = if command_execution_enabled {
         "fixed_read_only_server_diagnostics"
@@ -2004,11 +2368,13 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted-no-api-or-control, android_platform={}, android_battery_status={}, android_volume_status={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-list-metadata-read-search-and-dry-run-write-file, android_device_control=disabled, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-list-metadata-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
+                            volume_control_mode,
                             create_directory_mode,
+                            if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
                             command_execution_mode,
                         ),
                     },
@@ -2035,18 +2401,24 @@ fn runtime_status_response(
                     "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
                     "fileWrites": true,
                     "fileWriteMode": "dry_run_by_default_explicit_false_required",
-                    "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled,
+                    "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled,
                     "androidPlatformToolMode": android_platform_mode,
                     "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
                     "androidBatteryStatusEnabled": android_battery_status_enabled,
                     "androidVolumeStatusCompiled": cfg!(feature = "android-volume-status"),
                     "androidVolumeStatusEnabled": android_volume_status_enabled,
-                    "androidDeviceControl": false,
+                    "androidVolumeControlCompiled": cfg!(feature = "android-volume-control"),
+                    "androidVolumeControlEnabled": android_volume_control_enabled,
+                    "androidVolumeControlMode": volume_control_mode,
+                    "androidVolumeGrantRequired": android_volume_control_enabled,
+                    "androidVolumeGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+                    "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
+                    "androidDeviceControl": android_volume_control_enabled,
                     "commandExecutionCompiled": cfg!(feature = "command-execution"),
                     "commandExecution": command_execution_enabled,
                     "commandExecutionMode": command_execution_mode,
                     "arbitraryCommandExecution": false,
-                    "highImpactTools": false,
+                    "highImpactTools": android_volume_control_enabled,
                     "auditCounters": audit_counters_snapshot,
                 },
                 "isError": false
@@ -3436,6 +3808,23 @@ fn record_filesystem_denied(
     record_audit_event(counters, &event);
 }
 
+fn record_volume_control_decision(
+    counters: &SharedAuditCounters,
+    mode: AuditMode,
+    decision: AuditDecision,
+    reason_code: &'static str,
+) {
+    let event = AuditEvent::new(
+        current_unix_seconds(),
+        SET_ANDROID_VOLUME_TOOL,
+        ANDROID_VOLUME_CONTROL_GATE,
+        mode,
+        decision,
+        reason_code,
+    );
+    record_audit_event(counters, &event);
+}
+
 fn record_audit_event(counters: &SharedAuditCounters, event: &crate::audit::AuditEvent) {
     if let Ok(mut counters) = counters.lock() {
         counters.record_event(event);
@@ -3541,6 +3930,7 @@ mod tests {
             state.create_directory_authority.is_some(),
             state.android_battery_status_enabled,
             state.android_volume_status_enabled,
+            state.android_volume_control_enabled,
             state.command_execution_enabled,
         );
         let runtime: Value = serde_json::from_slice(
@@ -3953,6 +4343,252 @@ mod tests {
             counters.by_reason_code[ANDROID_VOLUME_STATUS_RUNTIME_DISABLED].denied,
             1
         );
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    fn test_volume_control_client(
+    ) -> (tempfile::TempDir, AndroidVolumeControlClient) {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("termux-volume");
+        let level = root.path().join("level");
+        let calls = root.path().join("calls");
+        fs::write(&level, "5\n").unwrap();
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+level='{}'
+calls='{}'
+if [ "$#" -eq 0 ]; then
+  IFS= read -r music <"$level"
+  printf '[{{"stream":"alarm","volume":1,"max_volume":7}},{{"stream":"call","volume":1,"max_volume":5}},{{"stream":"music","volume":%s,"max_volume":15}},{{"stream":"notification","volume":2,"max_volume":7}},{{"stream":"ring","volume":3,"max_volume":7}},{{"stream":"system","volume":2,"max_volume":7}}]' "$music"
+  exit 0
+fi
+test "$#" -eq 2
+printf '%s:%s:%s\n' "$1" "$2" "$PWD" >>"$calls"
+printf '%s\n' "$2" >"$level"
+"#,
+                level.display(),
+                calls.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = AndroidVolumeControlClient::with_program_and_limits(
+            program,
+            Duration::from_secs(1),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        (root, client)
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    fn test_volume_authority() -> AndroidVolumeGrantAuthority {
+        AndroidVolumeGrantAuthority::from_hex_key(
+            "test-volume-1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "private-static-principal",
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[tokio::test]
+    async fn enabled_volume_control_is_preview_first_exact_and_single_use() {
+        use axum::body::to_bytes;
+
+        let _guard = crate::android_provider::ANDROID_PROVIDER_TEST_LOCK.lock().await;
+        let (program_root, client) = test_volume_control_client();
+        let safe_root = tempfile::tempdir().unwrap();
+        let authority = test_volume_authority();
+        let state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            Some(authority.clone()),
+            client,
+        );
+        let session = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+        let target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+        let grant = authority
+            .issue_at(session, target, current_unix_seconds())
+            .unwrap();
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        let tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == SET_ANDROID_VOLUME_TOOL)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["stream"]["enum"],
+            json!(["alarm", "call", "music", "notification", "ring", "system"])
+        );
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+
+        let preview = handle_set_android_volume_call(
+            Some(json!("preview")),
+            Some(json!({"stream":"music", "level":9})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview: Value = serde_json::from_slice(
+            &to_bytes(preview.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(preview["result"]["structuredContent"]["dryRun"], true);
+        assert_eq!(preview["result"]["structuredContent"]["previousLevel"], 5);
+        assert!(!program_root.path().join("calls").exists());
+
+        let mutation = handle_set_android_volume_call(
+            Some(json!("mutation")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(mutation.status(), StatusCode::OK);
+        let mutation: Value = serde_json::from_slice(
+            &to_bytes(mutation.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mutation["result"]["structuredContent"]["verified"], true);
+        assert_eq!(
+            std::fs::read_to_string(program_root.path().join("calls")).unwrap(),
+            "music:9:/\n"
+        );
+
+        let replay = handle_set_android_volume_call(
+            Some(json!("replay")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        let replay: Value = serde_json::from_slice(
+            &to_bytes(replay.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay["error"]["data"]["reason"], "capability_grant_replayed");
+
+        let runtime = handle_runtime_status_call(
+            Some(json!("runtime")),
+            ToolArguments::Omitted,
+            &state,
+        );
+        let runtime: Value = serde_json::from_slice(
+            &to_bytes(runtime.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidVolumeControlEnabled"],
+            true
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidDeviceControl"],
+            true
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidPlatformToolMode"],
+            "bounded_request_authorized_volume_control"
+        );
+        assert_eq!(runtime["result"]["structuredContent"]["highImpactTools"], true);
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[SET_ANDROID_VOLUME_TOOL].allowed, 2);
+        assert_eq!(counters.by_tool[SET_ANDROID_VOLUME_TOOL].denied, 1);
+        let serialized = serde_json::to_string(&counters).unwrap();
+        assert!(!serialized.contains(&grant));
+        assert!(!serialized.contains("private-static-principal"));
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[tokio::test]
+    async fn disabled_or_invalid_volume_control_never_spawns() {
+        use axum::body::to_bytes;
+
+        let program_root = tempfile::tempdir().unwrap();
+        let client = AndroidVolumeControlClient::with_program_and_limits(
+            program_root.path().join("must-not-run"),
+            std::time::Duration::from_secs(1),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            None,
+            client,
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != SET_ANDROID_VOLUME_TOOL));
+
+        let disabled = handle_set_android_volume_call(
+            Some(json!("disabled")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+            None,
+        )
+        .await;
+        let disabled: Value = serde_json::from_slice(
+            &to_bytes(disabled.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            disabled["result"]["structuredContent"]["reasonCode"],
+            ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED
+        );
+
+        let authority = test_volume_authority();
+        let (_active_root, active_client) = test_volume_control_client();
+        let active = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            Some(authority),
+            active_client,
+        );
+        for arguments in [
+            json!({"stream":"media", "level":9}),
+            json!({"stream":"music", "level":9, "program":"sh"}),
+            json!({"stream":"music", "level":9, "argv":[]}),
+            json!({"stream":"music", "level":9, "environment":{}}),
+            json!({"stream":"music", "level":9, "timeout":999}),
+        ] {
+            let response = handle_set_android_volume_call(
+                Some(json!("invalid")),
+                Some(arguments),
+                &active,
+                "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 
     #[cfg(feature = "command-execution")]

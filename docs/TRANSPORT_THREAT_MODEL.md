@@ -14,7 +14,7 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - strict single-message JSON-RPC request, notification, and response classification;
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
-- the eleven-tool baseline allowlist, plus only those read-only battery, volume, and fixed-command tools whose independent compile/runtime gates are both enabled, as documented in README and the authorization policy;
+- the eleven-tool baseline allowlist, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.
@@ -155,8 +155,8 @@ Current controls:
 - the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics of the exact server executable;
 - its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input;
 - empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced;
-- arbitrary commands, shells, Android/service/package/network mutation, broad inspection, credentials, and other high-impact capabilities are absent from discovery and dispatch;
-- the narrow `create_directory` request-grant module is live only for that exact confined mutation; the separate general capability-token policy module remains inert;
+- arbitrary commands, shells, broader Android/service/package/network mutation, broad inspection, credentials, and unrelated high-impact capabilities are absent from discovery and dispatch;
+- the narrow `create_directory` and exact-stream volume request-grant modules are live only for their distinct bound mutations; the separate general capability-token policy module remains inert;
 - read-only Android and service metadata use fixed allowlists and expose no control path.
 
 Required controls for expansion:
@@ -170,7 +170,7 @@ Rust dependencies, GitHub Actions, the Android toolchain, and the MCP specificat
 
 Current controls:
 
-- immutable action pins, pinned Rust 1.88.0, pinned Android NDK, exact-head CI, RustSec Security, and five-posture Android validation;
+- immutable action pins, pinned Rust 1.88.0, pinned Android NDK, exact-head CI, RustSec Security, and six-posture Android validation;
 - dependency changes remain separate from unrelated runtime behavior.
 
 Required controls:
@@ -197,7 +197,7 @@ A transport or tool-surface change is blocked when it:
 Every affected change must identify the exact head SHA and provide the applicable evidence:
 
 1. host format, Clippy, all-feature tests, and deployment shell tests;
-2. all five Android AArch64 builds and applicable native ARM64 official-Termux gates for device-affecting source/toolchain changes;
+2. all six Android AArch64 builds and applicable native ARM64 official-Termux gates for device-affecting source/toolchain changes;
 3. RustSec Security and dependency-alert review for dependency changes;
 4. accepted and rejected authentication, Host, Origin, envelope, lifecycle, and tool-schema cases;
 5. concurrency, timeout, body, response, cancellation, cleanup, and reconnect bounds appropriate to the change;

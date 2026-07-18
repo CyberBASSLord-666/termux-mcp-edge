@@ -84,6 +84,8 @@ def runtime_value(name: str, default: str | None = None) -> str | None:
 
 POSTURE = sys.argv[1]
 VERSION = sys.argv[2] if len(sys.argv) > 2 else ""
+MCP_ENABLED = POSTURE in {"mcp", "volume-control"}
+VOLUME_CONTROL_COMPILED = POSTURE == "volume-control"
 PORT = int(runtime_value("MCP__SERVER__PORT", "0") or "0")
 TOKEN = runtime_value("MCP__AUTH__STATIC_TOKEN")
 SAFE_ROOT_VALUE = runtime_value("MCP__FILE__SAFE_ROOTS")
@@ -344,11 +346,11 @@ class Handler(BaseHTTPRequestHandler):
             ready: dict[str, Any] = {
                 "status": "ready",
                 "version": VERSION,
-                "mcp_runtime_enabled": POSTURE == "mcp",
+                "mcp_runtime_enabled": MCP_ENABLED,
                 "safe_root_count": 1,
                 "auth_posture": "static_token",
             }
-            if POSTURE == "mcp":
+            if MCP_ENABLED:
                 ready["mcp_request_limits"] = {
                     "max_concurrent_requests": 4,
                     "request_timeout_seconds": 30,
@@ -356,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             self.send_json(200, ready)
             return
-        if self.path != "/mcp" or POSTURE != "mcp":
+        if self.path != "/mcp" or not MCP_ENABLED:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authenticated() or not self.transport_allowed() or not self.active_session():
@@ -364,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(405)
 
     def do_DELETE(self) -> None:
-        if self.path != "/mcp" or POSTURE != "mcp":
+        if self.path != "/mcp" or not MCP_ENABLED:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authenticated() or not self.transport_allowed() or not self.active_session():
@@ -372,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(204)
 
     def do_POST(self) -> None:
-        if self.path != "/mcp" or POSTURE != "mcp":
+        if self.path != "/mcp" or not MCP_ENABLED:
             self.send_json(404, {"error": "not_found"})
             return
         if not self.authenticated() or not self.transport_allowed():
@@ -526,6 +528,9 @@ class Handler(BaseHTTPRequestHandler):
                         "commandExecution": False,
                         "androidPlatformTools": False,
                         "highImpactTools": False,
+                        "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
+                        "androidVolumeControlEnabled": False,
+                        "androidVolumeGrantRequired": False,
                         "createDirectoryMutationEnabled": CAPABILITY_ENABLED,
                         "createDirectoryGrantRequired": CAPABILITY_ENABLED,
                         "createDirectoryGrantHeader": "mcp-capability-grant",
@@ -538,6 +543,17 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 ),
             )
+            return
+        if name == "set_android_volume" and VOLUME_CONTROL_COMPILED:
+            response = result(
+                identifier,
+                {
+                    "reasonCode": "volume_control_runtime_disabled",
+                    "outcome": "denied",
+                },
+            )
+            response["result"]["isError"] = True
+            self.send_json(200, response)
             return
         if name == "platform_info":
             self.send_json(
@@ -874,7 +890,7 @@ if POSTURE == "issue":
     print(issue_fixture_grant())
     raise SystemExit(0)
 
-if POSTURE not in {"default", "mcp"}:
+if POSTURE not in {"default", "mcp", "volume-control"}:
     raise SystemExit(2)
 
 ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

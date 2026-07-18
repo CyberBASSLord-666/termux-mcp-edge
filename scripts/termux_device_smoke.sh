@@ -55,7 +55,7 @@ if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPOSITORY_URL="https://github.com/CyberBASSLord-666/termux-mcp-edge.git"
-HARNESS_VERSION="2"
+HARNESS_VERSION="3"
 HEAD_LABEL="${EXPECTED_HEAD:0:12}"
 SMOKE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_ROOT="$HOME/termux-mcp-device-smoke-$HEAD_LABEL-$SMOKE_ID"
@@ -79,6 +79,7 @@ SERVICE_ROOT=""
 SERVICE_DIR=""
 SAFE_ROOT=""
 RUNSVDIR_PID=""
+DIRECT_SERVER_PID=""
 MCP_TOKEN=""
 MCP_SESSION_ID=""
 CAPABILITY_KEY_ID="device-smoke-1"
@@ -145,6 +146,10 @@ cleanup() {
   if [[ -n "$RUNSVDIR_PID" ]]; then
     kill "$RUNSVDIR_PID" >/dev/null 2>&1 || true
     wait "$RUNSVDIR_PID" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$DIRECT_SERVER_PID" ]]; then
+    kill "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
+    wait "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
   fi
   unset MCP_TOKEN MCP_SESSION_ID CAPABILITY_KEY_HEX MCP__AUTH__STATIC_TOKEN TOKEN 2>/dev/null || true
   if ((cleanup_confirmed == 1)); then
@@ -240,6 +245,10 @@ file_sha() {
   sha256sum -- "$1" | awk '{print $1}'
 }
 
+curl_local() {
+  command curl --disable --proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10 "$@"
+}
+
 wait_for_runit() {
   local expected="$1" attempt output=""
   for attempt in $(seq 1 40); do
@@ -256,8 +265,8 @@ wait_for_runit() {
 wait_for_http() {
   local attempt health="" ready=""
   for attempt in $(seq 1 40); do
-    health="$(curl -fsS --max-time 2 "$TERMUX_MCP_HEALTH_URL" 2>/dev/null || true)"
-    ready="$(curl -fsS --max-time 2 "$TERMUX_MCP_READY_URL" 2>/dev/null || true)"
+    health="$(curl_local -fsS --max-time 2 "$TERMUX_MCP_HEALTH_URL" 2>/dev/null || true)"
+    ready="$(curl_local -fsS --max-time 2 "$TERMUX_MCP_READY_URL" 2>/dev/null || true)"
     if [[ "$health" == ok ]] && jq -e '.status == "ready"' <<<"$ready" >/dev/null 2>&1; then
       log "PASS health=ok"
       log "PASS readiness=ready"
@@ -322,7 +331,7 @@ mcp_post() {
     valid_capability_grant "$grant" || fail "candidate emitted an invalid capability grant"
     args+=( -H "MCP-Capability-Grant: $grant" )
   fi
-  curl "${args[@]}" --data-binary "$payload" "$MCP_URL"
+  curl_local "${args[@]}" --data-binary "$payload" "$MCP_URL"
 }
 
 issue_create_directory_grant() {
@@ -349,7 +358,7 @@ protocol_smoke() {
   body="$LOG_DIR/$label-response.json"
 
   payload='{"jsonrpc":"2.0","id":"unauthorized","method":"tools/list"}'
-  status="$(curl -sS -o "$body" -w '%{http_code}' \
+  status="$(curl_local -sS -o "$body" -w '%{http_code}' \
     -H "Host: localhost:$PORT" \
     -H "Origin: http://localhost:$PORT" \
     -H 'Content-Type: application/json' \
@@ -359,7 +368,7 @@ protocol_smoke() {
   assert_json "${label}_unauthorized_body" "$body" '.error == "unauthorized" and (.result | not)'
 
   payload='{"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-device-smoke","version":"1.0.0"}}}'
-  status="$(curl -sS -D "$headers" -o "$body" -w '%{http_code}' \
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
     -H "Authorization: Bearer $MCP_TOKEN" \
     -H "Host: localhost:$PORT" \
     -H "Origin: http://localhost:$PORT" \
@@ -514,7 +523,7 @@ protocol_smoke() {
   assert_eq "${label}_authenticated_oversized_http" "$status" 413
   assert_json "${label}_authenticated_oversized_body" "$body" '.error == "mcp_request_body_too_large"'
 
-  status="$(curl -sS -o "$body" -w '%{http_code}' \
+  status="$(curl_local -sS -o "$body" -w '%{http_code}' \
     -H "Host: localhost:$PORT" \
     -H "Origin: http://localhost:$PORT" \
     -H 'Content-Type: application/json' \
@@ -523,7 +532,7 @@ protocol_smoke() {
   assert_eq "${label}_unauthenticated_oversized_http" "$status" 401
   assert_json "${label}_unauthenticated_oversized_body" "$body" '.error == "unauthorized"'
 
-  status="$(curl -sS -X DELETE -o "$body" -w '%{http_code}' \
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
     -H "Authorization: Bearer $MCP_TOKEN" \
     -H "Host: localhost:$PORT" \
     -H "Origin: http://localhost:$PORT" \
@@ -534,6 +543,92 @@ protocol_smoke() {
   [[ ! -s "$body" ]] || fail "session deletion returned a response body"
   log "PASS ${label}_delete_session_body=empty"
   MCP_SESSION_ID=""
+}
+
+volume_control_disabled_smoke() {
+  local body="$LOG_DIR/volume-control-disabled-response.json"
+  local headers="$LOG_DIR/volume-control-disabled-initialize.headers"
+  local server_log="$LOG_DIR/volume-control-disabled-server.log"
+  local status payload attempt
+
+  env -i \
+    "HOME=$HOME" \
+    "PREFIX=$PREFIX" \
+    "PATH=$ORIGINAL_PATH" \
+    "MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN" \
+    MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
+    MCP__SERVER__HOST=127.0.0.1 \
+    "MCP__SERVER__PORT=$PORT" \
+    "MCP__TRANSPORT__ALLOWED_HOSTS=localhost:$PORT,127.0.0.1:$PORT" \
+    "MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:$PORT,http://127.0.0.1:$PORT" \
+    MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4 \
+    MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
+    MCP__TRANSPORT__MAX_BODY_BYTES=1024 \
+    "MCP__FILE__SAFE_ROOTS=$SAFE_ROOT" \
+    "$VOLUME_CONTROL_ARTIFACT" >"$server_log" 2>&1 &
+  DIRECT_SERVER_PID=$!
+  for attempt in $(seq 1 40); do
+    kill -0 "$DIRECT_SERVER_PID" >/dev/null 2>&1 || fail "volume-control disabled runtime exited before readiness"
+    if [[ "$(curl_local -fsS --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)" == ok ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  [[ "$(curl_local -fsS --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)" == ok ]] || fail "volume-control disabled runtime did not become healthy"
+
+  payload='{"jsonrpc":"2.0","id":"initialize-volume-control-disabled","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-device-smoke","version":"1.0.0"}}}'
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "Authorization: Bearer $MCP_TOKEN" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "$payload" "$MCP_URL")"
+  assert_eq volume_control_disabled_initialize_http "$status" 200
+  assert_json volume_control_disabled_initialize_body "$body" '.result.protocolVersion == "2025-11-25"'
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || fail "volume-control disabled runtime omitted its session ID"
+
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq volume_control_disabled_initialized_http "$status" 202
+  [[ ! -s "$body" ]] || fail "volume-control disabled initialized notification returned a body"
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-disabled-tools","method":"tools/list"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq volume_control_disabled_tools_http "$status" 200
+  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]'
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-disabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq volume_control_disabled_status_http "$status" 200
+  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false'
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq volume_control_disabled_call_http "$status" 200
+  assert_json volume_control_disabled_call "$body" '.result.isError == true and .result.structuredContent.reasonCode == "volume_control_runtime_disabled"'
+
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "Authorization: Bearer $MCP_TOKEN" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'MCP-Protocol-Version: 2025-11-25' -H "MCP-Session-Id: $MCP_SESSION_ID" \
+    "$MCP_URL")"
+  assert_eq volume_control_disabled_delete_http "$status" 204
+  MCP_SESSION_ID=""
+
+  kill "$DIRECT_SERVER_PID" >/dev/null 2>&1 || fail "volume-control disabled runtime could not be stopped"
+  for attempt in $(seq 1 40); do
+    kill -0 "$DIRECT_SERVER_PID" >/dev/null 2>&1 || break
+    sleep 0.1
+  done
+  if kill -0 "$DIRECT_SERVER_PID" >/dev/null 2>&1; then
+    kill -KILL "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
+    wait "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
+    DIRECT_SERVER_PID=""
+    fail "volume-control disabled runtime required forced termination"
+  fi
+  wait "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
+  DIRECT_SERVER_PID=""
+  log "PASS volume_control_disabled_runtime=verified_without_device_mutation"
 }
 
 log "Termux MCP exact-commit device production gate starting"
@@ -580,7 +675,7 @@ done
 AVAILABLE_KB="$(df -Pk "$HOME" | awk 'NR==2 {print $4}')"
 log "available_home_kb=$AVAILABLE_KB"
 if [[ "$AVAILABLE_KB" =~ ^[0-9]+$ ]] && ((AVAILABLE_KB < 1572864)); then
-  fail "at least 1.5 GiB of free space is required for the two Rust builds"
+  fail "at least 1.5 GiB of free space is required for the release builds"
 fi
 
 log "architecture=$(uname -m)"
@@ -636,6 +731,7 @@ CANDIDATE_VERSION="$(awk '
 BASELINE_VERSION="0.0.0-device-smoke.$HEAD_LABEL"
 BASELINE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$BASELINE_VERSION"
 CANDIDATE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION"
+VOLUME_CONTROL_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION-android-volume-control"
 
 log "Building baseline and exact candidate; detailed output is in $BUILD_LOG"
 : >"$BUILD_LOG"
@@ -654,18 +750,46 @@ if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features mcp-runtime -
   fail "exact candidate Rust build failed"
 fi
 install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$CANDIDATE_ARTIFACT"
+if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features android-volume-control -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
+  tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
+  fail "exact volume-control candidate Rust build failed"
+fi
+install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$VOLUME_CONTROL_ARTIFACT"
 
 assert_eq baseline_reported_version "$("$BASELINE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$BASELINE_VERSION"
 assert_eq candidate_reported_version "$("$CANDIDATE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
+assert_eq volume_control_reported_version "$("$VOLUME_CONTROL_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
 BASELINE_FILE="$(file -b "$BASELINE_ARTIFACT")"
 CANDIDATE_FILE="$(file -b "$CANDIDATE_ARTIFACT")"
+VOLUME_CONTROL_FILE="$(file -b "$VOLUME_CONTROL_ARTIFACT")"
 log "baseline_file=$BASELINE_FILE"
 log "candidate_file=$CANDIDATE_FILE"
+log "volume_control_file=$VOLUME_CONTROL_FILE"
 [[ "$CANDIDATE_FILE" == *"ARM aarch64"* && "$CANDIDATE_FILE" == *"Android"* ]] || fail "candidate is not an AArch64 Android ELF executable"
+[[ "$VOLUME_CONTROL_FILE" == *"ARM aarch64"* && "$VOLUME_CONTROL_FILE" == *"Android"* ]] || fail "volume-control candidate is not an AArch64 Android ELF executable"
 BASELINE_SHA="$(file_sha "$BASELINE_ARTIFACT")"
 CANDIDATE_SHA="$(file_sha "$CANDIDATE_ARTIFACT")"
+VOLUME_CONTROL_SHA="$(file_sha "$VOLUME_CONTROL_ARTIFACT")"
 log "baseline_sha256=$BASELINE_SHA"
 log "candidate_sha256=$CANDIDATE_SHA"
+log "volume_control_sha256=$VOLUME_CONTROL_SHA"
+
+set +e
+timeout -k 2 5 env -i \
+  "HOME=$HOME" \
+  "PREFIX=$PREFIX" \
+  "PATH=$ORIGINAL_PATH" \
+  MCP__AUTH__STATIC_TOKEN=device-smoke-compile-gate \
+  MCP__ANDROID__VOLUME_CONTROL_ENABLED=true \
+  MCP__CAPABILITY__KEY_ID=device-smoke-compile-gate \
+  MCP__CAPABILITY__HMAC_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000000 \
+  MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT=18765 \
+  "$CANDIDATE_ARTIFACT" >"$LOG_DIR/volume-control-compile-gate.log" 2>&1
+volume_control_compile_rc=$?
+set -e
+((volume_control_compile_rc != 0 && volume_control_compile_rc != 124 && volume_control_compile_rc != 137)) || fail "incompatible candidate did not reject the volume-control runtime gate"
+grep -Fq 'MCP__ANDROID__VOLUME_CONTROL_ENABLED requires a binary built with the android-volume-control feature' "$LOG_DIR/volume-control-compile-gate.log" || fail "incompatible candidate returned the wrong volume-control compile-gate error"
+log "PASS volume_control_compile_gate=rejected_incompatible_artifact"
 assert_eq candidate_build_head "$(git rev-parse HEAD)" "$EXPECTED_HEAD"
 [[ -z "$(git status --porcelain)" ]] || fail "exact candidate build left tracked source changes"
 
@@ -716,6 +840,8 @@ export TERMUX_MCP_PROBE_DELAY_SECONDS=1
 export TERMUX_MCP_STOP_ATTEMPTS=20
 export TERMUX_MCP_STOP_DELAY_SECONDS=1
 MCP_URL="http://127.0.0.1:$PORT/mcp"
+
+volume_control_disabled_smoke
 
 log "candidate_version=$CANDIDATE_VERSION"
 log "test_port=$PORT"
@@ -820,5 +946,6 @@ assert_exists uninstall_preserved_config "$CONFIG_ROOT/runtime.env"
 
 log "exact_head=$EXPECTED_HEAD"
 log "candidate_sha256=$CANDIDATE_SHA"
+log "volume_control_sha256=$VOLUME_CONTROL_SHA"
 log "TERMUX_MCP_DEVICE_RESULT=PASS"
 SMOKE_SUCCEEDED=1
