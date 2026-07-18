@@ -110,6 +110,8 @@ pub struct AndroidConfig {
     pub battery_status_enabled: bool,
     /// Explicit runtime opt-in for the separately feature-gated volume tool.
     pub volume_status_enabled: bool,
+    /// Explicit runtime opt-in for request-authorized volume mutation.
+    pub volume_control_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -242,6 +244,11 @@ impl AppConfig {
                     "MCP__ANDROID__VOLUME_STATUS_ENABLED",
                     false,
                 )?,
+                volume_control_enabled: env_bool(
+                    &read_variable,
+                    "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
+                    false,
+                )?,
             },
             command: CommandConfig {
                 enabled: env_bool(&read_variable, "MCP__COMMAND__ENABLED", false)?,
@@ -299,6 +306,7 @@ impl AppConfig {
         validate_file_safe_roots(&config.file)?;
         validate_create_directory_mutation_capability(&config)?;
         validate_android_capabilities(&config.android)?;
+        validate_android_volume_control_capability(&config)?;
         validate_command_capability(&config.command)?;
         validate_transport_security(&config.transport)?;
         Ok(config)
@@ -568,6 +576,31 @@ fn validate_android_capabilities(android: &AndroidConfig) -> anyhow::Result<()> 
             "MCP__ANDROID__VOLUME_STATUS_ENABLED requires a binary built with the android-volume-status feature"
         );
     }
+    if android.volume_control_enabled && !cfg!(feature = "android-volume-control") {
+        bail!(
+            "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires a binary built with the android-volume-control feature"
+        );
+    }
+    Ok(())
+}
+
+fn validate_android_volume_control_capability(config: &AppConfig) -> anyhow::Result<()> {
+    if !config.android.volume_control_enabled {
+        return Ok(());
+    }
+    if config
+        .auth
+        .static_token
+        .as_deref()
+        .is_none_or(|token| token.trim().is_empty())
+    {
+        bail!("MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__AUTH__STATIC_TOKEN");
+    }
+    if config.capability.key_id.is_none() {
+        bail!(
+            "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
+    }
     Ok(())
 }
 
@@ -658,6 +691,7 @@ mod tests {
             android: AndroidConfig {
                 battery_status_enabled: false,
                 volume_status_enabled: false,
+                volume_control_enabled: false,
             },
             command: CommandConfig { enabled: false },
             file: FileConfig {
@@ -784,6 +818,7 @@ mod tests {
         assert_eq!(config.capability.hmac_key_hex(), None);
         assert!(!config.android.battery_status_enabled);
         assert!(!config.android.volume_status_enabled);
+        assert!(!config.android.volume_control_enabled);
         assert!(!config.command.enabled);
         assert!(!config.file.create_directory_mutation_enabled);
         assert_eq!(
@@ -852,6 +887,86 @@ mod tests {
         assert!(error
             .to_string()
             .starts_with("MCP__ANDROID__VOLUME_STATUS_ENABLED must be a boolean value"));
+    }
+
+    #[test]
+    fn android_volume_control_requires_compile_runtime_auth_and_key_opt_in() {
+        let config = load_from_os_values([]).unwrap();
+        assert!(!config.android.volume_control_enabled);
+
+        let entries = [
+            (
+                "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
+                OsString::from("true"),
+            ),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ];
+        let configured = load_from_os_values(entries);
+        if cfg!(feature = "android-volume-control") {
+            assert!(configured.unwrap().android.volume_control_enabled);
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires a binary built with the android-volume-control feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[test]
+    fn android_volume_control_rejects_missing_principal_or_key() {
+        let missing_principal = load_from_os_values([
+            (
+                "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
+                OsString::from("true"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            missing_principal.to_string(),
+            "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+        );
+
+        let missing_key = load_from_os_values([
+            (
+                "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
+                OsString::from("true"),
+            ),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            missing_key.to_string(),
+            "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
+    }
+
+    #[test]
+    fn android_volume_control_rejects_invalid_runtime_flag() {
+        let error = load_from_os_values([(
+            "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
+            OsString::from("sometimes"),
+        )])
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("MCP__ANDROID__VOLUME_CONTROL_ENABLED must be a boolean value"));
     }
 
     #[test]
@@ -1003,6 +1118,7 @@ mod tests {
             "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
+            "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
             "MCP__COMMAND__ENABLED",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
