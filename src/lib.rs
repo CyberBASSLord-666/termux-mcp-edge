@@ -7,11 +7,14 @@ mod android_provider;
 pub mod android_status;
 #[cfg(feature = "android-volume-status")]
 pub mod android_volume;
+#[cfg(feature = "android-volume-control")]
+pub mod android_volume_control;
 pub mod audit;
 pub mod auth;
 #[cfg(any(
     feature = "android-battery-status",
     feature = "android-volume-status",
+    feature = "android-volume-control",
     feature = "command-execution"
 ))]
 mod bounded_process;

@@ -16,6 +16,7 @@ default = []
 mcp-runtime = ["dep:hmac", "dep:rustix", "dep:sha2"]
 android-battery-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-status = ["mcp-runtime", "tokio/process", "rustix/process"]
+android-volume-control = ["android-volume-status"]
 command-execution = ["mcp-runtime", "tokio/process", "rustix/process"]
 
 [dependencies]
