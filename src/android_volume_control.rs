@@ -239,7 +239,7 @@ impl AndroidVolumeControlClient {
     }
 
     #[cfg(test)]
-    fn with_program_and_limits(
+    pub(crate) fn with_program_and_limits(
         program: PathBuf,
         timeout: Duration,
         max_stdout_bytes: usize,

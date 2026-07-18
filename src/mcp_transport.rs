@@ -380,6 +380,19 @@ impl McpTransportState {
             command_execution_client,
         }
     }
+
+    #[cfg(all(test, feature = "android-volume-control"))]
+    fn with_android_volume_control_client(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        authority: Option<AndroidVolumeGrantAuthority>,
+        client: AndroidVolumeControlClient,
+    ) -> Self {
+        let mut state = Self::new(security_policy, file_tools, false, false, false, None)
+            .with_android_volume_control_authority(authority);
+        state.android_volume_control_client = client;
+        state
+    }
 }
 
 enum SessionRequestError {
@@ -4323,6 +4336,248 @@ mod tests {
             counters.by_reason_code[ANDROID_VOLUME_STATUS_RUNTIME_DISABLED].denied,
             1
         );
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    fn test_volume_control_client(
+    ) -> (tempfile::TempDir, AndroidVolumeControlClient) {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("termux-volume");
+        let level = root.path().join("level");
+        let calls = root.path().join("calls");
+        fs::write(&level, "5\n").unwrap();
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+level='{}'
+calls='{}'
+if [ "$#" -eq 0 ]; then
+  IFS= read -r music <"$level"
+  printf '[{{"stream":"alarm","volume":1,"max_volume":7}},{{"stream":"call","volume":1,"max_volume":5}},{{"stream":"music","volume":%s,"max_volume":15}},{{"stream":"notification","volume":2,"max_volume":7}},{{"stream":"ring","volume":3,"max_volume":7}},{{"stream":"system","volume":2,"max_volume":7}}]' "$music"
+  exit 0
+fi
+test "$#" -eq 2
+printf '%s:%s:%s\n' "$1" "$2" "$PWD" >>"$calls"
+printf '%s\n' "$2" >"$level"
+"#,
+                level.display(),
+                calls.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = AndroidVolumeControlClient::with_program_and_limits(
+            program,
+            Duration::from_secs(1),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        (root, client)
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    fn test_volume_authority() -> AndroidVolumeGrantAuthority {
+        AndroidVolumeGrantAuthority::from_hex_key(
+            "test-volume-1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "private-static-principal",
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[tokio::test]
+    async fn enabled_volume_control_is_preview_first_exact_and_single_use() {
+        use axum::body::to_bytes;
+
+        let _guard = crate::android_provider::ANDROID_PROVIDER_TEST_LOCK.lock().await;
+        let (program_root, client) = test_volume_control_client();
+        let safe_root = tempfile::tempdir().unwrap();
+        let authority = test_volume_authority();
+        let state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            Some(authority.clone()),
+            client,
+        );
+        let session = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+        let target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+        let grant = authority
+            .issue_at(session, target, current_unix_seconds())
+            .unwrap();
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        let tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == SET_ANDROID_VOLUME_TOOL)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["stream"]["enum"],
+            json!(["alarm", "call", "music", "notification", "ring", "system"])
+        );
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+
+        let preview = handle_set_android_volume_call(
+            Some(json!("preview")),
+            Some(json!({"stream":"music", "level":9})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview: Value = serde_json::from_slice(
+            &to_bytes(preview.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(preview["result"]["structuredContent"]["dryRun"], true);
+        assert_eq!(preview["result"]["structuredContent"]["previousLevel"], 5);
+        assert!(!program_root.path().join("calls").exists());
+
+        let mutation = handle_set_android_volume_call(
+            Some(json!("mutation")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(mutation.status(), StatusCode::OK);
+        let mutation: Value = serde_json::from_slice(
+            &to_bytes(mutation.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mutation["result"]["structuredContent"]["verified"], true);
+        assert_eq!(
+            std::fs::read_to_string(program_root.path().join("calls")).unwrap(),
+            "music:9:/\n"
+        );
+
+        let replay = handle_set_android_volume_call(
+            Some(json!("replay")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        let replay: Value = serde_json::from_slice(
+            &to_bytes(replay.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay["error"]["data"]["reason"], "capability_grant_replayed");
+
+        let runtime = handle_runtime_status_call(
+            Some(json!("runtime")),
+            ToolArguments::Omitted,
+            &state,
+        );
+        let runtime: Value = serde_json::from_slice(
+            &to_bytes(runtime.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidVolumeControlEnabled"],
+            true
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidDeviceControl"],
+            true
+        );
+        assert_eq!(runtime["result"]["structuredContent"]["highImpactTools"], true);
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[SET_ANDROID_VOLUME_TOOL].allowed, 2);
+        assert_eq!(counters.by_tool[SET_ANDROID_VOLUME_TOOL].denied, 1);
+        let serialized = serde_json::to_string(&counters).unwrap();
+        assert!(!serialized.contains(&grant));
+        assert!(!serialized.contains("private-static-principal"));
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[tokio::test]
+    async fn disabled_or_invalid_volume_control_never_spawns() {
+        use axum::body::to_bytes;
+
+        let program_root = tempfile::tempdir().unwrap();
+        let client = AndroidVolumeControlClient::with_program_and_limits(
+            program_root.path().join("must-not-run"),
+            std::time::Duration::from_secs(1),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            None,
+            client,
+        );
+
+        let tools = tools_list_response(Some(json!("tools")), &state);
+        let tools: Value = serde_json::from_slice(
+            &to_bytes(tools.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != SET_ANDROID_VOLUME_TOOL));
+
+        let disabled = handle_set_android_volume_call(
+            Some(json!("disabled")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+            None,
+        )
+        .await;
+        let disabled: Value = serde_json::from_slice(
+            &to_bytes(disabled.into_body(), 64 * 1024).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            disabled["result"]["structuredContent"]["reasonCode"],
+            ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED
+        );
+
+        let authority = test_volume_authority();
+        let (_active_root, active_client) = test_volume_control_client();
+        let active = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            Some(authority),
+            active_client,
+        );
+        for arguments in [
+            json!({"stream":"media", "level":9}),
+            json!({"stream":"music", "level":9, "program":"sh"}),
+            json!({"stream":"music", "level":9, "argv":[]}),
+            json!({"stream":"music", "level":9, "environment":{}}),
+            json!({"stream":"music", "level":9, "timeout":999}),
+        ] {
+            let response = handle_set_android_volume_call(
+                Some(json!("invalid")),
+                Some(arguments),
+                &active,
+                "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 
     #[cfg(feature = "command-execution")]
