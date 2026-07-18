@@ -1,5 +1,7 @@
 //! Library exports for integration tests and downstream embedding.
 
+#![recursion_limit = "256"]
+
 #[cfg(feature = "android-battery-status")]
 pub mod android_battery;
 #[cfg(any(feature = "android-battery-status", feature = "android-volume-status"))]
