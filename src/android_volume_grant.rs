@@ -12,7 +12,7 @@ use std::{
 };
 
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::android_volume_control::AndroidVolumeStreamName;
@@ -34,8 +34,7 @@ const MUTATING_POSTURE: u8 = 1;
 const GRANT_ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 const SESSION_BYTES: usize = 16;
-const PAYLOAD_BYTES: usize =
-    GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES + 1 + 1 + 8 + 1 + 8 + 8;
+const PAYLOAD_BYTES: usize = GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES + 1 + 1 + 8 + 1 + 8 + 8;
 const PAYLOAD_HEX_BYTES: usize = PAYLOAD_BYTES * 2;
 const MAC_BYTES: usize = 32;
 const MAC_HEX_BYTES: usize = MAC_BYTES * 2;
@@ -347,8 +346,11 @@ fn valid_key_id(key_id: &str) -> bool {
         })
 }
 
-fn parse_canonical_session(session_id: &str) -> Result<[u8; SESSION_BYTES], AndroidVolumeGrantError> {
-    let parsed = Uuid::parse_str(session_id).map_err(|_| AndroidVolumeGrantError::SessionInvalid)?;
+fn parse_canonical_session(
+    session_id: &str,
+) -> Result<[u8; SESSION_BYTES], AndroidVolumeGrantError> {
+    let parsed =
+        Uuid::parse_str(session_id).map_err(|_| AndroidVolumeGrantError::SessionInvalid)?;
     if parsed.to_string() != session_id {
         return Err(AndroidVolumeGrantError::SessionInvalid);
     }
@@ -514,7 +516,10 @@ mod tests {
                 NOW,
             ),
         ] {
-            assert_eq!(result.unwrap_err(), AndroidVolumeGrantError::BindingMismatch);
+            assert_eq!(
+                result.unwrap_err(),
+                AndroidVolumeGrantError::BindingMismatch
+            );
         }
     }
 
@@ -522,7 +527,9 @@ mod tests {
     fn rejects_missing_malformed_expired_future_and_invalid_signature() {
         let authority = authority();
         assert_eq!(
-            authority.consume_at(None, SESSION, target(), NOW).unwrap_err(),
+            authority
+                .consume_at(None, SESSION, target(), NOW)
+                .unwrap_err(),
             AndroidVolumeGrantError::Missing
         );
         for malformed in ["", "v1", "v1.primary-1.bad.bad", &"x".repeat(385)] {

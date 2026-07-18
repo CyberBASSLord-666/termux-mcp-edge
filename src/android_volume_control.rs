@@ -13,8 +13,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     android_volume::{
-        AndroidVolumeClient, AndroidVolumeError, AndroidVolumeStream, TERMUX_VOLUME_PROGRAM,
-        MAX_VOLUME_STDERR_BYTES, MAX_VOLUME_STDOUT_BYTES, VOLUME_STATUS_TIMEOUT,
+        AndroidVolumeClient, AndroidVolumeError, AndroidVolumeStream, MAX_VOLUME_STDERR_BYTES,
+        MAX_VOLUME_STDOUT_BYTES, TERMUX_VOLUME_PROGRAM,
     },
     bounded_process::{BoundedProcess, BoundedProcessError},
 };
@@ -267,6 +267,7 @@ impl Default for AndroidVolumeControlClient {
     }
 }
 
+#[derive(Debug)]
 pub struct PreparedAndroidVolumeMutation {
     client: AndroidVolumeControlClient,
     _permit: OwnedSemaphorePermit,
@@ -362,7 +363,8 @@ mod tests {
             MAX_VOLUME_STDOUT_BYTES,
             MAX_VOLUME_STDERR_BYTES,
         );
-        (root, root.path().to_path_buf(), client)
+        let root_path = root.path().to_path_buf();
+        (root, root_path, client)
     }
 
     fn stateful_script(root: &std::path::Path) -> String {
@@ -398,7 +400,10 @@ printf '%s' "$2" >"$state"
                 Some(stream)
             );
             assert_eq!(stream.as_str().parse(), Ok(stream));
-            assert_eq!(serde_json::to_string(&stream).unwrap(), format!("\"{}\"", stream.as_str()));
+            assert_eq!(
+                serde_json::to_string(&stream).unwrap(),
+                format!("\"{}\"", stream.as_str())
+            );
         }
         assert_eq!(
             "media".parse::<AndroidVolumeStreamName>(),
