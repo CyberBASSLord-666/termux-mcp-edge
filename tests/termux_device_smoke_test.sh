@@ -20,6 +20,7 @@ assert_contains() {
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
+assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then
   fail "device harness uses a non-portable ERE repetition above Android RE_DUP_MAX"
 fi
@@ -50,6 +51,9 @@ assert_contains 'must be a positive integer' "$TMP/stderr"
 
 for marker in \
   'cargo build --release --locked --features mcp-runtime' \
+  'cargo build --release --locked --features android-volume-control' \
+  'volume_control_compile_gate=rejected_incompatible_artifact' \
+  'volume_control_disabled_runtime=verified_without_device_mutation' \
   'candidate_readiness_failure' \
   'successful_upgrade' \
   'protocol_smoke candidate' \
@@ -70,6 +74,8 @@ for protocol_marker in \
   'create_directory_replay_http' \
   '--issue-create-directory-grant' \
   'MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env"' \
+  'androidVolumeControlCompiled == true' \
+  'volume_control_runtime_disabled' \
   'copy_dry_run_http' \
   'copy_existing=unchanged' \
   '"name":"shell"' \
