@@ -191,3 +191,11 @@ and unconfirmed, timeout/output/process-group/cancellation cleanup, audit
 redaction, exact artifact provenance, and native ARM64 official-Termux
 execution. Emulation is deterministic development evidence; physical-device
 audio-policy or OEM behavior requires separate device evidence.
+
+The exact-artifact native gate is
+[`termux_volume_control_emulated_gate.sh`](../scripts/termux_volume_control_emulated_gate.sh).
+Its sanitized output must conform to
+[`android-volume-control-emulated-evidence-schema-v1.json`](android-volume-control-emulated-evidence-schema-v1.json)
+and deliberately records `longObservationRequired: false`; it replaces repeated
+idle monitoring for deterministic process, protocol, authorization, recovery,
+and audit contracts without claiming to emulate device audio policy.

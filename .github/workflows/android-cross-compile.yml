@@ -17,12 +17,14 @@ on:
       - "scripts/termux_emulated_gate.sh"
       - "scripts/termux_battery_emulated_gate.sh"
       - "scripts/termux_volume_emulated_gate.sh"
+      - "scripts/termux_volume_control_emulated_gate.sh"
       - "scripts/termux_command_emulated_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
+      - "docs/android-volume-control-emulated-evidence-schema-v*.json"
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
@@ -41,12 +43,14 @@ on:
       - "scripts/termux_emulated_gate.sh"
       - "scripts/termux_battery_emulated_gate.sh"
       - "scripts/termux_volume_emulated_gate.sh"
+      - "scripts/termux_volume_control_emulated_gate.sh"
       - "scripts/termux_command_emulated_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
+      - "docs/android-volume-control-emulated-evidence-schema-v*.json"
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
@@ -349,6 +353,16 @@ jobs:
                 --android-run-id '$GITHUB_RUN_ID' \\
                 --output /output/termux-volume-emulated-evidence.json
 
+              bash /workspace/scripts/termux_volume_control_emulated_gate.sh \\
+                --artifact-dir /workspace/artifacts/android-volume-control \\
+                --incompatible-dir /workspace/artifacts/android-volume-status \\
+                --expected-commit '$SOURCE_SHA' \\
+                --expected-version '$EXPECTED_VERSION' \\
+                --ci-run-id '$CI_RUN_ID' \\
+                --security-run-id '$SECURITY_RUN_ID' \\
+                --android-run-id '$GITHUB_RUN_ID' \\
+                --output /output/termux-volume-control-emulated-evidence.json
+
               bash /workspace/scripts/termux_command_emulated_gate.sh \\
                 --artifact-dir /workspace/artifacts/command-execution \\
                 --default-dir /workspace/artifacts/default \\
@@ -364,6 +378,9 @@ jobs:
         env:
           OUTPUT_ROOT: ${{ steps.output.outputs.root }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_VERSION: ${{ steps.artifacts.outputs.version }}
+          CI_RUN_ID: ${{ steps.evidence.outputs.ci_run_id }}
+          SECURITY_RUN_ID: ${{ steps.evidence.outputs.security_run_id }}
         run: |
           set -euo pipefail
           sudo chown -R "$(id -u):$(id -g)" "$OUTPUT_ROOT"
@@ -371,14 +388,17 @@ jobs:
           report="$OUTPUT_ROOT/termux-emulated-evidence.json"
           battery_report="$OUTPUT_ROOT/termux-battery-emulated-evidence.json"
           volume_report="$OUTPUT_ROOT/termux-volume-emulated-evidence.json"
+          volume_control_report="$OUTPUT_ROOT/termux-volume-control-emulated-evidence.json"
           command_report="$OUTPUT_ROOT/termux-command-emulated-evidence.json"
           test -f "$report"
           test -f "$battery_report"
           test -f "$volume_report"
+          test -f "$volume_control_report"
           test -f "$command_report"
           test "$(stat -c %a "$report")" = 600
           test "$(stat -c %a "$battery_report")" = 600
           test "$(stat -c %a "$volume_report")" = 600
+          test "$(stat -c %a "$volume_control_report")" = 600
           test "$(stat -c %a "$command_report")" = 600
           jq -e \
             --arg commit "$SOURCE_SHA" \
@@ -444,6 +464,55 @@ jobs:
               and .validation.androidDeviceControlDisabled == true
             ' "$volume_report" >/dev/null
           sha256sum "$volume_report"
+
+          jq -e \
+            --arg commit "$SOURCE_SHA" \
+            --arg version "$EXPECTED_VERSION" \
+            --arg ci "$CI_RUN_ID" \
+            --arg security "$SECURITY_RUN_ID" \
+            --arg android "$GITHUB_RUN_ID" \
+            --arg digest "$TERMUX_IMAGE_DIGEST" '
+              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              and .releaseQualificationEligible == false
+              and .candidate.commit == $commit
+              and .candidate.version == $version
+              and .candidate.ciRunId == $ci
+              and .candidate.securityRunId == $security
+              and .candidate.androidRunId == $android
+              and .environment.imageDigest == $digest
+              and .validation.status == "pass"
+              and .validation.requests >= 20
+              and .validation.exactArtifact == true
+              and .validation.compileGate == true
+              and .validation.runtimeDefaultDisabled == true
+              and .validation.disabledDiscovery == true
+              and .validation.staticTokenRequired == true
+              and .validation.capabilityKeyRequired == true
+              and .validation.closedInputSchema == true
+              and .validation.previewNoMutation == true
+              and .validation.previewDoesNotConsumeGrant == true
+              and .validation.headerContextEnforced == true
+              and .validation.exactGrantBinding == true
+              and .validation.singleUseReplay == true
+              and .validation.freshMaximum == true
+              and .validation.fixedProgram == true
+              and .validation.exactTwoArguments == true
+              and .validation.fixedWorkingDirectory == true
+              and .validation.inheritedEnvironmentCleared == true
+              and .validation.nullStdin == true
+              and .validation.nonQueueingConcurrency == true
+              and .validation.mutationVerified == true
+              and .validation.rollbackConfirmed == true
+              and .validation.rollbackUnconfirmed == true
+              and .validation.cancellationIndependentRecovery == true
+              and .validation.boundedSupervisor == true
+              and .validation.auditCounters == true
+              and .validation.redactedResponses == true
+              and .validation.arbitraryCommandExecutionDisabled == true
+              and .validation.broaderAndroidControlDisabled == true
+              and .validation.longObservationRequired == false
+            ' "$volume_control_report" >/dev/null
+          sha256sum "$volume_control_report"
 
           jq -e \
             --arg commit "$SOURCE_SHA" \
@@ -537,6 +606,7 @@ jobs:
             ${{ steps.output.outputs.root }}/termux-emulated-evidence.json
             ${{ steps.output.outputs.root }}/termux-battery-emulated-evidence.json
             ${{ steps.output.outputs.root }}/termux-volume-emulated-evidence.json
+            ${{ steps.output.outputs.root }}/termux-volume-control-emulated-evidence.json
             ${{ steps.output.outputs.root }}/termux-command-emulated-evidence.json
             ${{ steps.output.outputs.root }}/termux-observation-requirement.json
             ${{ steps.output.outputs.root }}/termux-observation-inheritance.json
