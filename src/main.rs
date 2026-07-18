@@ -16,6 +16,11 @@ use axum::{extract::DefaultBodyLimit, middleware};
 use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::health::McpRequestLimitReadiness;
+#[cfg(feature = "android-volume-control")]
+use termux_mcp_server::{
+    android_volume_control::AndroidVolumeStreamName,
+    android_volume_grant::{AndroidVolumeGrantAuthority, AndroidVolumeGrantTarget},
+};
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
     auth::{require_mcp_auth, McpAuthPolicy},
@@ -32,12 +37,16 @@ use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n";
+const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n  termux-mcp-server --issue-android-volume-grant\n";
 
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_SESSION_ENV: &str = "MCP__CAPABILITY__SESSION_ID";
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DIRECTORY_TARGET";
+#[cfg(feature = "android-volume-control")]
+const CAPABILITY_VOLUME_STREAM_ENV: &str = "MCP__CAPABILITY__VOLUME_STREAM";
+#[cfg(feature = "android-volume-control")]
+const CAPABILITY_VOLUME_LEVEL_ENV: &str = "MCP__CAPABILITY__VOLUME_LEVEL";
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_CONFIG_FILE_ENV: &str = "MCP__CAPABILITY__CONFIG_FILE";
 
@@ -113,6 +122,9 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp-runtime")]
     let create_directory_authority = configured_create_directory_authority(&config)?;
 
+    #[cfg(feature = "android-volume-control")]
+    let android_volume_control_authority = configured_android_volume_control_authority(&config)?;
+
     #[cfg(feature = "mcp-runtime")]
     let readiness_limits = Some(McpRequestLimitReadiness {
         max_concurrent_requests: config.transport.max_concurrent_requests,
@@ -137,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
             config.transport.allowed_origins.clone(),
             config.transport.allow_missing_origin,
         )?;
+        #[cfg(not(feature = "android-volume-control"))]
         let mcp_app = match create_directory_authority {
             Some(authority) => {
                 termux_mcp_server::mcp_transport::router_with_create_directory_authority(
@@ -155,16 +168,27 @@ async fn main() -> anyhow::Result<()> {
                 config.android.volume_status_enabled,
                 config.command.enabled,
             ),
-        }
-        .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
-        .route_layer(middleware::from_fn_with_state(
-            mcp_request_limits,
-            enforce_mcp_request_limits,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            mcp_auth_policy,
-            require_mcp_auth,
-        ));
+        };
+        #[cfg(feature = "android-volume-control")]
+        let mcp_app = termux_mcp_server::mcp_transport::router_with_capability_authorities(
+            transport_security,
+            file_tools,
+            config.android.battery_status_enabled,
+            config.android.volume_status_enabled,
+            config.command.enabled,
+            create_directory_authority,
+            android_volume_control_authority,
+        );
+        let mcp_app = mcp_app
+            .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
+            .route_layer(middleware::from_fn_with_state(
+                mcp_request_limits,
+                enforce_mcp_request_limits,
+            ))
+            .route_layer(middleware::from_fn_with_state(
+                mcp_auth_policy,
+                require_mcp_auth,
+            ));
         app.merge(mcp_app)
     };
 
@@ -245,6 +269,19 @@ fn handle_cli() -> anyhow::Result<bool> {
                 )
             }
         }
+        (Some(argument), None) if argument == OsStr::new("--issue-android-volume-grant") => {
+            #[cfg(feature = "android-volume-control")]
+            {
+                issue_android_volume_grant()?;
+                Ok(true)
+            }
+            #[cfg(not(feature = "android-volume-control"))]
+            {
+                anyhow::bail!(
+                    "Android volume grant issuance requires a binary built with the android-volume-control feature"
+                )
+            }
+        }
         _ => anyhow::bail!("unsupported command-line arguments; use --help"),
     }
 }
@@ -270,6 +307,29 @@ fn configured_create_directory_authority(
         .map_err(|_| anyhow::anyhow!("create_directory capability configuration is invalid"))
 }
 
+#[cfg(feature = "android-volume-control")]
+fn configured_android_volume_control_authority(
+    config: &AppConfig,
+) -> anyhow::Result<Option<AndroidVolumeGrantAuthority>> {
+    if !config.android.volume_control_enabled {
+        return Ok(None);
+    }
+    let key_id =
+        config.capability.key_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("Android volume capability configuration is incomplete")
+        })?;
+    let key = config
+        .capability
+        .hmac_key_hex()
+        .ok_or_else(|| anyhow::anyhow!("Android volume capability configuration is incomplete"))?;
+    let principal = config.auth.static_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("Android volume capability requires static-token authentication")
+    })?;
+    AndroidVolumeGrantAuthority::from_hex_key(key_id, key, principal)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("Android volume capability configuration is invalid"))
+}
+
 #[cfg(feature = "mcp-runtime")]
 fn issue_create_directory_grant() -> anyhow::Result<()> {
     let config = load_offline_issuer_config()?;
@@ -293,6 +353,35 @@ fn issue_create_directory_grant() -> anyhow::Result<()> {
     let grant = authority
         .issue_at(&session_id, &target, now_unix_seconds)
         .map_err(|_| anyhow::anyhow!("create_directory grant issuance failed"))?;
+    println!("{grant}");
+    Ok(())
+}
+
+#[cfg(feature = "android-volume-control")]
+fn issue_android_volume_grant() -> anyhow::Result<()> {
+    let config = load_offline_issuer_config()?;
+    if !config.android.volume_control_enabled {
+        anyhow::bail!("Android volume control gate is disabled");
+    }
+    let _ = validate_runtime_auth_posture(&config)?;
+    let authority = configured_android_volume_control_authority(&config)?
+        .ok_or_else(|| anyhow::anyhow!("Android volume control gate is disabled"))?;
+    let session_id = required_grant_environment(CAPABILITY_SESSION_ENV)?;
+    let stream = required_grant_environment(CAPABILITY_VOLUME_STREAM_ENV)?
+        .parse::<AndroidVolumeStreamName>()
+        .map_err(|_| anyhow::anyhow!("Android volume grant stream validation failed"))?;
+    let level = required_grant_environment(CAPABILITY_VOLUME_LEVEL_ENV)?
+        .parse::<i64>()
+        .map_err(|_| anyhow::anyhow!("Android volume grant level validation failed"))?;
+    let target = AndroidVolumeGrantTarget::new(stream, level)
+        .map_err(|_| anyhow::anyhow!("Android volume grant target validation failed"))?;
+    let now_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
+        .as_secs();
+    let grant = authority
+        .issue_at(&session_id, target, now_unix_seconds)
+        .map_err(|_| anyhow::anyhow!("Android volume grant issuance failed"))?;
     println!("{grant}");
     Ok(())
 }
