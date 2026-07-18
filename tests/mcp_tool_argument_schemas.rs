@@ -115,6 +115,7 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
             "copy_file",
             "copy_file requires source_path and destination_path arguments.",
         ),
+        ("hash_file", "hash_file requires a path argument."),
         ("list_directory", "list_directory requires a path argument."),
         ("path_metadata", "path_metadata requires a path argument."),
         ("read_file", "read_file requires a path argument."),
@@ -217,6 +218,11 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             }),
         ),
         (
+            "hash-file-minimal-and-full",
+            "hash_file",
+            json!({"path": source.to_string_lossy()}),
+        ),
+        (
             "list-minimal",
             "list_directory",
             json!({"path": root.path().to_string_lossy()}),
@@ -315,6 +321,10 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
             }),
         ),
         (
+            "hash_file",
+            json!({"path": source.to_string_lossy(), "unexpected": true}),
+        ),
+        (
             "list_directory",
             json!({"path": root.path().to_string_lossy(), "unexpected": true}),
         ),
@@ -372,6 +382,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "project_service_status",
         "create_directory",
         "copy_file",
+        "hash_file",
         "list_directory",
         "path_metadata",
         "read_file",
@@ -427,6 +438,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
                 "dry_run": "false"
             }),
         ),
+        ("hash_file", json!({"path": [source.to_string_lossy()]})),
         ("list_directory", json!({"path": false})),
         (
             "list_directory",
