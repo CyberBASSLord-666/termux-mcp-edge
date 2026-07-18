@@ -83,6 +83,13 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
         cfg!(feature = "android-volume-status")
     );
     assert_eq!(structured["androidVolumeStatusEnabled"], false);
+    assert_eq!(
+        structured["androidVolumeControlCompiled"],
+        cfg!(feature = "android-volume-control")
+    );
+    assert_eq!(structured["androidVolumeControlEnabled"], false);
+    assert_eq!(structured["androidVolumeControlMode"], "disabled");
+    assert_eq!(structured["androidVolumeGrantRequired"], false);
     assert_eq!(structured["androidDeviceControl"], false);
     assert_eq!(structured["commandExecution"], false);
     assert_eq!(structured["highImpactTools"], false);
@@ -94,6 +101,7 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert!(text.contains("android_platform=disabled"));
     assert!(text.contains("android_battery_status=disabled"));
     assert!(text.contains("android_volume_status=disabled"));
+    assert!(text.contains("android_volume_control=disabled"));
     assert!(text.contains("command_execution=disabled"));
 }
 
