@@ -370,7 +370,7 @@ mod tests {
     fn stateful_script(root: &std::path::Path) -> String {
         let state = root.join("level");
         let log = root.join("calls");
-        fs::write(&state, "5").unwrap();
+        fs::write(&state, "5\n").unwrap();
         format!(
             r#"
 state='{state}'
@@ -381,7 +381,7 @@ if [ "$#" -eq 0 ]; then
   exit 0
 fi
 printf '%s:%s:%s:%s\n' "$#" "$1" "$2" "$PWD" >>"$log"
-printf '%s' "$2" >"$state"
+printf '%s\n' "$2" >"$state"
 "#,
             state = state.display(),
             log = log.display(),
@@ -447,7 +447,10 @@ printf '%s' "$2" >"$state"
         assert_eq!(result.outcome, "mutation_verified");
         assert!(result.changed);
         assert!(result.verified);
-        assert_eq!(fs::read_to_string(root.path().join("level")).unwrap(), "9");
+        assert_eq!(
+            fs::read_to_string(root.path().join("level")).unwrap(),
+            "9\n"
+        );
         assert_eq!(
             fs::read_to_string(root.path().join("calls")).unwrap(),
             "2:music:9:/\n"
@@ -504,7 +507,7 @@ printf '%s' "$2" >"$state"
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("level");
         let calls = root.path().join("calls");
-        fs::write(&state, "5").unwrap();
+        fs::write(&state, "5\n").unwrap();
         let script = format!(
             r#"
 state='{state}'
@@ -515,7 +518,7 @@ if [ "$#" -eq 0 ]; then
   exit 0
 fi
 printf '%s\n' "$2" >>"$calls"
-if [ "$2" = 5 ]; then printf 5 >"$state"; fi
+if [ "$2" = 5 ]; then printf '5\n' >"$state"; fi
 "#,
             state = state.display(),
             calls = calls.display(),

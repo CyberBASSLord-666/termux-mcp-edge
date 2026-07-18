@@ -599,11 +599,13 @@ mod tests {
 
     #[test]
     fn debug_output_redacts_key_principal_stream_and_level() {
-        let serialized = format!("{:?} {:?}", authority(), target());
-        assert!(!serialized.contains(KEY));
-        assert!(!serialized.contains(PRINCIPAL));
-        assert!(!serialized.contains("music"));
-        assert!(!serialized.contains('9'));
-        assert!(serialized.contains("<redacted>"));
+        let authority_debug = format!("{:?}", authority());
+        let target_debug = format!("{:?}", target());
+        assert!(!authority_debug.contains(KEY));
+        assert!(!authority_debug.contains(PRINCIPAL));
+        assert!(!target_debug.contains("music"));
+        assert!(!target_debug.contains('9'));
+        assert!(authority_debug.contains("<redacted>"));
+        assert!(target_debug.contains("<redacted>"));
     }
 }

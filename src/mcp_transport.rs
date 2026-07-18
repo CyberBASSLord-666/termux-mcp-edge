@@ -3910,6 +3910,7 @@ mod tests {
             state.create_directory_authority.is_some(),
             state.android_battery_status_enabled,
             state.android_volume_status_enabled,
+            state.android_volume_control_enabled,
             state.command_execution_enabled,
         );
         let runtime: Value = serde_json::from_slice(
