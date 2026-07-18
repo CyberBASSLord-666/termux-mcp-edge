@@ -327,6 +327,7 @@ jobs:
               bash /workspace/scripts/termux_emulated_gate.sh \\
                 --default-dir /workspace/artifacts/default \\
                 --mcp-dir /workspace/artifacts/mcp-runtime \\
+                --volume-control-dir /workspace/artifacts/android-volume-control \\
                 --expected-commit '$SOURCE_SHA' \\
                 --expected-version '$EXPECTED_VERSION' \\
                 --ci-run-id '$CI_RUN_ID' \\
@@ -407,6 +408,7 @@ jobs:
               .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
+              and (.candidate.androidVolumeControlArtifact.sha256 | test("^[0-9a-f]{64}$"))
               and .environment.imageDigest == $digest
               and .runtimeValidation.status == "pass"
               and .stress.status == "pass" and .stress.samples == 256

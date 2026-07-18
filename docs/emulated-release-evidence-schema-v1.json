@@ -34,7 +34,8 @@
         "securityRunId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
         "androidRunId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
         "defaultArtifact": {"$ref": "#/$defs/artifact"},
-        "mcpRuntimeArtifact": {"$ref": "#/$defs/artifact"}
+        "mcpRuntimeArtifact": {"$ref": "#/$defs/artifact"},
+        "androidVolumeControlArtifact": {"$ref": "#/$defs/artifact"}
       }
     },
     "environment": {
