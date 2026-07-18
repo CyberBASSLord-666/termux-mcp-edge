@@ -82,6 +82,9 @@ jobs:
           - posture: android-volume-status
             features: android-volume-status
             artifact: termux-mcp-server-aarch64-linux-android-android-volume-status
+          - posture: android-volume-control
+            features: android-volume-control
+            artifact: termux-mcp-server-aarch64-linux-android-android-volume-control
           - posture: command-execution
             features: command-execution
             artifact: termux-mcp-server-aarch64-linux-android-command-execution
@@ -201,13 +204,20 @@ jobs:
           name: termux-mcp-server-aarch64-linux-android-command-execution
           path: artifacts/command-execution
 
+      - name: Download Android volume control artifact bundle
+        # actions/download-artifact@v8.0.0 resolved 2026-07-12
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3
+        with:
+          name: termux-mcp-server-aarch64-linux-android-android-volume-control
+          path: artifacts/android-volume-control
+
       - name: Verify artifact staging
         id: artifacts
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
           test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
-          for root in artifacts/default artifacts/mcp-runtime artifacts/android-battery-status artifacts/android-volume-status artifacts/command-execution; do
+          for root in artifacts/default artifacts/mcp-runtime artifacts/android-battery-status artifacts/android-volume-status artifacts/android-volume-control artifacts/command-execution; do
             test "$(find "$root" -mindepth 1 -maxdepth 1 | wc -l)" = 3
             test -f "$root/termux-mcp-server"
             test -f "$root/SHA256SUMS"
@@ -220,11 +230,13 @@ jobs:
           mcp_version="$(jq -r .version artifacts/mcp-runtime/artifact-manifest.json)"
           battery_version="$(jq -r .version artifacts/android-battery-status/artifact-manifest.json)"
           volume_version="$(jq -r .version artifacts/android-volume-status/artifact-manifest.json)"
+          volume_control_version="$(jq -r .version artifacts/android-volume-control/artifact-manifest.json)"
           command_version="$(jq -r .version artifacts/command-execution/artifact-manifest.json)"
           [[ "$default_version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
           test "$mcp_version" = "$default_version"
           test "$battery_version" = "$default_version"
           test "$volume_version" = "$default_version"
+          test "$volume_control_version" = "$default_version"
           test "$command_version" = "$default_version"
           printf 'version=%s\n' "$default_version" >>"$GITHUB_OUTPUT"
 

@@ -9,7 +9,7 @@ usage() {
 Usage: package_android_artifact.sh \
   --binary FILE --output-dir DIR --repository OWNER/REPO --commit SHA \
   --workflow-run-id ID --artifact-name NAME \
-  --posture default|mcp-runtime|android-battery-status|android-volume-status|command-execution \
+  --posture default|mcp-runtime|android-battery-status|android-volume-status|android-volume-control|command-execution \
   --version VERSION
 EOF
 }
@@ -83,6 +83,10 @@ case "$POSTURE" in
   android-volume-status)
     expected_artifact_name=termux-mcp-server-aarch64-linux-android-android-volume-status
     features='["android-volume-status"]'
+    ;;
+  android-volume-control)
+    expected_artifact_name=termux-mcp-server-aarch64-linux-android-android-volume-control
+    features='["android-volume-control"]'
     ;;
   command-execution)
     expected_artifact_name=termux-mcp-server-aarch64-linux-android-command-execution
