@@ -9,6 +9,8 @@ pub mod android_status;
 pub mod android_volume;
 #[cfg(feature = "android-volume-control")]
 pub mod android_volume_control;
+#[cfg(feature = "android-volume-control")]
+pub mod android_volume_grant;
 pub mod audit;
 pub mod auth;
 #[cfg(any(
