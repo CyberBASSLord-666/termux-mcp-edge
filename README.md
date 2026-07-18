@@ -14,7 +14,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
-- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`; independent battery, volume, and fixed-command builds may additionally expose their narrowly bounded read-only tool after explicit runtime opt-in.
+- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in.
 - **Filesystem surface:** deterministic bounded directory listing, single-object metadata, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, and file writes. Mutations are descriptor-relative, crash-durable, and dry-run by default. Directory creation is additionally default-disabled and requires a 60-second request-scoped single-use grant bound to the authenticated principal, active session, anchored root, and normalized target. File copy accepts one regular source up to 1 MiB, requires an absent destination with an existing parent, publishes fixed mode `0600` without replacement, and never returns content or preserves source metadata. Metadata and search remain content-private under fixed response and traversal ceilings.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
@@ -25,7 +25,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
 - **Named tunnels:** explicit, non-overwriting Cloudflare Tunnel setup with strict hostname validation and hermetic failure-path tests.
 
-Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, network mutation, and high-impact actions remain unavailable. The optional battery and volume tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the exact server binary and does not authorize a shell or caller-selected command surface.
+Android controls other than the separately compiled, request-authorized exact-stream volume tool remain unavailable, as do shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, and network mutation. The optional battery and volume-status tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the exact server binary and does not authorize a shell or caller-selected command surface.
 
 ## Security and authentication
 
@@ -140,6 +140,19 @@ The feature includes `mcp-runtime`. Startup rejects the runtime flag when the fe
 
 See [`docs/ANDROID_VOLUME_STATUS.md`](docs/ANDROID_VOLUME_STATUS.md) for the exact stream contract, authority boundary, stable failures, audit behavior, and native ARM64 evidence.
 
+## Optional request-authorized Android volume control
+
+One exact audio-stream mutation requires its own compile and runtime gates:
+
+```bash
+cargo build --release --features android-volume-control
+export MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
+```
+
+The gate additionally requires static-token authentication plus the paired capability key used for request grants. `set_android_volume` defaults to preview, accepts only the six documented streams and one integer level, validates the fresh live maximum, and never exposes a shell or caller-selected execution setting. Explicit `dry_run:false` requires a 60-second principal/session/stream/level-bound grant issued locally by the exact binary with `--issue-android-volume-grant`. The server consumes the grant immediately before the fixed two-argument setter, verifies fresh status afterward, and attempts confirmed restoration to the captured prior level on setter or verification failure. Conflicting mutations fail without queueing, and recovery continues if the request is cancelled after grant consumption.
+
+See [`docs/ANDROID_VOLUME_CONTROL.md`](docs/ANDROID_VOLUME_CONTROL.md) for configuration, issuance, invocation, recovery, stable outcomes, audit privacy, and release evidence.
+
 ## Optional fixed-profile command diagnostics
 
 Fixed server diagnostics require a separate build and runtime opt-in:
@@ -170,6 +183,7 @@ cargo build --release
 cargo build --release --features mcp-runtime
 cargo build --release --features android-battery-status
 cargo build --release --features android-volume-status
+cargo build --release --features android-volume-control
 cargo build --release --features command-execution
 ```
 
@@ -195,7 +209,7 @@ Before a release declaration, run the no-clone exact-commit AArch64 device gate 
 
 Validate the exact downloaded default and `mcp-runtime` Android candidates separately through [`docs/RELEASE_CANDIDATE_VALIDATION.md`](docs/RELEASE_CANDIDATE_VALIDATION.md). Each workflow bundle includes an exact-source manifest and checksum sidecar; the offline validator reconciles those with the supplied commit/run metadata and feature postures before any listener or service mutation, requires explicit confirmation for runtime/deployment phases, and emits only versioned sanitized JSON evidence.
 
-The Android workflow additionally executes the default, `mcp-runtime`, opt-in battery, opt-in volume, and fixed-command postures in the digest-pinned official Termux container on a native ARM64 runner. The command gate also runs the default binary to prove compile-time rejection. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated gates, the evidence-only classification used when runtime changes require later physical release evidence, and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
+The Android workflow additionally executes the default, `mcp-runtime`, opt-in battery, read-only volume, request-authorized volume-control, and fixed-command postures in the digest-pinned official Termux container on a native ARM64 runner. Feature gates also consume an incompatible artifact where needed to prove compile-time rejection. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated gates, the evidence-only classification used when runtime changes require later physical release evidence, and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
 
 Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticated MCP, audit-counter, filesystem, Android-status, service-status, and capability-boundary checks.
 
@@ -216,6 +230,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Android artifact contract](docs/ANDROID_ARTIFACTS.md)
 - [Android battery status tool](docs/ANDROID_BATTERY_STATUS.md)
 - [Android volume status tool](docs/ANDROID_VOLUME_STATUS.md)
+- [Request-authorized Android volume control](docs/ANDROID_VOLUME_CONTROL.md)
 - [Fixed-profile command diagnostics](docs/command-execution-gate.md)
 - [Command profile validation runbook](docs/command-profile-validation.md)
 - [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)

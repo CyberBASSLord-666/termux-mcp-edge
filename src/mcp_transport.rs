@@ -2334,11 +2334,18 @@ fn runtime_status_response(
     let android_platform_mode = match (
         android_battery_status_enabled,
         android_volume_status_enabled,
+        android_volume_control_enabled,
     ) {
-        (true, true) => "read_only_battery_and_volume_telemetry",
-        (true, false) => "read_only_battery_telemetry",
-        (false, true) => "read_only_volume_telemetry",
-        (false, false) => "disabled",
+        (true, true, true) => {
+            "read_only_battery_and_volume_telemetry_plus_bounded_volume_control"
+        }
+        (true, false, true) => "read_only_battery_telemetry_plus_bounded_volume_control",
+        (false, true, true) => "read_only_volume_telemetry_plus_bounded_volume_control",
+        (false, false, true) => "bounded_request_authorized_volume_control",
+        (true, true, false) => "read_only_battery_and_volume_telemetry",
+        (true, false, false) => "read_only_battery_telemetry",
+        (false, true, false) => "read_only_volume_telemetry",
+        (false, false, false) => "disabled",
     };
     let command_execution_mode = if command_execution_enabled {
         "fixed_read_only_server_diagnostics"
@@ -4494,6 +4501,10 @@ printf '%s\n' "$2" >"$level"
         assert_eq!(
             runtime["result"]["structuredContent"]["androidDeviceControl"],
             true
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidPlatformToolMode"],
+            "bounded_request_authorized_volume_control"
         );
         assert_eq!(runtime["result"]["structuredContent"]["highImpactTools"], true);
 

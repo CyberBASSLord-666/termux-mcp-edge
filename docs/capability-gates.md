@@ -24,11 +24,15 @@ Separately gated read-only tool:
 - `android_volume_status` only in an `android-volume-status` build with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true`
 - `run_command_profile` only in a `command-execution` build with `MCP__COMMAND__ENABLED=true`; this is a closed set of fixed read-only server diagnostics, not arbitrary command execution
 
+Separately gated high-impact tool:
+
+- `set_android_volume` only in an `android-volume-control` build with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and capability key configuration; it previews by default and every mutation requires one exact single-use request grant
+
 Current audit visibility is aggregate and in-memory. The staged runtime exposes backend-neutral `auditCounters` through `runtime_status` for the currently wired status and filesystem surfaces. These counters are intentionally not retained request logs and store only stable tool names, gate names, modes, reason codes, and allowed or denied counts.
 
 Still disabled:
 
-- Android platform or audio control beyond read-only allowlisted status and optional battery/volume telemetry
+- Android platform or audio control beyond the exact request-authorized volume capability
 - Shell, arbitrary commands, caller-selected executables/argv, and all command mutation
 - Global process listing and arbitrary service inspection
 - Service mutation or control
@@ -80,7 +84,7 @@ Required coverage:
 
 ## Gate 2: Android read-only status
 
-Status: implemented for static read-only allowlisted Android/Termux status metadata and separately gated read-only battery and volume telemetry. Android and audio control remain disabled.
+Status: implemented for static read-only allowlisted Android/Termux status metadata and separately gated read-only battery and volume telemetry. Exact-stream control is isolated in Gate 5.
 
 Baseline `android_status` scope:
 
@@ -118,7 +122,7 @@ Denied:
 
 - Contacts, SMS, notifications, accounts, location, camera, microphone, accessibility state, installed package inventory, persistent device IDs, and user secrets
 - Shell fallback
-- Any mutation, including volume setting, or device-control action
+- Any mutation or device-control action through the read-only status gate
 - Caller-selected commands, arguments, executable paths, environment, timeouts, or output limits
 
 Required before any future expansion:
@@ -190,9 +194,28 @@ Required before any future expansion:
 - Preserve deterministic native evidence and exact-head CI/Security/Android success
 - Never redefine fixed diagnostics as arbitrary or high-impact execution
 
-## Gate 5: high-impact controls
+## Gate 5: request-authorized Android volume control
 
-Status: threat model complete; high-impact controls remain disabled.
+Status: one exact-stream control is implemented behind independent compile/runtime/auth/key/request gates.
+
+Implemented scope:
+
+- Separate `android-volume-control` feature and default-false `MCP__ANDROID__VOLUME_CONTROL_ENABLED` flag
+- Closed `set_android_volume` schema with the six documented streams, integer level, and preview-first posture
+- Fresh strict status bounds before preview or mutation
+- Exact-binary offline 60-second grant issuance bound to principal/session/capability/stream/level/posture
+- Atomic single-use replay state and header-context enforcement
+- One non-queueing mutation permit
+- Fixed absolute program, two arguments, root cwd, empty environment, null stdin, and fixed supervisor bounds
+- Post-mutation status verification plus automatic restoration and confirmed/unconfirmed stable outcomes
+- Recovery ownership independent from request cancellation after grant consumption
+- Aggregate private audit counters and exact artifact/native evidence
+
+The complete contract is [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
+
+## Gate 6: other high-impact controls
+
+Status: threat model complete; all other high-impact controls remain disabled.
 
 Examples:
 
@@ -200,7 +223,7 @@ Examples:
 - Service restart or stop
 - File deletion outside the staged safe-root write policy
 - Network or device configuration changes
-- Any Android device-control action
+- Any Android device-control action beyond exact-stream volume
 
 The detailed threat model is maintained in [`high-impact-controls-threat-model.md`](high-impact-controls-threat-model.md). Future capability-token evaluation must also satisfy [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) before any high-impact runtime gate is wired.
 

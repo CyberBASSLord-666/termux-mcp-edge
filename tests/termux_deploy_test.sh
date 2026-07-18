@@ -30,6 +30,7 @@ MCP__SERVER__PORT=8000
 MCP__TRANSPORT__ALLOWED_HOSTS=localhost:8000,127.0.0.1:8000
 MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
+MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
 MCP__CAPABILITY__KEY_ID=deployment-test-1
 MCP__CAPABILITY__HMAC_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 RUST_LOG=termux_mcp_server=info
@@ -186,6 +187,7 @@ rm -f "$TERMUX_MCP_DEPLOY_ROOT/previous"; ln -s "$previous_target" "$TERMUX_MCP_
 chmod 644 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; chmod 600 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 printf 'PATH=/tmp\n' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i '/^PATH=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__SERVER__PORT=8000$/MCP__SERVER__PORT=0/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__SERVER__PORT=0$/MCP__SERVER__PORT=8000/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 printf '%s\n' 'MCP__CAPABILITY__KEY_ID=duplicate-key' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i '$d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__CAPABILITY__HMAC_KEY_HEX=.*$/MCP__CAPABILITY__HMAC_KEY_HEX=ABCDEF/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__CAPABILITY__HMAC_KEY_HEX=ABCDEF$/MCP__CAPABILITY__HMAC_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i '/^MCP__CAPABILITY__HMAC_KEY_HEX=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; printf '%s\n' 'MCP__CAPABILITY__HMAC_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"

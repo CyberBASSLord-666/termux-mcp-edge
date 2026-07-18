@@ -16,7 +16,7 @@ Before the write-tool transport stage merged:
 
 The current staged MCP runtime exposes `write_file` with safe-root enforcement, payload-size controls, and dry-run-by-default behavior. Omitted `dry_run` defaults to `true`; mutating writes require explicit `dry_run: false` and remain bounded by the configured filesystem safe roots.
 
-Android platform control, shell fallback, arbitrary command execution, high-impact tools, and broad runtime-surface expansion remain unavailable unless a later independently validated stage adds them.
+At this historical stage, Android platform control, shell fallback, arbitrary command execution, high-impact tools, and broad runtime-surface expansion remained unavailable. Later focused gates added fixed read-only diagnostics and exact request-authorized volume control without changing this write-tool contract.
 
 ## Required transport constraints for the first write-capable runtime PR
 

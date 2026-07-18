@@ -117,7 +117,7 @@ The exact PR head must also pass:
 
 - CI on all feature combinations;
 - Security checks;
-- five Android artifact builds;
+- six Android artifact builds;
 - native ARM64 official-Termux execution of `termux_command_emulated_gate.sh`;
 - evidence validation against `command-emulated-evidence-schema-v1.json`.
 
