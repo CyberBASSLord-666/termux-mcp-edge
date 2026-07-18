@@ -60,7 +60,7 @@ assert_report_contract() {
     and (.repository.commit | test("^[0-9a-f]{40}$"))
     and (.environment | keys == ["architecture","fixtureMode","tools"])
     and (.environment.tools | keys == ["bash","curl","file","jq"])
-    and (.artifacts | keys == ["baseline","default","mcpRuntime"])
+    and (.artifacts | keys == ["androidVolumeControl","baseline","default","mcpRuntime"])
     and (.phases | keys == ["deployment","preflight","runtime"])
     and (.results | type == "array" and length <= 256)
     and (all(.results[]; (keys == ["check","code","outcome","phase"])))
@@ -106,6 +106,10 @@ if [[ "\${1:-}" == --version ]]; then
   printf 'termux-mcp-server %s\\n' '$version'
   exit 0
 fi
+if [[ '$posture' == mcp && "\${MCP__ANDROID__VOLUME_CONTROL_ENABLED:-false}" == true ]]; then
+  printf '%s\n' 'MCP__ANDROID__VOLUME_CONTROL_ENABLED requires a binary built with the android-volume-control feature' >&2
+  exit 1
+fi
 if [[ "\${1:-}" == --issue-create-directory-grant ]]; then
   exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue
 fi
@@ -145,6 +149,10 @@ write_manifest() {
       artifact_name=termux-mcp-server-aarch64-linux-android-mcp-runtime
       features='["mcp-runtime"]'
       ;;
+    android-volume-control)
+      artifact_name=termux-mcp-server-aarch64-linux-android-android-volume-control
+      features='["android-volume-control"]'
+      ;;
     *) fail_test "unknown manifest posture" ;;
   esac
   jq -n \
@@ -176,9 +184,10 @@ write_manifest() {
 write_config() {
   local path="$1" default_artifact="$2" default_sha="$3" mcp_artifact="$4" mcp_sha="$5"
   local sustained_status="${6:-not_run}" sustained_minutes="${7:-0}" sustained_reason="${8:-not_observed}"
-  local default_manifest="${path}.default-manifest.json" mcp_manifest="${path}.mcp-manifest.json"
+  local default_manifest="${path}.default-manifest.json" mcp_manifest="${path}.mcp-manifest.json" volume_control_manifest="${path}.volume-control-manifest.json"
   write_manifest "$default_manifest" "$default_artifact" "$default_sha" default
   write_manifest "$mcp_manifest" "$mcp_artifact" "$mcp_sha" mcp-runtime
+  write_manifest "$volume_control_manifest" "$VOLUME_CONTROL_ARTIFACT" "$VOLUME_CONTROL_SHA" android-volume-control
   cat >"$path" <<EOF
 EXPECTED_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 EXPECTED_VERSION=0.5.1
@@ -188,6 +197,9 @@ DEFAULT_MANIFEST=$default_manifest
 MCP_ARTIFACT=$mcp_artifact
 MCP_SHA256=$mcp_sha
 MCP_MANIFEST=$mcp_manifest
+VOLUME_CONTROL_ARTIFACT=$VOLUME_CONTROL_ARTIFACT
+VOLUME_CONTROL_SHA256=$VOLUME_CONTROL_SHA
+VOLUME_CONTROL_MANIFEST=$volume_control_manifest
 BASELINE_ARTIFACT=$BASELINE_ARTIFACT
 BASELINE_VERSION=0.5.0
 BASELINE_SHA256=$BASELINE_SHA
@@ -220,9 +232,10 @@ fi
 jq -e '
   .["$schema"] == "https://json-schema.org/draft/2020-12/schema"
   and .additionalProperties == false
-  and (.allOf | length) == 4
+  and (.allOf | length) == 5
   and .properties.schemaVersion.const == 1
   and .properties.status.enum == ["pass","fail","fixture"]
+  and .properties.artifacts.properties.androidVolumeControl."$ref" == "#/$defs/artifact"
   and (.properties.sustainedObservation.allOf | length) == 3
   and .properties.sustainedObservation.properties.minimumMinutes.const == 60
 ' "$SCHEMA" >/dev/null
@@ -249,12 +262,15 @@ chmod 700 "$FAKE_BIN/file"
 
 DEFAULT_ARTIFACT="$ROOT/default-artifact"
 MCP_ARTIFACT="$ROOT/mcp-artifact"
+VOLUME_CONTROL_ARTIFACT="$ROOT/volume-control-artifact"
 BASELINE_ARTIFACT="$ROOT/baseline-artifact"
 make_artifact "$DEFAULT_ARTIFACT" 0.5.1 default
 make_artifact "$MCP_ARTIFACT" 0.5.1 mcp
+make_artifact "$VOLUME_CONTROL_ARTIFACT" 0.5.1 android-volume-control
 make_artifact "$BASELINE_ARTIFACT" 0.5.0 baseline
 DEFAULT_SHA="$(sha "$DEFAULT_ARTIFACT")"
 MCP_SHA="$(sha "$MCP_ARTIFACT")"
+VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
 BASELINE_SHA="$(sha "$BASELINE_ARTIFACT")"
 
 TOKEN_FILE="$ROOT/token"
@@ -273,14 +289,17 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "2"
+  and .validatorVersion == "3"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
   and .phases.runtime == "not_run"
   and .phases.deployment == "not_run"
   and .artifacts.default.sha256 != .artifacts.mcpRuntime.sha256
+  and .artifacts.androidVolumeControl.sha256 != .artifacts.default.sha256
+  and .artifacts.androidVolumeControl.sha256 != .artifacts.mcpRuntime.sha256
   and .artifacts.default.version == "0.5.1"
+  and .artifacts.androidVolumeControl.version == "0.5.1"
   and .environment.fixtureMode == true
 ' "$REPORT" >/dev/null
 [[ "$(stat -c '%a' "$REPORT")" == 600 ]] || fail_test "report mode is not 600"
@@ -326,12 +345,30 @@ chmod 600 "$MANIFEST_CONFIG.default-manifest.json"
 assert_fails run_validator --config "$MANIFEST_CONFIG" --report "$MANIFEST_REPORT" --phase preflight
 jq -e '.status == "fail" and .failureCode == "default_manifest_mismatch"' "$MANIFEST_REPORT" >/dev/null
 
+VOLUME_MANIFEST_CONFIG="$ROOT/volume-manifest-mismatch.env"
+VOLUME_MANIFEST_REPORT="$ROOT/volume-manifest-mismatch.json"
+write_config "$VOLUME_MANIFEST_CONFIG" "$DEFAULT_ARTIFACT" "$DEFAULT_SHA" "$MCP_ARTIFACT" "$MCP_SHA"
+jq '.posture = "android-volume-status"' \
+  "$VOLUME_MANIFEST_CONFIG.volume-control-manifest.json" >"$ROOT/volume-manifest-mismatch.next"
+mv "$ROOT/volume-manifest-mismatch.next" "$VOLUME_MANIFEST_CONFIG.volume-control-manifest.json"
+chmod 600 "$VOLUME_MANIFEST_CONFIG.volume-control-manifest.json"
+assert_fails run_validator --config "$VOLUME_MANIFEST_CONFIG" --report "$VOLUME_MANIFEST_REPORT" --phase preflight
+jq -e '.status == "fail" and .failureCode == "android_volume_control_manifest_mismatch"' "$VOLUME_MANIFEST_REPORT" >/dev/null
+
 MISSING_MANIFEST_CONFIG="$ROOT/missing-manifest.env"
 MISSING_MANIFEST_REPORT="$ROOT/missing-manifest.json"
 grep -v '^DEFAULT_MANIFEST=' "$CONFIG" >"$MISSING_MANIFEST_CONFIG"
 chmod 600 "$MISSING_MANIFEST_CONFIG"
 assert_fails run_validator --config "$MISSING_MANIFEST_CONFIG" --report "$MISSING_MANIFEST_REPORT" --phase preflight
 jq -e '.status == "fail" and .failureCode == "default_manifest_invalid"' "$MISSING_MANIFEST_REPORT" >/dev/null
+
+MISSING_VOLUME_CONFIG="$ROOT/missing-volume-control.env"
+MISSING_VOLUME_REPORT="$ROOT/missing-volume-control.json"
+grep -v '^VOLUME_CONTROL_' "$CONFIG" >"$MISSING_VOLUME_CONFIG"
+chmod 600 "$MISSING_VOLUME_CONFIG"
+assert_fails run_validator --config "$MISSING_VOLUME_CONFIG" --report "$MISSING_VOLUME_REPORT" --phase preflight
+[[ ! -e "$MISSING_VOLUME_REPORT" ]] || fail_test "missing volume-control metadata unexpectedly produced a report"
+grep -Fq artifact_digest_metadata_invalid "$ROOT/last.stderr" || fail_test "missing volume-control metadata was not rejected"
 
 MUTATING_ARTIFACT="$ROOT/mutating-artifact"
 make_artifact "$MUTATING_ARTIFACT" 0.5.1 default
@@ -478,8 +515,12 @@ jq -e '
 
 RUNTIME_DEFAULT="$ROOT/runtime-default-artifact"
 RUNTIME_MCP="$ROOT/runtime-mcp-artifact"
+RUNTIME_VOLUME_CONTROL="$ROOT/runtime-volume-control-artifact"
 make_runtime_artifact "$RUNTIME_DEFAULT" 0.5.1 default
 make_runtime_artifact "$RUNTIME_MCP" 0.5.1 mcp
+make_runtime_artifact "$RUNTIME_VOLUME_CONTROL" 0.5.1 volume-control
+VOLUME_CONTROL_ARTIFACT="$RUNTIME_VOLUME_CONTROL"
+VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
 RUNTIME_CONFIG="$ROOT/runtime.env"
 RUNTIME_REPORT="$ROOT/runtime.json"
 write_config "$RUNTIME_CONFIG" "$RUNTIME_DEFAULT" "$(sha "$RUNTIME_DEFAULT")" "$RUNTIME_MCP" "$(sha "$RUNTIME_MCP")"
@@ -538,6 +579,11 @@ jq -e '
   and ([.results[].code] | index("read_response_bound_enforced") != null)
   and ([.results[].code] | index("symlink_escape_rejected") != null)
   and ([.results[].code] | index("authentication_precedes_body_limit") != null)
+  and ([.results[].code] | index("incompatible_volume_control_artifact_rejected") != null)
+  and ([.results[].code] | index("volume_control_posture_verified") != null)
+  and ([.results[].code] | index("volume_control_hidden_while_disabled") != null)
+  and ([.results[].code] | index("volume_control_runtime_status_read") != null)
+  and ([.results[].code] | index("volume_control_disabled_call_rejected") != null)
 ' "$RUNTIME_REPORT" >/dev/null
 if grep -Fq "$ROOT" "$RUNTIME_REPORT" \
   || grep -Fq fixture-private-token "$RUNTIME_REPORT" \
@@ -577,6 +623,25 @@ assert_fails run_validator \
   --confirm-runtime-mutation
 jq -e '.status == "fail" and .failureCode == "default_feature_posture_mismatch" and .phases.runtime == "fail"' "$SWAPPED_REPORT" >/dev/null
 [[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] || fail_test "failed runtime phase left safe-root state"
+
+RUNTIME_WRONG_VOLUME="$ROOT/runtime-wrong-volume-artifact"
+make_runtime_artifact "$RUNTIME_WRONG_VOLUME" 0.5.1 mcp
+printf '%s\n' '# distinct incompatible posture fixture' >>"$RUNTIME_WRONG_VOLUME"
+chmod 700 "$RUNTIME_WRONG_VOLUME"
+VOLUME_CONTROL_ARTIFACT="$RUNTIME_WRONG_VOLUME"
+VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
+WRONG_VOLUME_CONFIG="$ROOT/wrong-volume-runtime.env"
+WRONG_VOLUME_REPORT="$ROOT/wrong-volume-runtime.json"
+write_config "$WRONG_VOLUME_CONFIG" "$RUNTIME_DEFAULT" "$(sha "$RUNTIME_DEFAULT")" "$RUNTIME_MCP" "$(sha "$RUNTIME_MCP")"
+assert_fails run_validator \
+  --config "$WRONG_VOLUME_CONFIG" \
+  --report "$WRONG_VOLUME_REPORT" \
+  --phase runtime \
+  --confirm-runtime-mutation
+jq -e '.status == "fail" and .failureCode == "volume_control_runtime_status_invalid" and .phases.runtime == "fail"' "$WRONG_VOLUME_REPORT" >/dev/null
+[[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] || fail_test "wrong control posture left safe-root state"
+VOLUME_CONTROL_ARTIFACT="$RUNTIME_VOLUME_CONTROL"
+VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
 
 NO_RUNTIME_CONFIRM_REPORT="$ROOT/no-runtime-confirm.json"
 assert_fails run_validator \
@@ -701,6 +766,7 @@ for evidence_report in \
   "$REPORT" \
   "$BAD_REPORT" \
   "$MANIFEST_REPORT" \
+  "$VOLUME_MANIFEST_REPORT" \
   "$MISSING_MANIFEST_REPORT" \
   "$MUTATING_REPORT" \
   "$INJECTION_REPORT" \
@@ -713,6 +779,7 @@ for evidence_report in \
   "$TOKEN_NEWLINE_REPORT" \
   "$PORT_COLLISION_REPORT" \
   "$SWAPPED_REPORT" \
+  "$WRONG_VOLUME_REPORT" \
   "$NO_RUNTIME_CONFIRM_REPORT" \
   "$DEPLOY_REPORT" \
   "$NO_DEPLOY_CONFIRM_REPORT" \

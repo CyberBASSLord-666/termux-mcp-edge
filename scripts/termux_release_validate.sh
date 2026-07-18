@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="2"
+readonly VALIDATOR_VERSION="3"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -20,7 +20,7 @@ Usage:
 
 Options:
   --phase preflight|runtime|deployment|all
-      preflight   Verify metadata and both downloaded artifacts without starting a listener.
+      preflight   Verify metadata and all downloaded release artifacts without starting a listener.
       runtime     Run preflight, then explicitly confirmed isolated runtime checks.
       deployment  Run preflight, then an explicitly confirmed deployment exercise.
       all         Run preflight, isolated runtime checks, and deployment checks.
@@ -123,6 +123,9 @@ DEFAULT_MANIFEST=""
 MCP_ARTIFACT=""
 MCP_SHA256=""
 MCP_MANIFEST=""
+VOLUME_CONTROL_ARTIFACT=""
+VOLUME_CONTROL_SHA256=""
+VOLUME_CONTROL_MANIFEST=""
 BASELINE_ARTIFACT=""
 BASELINE_VERSION=""
 BASELINE_SHA256=""
@@ -164,6 +167,7 @@ SESSION_HEADER_FILE=""
 PINNED_ARTIFACT_ROOT=""
 DEFAULT_PINNED_ARTIFACT=""
 MCP_PINNED_ARTIFACT=""
+VOLUME_CONTROL_PINNED_ARTIFACT=""
 BASELINE_PINNED_ARTIFACT=""
 STARTED_AT=""
 RUN_ID=""
@@ -253,6 +257,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     MCP_ARTIFACT) MCP_ARTIFACT="$value" ;;
     MCP_SHA256) MCP_SHA256="$value" ;;
     MCP_MANIFEST) MCP_MANIFEST="$value" ;;
+    VOLUME_CONTROL_ARTIFACT) VOLUME_CONTROL_ARTIFACT="$value" ;;
+    VOLUME_CONTROL_SHA256) VOLUME_CONTROL_SHA256="$value" ;;
+    VOLUME_CONTROL_MANIFEST) VOLUME_CONTROL_MANIFEST="$value" ;;
     BASELINE_ARTIFACT) BASELINE_ARTIFACT="$value" ;;
     BASELINE_VERSION) BASELINE_VERSION="$value" ;;
     BASELINE_SHA256) BASELINE_SHA256="$value" ;;
@@ -274,8 +281,8 @@ unset line key value
 
 [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || raw_fail "expected_commit_invalid"
 [[ "$EXPECTED_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || raw_fail "expected_version_invalid"
-[[ "$DEFAULT_SHA256" =~ ^[0-9a-f]{64}$ && "$MCP_SHA256" =~ ^[0-9a-f]{64}$ ]] || raw_fail "artifact_digest_metadata_invalid"
-[[ "$DEFAULT_SHA256" != "$MCP_SHA256" ]] || raw_fail "artifact_posture_digests_not_distinct"
+[[ "$DEFAULT_SHA256" =~ ^[0-9a-f]{64}$ && "$MCP_SHA256" =~ ^[0-9a-f]{64}$ && "$VOLUME_CONTROL_SHA256" =~ ^[0-9a-f]{64}$ ]] || raw_fail "artifact_digest_metadata_invalid"
+[[ "$DEFAULT_SHA256" != "$MCP_SHA256" && "$DEFAULT_SHA256" != "$VOLUME_CONTROL_SHA256" && "$MCP_SHA256" != "$VOLUME_CONTROL_SHA256" ]] || raw_fail "artifact_posture_digests_not_distinct"
 [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ && "$SECURITY_RUN_ID" =~ ^[1-9][0-9]*$ && "$ANDROID_RUN_ID" =~ ^[1-9][0-9]*$ ]] || raw_fail "workflow_metadata_invalid"
 [[ "$BIND_HOST" == 127.0.0.1 ]] || raw_fail "bind_host_invalid"
 [[ "$PORT" =~ ^[0-9]+$ ]] || raw_fail "port_invalid"
@@ -334,6 +341,7 @@ jq -n \
   --arg jq_version "$(jq --version)" \
   --arg default_sha "$DEFAULT_SHA256" \
   --arg mcp_sha "$MCP_SHA256" \
+  --arg volume_control_sha "$VOLUME_CONTROL_SHA256" \
   --arg sustained_status "$SUSTAINED_OBSERVATION_STATUS" \
   --argjson sustained_minutes "$SUSTAINED_OBSERVATION_MINUTES" \
   --arg sustained_reason "$SUSTAINED_OBSERVATION_REASON_CODE" \
@@ -370,6 +378,7 @@ jq -n \
     artifacts: {
       default: {sha256: $default_sha, bytes: null, version: null, elf: null},
       mcpRuntime: {sha256: $mcp_sha, bytes: null, version: null, elf: null},
+      androidVolumeControl: {sha256: $volume_control_sha, bytes: null, version: null, elf: null},
       baseline: null
     },
     phases: {
@@ -577,12 +586,14 @@ validate_artifact() {
   case "$posture" in
     default) validate_artifact_manifest "$posture" "$DEFAULT_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
     mcp_runtime) validate_artifact_manifest "$posture" "$MCP_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
+    android_volume_control) validate_artifact_manifest "$posture" "$VOLUME_CONTROL_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
   esac
   reported_version="$(timeout -k 2 5 "$pinned_artifact" --version 2>/dev/null | awk 'NR==1 {print $NF}')" || fail "${posture}_artifact_version_failed"
   [[ "$reported_version" == "$expected_version" ]] || fail "${posture}_artifact_version_mismatch"
   case "$posture" in
     default) DEFAULT_PINNED_ARTIFACT="$pinned_artifact" ;;
     mcp_runtime) MCP_PINNED_ARTIFACT="$pinned_artifact" ;;
+    android_volume_control) VOLUME_CONTROL_PINNED_ARTIFACT="$pinned_artifact" ;;
     baseline) BASELINE_PINNED_ARTIFACT="$pinned_artifact" ;;
   esac
   record_result preflight "${posture}_artifact" pass artifact_verified
@@ -611,6 +622,10 @@ validate_artifact_manifest() {
       manifest_posture=mcp-runtime
       artifact_name=termux-mcp-server-aarch64-linux-android-mcp-runtime
       ;;
+    android_volume_control)
+      manifest_posture=android-volume-control
+      artifact_name=termux-mcp-server-aarch64-linux-android-android-volume-control
+      ;;
     *) fail artifact_manifest_posture_invalid ;;
   esac
   jq -e \
@@ -629,7 +644,7 @@ validate_artifact_manifest() {
       and .workflowRunId == $run_id
       and .artifactName == $artifact_name
       and .posture == $posture
-      and .features == (if $posture == "mcp-runtime" then ["mcp-runtime"] else [] end)
+      and .features == (if $posture == "mcp-runtime" then ["mcp-runtime"] elif $posture == "android-volume-control" then ["android-volume-control"] else [] end)
       and .target == "aarch64-linux-android"
       and .fileName == "termux-mcp-server"
       and .version == $version
@@ -646,8 +661,16 @@ run_preflight() {
   set_phase preflight running
   validate_artifact default default "$DEFAULT_ARTIFACT" "$DEFAULT_SHA256" "$EXPECTED_VERSION"
   validate_artifact mcp_runtime mcpRuntime "$MCP_ARTIFACT" "$MCP_SHA256" "$EXPECTED_VERSION"
-  [[ "$(realpath -e "$DEFAULT_ARTIFACT" 2>/dev/null)" != "$(realpath -e "$MCP_ARTIFACT" 2>/dev/null)" ]] || fail artifact_postures_not_distinct
-  [[ "$(realpath -e "$DEFAULT_MANIFEST" 2>/dev/null)" != "$(realpath -e "$MCP_MANIFEST" 2>/dev/null)" ]] || fail artifact_manifests_not_distinct
+  validate_artifact android_volume_control androidVolumeControl "$VOLUME_CONTROL_ARTIFACT" "$VOLUME_CONTROL_SHA256" "$EXPECTED_VERSION"
+  local default_path mcp_path volume_control_path default_manifest_path mcp_manifest_path volume_control_manifest_path
+  default_path="$(realpath -e "$DEFAULT_ARTIFACT" 2>/dev/null)"
+  mcp_path="$(realpath -e "$MCP_ARTIFACT" 2>/dev/null)"
+  volume_control_path="$(realpath -e "$VOLUME_CONTROL_ARTIFACT" 2>/dev/null)"
+  [[ "$default_path" != "$mcp_path" && "$default_path" != "$volume_control_path" && "$mcp_path" != "$volume_control_path" ]] || fail artifact_postures_not_distinct
+  default_manifest_path="$(realpath -e "$DEFAULT_MANIFEST" 2>/dev/null)"
+  mcp_manifest_path="$(realpath -e "$MCP_MANIFEST" 2>/dev/null)"
+  volume_control_manifest_path="$(realpath -e "$VOLUME_CONTROL_MANIFEST" 2>/dev/null)"
+  [[ "$default_manifest_path" != "$mcp_manifest_path" && "$default_manifest_path" != "$volume_control_manifest_path" && "$mcp_manifest_path" != "$volume_control_manifest_path" ]] || fail artifact_manifests_not_distinct
   if [[ "$PHASE" == deployment || "$PHASE" == all ]] && [[ -z "$PRODUCTION_ACTION" ]]; then
     [[ "$BASELINE_SHA256" =~ ^[0-9a-f]{64}$ && "$BASELINE_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail baseline_metadata_invalid
     [[ "$BASELINE_VERSION" != "$EXPECTED_VERSION" ]] || fail baseline_version_not_distinct
@@ -806,7 +829,12 @@ start_server() {
       "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
     )
   fi
-  env "${environment[@]}" "$artifact" >"$log_file" 2>&1 &
+  env -i \
+    "HOME=$HOME" \
+    "PREFIX=${PREFIX:-}" \
+    "PATH=$PATH" \
+    "${environment[@]}" \
+    "$artifact" >"$log_file" 2>&1 &
   SERVER_PID=$!
   local attempt
   for attempt in $(seq 1 80); do
@@ -1289,6 +1317,94 @@ run_mcp_runtime_checks() {
   stop_server || fail mcp_runtime_stop_failed
 }
 
+run_volume_control_runtime_checks() {
+  local body="$TEMP_ROOT/volume-control-response.json"
+  local headers="$TEMP_ROOT/volume-control-headers.txt"
+  local compile_log="$TEMP_ROOT/volume-control-compile-gate.log"
+  local status payload compile_rc
+
+  if timeout -k 2 5 env -i \
+    "HOME=$HOME" \
+    "PREFIX=${PREFIX:-}" \
+    "PATH=$PATH" \
+    "MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN" \
+    MCP__ANDROID__VOLUME_CONTROL_ENABLED=true \
+    "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID" \
+    "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
+    "MCP__SERVER__HOST=$BIND_HOST" \
+    "MCP__SERVER__PORT=$PORT" \
+    "$MCP_PINNED_ARTIFACT" >"$compile_log" 2>&1
+  then
+    compile_rc=0
+  else
+    compile_rc=$?
+  fi
+  ((compile_rc != 0 && compile_rc != 124 && compile_rc != 137)) || fail volume_control_compile_gate_not_enforced
+  grep -Fq 'MCP__ANDROID__VOLUME_CONTROL_ENABLED requires a binary built with the android-volume-control feature' "$compile_log" || fail volume_control_compile_gate_error_invalid
+  record_result runtime volume_control_compile_gate pass incompatible_volume_control_artifact_rejected
+
+  start_server "$VOLUME_CONTROL_PINNED_ARTIFACT" volume_control
+  curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null || fail volume_control_readiness_failed
+  jq -e --arg version "$EXPECTED_VERSION" '
+    .status == "ready"
+    and .version == $version
+    and .mcp_runtime_enabled == true
+    and .safe_root_count == 1
+    and .auth_posture == "static_token"
+    and .mcp_request_limits.max_concurrent_requests == 4
+    and .mcp_request_limits.request_timeout_seconds == 30
+    and .mcp_request_limits.max_body_bytes == 1024
+  ' "$body" >/dev/null 2>&1 || fail volume_control_feature_posture_mismatch
+  record_result runtime volume_control_readiness pass volume_control_posture_verified
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-validator","version":"1.0.0"}}}'
+  stage_request "$payload"
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp")"
+  expect_status volume_control_initialize "$status" 200 volume_control_initialize_succeeded
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || fail volume_control_session_header_invalid
+
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_initialized_notification "$status" 202 volume_control_initialized_notification_accepted
+  [[ ! -s "$body" ]] || fail volume_control_initialized_notification_body_present
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_runtime_status "$status" 200 volume_control_runtime_status_read
+  jq -e '
+    .result.structuredContent.androidVolumeControlCompiled == true
+    and .result.structuredContent.androidVolumeControlEnabled == false
+    and .result.structuredContent.androidVolumeGrantRequired == false
+    and .result.structuredContent.highImpactTools == false
+  ' "$body" >/dev/null 2>&1 || fail volume_control_runtime_status_invalid
+
+  payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_disabled_call "$status" 200 volume_control_disabled_call_rejected
+  jq -e '.result.isError == true and .result.structuredContent.reasonCode == "volume_control_runtime_disabled"' "$body" >/dev/null 2>&1 || fail volume_control_disabled_call_invalid
+
+  stage_session_headers "$MCP_SESSION_ID"
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "@$SESSION_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    "http://$BIND_HOST:$PORT/mcp")"
+  expect_status volume_control_session_delete "$status" 204 volume_control_session_deleted
+  [[ ! -s "$body" ]] || fail volume_control_session_delete_body_present
+  MCP_SESSION_ID=""
+  stop_server || fail volume_control_runtime_stop_failed
+}
+
 run_runtime_phase() {
   CURRENT_PHASE=runtime
   set_phase runtime running
@@ -1296,6 +1412,7 @@ run_runtime_phase() {
   prepare_runtime_inputs
   run_default_runtime_checks
   run_mcp_runtime_checks
+  run_volume_control_runtime_checks
   record_result runtime cleanup info isolated_runtime_cleanup_armed
   set_phase runtime pass
 }

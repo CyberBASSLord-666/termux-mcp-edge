@@ -90,7 +90,7 @@ The release process should be reproducible from the tagged source using the docu
 4. Merge only through the normal protected-main process with expected-head SHA validation.
 5. Wait for post-merge CI, security, and Android validation on the resulting `main` SHA.
 6. Download all six posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
-7. Run the default and `mcp-runtime` bundles through the complete validator in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), and run every optional posture through its exact-source native ARM64 official-Termux gate. Retain all schema-versioned sanitized evidence and complete either the direct physical route or the strictly bounded inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md).
+7. Run the default, `mcp-runtime`, and `android-volume-control` bundles through the complete validator in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), and run every optional posture through its exact-source native ARM64 official-Termux gate. Retain all schema-versioned sanitized evidence and complete either the direct physical route or the strictly bounded inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md).
 8. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the validated `main` SHA.
 9. Publish the GitHub Release from that immutable tag and attach all supported binaries, manifests, and checksum sidecars.
 10. Re-open the release page and independently verify every asset, checksum, link, version, and recorded SHA.
