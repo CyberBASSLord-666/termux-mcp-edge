@@ -428,7 +428,13 @@ jq -e '.result.isError == false and .result.structuredContent == {stream:"music"
 
 post_mcp '{"jsonrpc":"2.0","id":"wrong-context","method":"tools/list"}' "$SESSION_ID" "$GRANT_MAIN"
 [[ "$MCP_STATUS" == 400 ]] || fail header_context_http_invalid
-jq -e '.error == "capability_context_not_allowed"' "$BODY_FILE" >/dev/null || fail header_context_body_invalid
+jq -e '
+  .jsonrpc == "2.0"
+  and .id == "wrong-context"
+  and .error.code == -32600
+  and .error.message == "Invalid Request"
+  and .error.data == "A request-scoped capability grant is accepted only for an exact grant-authorized tool call."
+' "$BODY_FILE" >/dev/null || fail header_context_body_invalid
 
 post_mcp '{"jsonrpc":"2.0","id":"wrong-level","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":8,"dry_run":false}}}' "$SESSION_ID" "$GRANT_MAIN"
 [[ "$MCP_STATUS" == 403 ]] || fail wrong_binding_http_invalid
