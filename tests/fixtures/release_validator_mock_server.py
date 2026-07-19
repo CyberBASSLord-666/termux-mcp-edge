@@ -108,6 +108,7 @@ TOOLS = [
     "project_service_status",
     "create_directory",
     "copy_file",
+    "hash_file",
     "list_directory",
     "path_metadata",
     "read_file",
@@ -482,6 +483,19 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "hash_file":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded safe-root SHA-256 file hashing.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"path": {"type": "string"}},
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -531,6 +545,9 @@ class Handler(BaseHTTPRequestHandler):
                         "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
                         "androidVolumeControlEnabled": False,
                         "androidVolumeGrantRequired": False,
+                        "fileHashing": True,
+                        "fileHashAlgorithm": "sha256",
+                        "fileHashMaxBytes": 16777216,
                         "createDirectoryMutationEnabled": CAPABILITY_ENABLED,
                         "createDirectoryGrantRequired": CAPABILITY_ENABLED,
                         "createDirectoryGrantHeader": "mcp-capability-grant",
@@ -710,6 +727,68 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if name == "hash_file":
+            target = safe_path(str(arguments.get("path", "")))
+            if target is None or target.is_symlink() or not target.is_file():
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "File hash invalid."),
+                )
+                return
+            try:
+                descriptor = os.open(
+                    target,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        self.send_json(
+                            400,
+                            rpc_error(
+                                identifier,
+                                -32602,
+                                "Invalid params",
+                                "File hash invalid.",
+                            ),
+                        )
+                        return
+                    if metadata.st_size > 16777216:
+                        self.send_json(
+                            413,
+                            rpc_error(
+                                identifier,
+                                -32001,
+                                "Payload too large",
+                                "File hash too large.",
+                            ),
+                        )
+                        return
+                    content = stream.read(16777217)
+            except OSError:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "File hash invalid."),
+                )
+                return
+            if len(content) > 16777216:
+                self.send_json(
+                    413,
+                    rpc_error(identifier, -32001, "Payload too large", "File hash too large."),
+                )
+                return
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(content).hexdigest(),
+                        "sizeBytes": len(content),
+                    },
+                ),
+            )
+            return
         if name == "list_directory":
             target = safe_path(str(arguments.get("path", "")))
             if target is None or not target.is_dir():
@@ -806,18 +885,53 @@ class Handler(BaseHTTPRequestHandler):
             files_scanned = 0
             bytes_scanned = 0
             entries_examined = 0
+            skipped_oversized_files = 0
+            skipped_invalid_utf8_files = 0
+            skipped_unsafe_entries = 0
+            skipped_unreadable_entries = 0
+            truncated = False
+            match_limit_reached = False
             for child in sorted(target.iterdir(), key=lambda item: str(item)):
                 entries_examined += 1
-                if not child.is_file() or child.is_symlink():
+                if child.is_symlink():
+                    skipped_unsafe_entries += 1
                     continue
-                content = child.read_text()
+                if not child.is_file():
+                    continue
+                try:
+                    size = child.stat().st_size
+                except OSError:
+                    skipped_unreadable_entries += 1
+                    continue
+                if size > 1048576 or size > 8388608 - bytes_scanned:
+                    skipped_oversized_files += 1
+                    truncated = True
+                    continue
+                try:
+                    raw_content = child.read_bytes()
+                except OSError:
+                    skipped_unreadable_entries += 1
+                    continue
+                if len(raw_content) > 1048576 or len(raw_content) > 8388608 - bytes_scanned:
+                    skipped_oversized_files += 1
+                    truncated = True
+                    continue
                 files_scanned += 1
-                bytes_scanned += len(content.encode())
+                bytes_scanned += len(raw_content)
+                try:
+                    content = raw_content.decode("utf-8")
+                except UnicodeDecodeError:
+                    skipped_invalid_utf8_files += 1
+                    continue
                 for line_number, line in enumerate(content.split("\n"), start=1):
                     start = 0
                     while True:
                         column = line.find(query, start)
                         if column < 0:
+                            break
+                        if len(matches) >= 256:
+                            truncated = True
+                            match_limit_reached = True
                             break
                         matches.append(
                             {
@@ -827,6 +941,10 @@ class Handler(BaseHTTPRequestHandler):
                             }
                         )
                         start = column + len(query)
+                    if match_limit_reached:
+                        break
+                if match_limit_reached:
+                    break
             self.send_json(
                 200,
                 result(
@@ -834,14 +952,14 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "path": str(target),
                         "matches": matches,
-                        "truncated": False,
+                        "truncated": truncated,
                         "entriesExamined": entries_examined,
                         "filesScanned": files_scanned,
                         "bytesScanned": bytes_scanned,
-                        "skippedOversizedFiles": 0,
-                        "skippedInvalidUtf8Files": 0,
-                        "skippedUnsafeEntries": 0,
-                        "skippedUnreadableEntries": 0,
+                        "skippedOversizedFiles": skipped_oversized_files,
+                        "skippedInvalidUtf8Files": skipped_invalid_utf8_files,
+                        "skippedUnsafeEntries": skipped_unsafe_entries,
+                        "skippedUnreadableEntries": skipped_unreadable_entries,
                         "queryBytes": len(query.encode()),
                         "maxDepth": int(arguments.get("max_depth", 5)),
                         "maxEntries": 8192,

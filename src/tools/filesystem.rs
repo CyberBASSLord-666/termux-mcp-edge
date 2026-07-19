@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use metrics::{counter, histogram};
 use rustix::fs::{self as descriptor_fs, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::audit::AuditEvent;
@@ -25,6 +26,8 @@ pub const MAX_LIST_ENTRIES: usize = 4_096;
 pub const MAX_LIST_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_READ_BYTES: usize = 1_048_576;
 pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
+pub const MAX_HASH_FILE_BYTES: usize = 16_777_216;
+pub const MAX_HASH_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
 pub const MAX_CREATE_DIRECTORY_RESPONSE_BYTES: usize = 16_384;
 pub const CREATE_DIRECTORY_MODE: u32 = 0o700;
@@ -665,7 +668,7 @@ impl FileSystemTools {
             let file_fd = descriptor_fs::openat(
                 &parent_fd,
                 &file_name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                 Mode::empty(),
             )
             .map_err(descriptor_error)?;
@@ -696,6 +699,121 @@ impl FileSystemTools {
         let duration = start.elapsed().as_secs_f64();
         histogram!("mcp.fs.read.latency_seconds").record(duration);
         counter!("mcp.fs.read.bytes_total").increment(result.size as u64);
+
+        Ok(result)
+    }
+
+    /// Hash one regular file through the exact descriptor retained after
+    /// safe-root confinement. The bounded streaming read never returns file
+    /// contents or a partial digest.
+    pub async fn hash_file(&self, path: String) -> Result<HashFileResult, AppError> {
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let result = tokio::task::spawn_blocking(move || {
+            let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
+            let root_fd = open_root_directory(&anchored.root_path)?;
+            let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
+            let path_metadata =
+                descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW).map_err(
+                    |error| {
+                        if error == rustix::io::Errno::NOENT {
+                            AppError::PathNotFound
+                        } else {
+                            descriptor_error(error)
+                        }
+                    },
+                )?;
+            let path_type = FileType::from_raw_mode(path_metadata.st_mode);
+            if path_type.is_symlink() {
+                return Err(path_rejected(
+                    anchored.display_path.to_string_lossy().as_ref(),
+                ));
+            }
+            if !path_type.is_file() {
+                return Err(AppError::UnsupportedPathType);
+            }
+
+            let reported_size = u64::try_from(path_metadata.st_size).map_err(|_| {
+                AppError::Io(std::io::Error::other("file reported an invalid size"))
+            })?;
+            if reported_size > MAX_HASH_FILE_BYTES as u64 {
+                counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
+                return Err(AppError::FileTooLarge {
+                    size: reported_size,
+                    max_size: MAX_HASH_FILE_BYTES as u64,
+                });
+            }
+
+            let file_fd = descriptor_fs::openat(
+                &parent_fd,
+                &file_name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|error| match error {
+                rustix::io::Errno::NOENT => AppError::PathNotFound,
+                rustix::io::Errno::LOOP => {
+                    path_rejected(anchored.display_path.to_string_lossy().as_ref())
+                }
+                _ => descriptor_error(error),
+            })?;
+            let opened_metadata = descriptor_fs::fstat(&file_fd).map_err(descriptor_error)?;
+            if !FileType::from_raw_mode(opened_metadata.st_mode).is_file() {
+                return Err(AppError::UnsupportedPathType);
+            }
+            if opened_metadata.st_dev != path_metadata.st_dev
+                || opened_metadata.st_ino != path_metadata.st_ino
+            {
+                return Err(path_rejected(
+                    anchored.display_path.to_string_lossy().as_ref(),
+                ));
+            }
+            let opened_size = u64::try_from(opened_metadata.st_size).map_err(|_| {
+                AppError::Io(std::io::Error::other("file reported an invalid size"))
+            })?;
+            if opened_size > MAX_HASH_FILE_BYTES as u64 {
+                counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
+                return Err(AppError::FileTooLarge {
+                    size: opened_size,
+                    max_size: MAX_HASH_FILE_BYTES as u64,
+                });
+            }
+
+            let mut reader = File::from(file_fd).take((MAX_HASH_FILE_BYTES + 1) as u64);
+            let mut buffer = [0_u8; 64 * 1_024];
+            let mut hasher = Sha256::new();
+            let mut bytes_hashed = 0_usize;
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                let next_size = bytes_hashed.checked_add(read).ok_or_else(|| {
+                    AppError::Io(std::io::Error::other("hashed byte count overflowed"))
+                })?;
+                if next_size > MAX_HASH_FILE_BYTES {
+                    counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
+                    return Err(AppError::FileTooLarge {
+                        size: next_size as u64,
+                        max_size: MAX_HASH_FILE_BYTES as u64,
+                    });
+                }
+                hasher.update(&buffer[..read]);
+                bytes_hashed = next_size;
+            }
+
+            Ok::<_, AppError>(HashFileResult {
+                algorithm: "sha256".to_owned(),
+                digest: format!("{:x}", hasher.finalize()),
+                size_bytes: bytes_hashed,
+            })
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.hash.latency_seconds").record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.hash.calls_total").increment(1);
+        counter!("mcp.fs.hash.bytes_total").increment(result.size_bytes as u64);
 
         Ok(result)
     }
@@ -1632,6 +1750,14 @@ pub struct ReadFileResult {
     pub size: usize,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HashFileResult {
+    pub algorithm: String,
+    pub digest: String,
+    pub size_bytes: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathMetadataKind {
@@ -2511,6 +2637,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(outside_source).unwrap(),
             "outside-source"
+        );
+    }
+
+    #[test]
+    fn held_hash_descriptor_prevents_redirection_after_path_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let parked = root.path().join("source-parked");
+        let outside_source = outside.path().join("outside-source");
+        std::fs::write(&source, b"inside-hash").unwrap();
+        std::fs::write(&outside_source, b"outside-secret").unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let source_fd = descriptor_fs::openat(
+            &root_fd,
+            "source",
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        std::fs::rename(&source, &parked).unwrap();
+        symlink(&outside_source, &source).unwrap();
+
+        let mut bytes = Vec::new();
+        File::from(source_fd).read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"inside-hash");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            format!("{:x}", Sha256::digest(b"inside-hash"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside_source).unwrap(),
+            "outside-secret"
         );
     }
 

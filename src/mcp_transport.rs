@@ -53,9 +53,10 @@ use crate::{
     },
     tools::{
         AuthorizedCreateDirectoryError, FileSystemTools, PreparedCreateDirectoryMutation,
-        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES,
-        MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
-        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
+        MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
+        MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
+        MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -92,18 +93,20 @@ const SET_ANDROID_VOLUME_TOOL: &str = "set_android_volume";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const COPY_FILE_TOOL: &str = "copy_file";
+const HASH_FILE_TOOL: &str = "hash_file";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const PATH_METADATA_TOOL: &str = "path_metadata";
 const READ_FILE_TOOL: &str = "read_file";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 11] = [
+const BASE_AVAILABLE_TOOLS: [&str; 12] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
     PROJECT_SERVICE_STATUS_TOOL,
     CREATE_DIRECTORY_TOOL,
     COPY_FILE_TOOL,
+    HASH_FILE_TOOL,
     LIST_DIRECTORY_TOOL,
     PATH_METADATA_TOOL,
     READ_FILE_TOOL,
@@ -165,6 +168,11 @@ const FILESYSTEM_METADATA_NOT_FOUND: &str = "filesystem_path_not_found";
 const FILESYSTEM_METADATA_UNSUPPORTED: &str = "filesystem_path_type_unsupported";
 const FILESYSTEM_METADATA_FAILED: &str = "filesystem_metadata_failed";
 const FILESYSTEM_READ_ALLOWED: &str = "safe_root_read";
+const FILESYSTEM_HASH_ALLOWED: &str = "safe_root_file_hashed";
+const FILESYSTEM_HASH_NOT_FOUND: &str = "filesystem_hash_target_not_found";
+const FILESYSTEM_HASH_UNSUPPORTED: &str = "filesystem_hash_target_type_unsupported";
+const FILESYSTEM_HASH_TOO_LARGE: &str = "filesystem_hash_size_limit_exceeded";
+const FILESYSTEM_HASH_FAILED: &str = "filesystem_hash_failed";
 const FILESYSTEM_SEARCH_ALLOWED: &str = "safe_root_text_searched";
 const FILESYSTEM_SEARCH_INVALID_QUERY: &str = "search_query_invalid";
 const FILESYSTEM_SEARCH_FAILED: &str = "filesystem_search_failed";
@@ -474,6 +482,12 @@ struct ListDirectoryArguments {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadFileArguments {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HashFileArguments {
     path: String,
 }
 
@@ -1357,6 +1371,23 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": HASH_FILE_TOOL,
+                        "description": "Compute a bounded SHA-256 digest for one safe-rooted regular file without returning file contents.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": format!(
+                                        "Absolute regular-file path inside one configured safe root; at most {MAX_HASH_FILE_BYTES} bytes are hashed through the retained no-follow descriptor."
+                                    ),
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": LIST_DIRECTORY_TOOL,
                         "description": "List entries under a configured filesystem safe root without reading file contents or writing data.",
                         "inputSchema": {
@@ -1674,6 +1705,15 @@ async fn handle_tool_call(
         }
         COPY_FILE_TOOL => {
             handle_copy_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        HASH_FILE_TOOL => {
+            handle_hash_file_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -2368,7 +2408,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-list-metadata-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-hash-file-list-metadata-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -2393,7 +2433,10 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "fileHashing": true,
+                    "fileHashAlgorithm": "sha256",
+                    "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
                     "createDirectoryMutationEnabled": create_directory_mutation_enabled,
                     "createDirectoryMutationMode": create_directory_mode,
                     "createDirectoryGrantRequired": create_directory_mutation_enabled,
@@ -3307,6 +3350,161 @@ async fn handle_copy_file_call(
 }
 
 #[rustfmt::skip]
+async fn handle_hash_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let maximum_summary = format!(
+        "Computed a SHA-256 digest for {MAX_HASH_FILE_BYTES} bytes from one safe-rooted regular file."
+    );
+    if bounded_ok_result(
+        id.clone(),
+        maximum_summary,
+        json!({
+            "algorithm": "sha256",
+            "digest": "f".repeat(64),
+            "sizeBytes": MAX_HASH_FILE_BYTES,
+        }),
+        MAX_HASH_FILE_RESPONSE_BYTES,
+    )
+    .is_none()
+    {
+        record_filesystem_denied(
+            audit_counters,
+            HASH_FILE_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "File digest response exceeds the staged hash_file response byte limit.",
+            MAX_HASH_FILE_RESPONSE_BYTES,
+        );
+    }
+
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "hash_file requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<HashFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools.hash_file(args.path).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = format!(
+                "Computed a SHA-256 digest for {} bytes from one safe-rooted regular file.",
+                result.size_bytes
+            );
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_HASH_FILE_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    HASH_FILE_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "File digest response exceeds the staged hash_file response byte limit.",
+                    MAX_HASH_FILE_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_HASH_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_HASH_NOT_FOUND,
+            );
+            invalid_params(id, "Filesystem hash target does not exist.")
+        }
+        Err(AppError::UnsupportedPathType) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_HASH_UNSUPPORTED,
+            );
+            invalid_params(id, "Filesystem hash target must be a regular file.")
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_HASH_TOO_LARGE,
+            );
+            payload_too_large(id, "File exceeds the staged hash_file byte limit.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_HASH_FAILED,
+            );
+            internal_error(id, "Filesystem hashing failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
 async fn handle_search_text_call(
     id: Option<Value>,
     arguments: Option<Value>,
@@ -3914,6 +4112,7 @@ mod tests {
                 "project_service_status",
                 "create_directory",
                 "copy_file",
+                "hash_file",
                 "list_directory",
                 "path_metadata",
                 "read_file",
@@ -3946,7 +4145,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            13
+            14
         );
     }
 

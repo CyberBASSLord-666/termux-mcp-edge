@@ -8,7 +8,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and eleven baseline tools: deterministic runtime/platform/Android/project-service metadata, preview-first and independently grant-gated single-directory creation, dry-run-first bounded binary file copy, safe-rooted listing, descriptor-relative single-object metadata, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and twelve baseline tools: deterministic runtime/platform/Android/project-service metadata, preview-first and independently grant-gated single-directory creation, dry-run-first bounded binary file copy, streaming bounded SHA-256 file hashing, safe-rooted listing, descriptor-relative single-object metadata, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
 
 The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 
@@ -81,7 +81,7 @@ Required gates:
 
 Restore filesystem capability with narrow safe roots, read/write separation, payload limits, explicit write controls, and non-sensitive audit counter coverage.
 
-Status: exposed behind the staged runtime gate. The surface includes preview-first one-directory creation, dry-run-first one-file binary copy, deterministic response-bounded listing, bounded single-object metadata, bounded UTF-8 reads, bounded literal text-location search, dry-run-first file writes, explicit crash-durable mutations, and non-sensitive audit counters. Directory mutation is separately default-disabled and requires a 60-second, principal/session/root/target-bound, single-use header grant issued offline by the exact binary. Live operations retain exact safe-root, source, and destination-parent descriptors through classification, bounded reads, staging, no-replace publication, cleanup, and durability sync. File copy is capped at 1 MiB, fixes destinations to mode `0600`, returns no content, and preflights its complete 16 KiB response before mutation. The response-bound work landed through #206, descriptor-relative race hardening through #200, bounded search through #240, bounded path metadata through #242, bounded directory creation through #244, bounded file copy through #247, and directory request authorization through #248.
+Status: exposed behind the staged runtime gate. The surface includes preview-first one-directory creation, dry-run-first one-file binary copy, bounded streaming SHA-256 file hashing, deterministic response-bounded listing, bounded single-object metadata, bounded UTF-8 reads, bounded literal text-location search, dry-run-first file writes, explicit crash-durable mutations, and non-sensitive audit counters. Directory mutation is separately default-disabled and requires a 60-second, principal/session/root/target-bound, single-use header grant issued offline by the exact binary. Live operations retain exact safe-root, source, and destination-parent descriptors through classification, bounded reads, staging, no-replace publication, cleanup, and durability sync. File copy is capped at 1 MiB, fixes destinations to mode `0600`, returns no content, and preflights its complete 16 KiB response before mutation. Hashing is capped at 16 MiB, retains one exact no-follow descriptor, returns only SHA-256 and bytes hashed, and preflights its complete 16 KiB response before reading. The response-bound work landed through #206, descriptor-relative race hardening through #200, bounded search through #240, bounded path metadata through #242, bounded directory creation through #244, bounded file copy through #247, directory request authorization through #248, and bounded hashing through #261.
 
 Required gates:
 
@@ -89,6 +89,7 @@ Required gates:
 - Symlink escape tests.
 - Default-disabled, missing/malformed/mismatched/expired/future/replay/concurrent grant tests plus dry-run non-consumption and explicit one-directory creation tests with fixed mode, existing-target denial, atomic no-replace publication, post-consumption failure semantics, and identity-checked cleanup.
 - Dry-run and explicit binary file-copy tests with exact-limit enforcement, fixed mode, absent-destination/no-replace behavior, descriptor exchange resistance, response preflight, identity-safe cleanup, and content-private audit counters.
+- Binary and empty-file SHA-256 tests with exact 16 MiB acceptance, one-byte-over rejection, descriptor exchange resistance, response preflight, runtime growth enforcement, and digest/path/content-private audit counters.
 - Read-only directory listing test.
 - Bounded path-metadata test with identifier and unsupported-type redaction.
 - Bounded read-file test.
@@ -121,7 +122,7 @@ Required gates:
 
 Restore Android platform tools only after explicit feature gates and operational documentation. Read-only `android_status` metadata is already complete and does not authorize this stage.
 
-Status: read-only `android_battery_status` and `android_volume_status` are implemented behind independent compile-time and runtime gates. Control-oriented Android/platform and audio-mutation tools are not started.
+Status: read-only `android_battery_status` and `android_volume_status` are implemented behind independent compile-time and runtime gates. Preview-first `set_android_volume` is also implemented behind an independent compile gate, default-disabled runtime gate, static authentication, exact request grant, fixed execution, non-queueing mutation lane, fresh bounds, result verification, and confirmed recovery on failure. Broader Android/platform control is not started.
 
 Required gates:
 
@@ -135,6 +136,8 @@ Required gates:
 Battery telemetry satisfies this stage only for its read-only data family: fixed executable, no caller arguments, cleared environment, bounded normal operation/output, strict field normalization, disabled discovery, stable error codes, aggregate audit coverage, a cancellation-safe process-group supervisor with authoritative late-reap failure handling, and native ARM64 official-Termux cleanup validation. It does not satisfy or authorize any future Android control family.
 
 Volume telemetry satisfies this stage only for zero-argument status: fixed `termux-volume` execution, no caller-selected stream or level, cleared environment, bounded output/time, an exact six-stream parser with canonical order, disabled discovery, stable errors, aggregate audit coverage, the shared hardened provider supervisor, and a dedicated native ARM64 evidence report. It does not authorize the upstream command's argument-taking mutation mode, audio routing, media control, or any broader Android control family.
+
+Volume control satisfies this stage only for the exact six allowlisted streams and an integer level inside a fresh live maximum. Preview never invokes the setter. Mutation requires an exact single-use grant, one non-queueing permit, the fixed `termux-volume <stream> <level>` execution, post-set verification, and restoration to the captured prior level when setter or verification fails. It does not authorize audio routing, media control, arbitrary Termux:API calls, or broader Android control.
 
 ## Stage 7: Fixed Command Diagnostics and High-Impact Tooling
 

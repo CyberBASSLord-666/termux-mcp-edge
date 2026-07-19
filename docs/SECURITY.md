@@ -23,6 +23,7 @@ The optional runtime is not a broad host-control surface. After authentication, 
 - `project_service_status`
 - `create_directory`
 - `copy_file`
+- `hash_file`
 - `list_directory`
 - `path_metadata`
 - `read_file`
@@ -82,6 +83,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `project_service_status` | Disabled | Read-only allowlisted project service metadata |
 | `create_directory` | Disabled | Preview is available; mutation is separately default-disabled and requires fixed mode `0700`, atomic no-replace, and one request-scoped single-use grant |
 | `copy_file` | Disabled | One regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run by default |
+| `hash_file` | Disabled | One no-follow regular file up to 16 MiB, streaming SHA-256, digest-and-size-only response |
 | `list_directory` | Disabled | Bounded and safe-rooted |
 | `path_metadata` | Disabled | Bounded, content-free, descriptor-relative metadata |
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
@@ -124,7 +126,7 @@ The body ceiling is implemented with Axum's streaming extractor limit rather tha
 
 Filesystem requests must lexically identify a descendant of a configured safe root. The implementation rejects relative paths, NUL bytes, explicit parent traversal, missing parents, and every symlink component used by a live operation.
 
-Each live create, copy, list, metadata, read, search, and write opens the selected safe root and resolves descendants one component at a time with descriptor-relative `openat` plus `O_NOFOLLOW`; directory enumeration, source reads, staging, publication, cleanup, and metadata lookup remain relative to held descriptors. Copy additionally verifies source identity and size around its bounded read and verifies both held and published destination identities. A concurrent directory/symlink exchange can therefore produce a bounded failure or continue against an already-open safe directory or file capability, but cannot redirect the operation through the replacement symlink. Deterministic adversarial tests cover swaps before and after descriptors are opened.
+Each live create, copy, hash, list, metadata, read, search, and write opens the selected safe root and resolves descendants one component at a time with descriptor-relative `openat` plus `O_NOFOLLOW`; directory enumeration, source reads, hashing, staging, publication, cleanup, and metadata lookup remain relative to held descriptors. Copy additionally verifies source identity and size around its bounded read and verifies both held and published destination identities. Hashing verifies that the opened regular descriptor matches the pre-open no-follow device/inode observation, then enforces its byte limit while streaming. A concurrent directory/symlink exchange can therefore produce a bounded failure or continue against an already-open safe directory or file capability, but cannot redirect the operation through the replacement symlink. Deterministic adversarial tests cover swaps before and after descriptors are opened.
 
 The default safe root is deliberately narrow:
 
@@ -134,7 +136,7 @@ The default safe root is deliberately narrow:
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
-`create_directory`, `copy_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview; explicit `dry_run:false` selects mutation but the independent runtime gate and exact request grant still must authorize it. The runtime validates the absent descriptor-relative target before matching the grant, atomically consumes the grant immediately before `mkdirat`, publishes fixed mode `0700` without replacement, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent safe-rooted destination, defaults to preview, publishes mode `0600` without replacement, returns no content, and preflights its 16 KiB response. Directory listings are deterministic and response bounded. Metadata is content-free; reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked; successful parent sync defines the crash-durability boundary.
+`create_directory`, `copy_file`, `hash_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview; explicit `dry_run:false` selects mutation but the independent runtime gate and exact request grant still must authorize it. The runtime validates the absent descriptor-relative target before matching the grant, atomically consumes the grant immediately before `mkdirat`, publishes fixed mode `0700` without replacement, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent safe-rooted destination, defaults to preview, publishes mode `0600` without replacement, returns no content, and preflights its 16 KiB response. File hashing streams arbitrary bytes from one regular descriptor up to 16 MiB, returns only lowercase SHA-256 and bytes hashed, preflights its 16 KiB response before reading, and never records digest/path/content in audits. Directory listings are deterministic and response bounded. Metadata is content-free; reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked; successful parent sync defines the crash-durability boundary.
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
 
