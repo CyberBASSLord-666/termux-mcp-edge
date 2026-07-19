@@ -38,7 +38,6 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
         file_tools,
         false,
         false,
-        false,
     )
 }
 
