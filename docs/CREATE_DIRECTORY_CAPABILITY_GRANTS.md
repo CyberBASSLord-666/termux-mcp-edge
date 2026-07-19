@@ -51,7 +51,7 @@ MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
 
 The optional `MCP__CAPABILITY__CONFIG_FILE` points the issuer at the exact deployed literal configuration. The loader requires an absolute, regular, final-component-no-follow, owner-readable file that is inaccessible to group/other and at most 64 KiB; it accepts unique allowlisted `NAME=value` records without sourcing or evaluating shell text. When the variable is omitted, the issuer reads configuration from its process environment for isolated validator and development workflows.
 
-The issuer therefore loads the same static principal, safe roots, mutation gate, key identifier, and HMAC key as the service. It anchors the configured roots, resolves the exact existing parent without following links, rejects an existing or out-of-root target, and writes exactly one grant line to standard output. Errors are generic and do not echo the target, session, key, or bearer token.
+The issuer therefore loads the same static principal, safe roots, mutation gate, key identifier, and HMAC key as the service. Its fallible filesystem constructor independently lifetime-pins the configured roots, resolves the exact existing parent from the selected retained descriptor without following links, rejects an existing or out-of-root target, and writes exactly one grant line to standard output. The grant binds the pinned root's device/inode identity. Runtime target preparation and consumption compare that binding with the service's own lifetime pin; if the configured pathname was replaced after service startup, a grant issued against the replacement cannot authorize the original pinned root. The processes need not share one descriptor, but they must identify the same directory object. Errors are generic and do not echo the target, configured root, descriptor identity, session, key, or bearer token.
 
 Submit the mutating request once:
 
@@ -88,8 +88,7 @@ The fixed-shape `v1.<kid>.<payload>.<mac>` grant uses HMAC-SHA-256. The authenti
 - the signed version and key identifier.
 
 All request-grant codes come from one internal registry: directory creation is
-`1`, file write is `2`, Android volume is `3`, and file copy reserves `4` for a
-future independently gated design. The codes are wire commitments, are
+`1`, file write is `2`, Android volume is `3`, and file copy is `4`. The codes are wire commitments, are
 pairwise unique by invariant test, and are not caller-selectable.
 
 The normal lifetime is 60 seconds. The validator rejects zero or greater-than-120-second lifetimes, issuance more than 5 seconds in the future, expiry at the current second, an unknown version or key, and any signature or binding mismatch. One process retains at most 4,096 unexpired consumed JTIs. Equivalent independently constructed directory authorities with the same key identifier, HMAC key, and static principal share that replay set, last-observed clock, and capacity through a bounded process-global registry. Different families, keys, and principals remain isolated. A full, poisoned, or unavailable registry or replay state fails closed; expired entries are pruned before a new valid grant is recorded. Separate operating-system processes do not share this state and must not consume grants from one key/principal domain concurrently without an external atomic one-use coordinator.

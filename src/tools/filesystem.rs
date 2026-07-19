@@ -7,11 +7,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{
-    canonical_safe_roots, is_write_quarantine_name, SafeRootConfigurationError,
+    is_write_quarantine_name, validated_safe_root_labels, SafeRootConfigurationError,
     WRITE_FILE_QUARANTINE_DIRECTORY,
 };
 use crate::audit::AuditEvent;
@@ -273,10 +273,46 @@ impl Drop for DescriptorDirectoryCleanup<'_> {
     }
 }
 
+struct PinnedSafeRoot {
+    descriptor: OwnedFd,
+    identity: (u64, u64),
+}
+
+struct PinnedSafeRootSet {
+    labels: Vec<PathBuf>,
+    roots: Vec<PinnedSafeRoot>,
+}
+
+impl PinnedSafeRootSet {
+    fn duplicate_root(&self, index: usize) -> Result<OwnedFd, AppError> {
+        let root = self
+            .roots
+            .get(index)
+            .ok_or_else(|| AppError::Io(std::io::Error::other("safe-root handle is invalid")))?;
+        let duplicate = duplicate_directory_descriptor(&root.descriptor)?;
+        let metadata = descriptor_fs::fstat(&duplicate).map_err(descriptor_error)?;
+        if !FileType::from_raw_mode(metadata.st_mode).is_dir()
+            || (metadata.st_dev, metadata.st_ino) != root.identity
+        {
+            return Err(AppError::Io(std::io::Error::other(
+                "safe-root identity validation failed",
+            )));
+        }
+        Ok(duplicate)
+    }
+}
+
 struct AnchoredPath {
     display_path: PathBuf,
-    root_path: PathBuf,
+    roots: Arc<PinnedSafeRootSet>,
+    root_index: usize,
     relative_path: PathBuf,
+}
+
+impl AnchoredPath {
+    fn duplicate_root(&self) -> Result<OwnedFd, AppError> {
+        self.roots.duplicate_root(self.root_index)
+    }
 }
 
 pub(crate) struct PreparedCreateDirectoryMutation {
@@ -1058,19 +1094,44 @@ impl<'a> SearchState<'a> {
 
 #[derive(Clone)]
 pub struct FileSystemTools {
-    safe_roots: Vec<PathBuf>,
+    roots: Arc<PinnedSafeRootSet>,
+}
+
+impl std::fmt::Debug for FileSystemTools {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FileSystemTools")
+            .field("safe_root_count", &self.roots.labels.len())
+            .field("safe_roots", &"<redacted>")
+            .field("descriptor_identities", &"<redacted>")
+            .finish()
+    }
 }
 
 impl FileSystemTools {
-    /// Validate, canonicalize, and deterministically deduplicate safe roots.
+    /// Validate, pin, and deterministically deduplicate safe roots.
     pub fn try_new(safe_roots: Vec<PathBuf>) -> Result<Self, SafeRootConfigurationError> {
+        let labels = validated_safe_root_labels(safe_roots)?;
+        let roots = pin_safe_roots(&labels)?;
         Ok(Self {
-            safe_roots: canonical_safe_roots(safe_roots)?,
+            roots: Arc::new(PinnedSafeRootSet { labels, roots }),
         })
     }
 
     pub fn safe_roots(&self) -> &[PathBuf] {
-        &self.safe_roots
+        &self.roots.labels
+    }
+
+    pub fn safe_root_count(&self) -> usize {
+        self.roots.labels.len()
+    }
+
+    /// Clone one lifetime-pinned root for another crate-owned subsystem.
+    ///
+    /// The returned descriptor is identity-verified and carries authority;
+    /// `safe_roots()` remains display/configuration metadata only.
+    pub(crate) fn duplicate_safe_root_descriptor(&self, index: usize) -> Result<OwnedFd, AppError> {
+        self.roots.duplicate_root(index)
     }
 
     fn anchor(&self, input: &str) -> Result<AnchoredPath, AppError> {
@@ -1087,16 +1148,18 @@ impl FileSystemTools {
             return Err(path_rejected(input));
         }
 
-        let Some((root_path, relative_path)) = self
-            .safe_roots
+        let Some((root_index, root_path, relative_path)) = self
+            .roots
+            .labels
             .iter()
-            .filter_map(|root| {
+            .enumerate()
+            .filter_map(|(index, root)| {
                 candidate
                     .strip_prefix(root)
                     .ok()
-                    .map(|relative| (root, relative))
+                    .map(|relative| (index, root, relative))
             })
-            .max_by_key(|(root, _)| root.components().count())
+            .max_by_key(|(_, root, _)| root.components().count())
         else {
             return Err(path_rejected(input));
         };
@@ -1114,7 +1177,8 @@ impl FileSystemTools {
             } else {
                 root_path.join(relative_path)
             },
-            root_path: root_path.clone(),
+            roots: Arc::clone(&self.roots),
+            root_index,
             relative_path: relative_path.to_path_buf(),
         })
     }
@@ -1132,91 +1196,30 @@ impl FileSystemTools {
         )
     }
 
-    /// Resolve a caller-supplied path and verify that it remains inside one of
-    /// the configured safe roots.
+    /// Validate a caller-supplied logical path against a pinned safe root.
     ///
-    /// The method remains public for compatibility and static guard tests. Live
-    /// filesystem operations additionally resolve every descendant from an open
-    /// safe-root descriptor with no-follow semantics and never use this returned
-    /// pathname for I/O.
+    /// The returned path is a display label, not filesystem authority. Callers
+    /// must use the descriptor-relative operations on this type for I/O.
     pub fn sanitize(&self, input: &str) -> Result<PathBuf, AppError> {
-        if input.trim().is_empty() || input.contains('\0') {
-            return Err(AppError::PathTraversal {
-                attempted: input.to_string(),
-            });
+        let anchored = self.anchor(input)?;
+        let root_fd = anchored
+            .duplicate_root()
+            .map_err(|_| path_rejected(input))?;
+        if anchored.relative_path.as_os_str().is_empty() {
+            return Ok(anchored.display_path);
         }
 
-        let candidate = Path::new(input);
-        if !candidate.is_absolute() {
-            return Err(AppError::PathTraversal {
-                attempted: input.to_string(),
-            });
-        }
-
-        if self.safe_roots.iter().any(|root| {
-            candidate.strip_prefix(root).is_ok_and(|relative| {
-                relative.components().any(|component| {
-                    matches!(component, Component::Normal(name) if is_write_quarantine_name(name))
-                })
-            })
-        }) {
-            return Err(AppError::PathTraversal {
-                attempted: input.to_string(),
-            });
-        }
-
-        if candidate
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-        {
-            return Err(AppError::PathTraversal {
-                attempted: input.to_string(),
-            });
-        }
-
-        let resolved = match std::fs::symlink_metadata(candidate) {
-            Ok(_) => candidate
-                .canonicalize()
-                .map_err(|_| AppError::PathTraversal {
-                    attempted: input.to_string(),
-                })?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
-                    attempted: input.to_string(),
-                })?;
-                let file_name = candidate
-                    .file_name()
-                    .ok_or_else(|| AppError::PathTraversal {
-                        attempted: input.to_string(),
-                    })?;
-                let canonical_parent =
-                    parent.canonicalize().map_err(|_| AppError::PathTraversal {
-                        attempted: input.to_string(),
-                    })?;
-                canonical_parent.join(file_name)
+        let (parent_relative, file_name) =
+            split_parent_and_name(&anchored.relative_path).map_err(|_| path_rejected(input))?;
+        let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)
+            .map_err(|_| path_rejected(input))?;
+        match descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
+                Err(path_rejected(input))
             }
-            Err(_) => {
-                return Err(AppError::PathTraversal {
-                    attempted: input.to_string(),
-                });
-            }
-        };
-
-        let remains_in_public_namespace = self.safe_roots.iter().any(|root| {
-            resolved.strip_prefix(root).is_ok_and(|relative| {
-                !relative.components().any(|component| {
-                    matches!(component, Component::Normal(name) if is_write_quarantine_name(name))
-                })
-            })
-        });
-
-        if !remains_in_public_namespace {
-            return Err(AppError::PathTraversal {
-                attempted: input.to_string(),
-            });
+            Ok(_) | Err(rustix::io::Errno::NOENT) => Ok(anchored.display_path),
+            Err(_) => Err(path_rejected(input)),
         }
-
-        Ok(resolved)
     }
 
     fn collect_entries_descriptor_relative(
@@ -1348,7 +1351,7 @@ impl FileSystemTools {
             .unwrap_or(DEFAULT_LIST_DEPTH)
             .clamp(1, MAX_LIST_DEPTH);
         let result = tokio::task::spawn_blocking(move || {
-            let root_fd = open_root_directory(&anchored.root_path)?;
+            let root_fd = anchored.duplicate_root()?;
             let target_fd = open_descendant_directory(root_fd, &anchored.relative_path)?;
             let mut result = ListDirResult {
                 path: anchored.display_path.to_string_lossy().to_string(),
@@ -1620,7 +1623,7 @@ impl FileSystemTools {
         let start = Instant::now();
         let anchored = self.anchor(&path)?;
         let result = tokio::task::spawn_blocking(move || {
-            let root_fd = open_root_directory(&anchored.root_path)?;
+            let root_fd = anchored.duplicate_root()?;
             let target_fd = open_metadata_descriptor(root_fd, &anchored.relative_path)?;
             let metadata = descriptor_fs::fstat(&target_fd).map_err(descriptor_error)?;
             let file_type = FileType::from_raw_mode(metadata.st_mode);
@@ -1796,7 +1799,7 @@ impl FileSystemTools {
             .unwrap_or(MAX_FIND_DEPTH)
             .clamp(MIN_FIND_DEPTH, MAX_FIND_DEPTH);
         let result = tokio::task::spawn_blocking(move || {
-            let root_fd = open_root_directory(&anchored.root_path)?;
+            let root_fd = anchored.duplicate_root()?;
             let target_fd = open_descendant_directory(root_fd, &anchored.relative_path)?;
             let mut state = FindPathsState::new(&query, kind_filter);
             collect_path_matches_descriptor_relative(
@@ -1861,7 +1864,7 @@ impl FileSystemTools {
             .unwrap_or(MAX_SEARCH_DEPTH)
             .clamp(MIN_SEARCH_DEPTH, MAX_SEARCH_DEPTH);
         let result = tokio::task::spawn_blocking(move || {
-            let root_fd = open_root_directory(&anchored.root_path)?;
+            let root_fd = anchored.duplicate_root()?;
             let target_fd = open_descendant_directory(root_fd, &anchored.relative_path)?;
             let mut state = SearchState::new(&query);
             collect_text_matches_descriptor_relative(
@@ -2014,9 +2017,9 @@ impl FileSystemTools {
     }
 }
 
-fn path_rejected(input: &str) -> AppError {
+fn path_rejected(_input: &str) -> AppError {
     AppError::PathTraversal {
-        attempted: input.to_string(),
+        attempted: "<redacted>".to_owned(),
     }
 }
 
@@ -2339,7 +2342,7 @@ fn open_verified_regular_file(
     max_bytes: usize,
 ) -> Result<VerifiedRegularFile, AppError> {
     let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
-    let root_fd = open_root_directory(&anchored.root_path)?;
+    let root_fd = anchored.duplicate_root()?;
     let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
     let path_metadata = descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|error| {
@@ -2573,6 +2576,56 @@ fn filesystem_worker_error(_error: tokio::task::JoinError) -> AppError {
     AppError::Io(std::io::Error::other("filesystem worker failed"))
 }
 
+fn pin_safe_roots(labels: &[PathBuf]) -> Result<Vec<PinnedSafeRoot>, SafeRootConfigurationError> {
+    labels.iter().map(|label| pin_safe_root(label)).collect()
+}
+
+fn pin_safe_root(label: &Path) -> Result<PinnedSafeRoot, SafeRootConfigurationError> {
+    let mut descriptor = descriptor_fs::open(
+        "/",
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| SafeRootConfigurationError::Unresolved)?;
+    let filesystem_root_metadata =
+        descriptor_fs::fstat(&descriptor).map_err(|_| SafeRootConfigurationError::Unresolved)?;
+
+    for component in label.components() {
+        let Component::Normal(name) = component else {
+            if matches!(component, Component::RootDir) {
+                continue;
+            }
+            return Err(SafeRootConfigurationError::Unresolved);
+        };
+        descriptor = descriptor_fs::openat(
+            &descriptor,
+            name,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| SafeRootConfigurationError::Unresolved)?;
+    }
+
+    let metadata =
+        descriptor_fs::fstat(&descriptor).map_err(|_| SafeRootConfigurationError::Unresolved)?;
+    if !FileType::from_raw_mode(metadata.st_mode).is_dir() {
+        return Err(SafeRootConfigurationError::NotDirectory);
+    }
+    if (metadata.st_dev, metadata.st_ino)
+        == (
+            filesystem_root_metadata.st_dev,
+            filesystem_root_metadata.st_ino,
+        )
+    {
+        return Err(SafeRootConfigurationError::FilesystemRoot);
+    }
+    Ok(PinnedSafeRoot {
+        descriptor,
+        identity: (metadata.st_dev, metadata.st_ino),
+    })
+}
+
+#[cfg(test)]
 fn open_root_directory(root: &Path) -> Result<OwnedFd, AppError> {
     descriptor_fs::open(
         root,
@@ -2973,7 +3026,7 @@ fn prepare_write_file(
         .validate_payload_size(content.len())
         .map_err(write_policy_error_to_app_error)?;
     let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
-    let root_fd = open_root_directory(&anchored.root_path)?;
+    let root_fd = anchored.duplicate_root()?;
     let root_metadata = descriptor_fs::fstat(&root_fd).map_err(descriptor_error)?;
     if !FileType::from_raw_mode(root_metadata.st_mode).is_dir() {
         return Err(path_rejected(
@@ -3129,7 +3182,7 @@ fn prepare_create_directory(
 ) -> Result<PreparedCreateDirectoryMutation, AppError> {
     let started = Instant::now();
     let (parent_relative, directory_name) = split_parent_and_name(&anchored.relative_path)?;
-    let root_fd = open_root_directory(&anchored.root_path)?;
+    let root_fd = anchored.duplicate_root()?;
     let root_metadata = descriptor_fs::fstat(&root_fd).map_err(descriptor_error)?;
     if !FileType::from_raw_mode(root_metadata.st_mode).is_dir() {
         return Err(path_rejected(
@@ -3188,7 +3241,7 @@ fn prepare_copy_file(
     }
 
     let (source_parent_relative, source_name) = split_parent_and_name(&source.relative_path)?;
-    let source_root_fd = open_root_directory(&source.root_path)?;
+    let source_root_fd = source.duplicate_root()?;
     let source_root_metadata = descriptor_fs::fstat(&source_root_fd).map_err(descriptor_error)?;
     if !FileType::from_raw_mode(source_root_metadata.st_mode).is_dir() {
         return Err(path_rejected(
@@ -3256,7 +3309,7 @@ fn prepare_copy_file(
 
     let (destination_parent_relative, destination_name) =
         split_parent_and_name(&destination.relative_path)?;
-    let destination_root_fd = open_root_directory(&destination.root_path)?;
+    let destination_root_fd = destination.duplicate_root()?;
     let destination_root_metadata =
         descriptor_fs::fstat(&destination_root_fd).map_err(descriptor_error)?;
     if !FileType::from_raw_mode(destination_root_metadata.st_mode).is_dir() {
@@ -3661,6 +3714,244 @@ mod tests {
             matches!(result, Err(AppError::PathTraversal { .. })),
             "expected safe-root rejection"
         );
+    }
+
+    #[test]
+    fn descriptor_pinning_rejects_filesystem_root_identity_independently() {
+        let error = pin_safe_root(Path::new("/"))
+            .err()
+            .expect("descriptor validation must reject filesystem root identity");
+        assert_eq!(error, SafeRootConfigurationError::FilesystemRoot);
+    }
+
+    #[tokio::test]
+    async fn pinned_root_cannot_be_redirected_by_root_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("payload.txt"), "original").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("payload.txt"), "hostile-replacement").unwrap();
+
+        let result = tools
+            .read_file(root.join("payload.txt").to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "original");
+        assert_eq!(
+            std::fs::read_to_string(root.join("payload.txt")).unwrap(),
+            "hostile-replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("payload.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    async fn pinned_root_cannot_be_redirected_by_ancestor_replacement() {
+        let parent = tempfile::tempdir().unwrap();
+        let ancestor = parent.path().join("authority-parent");
+        let root = ancestor.join("root");
+        let moved_ancestor = parent.path().join("original-parent");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("payload.txt"), "original").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+
+        std::fs::rename(&ancestor, &moved_ancestor).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("payload.txt"), "hostile-replacement").unwrap();
+
+        let result = tools
+            .read_file(root.join("payload.txt").to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "original");
+        assert_eq!(
+            std::fs::read_to_string(root.join("payload.txt")).unwrap(),
+            "hostile-replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved_ancestor.join("root/payload.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloned_tools_retain_the_same_pinned_authority_lifetime() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("payload.txt"), "original").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let retained = tools.clone();
+        drop(tools);
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("payload.txt"), "hostile-replacement").unwrap();
+
+        let result = retained
+            .read_file(root.join("payload.txt").to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "original");
+        assert_eq!(retained.safe_root_count(), 1);
+    }
+
+    #[test]
+    fn grants_issued_for_a_replacement_root_cannot_authorize_the_pinned_runtime_root() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        let target = root.join("new-directory");
+        std::fs::create_dir(&root).unwrap();
+        let runtime_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let prepared = runtime_tools
+            .prepare_create_directory_mutation_blocking(target.to_string_lossy().to_string())
+            .unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let issuer_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let issuer_target = issuer_tools
+            .create_directory_grant_target(target.to_string_lossy().as_ref())
+            .unwrap();
+        let authority = crate::create_directory_grant::CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let token = authority
+            .issue_at(&session_id, &issuer_target, unix_timestamp_seconds())
+            .unwrap();
+
+        let result = authority.consume_at(
+            Some(&token),
+            &session_id,
+            &prepared.grant_target,
+            unix_timestamp_seconds(),
+        );
+        assert_eq!(result, Err(CreateDirectoryGrantError::BindingMismatch));
+        assert!(!root.join("new-directory").exists());
+        assert!(!moved.join("new-directory").exists());
+    }
+
+    #[test]
+    fn write_grants_bind_to_the_runtime_pinned_root_identity() {
+        const TEST_KEY: &str = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        let target = root.join("new-file.txt");
+        let content = "identity-bound-content";
+        std::fs::create_dir(&root).unwrap();
+        let runtime_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let prepared = runtime_tools
+            .prepare_write_file_mutation_blocking(
+                target.to_string_lossy().to_string(),
+                content.to_owned(),
+            )
+            .unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let issuer_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let issuer_target = issuer_tools
+            .write_file_grant_target(
+                target.to_string_lossy().as_ref(),
+                content.as_bytes(),
+                WriteFileDisposition::Create,
+            )
+            .unwrap();
+        let authority = crate::write_file_grant::WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let token = authority.issue(&session_id, &issuer_target).unwrap();
+
+        let result = authority.consume(Some(&token), &session_id, &prepared.grant_target);
+        assert_eq!(result, Err(WriteFileGrantError::BindingMismatch));
+        assert!(!root.join("new-file.txt").exists());
+        assert!(!moved.join("new-file.txt").exists());
+    }
+
+    #[test]
+    fn copy_grants_bind_both_endpoints_to_pinned_root_identity() {
+        const TEST_KEY: &str = "22334455667788990011aabbccddeeff22334455667788990011aabbccddeeff";
+
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        let source = root.join("source.txt");
+        let destination = root.join("destination.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&source, "identity-bound-copy").unwrap();
+        let runtime_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let prepared = runtime_tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+            )
+            .unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&source, "identity-bound-copy").unwrap();
+        let issuer_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let issuer_target = issuer_tools
+            .copy_file_grant_target(
+                source.to_string_lossy().as_ref(),
+                destination.to_string_lossy().as_ref(),
+            )
+            .unwrap();
+        let authority = crate::copy_file_grant::CopyFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let token = authority.issue(&session_id, &issuer_target).unwrap();
+
+        let result = authority.consume(Some(&token), &session_id, &prepared.grant_target);
+        assert_eq!(result, Err(CopyFileGrantError::BindingMismatch));
+        assert!(!root.join("destination.txt").exists());
+        assert!(!moved.join("destination.txt").exists());
+    }
+
+    #[test]
+    fn filesystem_tools_debug_and_rejections_redact_root_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let root_text = root.path().to_string_lossy().to_string();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+
+        let debug = format!("{tools:?}");
+        assert_eq!(
+            debug,
+            "FileSystemTools { safe_root_count: 1, safe_roots: \"<redacted>\", descriptor_identities: \"<redacted>\" }"
+        );
+        assert!(!debug.contains(&root_text));
+
+        let rejected = tools
+            .sanitize(root.path().join("missing/child").to_string_lossy().as_ref())
+            .unwrap_err();
+        let diagnostic = format!("{rejected:?} {rejected}");
+        assert!(!diagnostic.contains(&root_text));
+        assert!(!diagnostic.contains("missing/child"));
     }
 
     fn execute_prepared_copy(
@@ -6292,7 +6583,7 @@ mod tests {
             .expect("test safe root must validate");
         let requested = child.join("target.txt");
         let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
-        let root_fd = open_root_directory(&anchored.root_path).unwrap();
+        let root_fd = anchored.duplicate_root().unwrap();
         let target_fd = open_metadata_descriptor(root_fd, &anchored.relative_path).unwrap();
 
         std::fs::rename(&child, &parked).unwrap();
@@ -6323,7 +6614,7 @@ mod tests {
         symlink(outside.path(), &child).unwrap();
 
         let (parent_relative, _) = split_parent_and_name(&anchored.relative_path).unwrap();
-        let root_fd = open_root_directory(&anchored.root_path).unwrap();
+        let root_fd = anchored.duplicate_root().unwrap();
         let result = open_descendant_directory(root_fd, &parent_relative);
 
         assert!(matches!(result, Err(AppError::PathTraversal { .. })));
@@ -6341,7 +6632,7 @@ mod tests {
         let requested = child.join("result.txt");
         let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
         let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path).unwrap();
-        let root_fd = open_root_directory(&anchored.root_path).unwrap();
+        let root_fd = anchored.duplicate_root().unwrap();
         let parent_fd = open_descendant_directory(root_fd, &parent_relative).unwrap();
 
         std::fs::rename(&child, &parked).unwrap();

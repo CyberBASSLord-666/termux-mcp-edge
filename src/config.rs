@@ -506,6 +506,12 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     if file.safe_roots.is_empty() {
         bail!("MCP__FILE__SAFE_ROOTS must contain at least one absolute safe root");
     }
+    if file.safe_roots.len() > crate::tools::MAX_SAFE_ROOTS {
+        bail!(
+            "MCP__FILE__SAFE_ROOTS must contain at most {} safe roots",
+            crate::tools::MAX_SAFE_ROOTS
+        );
+    }
 
     for root in &file.safe_roots {
         if root.as_os_str().is_empty() {
@@ -1520,6 +1526,22 @@ mod tests {
 
         let err = validate_file_safe_roots(&file).expect_err("empty safe roots must fail closed");
         assert!(err.to_string().contains("at least one absolute safe root"));
+    }
+
+    #[test]
+    fn excessive_safe_roots_are_rejected_before_runtime_construction() {
+        let file = FileConfig {
+            safe_roots: (0..=crate::tools::MAX_SAFE_ROOTS)
+                .map(|index| PathBuf::from(format!("/tmp/safe-root-{index}")))
+                .collect(),
+            create_directory_mutation_enabled: false,
+            write_file_mutation_enabled: false,
+            copy_file_mutation_enabled: false,
+        };
+
+        let err = validate_file_safe_roots(&file)
+            .expect_err("an excessive safe-root set must fail before runtime construction");
+        assert!(err.to_string().contains("at most 64 safe roots"));
     }
 
     #[test]

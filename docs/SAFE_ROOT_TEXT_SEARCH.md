@@ -14,7 +14,7 @@ Unknown properties, empty queries, NUL, CR/LF, oversized queries, and out-of-ran
 
 ## Descriptor boundary
 
-The operation anchors the supplied path to the most specific configured safe root, opens that root, and resolves every descendant directory and file relative to an already-open descriptor with `NOFOLLOW`. Symlinks and non-regular file types are skipped. An opened file is checked again before reading, so exchanging a validated pathname for a symlink, FIFO, device, or outside-root directory cannot redirect the read.
+The operation anchors the supplied path to the most specific configured root label, duplicates and identity-verifies that root's lifetime-pinned descriptor, and resolves every descendant directory and file relative to the retained duplicate with `NOFOLLOW`. Symlinks and non-regular file types are skipped. An opened file is checked again before reading, so exchanging a validated pathname for a symlink, FIFO, device, or outside-root directory cannot redirect the read.
 
 Blocking enumeration and reads run outside the async executor. No subprocess, shell, Android API, network request, write, or temporary file is involved.
 

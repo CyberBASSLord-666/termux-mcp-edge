@@ -180,11 +180,11 @@ async fn main() -> anyhow::Result<()> {
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
-    // Validate and anchor every configured jail root before any listener is
-    // opened. Termux storage permissions and mount availability can change
-    // independently of configuration; unresolved lexical paths must fail closed.
+    // Validate and lifetime-pin every configured jail root before any listener
+    // is opened. Termux storage permissions and mount availability can change
+    // independently of configuration; unresolved roots must fail closed.
     let file_tools = FileSystemTools::try_new(config.file.safe_roots.clone())?;
-    let safe_root_count = file_tools.safe_roots().len();
+    let safe_root_count = file_tools.safe_root_count();
 
     #[cfg(feature = "mcp-runtime")]
     let create_directory_authority = configured_create_directory_authority(&config)?;
@@ -564,11 +564,6 @@ impl std::fmt::Debug for PrivateWriteGrantContent {
 impl PrivateWriteGrantContent {
     fn as_bytes(&self) -> &[u8] {
         &self.bytes
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.bytes.len()
     }
 }
 

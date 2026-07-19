@@ -1129,7 +1129,7 @@ impl McpTransportState {
     ) -> Self {
         #[cfg(feature = "command-execution")]
         let command_execution_client = command_execution_enabled
-            .then(|| file_tools.safe_roots().first().cloned())
+            .then(|| file_tools.duplicate_safe_root_descriptor(0).ok())
             .flatten()
             .and_then(|safe_root| CommandExecutionClient::current_server(safe_root).ok());
         #[cfg(feature = "command-execution")]
@@ -4129,7 +4129,7 @@ async fn handle_run_command_profile_call(
         let decision = policy.evaluate(
             &args.profile,
             state.command_execution_enabled,
-            !state.file_tools.safe_roots().is_empty(),
+            state.file_tools.safe_root_count() > 0,
         );
         if !decision.allowed {
             record_command_policy_decision(&state.audit_counters, &decision);

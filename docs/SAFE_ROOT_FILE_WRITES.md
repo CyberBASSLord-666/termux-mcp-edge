@@ -35,8 +35,8 @@ See [Write-file capability grants](WRITE_FILE_CAPABILITY_GRANTS.md) for configur
 After argument and complete-response preflight, the runtime:
 
 1. Lexically anchors `path` to the most specific configured safe root and rejects relative paths, NUL bytes, parent traversal, the safe-root path itself, and paths outside every root.
-2. Opens the anchored root, captures its device/inode identity, and resolves the existing parent one component at a time with no-follow descriptors.
-3. Retains the mutation-parent descriptor through authorization, private-quarantine staging, publication, verification, and durability sync. Replacement also retains a no-follow descriptor for the classified target. The safe-root descriptor is no longer needed after parent resolution.
+2. Duplicates and identity-verifies the selected root's lifetime pin, then resolves the existing parent one component at a time with no-follow descriptors.
+3. Retains the mutation-parent descriptor through authorization, private-quarantine staging, publication, verification, and durability sync. Replacement also retains a no-follow descriptor for the classified target. The operation may release its root duplicate after parent resolution, while the shared lifetime pin remains authoritative for later calls.
 4. Classifies the final name without following it:
    - absence selects **create**;
    - one single-link regular file of at most 1 MiB selects **replace** and retains a descriptor plus its device, inode, size, high-resolution ctime, and link-count identity;

@@ -48,7 +48,7 @@ The maximum raw file is 1,048,576 bytes. Its maximum encoded payload is 1,398,10
 
 The implementation:
 
-1. anchors the requested absolute path to one configured safe-root descriptor;
+1. anchors the requested absolute path to one configured root label, then duplicates and identity-verifies its lifetime-pinned descriptor;
 2. rejects parent traversal, NUL data, paths outside every safe root, and symlinked descendant components;
 3. walks the parent components descriptor-relatively with no-follow directory opens;
 4. performs a no-follow final-object metadata lookup and requires a regular file;

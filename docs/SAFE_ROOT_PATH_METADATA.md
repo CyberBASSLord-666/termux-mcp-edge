@@ -24,7 +24,7 @@ The result does not expose file content, inode or device numbers, UID/GID values
 
 ## Descriptor and race boundary
 
-The server anchors the request beneath the longest matching configured safe root, opens that root as a no-follow directory descriptor, and walks every parent component relative to the already-open descriptor. The final object is opened with Linux path-descriptor and no-follow semantics, then classified with `fstat` on that exact descriptor. The configured safe-root directory itself is inspected through its already-open root descriptor.
+The server anchors the request beneath the longest matching configured root label, duplicates and identity-verifies that root's lifetime-pinned no-follow descriptor, and walks every parent component relative to the retained duplicate. The final object is opened with Linux path-descriptor and no-follow semantics, then classified with `fstat` on that exact descriptor. The configured safe-root directory itself is inspected through the verified duplicate rather than by reopening its pathname.
 
 Symlink final components are opened only as links long enough to classify and reject them; link targets are never resolved or returned. Sockets, FIFOs, devices, and other non-regular types are rejected. Holding the final descriptor prevents a concurrent rename or path exchange from redirecting metadata lookup to an outside object.
 

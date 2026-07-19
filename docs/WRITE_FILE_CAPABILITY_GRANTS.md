@@ -52,7 +52,7 @@ MCP__CAPABILITY__WRITE_FILE_DISPOSITION='create' \
   --issue-write-file-grant >"$GRANT_FILE"
 ```
 
-Use `create` only when the final path is absent. Use `replace` only when the final path is an existing regular file. Issuance validates the same anchored safe-root, no-follow parent, target kind, bounded payload, and normalized target contract used by the runtime. The private content file must be a bounded, stable, no-follow regular file containing valid UTF-8. Its bytes are hashed into the grant binding; they are never serialized into the grant.
+Use `create` only when the final path is absent. Use `replace` only when the final path is an existing regular file. The issuer's fallible filesystem constructor independently lifetime-pins the configured root, and issuance validates the same pinned-root identity, no-follow parent, target kind, bounded payload, and normalized target contract used by the runtime. Runtime target preparation and consumption compare the grant's root device/inode binding with the service's own lifetime pin. A grant issued against a configured pathname replacement cannot authorize the service's earlier pinned root; descriptor numbers may differ across processes, but the directory object identity must match. The private content file must be a bounded, stable, no-follow regular file containing valid UTF-8. Its bytes are hashed into the grant binding; they are never serialized into the grant. Errors and public surfaces expose neither the configured root path nor descriptor identity.
 
 Send the single line in `GRANT_FILE` only as the `MCP-Capability-Grant` header on the matching `tools/call` request. The JSON `content` must have exactly the same UTF-8 bytes used during issuance:
 

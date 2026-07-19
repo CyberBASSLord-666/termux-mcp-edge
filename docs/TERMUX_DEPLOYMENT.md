@@ -34,6 +34,7 @@ Create a private configuration file before installation:
 
 ```bash
 install -d -m 700 "$HOME/.config/termux-mcp-edge"
+install -d -m 700 "$HOME/mcp-files"
 umask 077
 cat >"$HOME/.config/termux-mcp-edge/runtime.env" <<'EOF'
 MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
@@ -45,6 +46,7 @@ MCP__TRANSPORT__SSE_ENABLED=false
 MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=2097152
+MCP__FILE__SAFE_ROOTS=/data/data/com.termux/files/home/mcp-files
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false
 MCP__FILE__COPY_FILE_MUTATION_ENABLED=false
 MCP__FILE__WRITE_MUTATION_ENABLED=false
@@ -114,6 +116,14 @@ chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 Replace an existing `false` gate line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and any enabled request-authorized mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, operation-bound `MCP-Capability-Grant`; the copy issuer independently opens and hashes the exact source, while the write issuer additionally binds exact content, disposition, and replacement identity. See [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md), [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md), and [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md). Never print, commit, or attach either the HMAC key or issued grants.
 
 For issuance, set `MCP__CAPABILITY__CONFIG_FILE` to this private `runtime.env`. The exact binary opens it without following the final component, enforces the same private mode and a 64 KiB ceiling, rejects duplicate or non-allowlisted records, and parses literal values without shell evaluation.
+
+### Safe-root preflight and restart semantics
+
+Safe-root construction is a startup gate, not a deferred request check. `MCP__FILE__SAFE_ROOTS` must contain one through 64 configured absolute directory entries. Empty or relative entries, filesystem root `/`, parent traversal, missing/non-directory objects, and a symlink in any root or ancestor fail before the listener opens. Valid labels are normalized, sorted, and deduplicated. A shell `test -d -r -x` check can catch basic permission mistakes, but exact-binary startup remains authoritative for the component-level no-follow and identity contract.
+
+The runtime retains a no-follow directory descriptor and device/inode identity for every distinct normalized root label. All filesystem tools and grant consumption duplicate those lifetime pins rather than reopening configured paths. Renaming or replacing a root or ancestor cannot redirect the running process; it continues against the originally pinned directory and does not touch an object substituted at the configured pathname. An offline grant issuer performs its own fallible pinning and signs the resulting identity, so a grant issued against a replacement fails against a runtime that still holds the original pin.
+
+Treat a storage rename, replacement, remount, permission migration, or removable-media change as a controlled restart event. Quiesce clients and same-UID writers, stop the runit service, make the change, start the service so current path objects are freshly validated and pinned, then verify runit state, `/health`, `/ready`, and representative allowed/denied filesystem calls. Startup, debug, audit, and release-evidence surfaces must not expose configured paths or descriptor/device/inode metadata.
 
 ## Validate the candidate
 
@@ -218,7 +228,7 @@ cargo test --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 ```
 
-The test suite covers the binary CLI contract, verified install, invalid operation modes, checksum and version failures, active and stale locks, dry-run immutability, literal and duplicate configuration handling, capability-key pairing and format enforcement, failed-candidate recovery, failed-rollback recovery, invalid links, unsafe roots, configuration preservation, and explicit purge.
+The test suite covers the binary CLI contract, verified install, invalid operation modes, checksum and version failures, active and stale locks, dry-run immutability, literal and duplicate configuration handling, the 64-entry safe-root ceiling, fallible no-symlink root pinning, root/ancestor replacement resistance, capability-key pairing and format enforcement, failed-candidate recovery, failed-rollback recovery, invalid links, unsafe roots, configuration preservation, and explicit purge.
 
 ## On-device production gate
 

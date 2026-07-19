@@ -22,6 +22,7 @@ on:
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/emulated-release-evidence-schema-v2.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/android-volume-control-emulated-evidence-schema-v*.json"
@@ -48,6 +49,7 @@ on:
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
       - "docs/emulated-release-evidence-schema-v1.json"
+      - "docs/emulated-release-evidence-schema-v2.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/android-volume-control-emulated-evidence-schema-v*.json"
@@ -405,13 +407,17 @@ jobs:
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
             --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
+              and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
               and (.candidate.androidVolumeControlArtifact.sha256 | test("^[0-9a-f]{64}$"))
               and .environment.imageDigest == $digest
               and .runtimeValidation.status == "pass"
               and .stress.status == "pass" and .stress.samples == 256
+              and .stress.safeRootIdentityPinned == true
+              and .stress.safeRootAncestorIdentityPinned == true
+              and .stress.longObservationRequired == false
             ' "$report" >/dev/null
           sha256sum "$report"
 

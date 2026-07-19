@@ -19,7 +19,7 @@ Confinement and response-size validation complete before grant matching. After d
 
 ## Descriptor and publication boundary
 
-The runtime anchors the request to the most specific configured safe root, opens that root with no-follow semantics, and walks every existing parent component by descriptor. Each component is opened with `O_PATH | O_NOFOLLOW`, classified with `fstat`, and required to be a directory. The final writable parent is reopened from the held descriptor; no authorized pathname is later re-resolved for mutation.
+The runtime anchors the request to the most specific configured safe-root label, duplicates and identity-verifies that root's lifetime-pinned no-follow descriptor, and walks every existing parent component by descriptor. Each component is opened with `O_PATH | O_NOFOLLOW`, classified with `fstat`, and required to be a directory. The final writable parent is reopened from the held descriptor; neither the configured root nor any authorized descendant pathname is later re-resolved for mutation.
 
 Mutation uses this sequence:
 

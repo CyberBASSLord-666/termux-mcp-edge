@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-GATE_VERSION=1
+GATE_VERSION=2
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
 DEFAULT_SAMPLES=256
 MAX_SAMPLES=4096
@@ -246,7 +246,8 @@ OUTPUT_PARENT="$(dirname "$OUTPUT_REPORT")"
 
 WORK_ROOT="$(mktemp -d "$HOME/.termux-mcp-emulated-gate.XXXXXX")" || fail work_root_create_failed
 chmod 700 "$WORK_ROOT"
-SAFE_ROOT="$WORK_ROOT/safe-root"
+SAFE_PARENT="$WORK_ROOT/safe-parent"
+SAFE_ROOT="$SAFE_PARENT/safe-root"
 TOKEN_FILE="$WORK_ROOT/token"
 CONFIG_FILE="$WORK_ROOT/release-validator.env"
 RUNTIME_REPORT="$WORK_ROOT/runtime-evidence.json"
@@ -254,6 +255,7 @@ STRESS_LOG="$WORK_ROOT/stress-server.log"
 BODY_FILE="$WORK_ROOT/body.json"
 HEADER_FILE="$WORK_ROOT/headers.txt"
 REQUEST_FILE="$WORK_ROOT/request.json"
+mkdir -m 700 "$SAFE_PARENT"
 mkdir -m 700 "$SAFE_ROOT"
 printf '%s' emulated-visible >"$SAFE_ROOT/visible.txt"
 chmod 600 "$SAFE_ROOT/visible.txt"
@@ -404,6 +406,32 @@ SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, 
 post_mcp '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 202 && ! -s "$BODY_FILE" ]] || fail stress_initialized_notification_invalid
 
+# Prove that every operation continues from the descriptor pinned at startup,
+# even after both the configured root pathname and one of its ancestors are
+# renamed and replaced with attacker-controlled directories.
+PINNED_ROOT="$SAFE_PARENT/original-safe-root"
+mv -- "$SAFE_ROOT" "$PINNED_ROOT"
+mkdir -m 700 "$SAFE_ROOT"
+printf '%s' root-replacement >"$SAFE_ROOT/visible.txt"
+chmod 600 "$SAFE_ROOT/visible.txt"
+post_mcp "$(jq -cn --arg path "$SAFE_ROOT/visible.txt" '{jsonrpc:"2.0",id:"root-identity",method:"tools/call",params:{name:"read_file",arguments:{path:$path}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail stress_root_identity_status_invalid
+jq -e '.result.structuredContent.content == "emulated-visible"' "$BODY_FILE" >/dev/null || fail stress_root_identity_redirected
+[[ "$(cat "$SAFE_ROOT/visible.txt")" == root-replacement ]] || fail stress_root_replacement_fixture_invalid
+[[ "$(cat "$PINNED_ROOT/visible.txt")" == emulated-visible ]] || fail stress_pinned_root_fixture_invalid
+
+PINNED_PARENT="$WORK_ROOT/original-safe-parent"
+mv -- "$SAFE_PARENT" "$PINNED_PARENT"
+mkdir -m 700 "$SAFE_PARENT"
+mkdir -m 700 "$SAFE_ROOT"
+printf '%s' ancestor-replacement >"$SAFE_ROOT/visible.txt"
+chmod 600 "$SAFE_ROOT/visible.txt"
+post_mcp "$(jq -cn --arg path "$SAFE_ROOT/visible.txt" '{jsonrpc:"2.0",id:"ancestor-identity",method:"tools/call",params:{name:"read_file",arguments:{path:$path}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail stress_ancestor_identity_status_invalid
+jq -e '.result.structuredContent.content == "emulated-visible"' "$BODY_FILE" >/dev/null || fail stress_ancestor_identity_redirected
+[[ "$(cat "$SAFE_ROOT/visible.txt")" == ancestor-replacement ]] || fail stress_ancestor_replacement_fixture_invalid
+[[ "$(cat "$PINNED_PARENT/original-safe-root/visible.txt")" == emulated-visible ]] || fail stress_pinned_ancestor_fixture_invalid
+
 for sample in $(seq 1 "$SAMPLES"); do
   kill -0 "$STRESS_PID" >/dev/null 2>&1 || fail stress_pid_lost
   [[ "$SERVER_PID" == "$STRESS_PID" ]] || fail stress_pid_changed
@@ -477,12 +505,14 @@ for sample in $(seq 1 "$SAMPLES"); do
     post_mcp "$(jq -cn --arg source "$SAFE_ROOT/visible.txt" --arg destination "$SAFE_ROOT/copy-disabled.txt" '{jsonrpc:"2.0",id:"copy-disabled",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')" "$SESSION_ID"
     [[ "$MCP_STATUS" == 403 ]] || fail stress_copy_file_disabled_status_invalid
     jq -e '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_copy_file_disabled_contract_invalid
-    [[ ! -e "$SAFE_ROOT/copy-disabled.txt" && ! -L "$SAFE_ROOT/copy-disabled.txt" ]] || fail stress_copy_file_disabled_mutated
+    [[ ! -e "$SAFE_ROOT/copy-disabled.txt" && ! -L "$SAFE_ROOT/copy-disabled.txt" ]] || fail stress_copy_file_disabled_replacement_mutated
+    [[ ! -e "$PINNED_PARENT/original-safe-root/copy-disabled.txt" && ! -L "$PINNED_PARENT/original-safe-root/copy-disabled.txt" ]] || fail stress_copy_file_disabled_pinned_root_mutated
 
     post_mcp "$(jq -cn --arg path "$SAFE_ROOT/write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
     [[ "$MCP_STATUS" == 403 ]] || fail stress_write_file_disabled_status_invalid
     jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_write_file_disabled_contract_invalid
-    [[ ! -e "$SAFE_ROOT/write-disabled.txt" && ! -L "$SAFE_ROOT/write-disabled.txt" ]] || fail stress_write_file_disabled_mutated
+    [[ ! -e "$SAFE_ROOT/write-disabled.txt" && ! -L "$SAFE_ROOT/write-disabled.txt" ]] || fail stress_write_file_disabled_replacement_mutated
+    [[ ! -e "$PINNED_PARENT/original-safe-root/write-disabled.txt" && ! -L "$PINNED_PARENT/original-safe-root/write-disabled.txt" ]] || fail stress_write_file_disabled_pinned_root_mutated
 
     post_mcp '{"jsonrpc":"2.0","id":"battery-uncompiled","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
     [[ "$MCP_STATUS" == 200 ]] || fail stress_battery_uncompiled_status_invalid
@@ -540,10 +570,11 @@ jq -n \
   --argjson samples "$SAMPLES" \
   --argjson requests "$REQUEST_COUNT" '
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     gateVersion: $gate_version,
     status: "pass",
     failureCode: null,
+    releaseQualificationEligible: false,
     startedAt: $started_at,
     completedAt: $completed_at,
     candidate: {
@@ -577,14 +608,18 @@ jq -n \
       healthReadyStable: true,
       sessionLifecycle: true,
       exactToolAllowlist: true,
+      safeRootIdentityPinned: true,
+      safeRootAncestorIdentityPinned: true,
       copyFileMutationDisabled: true,
-      highImpactDisabled: true
+      highImpactDisabled: true,
+      longObservationRequired: false
     }
   }' >"$REPORT_NEXT"
 chmod 600 "$REPORT_NEXT"
 
 jq -e '
-  .schemaVersion == 1 and .gateVersion == "1" and .status == "pass" and .failureCode == null
+  .schemaVersion == 2 and .gateVersion == "2" and .status == "pass" and .failureCode == null
+  and .releaseQualificationEligible == false
   and .environment.executionMode == "official-termux-docker-native-arm64"
   and (.candidate.androidVolumeControlArtifact.sha256 | test("^[0-9a-f]{64}$"))
   and .candidate.androidVolumeControlArtifact.sha256 != .candidate.defaultArtifact.sha256
@@ -595,8 +630,11 @@ jq -e '
   and .stress.status == "pass" and .stress.samples >= 32 and .stress.requests >= (.stress.samples * 3)
   and .stress.servicePidStable == true and .stress.healthReadyStable == true
   and .stress.sessionLifecycle == true and .stress.exactToolAllowlist == true
+  and .stress.safeRootIdentityPinned == true
+  and .stress.safeRootAncestorIdentityPinned == true
   and .stress.copyFileMutationDisabled == true
   and .stress.highImpactDisabled == true
+  and .stress.longObservationRequired == false
 ' "$REPORT_NEXT" >/dev/null || fail generated_report_invalid
 
 if grep -Eq '/data/|Bearer[[:space:]]|MCP__|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$REPORT_NEXT"; then
