@@ -51,8 +51,7 @@ use crate::{
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
     },
     create_directory_grant::{
-        CreateDirectoryGrantAuthority, CreateDirectoryGrantError, CREATE_DIRECTORY_GRANT_HEADER,
-        CREATE_DIRECTORY_GRANT_TTL_SECONDS, MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES,
+        CreateDirectoryGrantAuthority, CreateDirectoryGrantError, CREATE_DIRECTORY_GRANT_TTL_SECONDS,
     },
     error::{AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE, INVALID_TEXT_RANGE_PUBLIC_MESSAGE},
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
@@ -63,6 +62,7 @@ use crate::{
         SSE_RETRY_MILLISECONDS,
     },
     platform_info::collect_platform_info,
+    request_grant_capability::{MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER},
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     service_status::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
@@ -82,8 +82,7 @@ use crate::{
     },
     transport_security::TransportSecurityPolicy,
     write_file_grant::{
-        WriteFileGrantAuthority, WriteFileGrantError, MAX_WRITE_FILE_GRANT_HEADER_BYTES,
-        WRITE_FILE_GRANT_HEADER, WRITE_FILE_GRANT_TTL_SECONDS,
+        WriteFileGrantAuthority, WriteFileGrantError, WRITE_FILE_GRANT_TTL_SECONDS,
     },
     write_policy::{WriteMode, WritePolicy, DEFAULT_MAX_WRITE_BYTES},
 };
@@ -116,13 +115,6 @@ static FILESYSTEM_MUTATION_PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
-const MAX_CAPABILITY_GRANT_HEADER_BYTES: usize =
-    if MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES > MAX_WRITE_FILE_GRANT_HEADER_BYTES {
-        MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
-    } else {
-        MAX_WRITE_FILE_GRANT_HEADER_BYTES
-    };
-
 #[cfg(feature = "android-volume-control")]
 const ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED: u64 = ANDROID_VOLUME_GRANT_TTL_SECONDS;
 #[cfg(not(feature = "android-volume-control"))]
@@ -1753,7 +1745,7 @@ async fn handle_mcp_request(
             })),
         )
             .into_response()
-    } else if method != Method::POST && headers.contains_key(CREATE_DIRECTORY_GRANT_HEADER) {
+    } else if method != Method::POST && headers.contains_key(REQUEST_GRANT_HEADER) {
         capability_context_not_allowed(None)
     } else {
         match method {
@@ -1788,10 +1780,10 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
         );
     }
 
-    let capability_grant = match single_header_value(headers, CREATE_DIRECTORY_GRANT_HEADER) {
+    let capability_grant = match single_header_value(headers, REQUEST_GRANT_HEADER) {
         Ok(Some(value))
             if !value.is_empty()
-                && value.len() <= MAX_CAPABILITY_GRANT_HEADER_BYTES
+                && value.len() <= MAX_REQUEST_GRANT_HEADER_BYTES
                 && value.is_ascii() =>
         {
             Some(value.to_owned())
@@ -3961,13 +3953,13 @@ fn runtime_status_response(
         "createDirectoryMutationEnabled": create_directory_mutation_enabled,
         "createDirectoryMutationMode": create_directory_mode,
         "createDirectoryGrantRequired": create_directory_mutation_enabled,
-        "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+        "createDirectoryGrantHeader": REQUEST_GRANT_HEADER,
         "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
         "fileWrites": true,
         "fileWriteMode": write_file_mode,
         "fileWriteMutationEnabled": write_file_mutation_enabled,
         "fileWriteGrantRequired": write_file_mutation_enabled,
-        "fileWriteGrantHeader": WRITE_FILE_GRANT_HEADER,
+        "fileWriteGrantHeader": REQUEST_GRANT_HEADER,
         "fileWriteGrantTtlSeconds": WRITE_FILE_GRANT_TTL_SECONDS,
         "fileWriteMaxBytes": DEFAULT_MAX_WRITE_BYTES,
         "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
@@ -3981,7 +3973,7 @@ fn runtime_status_response(
         "androidVolumeControlEnabled": android_volume_control_enabled,
         "androidVolumeControlMode": volume_control_mode,
         "androidVolumeGrantRequired": android_volume_control_enabled,
-        "androidVolumeGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+        "androidVolumeGrantHeader": REQUEST_GRANT_HEADER,
         "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
         "androidDeviceControl": android_volume_control_enabled,
         "commandExecutionCompiled": cfg!(feature = "command-execution"),
