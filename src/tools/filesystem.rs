@@ -3804,7 +3804,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(metadata.kind, PathMetadataKind::RegularFile);
-        assert_eq!(metadata.size_bytes, Some("pinned-original-content".len() as u64));
+        assert_eq!(
+            metadata.size_bytes,
+            Some("pinned-original-content".len() as u64)
+        );
 
         let listed = tools
             .list_directory(configured.to_string_lossy().to_string(), Some(2))
@@ -3866,7 +3869,11 @@ mod tests {
 
         std::fs::rename(&ancestor, &original_ancestor).unwrap();
         std::fs::create_dir_all(&configured).unwrap();
-        std::fs::write(configured.join("identity.txt"), "replacement-ancestor-content").unwrap();
+        std::fs::write(
+            configured.join("identity.txt"),
+            "replacement-ancestor-content",
+        )
+        .unwrap();
 
         let requested_file = configured.join("identity.txt");
         let read = tools
@@ -3883,18 +3890,15 @@ mod tests {
             .unwrap();
         assert_eq!(replacement_read.content, "replacement-ancestor-content");
         assert_eq!(
-            std::fs::read_to_string(
-                original_ancestor.join("safe-root").join("identity.txt")
-            )
-            .unwrap(),
+            std::fs::read_to_string(original_ancestor.join("safe-root").join("identity.txt"))
+                .unwrap(),
             "pinned-ancestor-content"
         );
     }
 
     #[test]
     fn grants_remain_bound_to_pinned_root_identity_after_path_replacement() {
-        const TEST_KEY: &str =
-            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
         let parent = tempfile::tempdir().unwrap();
         let configured = parent.path().join("configured-root");
@@ -4011,9 +4015,7 @@ mod tests {
         );
 
         tools
-            .prepare_create_directory_mutation_blocking(
-                directory.to_string_lossy().to_string(),
-            )
+            .prepare_create_directory_mutation_blocking(directory.to_string_lossy().to_string())
             .unwrap()
             .execute_authorized(|target| {
                 create_authority.consume_at(
