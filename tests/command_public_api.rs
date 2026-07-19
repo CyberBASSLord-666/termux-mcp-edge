@@ -157,10 +157,7 @@ fn public_router_constructors_reject_removed_command_enablement_argument() {
             8,
         ),
         ("protected_router_with_copy_file_authority", 7),
-        (
-            "protected_router_with_copy_file_authority_and_options",
-            8,
-        ),
+        ("protected_router_with_copy_file_authority_and_options", 8),
         ("protected_router_with_filesystem_authorities", 8),
         (
             "protected_router_with_filesystem_authorities_and_options",
