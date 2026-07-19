@@ -1,13 +1,11 @@
 #![cfg(feature = "mcp-runtime")]
 #![allow(dead_code)]
 
-use std::{net::SocketAddr, path::Path};
+use std::path::Path;
 
 use axum::{
     body::{to_bytes, Body},
-    extract::{ConnectInfo, Request as AxumRequest},
     http::{header, Request},
-    middleware::{self, Next},
     response::Response,
     Router,
 };
@@ -75,17 +73,6 @@ fn default_request_limits() -> McpRequestLimits {
     .expect("default test request limits must be valid")
 }
 
-async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Response {
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
-    next.run(request).await
-}
-
-fn with_loopback_test_peer(router: Router) -> Router {
-    router.route_layer(middleware::from_fn(attach_loopback_test_peer))
-}
-
 pub(super) fn test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("visible.txt"), "safe content").unwrap();
@@ -102,26 +89,24 @@ pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
 }
 
 pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
-    let router = test_router_builder(
+    test_router_builder(
         &file_tools,
-        McpAuthPolicy::unauthenticated_localhost_only(),
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
         default_request_limits(),
     )
     .build()
-    .expect("test router must build");
-    with_loopback_test_peer(router)
+    .expect("test router must build")
 }
 
 pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
-    let router = test_router_builder(
+    test_router_builder(
         &file_tools,
-        McpAuthPolicy::unauthenticated_localhost_only(),
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
         default_request_limits(),
     )
     .with_sse_enabled(true)
     .build()
-    .expect("SSE test router must build");
-    with_loopback_test_peer(router)
+    .expect("SSE test router must build")
 }
 
 pub(super) fn create_directory_authorized_test_router(
