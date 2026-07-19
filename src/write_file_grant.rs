@@ -1090,8 +1090,8 @@ mod tests {
         let second_payload =
             decode_hex_array::<PAYLOAD_BYTES>(second.split('.').nth(2).unwrap()).unwrap();
 
-        assert_eq!(PAYLOAD_BYTES, 64);
-        assert_eq!(token.split('.').nth(2).unwrap().len(), 128);
+        assert_eq!(PAYLOAD_BYTES, 65);
+        assert_eq!(token.split('.').nth(2).unwrap().len(), 130);
         assert_eq!(
             &payload[ISSUED_OFFSET..ISSUED_OFFSET + 8],
             &NOW.to_be_bytes()
