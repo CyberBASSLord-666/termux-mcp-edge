@@ -1,6 +1,7 @@
 use std::{
     convert::Infallible,
     net::IpAddr,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc, Mutex,
@@ -72,6 +73,7 @@ use crate::{
     tools::{
         AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedWriteFileError,
         FileSystemTools, FindPathFilter, PreparedCopyFileMutation, PreparedCreateDirectoryMutation,
+        SafeRootConfigurationError,
         COPY_FILE_MODE, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
         MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
         MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_BYTES,
@@ -955,12 +957,14 @@ impl McpTransportOptions {
     }
 }
 
+#[cfg(test)]
 struct FilesystemMutationAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
     copy_file: Option<CopyFileGrantAuthority>,
     write_file: Option<WriteFileGrantAuthority>,
 }
 
+#[cfg(test)]
 impl FilesystemMutationAuthorities {
     fn new(
         create_directory: Option<CreateDirectoryGrantAuthority>,
@@ -979,48 +983,46 @@ impl FilesystemMutationAuthorities {
     }
 }
 
-/// Mandatory authentication and resource-limit boundary for public MCP routers.
-///
-/// Construction requires the host that the embedding application intends to
-/// bind. An unauthenticated development policy is accepted only for an exact
-/// loopback declaration, and every request under that policy additionally
-/// requires Axum `ConnectInfo<SocketAddr>` proving the actual network peer is
-/// loopback. Missing peer metadata and non-loopback peers fail closed. Embedders
-/// must therefore serve the returned router with
-/// `into_make_service_with_connect_info::<SocketAddr>()`; the declaration is
-/// defense in depth, not the request-time trust boundary. The fields are private
-/// to ensure every public router is protected by bearer authentication (or this
-/// verified loopback-only development posture), request limits, and Axum's
-/// streaming body limit in the required order.
-///
-/// Raw transport constructors are deliberately crate-private:
-///
-/// ```compile_fail
-/// let _ = termux_mcp_server::mcp_transport::router;
-/// ```
+/// Non-sensitive failures returned while constructing the one public MCP router.
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum McpRouterBuildError {
+    #[error("MCP router construction requires a valid declared listener host")]
+    InvalidListenerHost,
+
+    #[error("unauthenticated MCP router construction requires a declared loopback listener host")]
+    UnauthenticatedListenerRequiresLoopback,
+
+    #[error(transparent)]
+    SafeRoots(#[from] SafeRootConfigurationError),
+
+    #[error("requested MCP capability was not compiled: {capability}")]
+    CapabilityNotCompiled { capability: &'static str },
+
+    #[error("requested MCP optional client is unavailable: {client}")]
+    OptionalClientUnavailable { client: &'static str },
+}
+
+/// Private authentication and resource-limit boundary retained by the public builder.
 #[derive(Clone, Debug)]
-pub struct McpRouterProtection {
+struct McpRouterProtection {
     listener_host: String,
     auth_policy: McpAuthPolicy,
     request_limits: McpRequestLimits,
 }
 
 impl McpRouterProtection {
-    /// Declare the listener host and construct a complete public route boundary.
-    pub fn new(
+    fn new(
         listener_host: impl AsRef<str>,
         auth_policy: McpAuthPolicy,
         request_limits: McpRequestLimits,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, McpRouterBuildError> {
         let listener_host = listener_host.as_ref();
         validate_declared_listener_host(listener_host)?;
 
-        if matches!(&auth_policy, McpAuthPolicy::UnauthenticatedLocalhostOnly)
+        if auth_policy.is_unauthenticated_localhost_only()
             && !is_loopback_listener_host(listener_host)
         {
-            anyhow::bail!(
-                "unauthenticated MCP router protection requires a declared loopback listener host"
-            );
+            return Err(McpRouterBuildError::UnauthenticatedListenerRequiresLoopback);
         }
 
         Ok(Self {
@@ -1029,21 +1031,18 @@ impl McpRouterProtection {
             request_limits,
         })
     }
-
-    /// Return the exact listener host declared by the embedding application.
-    pub fn listener_host(&self) -> &str {
-        &self.listener_host
-    }
 }
 
-fn validate_declared_listener_host(listener_host: &str) -> anyhow::Result<()> {
+fn validate_declared_listener_host(
+    listener_host: &str,
+) -> Result<(), McpRouterBuildError> {
     if listener_host.is_empty()
         || listener_host != listener_host.trim()
         || listener_host
             .bytes()
             .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
     {
-        anyhow::bail!("MCP router protection requires a valid declared listener host");
+        return Err(McpRouterBuildError::InvalidListenerHost);
     }
 
     Ok(())
@@ -1056,21 +1055,194 @@ fn is_loopback_listener_host(listener_host: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
+/// The only public MCP router construction path.
+///
+/// Construction consumes already validated authentication, request-limit, and
+/// transport-security policies, validates and lifetime-pins every filesystem
+/// root, and rejects an unauthenticated policy unless the declared listener is
+/// exactly loopback. Self::build then initializes every requested optional
+/// client fallibly and applies authentication as the outermost route layer.
+///
+/// The returned router must be served with Axum SocketAddr ConnectInfo so
+/// request-time localhost policy can prove the actual TCP peer. Public
+/// embeddings cannot enable the crate-owned command-execution lane.
+///
+/// Raw and legacy constructors are deliberately unavailable to downstream
+/// crates; McpRouterBuilder is the complete public construction surface.
+pub struct McpRouterBuilder {
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    options: McpTransportOptions,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    copy_file_authority: Option<CopyFileGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+    #[cfg(feature = "android-volume-control")]
+    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
+}
+
+impl std::fmt::Debug for McpRouterBuilder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpRouterBuilder")
+            .field("listener_host", &self.protection.listener_host)
+            .field("safe_root_count", &self.file_tools.safe_root_count())
+            .field(
+                "android_battery_status_enabled",
+                &self.android_battery_status_enabled,
+            )
+            .field(
+                "android_volume_status_enabled",
+                &self.android_volume_status_enabled,
+            )
+            .field("command_execution_enabled", &self.command_execution_enabled)
+            .field(
+                "create_directory_authority_configured",
+                &self.create_directory_authority.is_some(),
+            )
+            .field(
+                "copy_file_authority_configured",
+                &self.copy_file_authority.is_some(),
+            )
+            .field(
+                "write_file_authority_configured",
+                &self.write_file_authority.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpRouterBuilder {
+    pub fn new(
+        listener_host: impl AsRef<str>,
+        auth_policy: McpAuthPolicy,
+        request_limits: McpRequestLimits,
+        security_policy: TransportSecurityPolicy,
+        safe_roots: Vec<PathBuf>,
+    ) -> Result<Self, McpRouterBuildError> {
+        let protection = McpRouterProtection::new(listener_host, auth_policy, request_limits)?;
+        let file_tools = FileSystemTools::try_new(safe_roots)?;
+
+        Ok(Self {
+            protection,
+            security_policy,
+            file_tools,
+            options: McpTransportOptions::default(),
+            android_battery_status_enabled: false,
+            android_volume_status_enabled: false,
+            command_execution_enabled: false,
+            create_directory_authority: None,
+            copy_file_authority: None,
+            write_file_authority: None,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority: None,
+        })
+    }
+
+    pub fn safe_root_count(&self) -> usize {
+        self.file_tools.safe_root_count()
+    }
+
+    pub fn with_transport_options(mut self, options: McpTransportOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    pub fn with_android_battery_status_enabled(mut self, enabled: bool) -> Self {
+        self.android_battery_status_enabled = enabled;
+        self
+    }
+
+    pub fn with_android_volume_status_enabled(mut self, enabled: bool) -> Self {
+        self.android_volume_status_enabled = enabled;
+        self
+    }
+
+    pub fn with_create_directory_authority(
+        mut self,
+        authority: CreateDirectoryGrantAuthority,
+    ) -> Self {
+        self.create_directory_authority = Some(authority);
+        self
+    }
+
+    pub fn with_copy_file_authority(mut self, authority: CopyFileGrantAuthority) -> Self {
+        self.copy_file_authority = Some(authority);
+        self
+    }
+
+    pub fn with_write_file_authority(mut self, authority: WriteFileGrantAuthority) -> Self {
+        self.write_file_authority = Some(authority);
+        self
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    pub fn with_android_volume_control_authority(
+        mut self,
+        authority: AndroidVolumeGrantAuthority,
+    ) -> Self {
+        self.android_volume_control_authority = Some(authority);
+        self
+    }
+
+    pub(crate) fn with_command_execution_enabled(mut self, enabled: bool) -> Self {
+        self.command_execution_enabled = enabled;
+        self
+    }
+
+    pub fn build(self) -> Result<Router, McpRouterBuildError> {
+        let Self {
+            protection,
+            security_policy,
+            file_tools,
+            options,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            create_directory_authority,
+            copy_file_authority,
+            write_file_authority,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority,
+        } = self;
+
+        let state = McpTransportState::try_new(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            create_directory_authority,
+            write_file_authority,
+        )?
+        .with_copy_file_authority(copy_file_authority)
+        .with_options(options);
+        #[cfg(feature = "android-volume-control")]
+        let state =
+            state.with_android_volume_control_authority(android_volume_control_authority);
+
+        Ok(protect_router(router_from_state(state), protection))
+    }
+}
+
 /// Independently optional authorities for high-impact MCP capabilities.
 ///
 /// Grouping these authorities keeps transport construction explicit while
 /// preventing feature additions from growing an error-prone positional API.
-#[cfg(feature = "android-volume-control")]
-pub struct McpCapabilityAuthorities {
+#[cfg(all(test, feature = "android-volume-control"))]
+pub(crate) struct McpCapabilityAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
     copy_file: Option<CopyFileGrantAuthority>,
     write_file: Option<WriteFileGrantAuthority>,
     android_volume_control: Option<AndroidVolumeGrantAuthority>,
 }
 
-#[cfg(feature = "android-volume-control")]
+#[cfg(all(test, feature = "android-volume-control"))]
 impl McpCapabilityAuthorities {
-    pub fn new(
+    pub(crate) fn new(
         create_directory: Option<CreateDirectoryGrantAuthority>,
         write_file: Option<WriteFileGrantAuthority>,
         android_volume_control: Option<AndroidVolumeGrantAuthority>,
@@ -1084,7 +1256,7 @@ impl McpCapabilityAuthorities {
     }
 
     /// Add the independently gated `copy_file` mutation authority.
-    pub fn with_copy_file_authority(mut self, authority: CopyFileGrantAuthority) -> Self {
+    pub(crate) fn with_copy_file_authority(mut self, authority: CopyFileGrantAuthority) -> Self {
         self.copy_file = Some(authority);
         self
     }
@@ -1118,6 +1290,95 @@ struct McpTransportState {
 }
 
 impl McpTransportState {
+    fn try_new(
+        security_policy: TransportSecurityPolicy,
+        file_tools: FileSystemTools,
+        android_battery_status_enabled: bool,
+        android_volume_status_enabled: bool,
+        command_execution_enabled: bool,
+        create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+        write_file_authority: Option<WriteFileGrantAuthority>,
+    ) -> Result<Self, McpRouterBuildError> {
+        if android_battery_status_enabled && !cfg!(feature = "android-battery-status") {
+            return Err(McpRouterBuildError::CapabilityNotCompiled {
+                capability: "android_battery_status",
+            });
+        }
+        if android_volume_status_enabled && !cfg!(feature = "android-volume-status") {
+            return Err(McpRouterBuildError::CapabilityNotCompiled {
+                capability: "android_volume_status",
+            });
+        }
+        if command_execution_enabled && !cfg!(feature = "command-execution") {
+            return Err(McpRouterBuildError::CapabilityNotCompiled {
+                capability: "command_execution",
+            });
+        }
+
+        #[cfg(feature = "android-battery-status")]
+        let android_battery_client = AndroidBatteryClient::try_termux().map_err(|_| {
+            McpRouterBuildError::OptionalClientUnavailable {
+                client: "android_battery_status",
+            }
+        })?;
+        #[cfg(feature = "android-volume-status")]
+        let android_volume_client = AndroidVolumeClient::try_termux().map_err(|_| {
+            McpRouterBuildError::OptionalClientUnavailable {
+                client: "android_volume_status",
+            }
+        })?;
+        #[cfg(feature = "android-volume-control")]
+        let android_volume_control_client =
+            AndroidVolumeControlClient::try_termux().map_err(|_| {
+                McpRouterBuildError::OptionalClientUnavailable {
+                    client: "android_volume_control",
+                }
+            })?;
+
+        #[cfg(feature = "command-execution")]
+        let command_execution_client = if command_execution_enabled {
+            let safe_root = file_tools
+                .duplicate_safe_root_descriptor(0)
+                .map_err(|_| McpRouterBuildError::OptionalClientUnavailable {
+                    client: "command_execution",
+                })?;
+            Some(CommandExecutionClient::current_server(safe_root).map_err(|_| {
+                McpRouterBuildError::OptionalClientUnavailable {
+                    client: "command_execution",
+                }
+            })?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            security_policy,
+            file_tools,
+            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
+            sessions: McpSessionStore::new(),
+            mutation_worker_capacity: FilesystemMutationWorkerCapacity::default(),
+            sse_enabled: false,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            android_volume_control_enabled: false,
+            command_execution_enabled,
+            create_directory_authority,
+            copy_file_authority: None,
+            write_file_authority,
+            #[cfg(feature = "android-battery-status")]
+            android_battery_client,
+            #[cfg(feature = "android-volume-status")]
+            android_volume_client,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_authority: None,
+            #[cfg(feature = "android-volume-control")]
+            android_volume_control_client,
+            #[cfg(feature = "command-execution")]
+            command_execution_client,
+        })
+    }
+
+    #[cfg(test)]
     fn new(
         security_policy: TransportSecurityPolicy,
         file_tools: FileSystemTools,
@@ -1127,43 +1388,16 @@ impl McpTransportState {
         create_directory_authority: Option<CreateDirectoryGrantAuthority>,
         write_file_authority: Option<WriteFileGrantAuthority>,
     ) -> Self {
-        #[cfg(feature = "command-execution")]
-        let command_execution_client = command_execution_enabled
-            .then(|| file_tools.duplicate_safe_root_descriptor(0).ok())
-            .flatten()
-            .and_then(|safe_root| CommandExecutionClient::current_server(safe_root).ok());
-        #[cfg(feature = "command-execution")]
-        let command_execution_enabled =
-            command_execution_enabled && command_execution_client.is_some();
-
-        Self {
+        Self::try_new(
             security_policy,
             file_tools,
-            audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
-            sessions: McpSessionStore::new(),
-            mutation_worker_capacity: FilesystemMutationWorkerCapacity::default(),
-            sse_enabled: false,
-            android_battery_status_enabled: android_battery_status_enabled
-                && cfg!(feature = "android-battery-status"),
-            android_volume_status_enabled: android_volume_status_enabled
-                && cfg!(feature = "android-volume-status"),
-            android_volume_control_enabled: false,
-            command_execution_enabled: command_execution_enabled
-                && cfg!(feature = "command-execution"),
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
             create_directory_authority,
-            copy_file_authority: None,
             write_file_authority,
-            #[cfg(feature = "android-battery-status")]
-            android_battery_client: AndroidBatteryClient::termux(),
-            #[cfg(feature = "android-volume-status")]
-            android_volume_client: AndroidVolumeClient::termux(),
-            #[cfg(feature = "android-volume-control")]
-            android_volume_control_authority: None,
-            #[cfg(feature = "android-volume-control")]
-            android_volume_control_client: AndroidVolumeControlClient::termux(),
-            #[cfg(feature = "command-execution")]
-            command_execution_client,
-        }
+        )
+        .expect("test MCP transport state configuration must be valid")
     }
 
     fn with_options(mut self, options: McpTransportOptions) -> Self {
@@ -1488,6 +1722,7 @@ struct SetAndroidVolumeArguments {
     reason = "the package binary constructor carries explicit protection boundaries"
 )]
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn binary_server_router_with_filesystem_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
@@ -1526,6 +1761,7 @@ pub(crate) fn binary_server_router_with_filesystem_authorities_and_options(
     reason = "the package binary constructor carries explicit protection boundaries"
 )]
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn binary_server_router_with_capability_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
@@ -1557,7 +1793,8 @@ pub(crate) fn binary_server_router_with_capability_authorities_and_options(
 /// diagnostics are initialized only by this package's crate-owned server startup,
 /// which prevents a downstream binary from substituting its own `current_exe`.
 #[rustfmt::skip]
-pub fn protected_router(
+#[cfg(test)]
+pub(crate) fn protected_router(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1578,7 +1815,8 @@ pub fn protected_router(
 
 /// Build a protected MCP router with explicit additive transport options.
 #[rustfmt::skip]
-pub fn protected_router_with_options(
+#[cfg(test)]
+pub(crate) fn protected_router_with_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1602,7 +1840,8 @@ pub fn protected_router_with_options(
 /// Build a protected MCP router with the request-authorized directory mutation
 /// capability enabled.
 #[rustfmt::skip]
-pub fn protected_router_with_create_directory_authority(
+#[cfg(test)]
+pub(crate) fn protected_router_with_create_directory_authority(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1626,7 +1865,8 @@ pub fn protected_router_with_create_directory_authority(
 /// Build a protected directory-authorized MCP router with explicit additive
 /// transport options.
 #[rustfmt::skip]
-pub fn protected_router_with_create_directory_authority_and_options(
+#[cfg(test)]
+pub(crate) fn protected_router_with_create_directory_authority_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1653,7 +1893,8 @@ pub fn protected_router_with_create_directory_authority_and_options(
 /// mutation capability enabled. Preview calls remain available without a
 /// grant, while every live copy requires an exact single-use grant.
 #[rustfmt::skip]
-pub fn protected_router_with_copy_file_authority(
+#[cfg(test)]
+pub(crate) fn protected_router_with_copy_file_authority(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1679,7 +1920,8 @@ pub fn protected_router_with_copy_file_authority(
 /// Build a protected copy-authorized MCP router with explicit additive
 /// transport options.
 #[rustfmt::skip]
-pub fn protected_router_with_copy_file_authority_and_options(
+#[cfg(test)]
+pub(crate) fn protected_router_with_copy_file_authority_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1706,7 +1948,8 @@ pub fn protected_router_with_copy_file_authority_and_options(
 /// Build a protected MCP router with independently optional filesystem
 /// mutation authorities.
 #[rustfmt::skip]
-pub fn protected_router_with_filesystem_authorities(
+#[cfg(test)]
+pub(crate) fn protected_router_with_filesystem_authorities(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1736,7 +1979,8 @@ pub fn protected_router_with_filesystem_authorities(
     reason = "each constructor argument represents an explicit protection boundary"
 )]
 #[rustfmt::skip]
-pub fn protected_router_with_filesystem_authorities_and_options(
+#[cfg(test)]
+pub(crate) fn protected_router_with_filesystem_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1768,7 +2012,8 @@ pub fn protected_router_with_filesystem_authorities_and_options(
     reason = "each constructor argument represents an explicit protection boundary"
 )]
 #[rustfmt::skip]
-pub fn protected_router_with_all_filesystem_authorities(
+#[cfg(test)]
+pub(crate) fn protected_router_with_all_filesystem_authorities(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1798,7 +2043,8 @@ pub fn protected_router_with_all_filesystem_authorities(
     reason = "each constructor argument represents an explicit protection boundary"
 )]
 #[rustfmt::skip]
-pub fn protected_router_with_all_filesystem_authorities_and_options(
+#[cfg(test)]
+pub(crate) fn protected_router_with_all_filesystem_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1827,7 +2073,8 @@ pub fn protected_router_with_all_filesystem_authorities_and_options(
 /// Android-volume mutation authorities.
 #[cfg(feature = "android-volume-control")]
 #[rustfmt::skip]
-pub fn protected_router_with_capability_authorities(
+#[cfg(test)]
+pub(crate) fn protected_router_with_capability_authorities(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1854,7 +2101,8 @@ pub fn protected_router_with_capability_authorities(
 /// authorities and explicit additive transport options.
 #[cfg(feature = "android-volume-control")]
 #[rustfmt::skip]
-pub fn protected_router_with_capability_authorities_and_options(
+#[cfg(test)]
+pub(crate) fn protected_router_with_capability_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1885,6 +2133,7 @@ pub fn protected_router_with_capability_authorities_and_options(
 /// binary file copy and file writes, and optionally compiled and enabled fixed-profile command diagnostics. Android platform control,
 /// arbitrary command execution, and high-impact actions remain unavailable.
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1906,6 +2155,7 @@ pub(crate) fn router(
 /// default-disabled and cannot be enabled accidentally through the legacy
 /// constructors.
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router_with_options(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1928,6 +2178,7 @@ pub(crate) fn router_with_options(
 /// Build the MCP transport with the dedicated `create_directory` mutation gate
 /// enabled. Every mutating call still requires one valid request-scoped grant.
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router_with_create_directory_authority(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1950,6 +2201,7 @@ pub(crate) fn router_with_create_directory_authority(
 /// Build the request-authorized directory transport with explicit additive
 /// transport options.
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router_with_create_directory_authority_and_options(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1974,6 +2226,7 @@ pub(crate) fn router_with_create_directory_authority_and_options(
 /// filesystem mutation authorities. Preview calls remain available when an
 /// authority is absent; every live mutation requires its exact request grant.
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router_with_filesystem_authorities(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -2000,6 +2253,7 @@ pub(crate) fn router_with_filesystem_authorities(
 /// Build the independently authorized filesystem transport with explicit
 /// additive transport options.
 #[rustfmt::skip]
+#[cfg(test)]
 fn router_with_filesystem_authorities_and_options(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -2031,6 +2285,7 @@ fn router_with_filesystem_authorities_and_options(
 /// request-scoped grant.
 #[cfg(feature = "android-volume-control")]
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router_with_capability_authorities(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -2059,6 +2314,7 @@ pub(crate) fn router_with_capability_authorities(
 /// additive transport options.
 #[cfg(feature = "android-volume-control")]
 #[rustfmt::skip]
+#[cfg(test)]
 pub(crate) fn router_with_capability_authorities_and_options(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -7937,17 +8193,49 @@ mod tests {
     }
 
     #[test]
-    fn public_protection_rejects_unauthenticated_non_loopback_listener() {
+    fn public_builder_rejects_unauthenticated_non_loopback_listener() {
+        let safe_root = tempfile::tempdir().unwrap();
         for listener_host in ["0.0.0.0", "::", "192.0.2.10", "example.com"] {
-            let error = McpRouterProtection::new(
+            let error = McpRouterBuilder::new(
                 listener_host,
                 McpAuthPolicy::unauthenticated_localhost_only(),
                 McpRequestLimits::from_seconds(1, 1, 1_024).unwrap(),
+                TransportSecurityPolicy::localhost(8000, false).unwrap(),
+                vec![safe_root.path().to_path_buf()],
             )
-            .expect_err("unauthenticated protected routers require loopback listeners");
+            .expect_err("unauthenticated public builders require loopback listeners");
 
-            assert!(error.to_string().contains("loopback listener host"));
+            assert_eq!(
+                error,
+                McpRouterBuildError::UnauthenticatedListenerRequiresLoopback
+            );
         }
+    }
+
+    #[cfg(feature = "command-execution")]
+    #[test]
+    fn binary_command_client_initialization_failure_is_typed_and_never_silent() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let builder = McpRouterBuilder::new(
+            "127.0.0.1",
+            McpAuthPolicy::static_bearer("command-client-test-token").unwrap(),
+            McpRequestLimits::from_seconds(1, 1, 1_024).unwrap(),
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            vec![safe_root.path().to_path_buf()],
+        )
+        .unwrap()
+        .with_command_execution_enabled(true);
+
+        let error = match builder.build() {
+            Ok(_) => panic!("an unavailable command client was silently accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            McpRouterBuildError::OptionalClientUnavailable {
+                client: "command_execution"
+            }
+        );
     }
 
     #[test]
@@ -7994,7 +8282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_protected_router_authenticates_before_body_limit_and_reaches_transport() {
+    async fn public_builder_authenticates_before_body_limit_and_reaches_transport() {
         use axum::{
             body::Body,
             http::{header, Request},
@@ -8002,18 +8290,16 @@ mod tests {
         use tower::ServiceExt;
 
         let safe_root = tempfile::tempdir().unwrap();
-        let app = protected_router(
-            McpRouterProtection::new(
-                "127.0.0.1",
-                McpAuthPolicy::static_bearer("expected-token").unwrap(),
-                McpRequestLimits::from_seconds(1, 5, 1_024).unwrap(),
-            )
-            .unwrap(),
+        let app = McpRouterBuilder::new(
+            "127.0.0.1",
+            McpAuthPolicy::static_bearer("expected-token").unwrap(),
+            McpRequestLimits::from_seconds(1, 5, 1_024).unwrap(),
             TransportSecurityPolicy::localhost(8000, false).unwrap(),
-            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).expect("test safe root must validate"),
-            false,
-            false,
-        );
+            vec![safe_root.path().to_path_buf()],
+        )
+        .unwrap()
+        .build()
+        .unwrap();
 
         let unauthenticated = app
             .clone()
