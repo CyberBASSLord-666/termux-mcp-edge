@@ -107,10 +107,7 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert_eq!(structured["sseMaxReplayBytesPerSession"], 256 * 1024);
     assert_eq!(structured["sseMaxLastEventIdBytes"], 64);
     assert_eq!(structured["sseRetryMilliseconds"], 1_000);
-    assert_eq!(
-        structured["jsonRpcIdMaxBytes"],
-        MAX_MCP_JSON_RPC_ID_BYTES
-    );
+    assert_eq!(structured["jsonRpcIdMaxBytes"], MAX_MCP_JSON_RPC_ID_BYTES);
 
     let text = payload["result"]["content"][0]["text"]
         .as_str()

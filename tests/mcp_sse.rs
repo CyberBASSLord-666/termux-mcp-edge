@@ -210,10 +210,7 @@ async fn opt_in_sse_primes_then_delivers_one_terminal_json_rpc_response() {
         structured["serverSentEventsMode"],
         "finite_request_response_with_origin_stream_replay"
     );
-    assert_eq!(
-        structured["jsonRpcIdMaxBytes"],
-        MAX_MCP_JSON_RPC_ID_BYTES
-    );
+    assert_eq!(structured["jsonRpcIdMaxBytes"], MAX_MCP_JSON_RPC_ID_BYTES);
 }
 
 #[tokio::test]

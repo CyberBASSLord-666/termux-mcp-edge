@@ -5591,8 +5591,7 @@ fn bounded_json_rpc_ok(id: Option<Value>, body: Value, message: &'static str) ->
 }
 
 fn json_rpc_id_fits(id: &Value) -> bool {
-    serde_json::to_vec(id)
-        .is_ok_and(|serialized| serialized.len() <= MAX_MCP_JSON_RPC_ID_BYTES)
+    serde_json::to_vec(id).is_ok_and(|serialized| serialized.len() <= MAX_MCP_JSON_RPC_ID_BYTES)
 }
 
 fn json_rpc_id_too_large() -> Response {
