@@ -3739,6 +3739,28 @@ mod tests {
     }
 
     #[test]
+    fn held_text_range_descriptor_prevents_redirection_after_path_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let parked = root.path().join("source-parked");
+        let outside_source = outside.path().join("outside-source");
+        std::fs::write(&source, b"inside-text").unwrap();
+        std::fs::write(&outside_source, b"outside-secret").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let anchored = tools.anchor(source.to_string_lossy().as_ref()).unwrap();
+        let file = open_verified_regular_file(&anchored, MAX_TEXT_RANGE_FILE_BYTES).unwrap();
+
+        std::fs::rename(&source, &parked).unwrap();
+        symlink(&outside_source, &source).unwrap();
+
+        let range = read_verified_text_range(file, 7, MIN_TEXT_RANGE_BYTES).unwrap();
+        assert_eq!(range.content, "text");
+        assert!(range.eof);
+        assert_eq!(std::fs::read(outside_source).unwrap(), b"outside-secret");
+    }
+
+    #[test]
     fn held_destination_parent_descriptor_prevents_copy_redirection() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
