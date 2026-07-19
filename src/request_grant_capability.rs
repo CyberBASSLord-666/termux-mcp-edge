@@ -13,8 +13,8 @@
 #[repr(u8)]
 pub(crate) enum RequestGrantCapability {
     CreateDirectory = 1,
-    AndroidVolume = 2,
-    WriteFile = 3,
+    WriteFile = 2,
+    AndroidVolume = 3,
     #[allow(dead_code, reason = "reserved before a live copy-file grant exists")]
     ReservedCopyFile = 4,
 }
@@ -23,8 +23,8 @@ impl RequestGrantCapability {
     #[cfg(test)]
     pub(crate) const ALL: [Self; 4] = [
         Self::CreateDirectory,
-        Self::AndroidVolume,
         Self::WriteFile,
+        Self::AndroidVolume,
         Self::ReservedCopyFile,
     ];
 
@@ -41,6 +41,10 @@ mod tests {
 
     #[test]
     fn capability_registry_preserves_exact_unique_wire_codes() {
+        assert_eq!(RequestGrantCapability::CreateDirectory.wire_code(), 1);
+        assert_eq!(RequestGrantCapability::WriteFile.wire_code(), 2);
+        assert_eq!(RequestGrantCapability::AndroidVolume.wire_code(), 3);
+        assert_eq!(RequestGrantCapability::ReservedCopyFile.wire_code(), 4);
         assert_eq!(
             RequestGrantCapability::ALL.map(RequestGrantCapability::wire_code),
             [1, 2, 3, 4]
