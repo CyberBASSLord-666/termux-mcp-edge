@@ -1554,8 +1554,8 @@ pub(crate) fn binary_server_router_with_capability_authorities_and_options(
 /// request-resource protections.
 ///
 /// Public embeddings cannot enable the process-execution lane. Command
-/// diagnostics are initialized only by this package's crate-owned server startup,
-/// which prevents a downstream binary from substituting its own `current_exe`.
+/// diagnostics are initialized only by this package's crate-owned binary
+/// startup through crate-private constructors.
 #[rustfmt::skip]
 pub fn protected_router(
     protection: McpRouterProtection,
@@ -1625,10 +1625,6 @@ pub fn protected_router_with_create_directory_authority(
 
 /// Build a protected directory-authorized MCP router with explicit additive
 /// transport options.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
 #[rustfmt::skip]
 pub fn protected_router_with_create_directory_authority_and_options(
     protection: McpRouterProtection,
@@ -1682,10 +1678,6 @@ pub fn protected_router_with_copy_file_authority(
 
 /// Build a protected copy-authorized MCP router with explicit additive
 /// transport options.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
 #[rustfmt::skip]
 pub fn protected_router_with_copy_file_authority_and_options(
     protection: McpRouterProtection,
@@ -1713,10 +1705,6 @@ pub fn protected_router_with_copy_file_authority_and_options(
 
 /// Build a protected MCP router with independently optional filesystem
 /// mutation authorities.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
 #[rustfmt::skip]
 pub fn protected_router_with_filesystem_authorities(
     protection: McpRouterProtection,
@@ -1838,10 +1826,6 @@ pub fn protected_router_with_all_filesystem_authorities_and_options(
 /// Build a protected MCP router with independently optional directory and
 /// Android-volume mutation authorities.
 #[cfg(feature = "android-volume-control")]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
 #[rustfmt::skip]
 pub fn protected_router_with_capability_authorities(
     protection: McpRouterProtection,
@@ -1869,10 +1853,6 @@ pub fn protected_router_with_capability_authorities(
 /// Build a protected MCP router with all independently optional mutation
 /// authorities and explicit additive transport options.
 #[cfg(feature = "android-volume-control")]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
 #[rustfmt::skip]
 pub fn protected_router_with_capability_authorities_and_options(
     protection: McpRouterProtection,

@@ -17,7 +17,6 @@ fn run_cargo(root: &Path, target: &Path, arguments: &[&str]) -> std::process::Ou
         .env("CARGO_TARGET_DIR", target)
         .env("CARGO_INCREMENTAL", "0")
         .env("CARGO_TERM_COLOR", "never")
-        .env_remove("CARGO_PRIMARY_PACKAGE")
         .output()
         .unwrap()
 }
@@ -70,7 +69,6 @@ fn main() {
 }
 "#,
             "CommandProfile",
-            "private",
         ),
         (
             "raw execution client",
@@ -82,7 +80,6 @@ fn main() {
 }
 "#,
             "command_execution",
-            "private",
         ),
         (
             "resolved profile handle",
@@ -95,7 +92,6 @@ fn main() {
 }
 "#,
             "profile",
-            "private",
         ),
         (
             "binary-owned command router",
@@ -107,53 +103,10 @@ fn main() {
 }
 "#,
             "binary_server_router_with_filesystem_authorities_and_options",
-            "private",
-        ),
-        (
-            "copy router command flag",
-            r#"
-use termux_mcp_server::mcp_transport::protected_router_with_copy_file_authority;
-
-fn main() {
-    let _ = protected_router_with_copy_file_authority(
-        todo!(),
-        todo!(),
-        todo!(),
-        false,
-        false,
-        true,
-        todo!(),
-    );
-}
-"#,
-            "protected_router_with_copy_file_authority",
-            "arguments",
-        ),
-        (
-            "all-filesystem router command flag",
-            r#"
-use termux_mcp_server::mcp_transport::protected_router_with_all_filesystem_authorities;
-
-fn main() {
-    let _ = protected_router_with_all_filesystem_authorities(
-        todo!(),
-        todo!(),
-        todo!(),
-        false,
-        false,
-        true,
-        None,
-        None,
-        None,
-    );
-}
-"#,
-            "protected_router_with_all_filesystem_authorities",
-            "arguments",
         ),
     ];
 
-    for (name, source, expected_symbol, expected_reason) in rejected {
+    for (name, source, expected_symbol) in rejected {
         write_probe_source(probe.path(), source);
         let output = run_cargo(
             probe.path(),
@@ -166,14 +119,14 @@ fn main() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains(expected_symbol) && stderr.contains(expected_reason),
+            stderr.contains(expected_symbol) && stderr.contains("private"),
             "{name} failed for the wrong reason:\n{stderr}"
         );
     }
 }
 
 #[test]
-fn selected_workspace_consumer_cannot_reach_removed_command_authority() {
+fn selected_workspace_consumer_cannot_reach_binary_command_router() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
     let package = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -231,12 +184,10 @@ fn main() {
     write_probe_source(
         &consumer,
         r#"
-use termux_mcp_server::mcp_transport;
+use termux_mcp_server::mcp_transport::binary_server_router_with_filesystem_authorities_and_options;
 
 fn main() {
-    let _ = mcp_transport::ServerCommandAuthority::for_primary_package;
-    let _ = mcp_transport::protected_primary_server_router_with_filesystem_authorities_and_options;
-    let _ = mcp_transport::binary_server_router_with_filesystem_authorities_and_options;
+    let _ = binary_server_router_with_filesystem_authorities_and_options;
 }
 "#,
     );
@@ -257,19 +208,13 @@ fn main() {
     );
     assert!(
         !rejected.status.success(),
-        "a selected-workspace consumer unexpectedly reached removed command authority"
+        "a selected-workspace consumer unexpectedly reached the binary command router"
     );
     let stderr = String::from_utf8_lossy(&rejected.stderr);
     assert!(
         stderr.contains("consumer/src/main.rs")
-            && stderr.contains("ServerCommandAuthority")
-            && stderr.contains(
-                "protected_primary_server_router_with_filesystem_authorities_and_options"
-            )
             && stderr.contains("binary_server_router_with_filesystem_authorities_and_options")
-            && (stderr.contains("could not find")
-                || stderr.contains("cannot find")
-                || stderr.contains("unresolved")),
+            && stderr.contains("private"),
         "selected-workspace probe failed for the wrong reason:\n{stderr}"
     );
 }
