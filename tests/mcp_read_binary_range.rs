@@ -88,12 +88,7 @@ async fn range_read_returns_canonical_slice_and_explicit_eof_without_path_metada
     let response = post_json_to_session(
         router.clone(),
         &session_id,
-        range_call(
-            json!("slice"),
-            path.to_string_lossy().as_ref(),
-            2,
-            4,
-        ),
+        range_call(json!("slice"), path.to_string_lossy().as_ref(), 2, 4),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -236,7 +231,11 @@ async fn range_read_rejects_missing_outside_symlinked_and_unsupported_targets() 
 
     assert!(matches!(
         tools
-            .read_binary_range(root.path().join("missing").to_string_lossy().to_string(), 0, 1)
+            .read_binary_range(
+                root.path().join("missing").to_string_lossy().to_string(),
+                0,
+                1
+            )
             .await,
         Err(AppError::PathNotFound)
     ));
@@ -358,12 +357,7 @@ async fn range_read_arguments_response_preflight_and_audits_are_bounded_and_priv
     let oversized = post_json_to_session(
         router.clone(),
         &session_id,
-        range_call(
-            json!(oversized_id),
-            path.to_string_lossy().as_ref(),
-            0,
-            1,
-        ),
+        range_call(json!(oversized_id), path.to_string_lossy().as_ref(), 0, 1),
     )
     .await;
     assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);

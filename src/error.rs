@@ -75,10 +75,9 @@ impl AppError {
                 StatusCode::BAD_REQUEST,
                 "Requested binary range is not valid",
             ),
-            AppError::FileChangedDuringRead => (
-                StatusCode::CONFLICT,
-                "File changed during the bounded read",
-            ),
+            AppError::FileChangedDuringRead => {
+                (StatusCode::CONFLICT, "File changed during the bounded read")
+            }
             AppError::InvalidSearchQuery => (
                 StatusCode::BAD_REQUEST,
                 "Search query does not satisfy the literal text-search contract",
@@ -197,10 +196,7 @@ mod tests {
         );
         assert_eq!(
             AppError::FileChangedDuringRead.public_response(),
-            (
-                StatusCode::CONFLICT,
-                "File changed during the bounded read",
-            )
+            (StatusCode::CONFLICT, "File changed during the bounded read",)
         );
         assert_eq!(
             AppError::InvalidSearchQuery.public_response(),

@@ -1568,9 +1568,7 @@ fn read_verified_binary_range(
     offset_bytes: u64,
     length_bytes: usize,
 ) -> Result<BinaryRangeRead, AppError> {
-    if offset_bytes > verified.size_bytes
-        || !(1..=MAX_BINARY_RANGE_BYTES).contains(&length_bytes)
-    {
+    if offset_bytes > verified.size_bytes || !(1..=MAX_BINARY_RANGE_BYTES).contains(&length_bytes) {
         return Err(AppError::InvalidBinaryRange);
     }
 
