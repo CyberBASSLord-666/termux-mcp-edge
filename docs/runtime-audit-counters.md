@@ -23,7 +23,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `search_text`
 - `write_file`
 
-When a separately compiled and runtime-enabled optional posture is active, the same counter path also records `android_battery_status`, `android_volume_status`, `set_android_volume`, or `run_command_profile`. Disabled direct calls and provider/process failures are denied decisions; successful normalized reads, previews, verified volume mutations, or fixed diagnostics are allowed decisions. No raw Termux:API or command output is retained. Volume counters retain only stable gate/mode/decision/reason labels; command policy events may carry a numeric profile ordinal internally, but `AuditCounters` deliberately ignores all event metadata.
+When a separately compiled and runtime-enabled optional posture is active, the same counter path also records `android_battery_status`, `android_volume_status`, `set_android_volume`, or `run_command_profile`. Disabled direct calls and provider/process failures are denied decisions; successful normalized reads, previews, verified volume mutations, or fixed diagnostics are allowed decisions. A detached volume mutation task owns its terminal audit guard, so waiter loss cannot omit or duplicate the verified/recovery outcome and task drop records one stable worker-failed denial. No raw Termux:API or command output is retained. Volume counters retain only stable gate/mode/decision/reason labels; command policy events may carry a numeric profile ordinal internally, but `AuditCounters` deliberately ignores all event metadata.
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
