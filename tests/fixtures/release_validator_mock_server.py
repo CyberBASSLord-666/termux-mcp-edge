@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-import json
+import base64
 import hashlib
 import hmac
+import json
 import os
 import pathlib
 import re
@@ -111,6 +112,7 @@ TOOLS = [
     "hash_file",
     "list_directory",
     "path_metadata",
+    "read_binary_file",
     "read_file",
     "search_text",
     "write_file",
@@ -496,6 +498,19 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "read_binary_file":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded base64 safe-root file read.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"path": {"type": "string"}},
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -545,6 +560,10 @@ class Handler(BaseHTTPRequestHandler):
                         "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
                         "androidVolumeControlEnabled": False,
                         "androidVolumeGrantRequired": False,
+                        "binaryFileReads": True,
+                        "binaryFileReadEncoding": "base64",
+                        "binaryFileReadMaxBytes": 1048576,
+                        "binaryFileReadMaxResponseBytes": 1507328,
                         "fileHashing": True,
                         "fileHashAlgorithm": "sha256",
                         "fileHashMaxBytes": 16777216,
@@ -818,6 +837,70 @@ class Handler(BaseHTTPRequestHandler):
                         "truncated": False,
                         "maxEntries": 4096,
                         "maxResponseBytes": 262144,
+                    },
+                ),
+            )
+            return
+        if name == "read_binary_file":
+            target = safe_path(str(arguments.get("path", "")))
+            if target is None or target.is_symlink() or not target.is_file():
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Binary read invalid."),
+                )
+                return
+            try:
+                descriptor = os.open(
+                    target,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        self.send_json(
+                            400,
+                            rpc_error(
+                                identifier,
+                                -32602,
+                                "Invalid params",
+                                "Binary read invalid.",
+                            ),
+                        )
+                        return
+                    if metadata.st_size > 1048576:
+                        self.send_json(
+                            413,
+                            rpc_error(
+                                identifier,
+                                -32001,
+                                "Payload too large",
+                                "Binary read too large.",
+                            ),
+                        )
+                        return
+                    content = stream.read(1048577)
+            except OSError:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Binary read invalid."),
+                )
+                return
+            if len(content) > 1048576:
+                self.send_json(
+                    413,
+                    rpc_error(identifier, -32001, "Payload too large", "Binary read too large."),
+                )
+                return
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "encoding": "base64",
+                        "data": base64.b64encode(content).decode("ascii"),
+                        "sizeBytes": len(content),
+                        "maxFileBytes": 1048576,
+                        "maxResponseBytes": 1507328,
                     },
                 ),
             )

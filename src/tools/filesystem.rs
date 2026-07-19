@@ -26,6 +26,9 @@ pub const MAX_LIST_ENTRIES: usize = 4_096;
 pub const MAX_LIST_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_READ_BYTES: usize = 1_048_576;
 pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
+pub const MAX_BINARY_READ_BYTES: usize = 1_048_576;
+pub const MAX_BINARY_READ_BASE64_BYTES: usize = 1_398_104;
+pub const MAX_BINARY_READ_RESPONSE_BYTES: usize = 1_507_328;
 pub const MAX_HASH_FILE_BYTES: usize = 16_777_216;
 pub const MAX_HASH_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
@@ -655,36 +658,21 @@ impl FileSystemTools {
         let start = Instant::now();
         let anchored = self.anchor(&path)?;
         let result = tokio::task::spawn_blocking(move || {
-            let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
-            let root_fd = open_root_directory(&anchored.root_path)?;
-            let parent_fd = open_descendant_directory(root_fd, &parent_relative)?;
-            let metadata = descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW)
-                .map_err(descriptor_error)?;
-            if FileType::from_raw_mode(metadata.st_mode).is_symlink() {
-                return Err(path_rejected(
-                    anchored.display_path.to_string_lossy().as_ref(),
-                ));
-            }
-            let file_fd = descriptor_fs::openat(
-                &parent_fd,
-                &file_name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(descriptor_error)?;
-            let file = File::from(file_fd);
-            let mut limited_reader = file.take((MAX_READ_BYTES + 1) as u64);
-            let mut bytes = Vec::with_capacity(MAX_READ_BYTES.min(64 * 1_024));
-            limited_reader.read_to_end(&mut bytes)?;
+            let file = match open_verified_regular_file(&anchored, MAX_READ_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.read.rejected_too_large_total").increment(1);
+                    return Err(error);
+                }
+                result => result?,
+            };
+            let bytes = match read_bounded_bytes(file, MAX_READ_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.read.rejected_too_large_total").increment(1);
+                    return Err(error);
+                }
+                result => result?,
+            };
             let bytes_read = bytes.len();
-
-            if bytes_read > MAX_READ_BYTES {
-                counter!("mcp.fs.read.rejected_too_large_total").increment(1);
-                return Err(AppError::FileTooLarge {
-                    size: bytes_read as u64,
-                    max_size: MAX_READ_BYTES as u64,
-                });
-            }
 
             let content = String::from_utf8(bytes).map_err(|_| AppError::InvalidFileEncoding)?;
             Ok::<_, AppError>(ReadFileResult {
@@ -703,6 +691,45 @@ impl FileSystemTools {
         Ok(result)
     }
 
+    /// Read one regular file as canonical padded RFC 4648 base64 through the
+    /// exact descriptor retained after safe-root confinement.
+    pub async fn read_binary_file(&self, path: String) -> Result<ReadBinaryFileResult, AppError> {
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let result = tokio::task::spawn_blocking(move || {
+            let file = match open_verified_regular_file(&anchored, MAX_BINARY_READ_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.read_binary.rejected_too_large_total").increment(1);
+                    return Err(error);
+                }
+                result => result?,
+            };
+            let bytes = match read_bounded_bytes(file, MAX_BINARY_READ_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.read_binary.rejected_too_large_total").increment(1);
+                    return Err(error);
+                }
+                result => result?,
+            };
+
+            let size_bytes = bytes.len();
+            Ok::<_, AppError>(ReadBinaryFileResult {
+                encoding: "base64".to_owned(),
+                data: encode_base64(&bytes),
+                size_bytes,
+                max_file_bytes: MAX_BINARY_READ_BYTES,
+                max_response_bytes: MAX_BINARY_READ_RESPONSE_BYTES,
+            })
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.read_binary.latency_seconds").record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.read_binary.calls_total").increment(1);
+        counter!("mcp.fs.read_binary.bytes_total").increment(result.size_bytes as u64);
+        Ok(result)
+    }
+
     /// Hash one regular file through the exact descriptor retained after
     /// safe-root confinement. The bounded streaming read never returns file
     /// contents or a partial digest.
@@ -710,76 +737,14 @@ impl FileSystemTools {
         let start = Instant::now();
         let anchored = self.anchor(&path)?;
         let result = tokio::task::spawn_blocking(move || {
-            let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
-            let root_fd = open_root_directory(&anchored.root_path)?;
-            let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
-            let path_metadata =
-                descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW).map_err(
-                    |error| {
-                        if error == rustix::io::Errno::NOENT {
-                            AppError::PathNotFound
-                        } else {
-                            descriptor_error(error)
-                        }
-                    },
-                )?;
-            let path_type = FileType::from_raw_mode(path_metadata.st_mode);
-            if path_type.is_symlink() {
-                return Err(path_rejected(
-                    anchored.display_path.to_string_lossy().as_ref(),
-                ));
-            }
-            if !path_type.is_file() {
-                return Err(AppError::UnsupportedPathType);
-            }
-
-            let reported_size = u64::try_from(path_metadata.st_size).map_err(|_| {
-                AppError::Io(std::io::Error::other("file reported an invalid size"))
-            })?;
-            if reported_size > MAX_HASH_FILE_BYTES as u64 {
-                counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
-                return Err(AppError::FileTooLarge {
-                    size: reported_size,
-                    max_size: MAX_HASH_FILE_BYTES as u64,
-                });
-            }
-
-            let file_fd = descriptor_fs::openat(
-                &parent_fd,
-                &file_name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|error| match error {
-                rustix::io::Errno::NOENT => AppError::PathNotFound,
-                rustix::io::Errno::LOOP => {
-                    path_rejected(anchored.display_path.to_string_lossy().as_ref())
+            let file = match open_verified_regular_file(&anchored, MAX_HASH_FILE_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
+                    return Err(error);
                 }
-                _ => descriptor_error(error),
-            })?;
-            let opened_metadata = descriptor_fs::fstat(&file_fd).map_err(descriptor_error)?;
-            if !FileType::from_raw_mode(opened_metadata.st_mode).is_file() {
-                return Err(AppError::UnsupportedPathType);
-            }
-            if opened_metadata.st_dev != path_metadata.st_dev
-                || opened_metadata.st_ino != path_metadata.st_ino
-            {
-                return Err(path_rejected(
-                    anchored.display_path.to_string_lossy().as_ref(),
-                ));
-            }
-            let opened_size = u64::try_from(opened_metadata.st_size).map_err(|_| {
-                AppError::Io(std::io::Error::other("file reported an invalid size"))
-            })?;
-            if opened_size > MAX_HASH_FILE_BYTES as u64 {
-                counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
-                return Err(AppError::FileTooLarge {
-                    size: opened_size,
-                    max_size: MAX_HASH_FILE_BYTES as u64,
-                });
-            }
-
-            let mut reader = File::from(file_fd).take((MAX_HASH_FILE_BYTES + 1) as u64);
+                result => result?,
+            };
+            let mut reader = file.take((MAX_HASH_FILE_BYTES + 1) as u64);
             let mut buffer = [0_u8; 64 * 1_024];
             let mut hasher = Sha256::new();
             let mut bytes_hashed = 0_usize;
@@ -1465,6 +1430,128 @@ fn scan_search_file(
     Ok(())
 }
 
+fn open_verified_regular_file(anchored: &AnchoredPath, max_bytes: usize) -> Result<File, AppError> {
+    let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
+    let root_fd = open_root_directory(&anchored.root_path)?;
+    let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
+    let path_metadata = descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| {
+            if error == rustix::io::Errno::NOENT {
+                AppError::PathNotFound
+            } else {
+                descriptor_error(error)
+            }
+        })?;
+    let path_type = FileType::from_raw_mode(path_metadata.st_mode);
+    if path_type.is_symlink() {
+        return Err(path_rejected(
+            anchored.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    if !path_type.is_file() {
+        return Err(AppError::UnsupportedPathType);
+    }
+    let reported_size = u64::try_from(path_metadata.st_size)
+        .map_err(|_| AppError::Io(std::io::Error::other("file reported an invalid size")))?;
+    if reported_size > max_bytes as u64 {
+        return Err(AppError::FileTooLarge {
+            size: reported_size,
+            max_size: max_bytes as u64,
+        });
+    }
+
+    let file_fd = descriptor_fs::openat(
+        &parent_fd,
+        &file_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| match error {
+        rustix::io::Errno::NOENT => AppError::PathNotFound,
+        rustix::io::Errno::LOOP => path_rejected(anchored.display_path.to_string_lossy().as_ref()),
+        _ => descriptor_error(error),
+    })?;
+    let opened_metadata = descriptor_fs::fstat(&file_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(opened_metadata.st_mode).is_file() {
+        return Err(AppError::UnsupportedPathType);
+    }
+    if opened_metadata.st_dev != path_metadata.st_dev
+        || opened_metadata.st_ino != path_metadata.st_ino
+    {
+        return Err(path_rejected(
+            anchored.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    let opened_size = u64::try_from(opened_metadata.st_size)
+        .map_err(|_| AppError::Io(std::io::Error::other("file reported an invalid size")))?;
+    if opened_size > max_bytes as u64 {
+        return Err(AppError::FileTooLarge {
+            size: opened_size,
+            max_size: max_bytes as u64,
+        });
+    }
+    Ok(File::from(file_fd))
+}
+
+fn base64_encoded_len(byte_len: usize) -> Option<usize> {
+    byte_len.checked_add(2)?.checked_div(3)?.checked_mul(4)
+}
+
+fn read_bounded_bytes(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, AppError> {
+    let read_limit = max_bytes
+        .checked_add(1)
+        .ok_or_else(|| AppError::Io(std::io::Error::other("file byte limit overflowed")))?;
+    let mut reader = reader.take(read_limit as u64);
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1_024));
+    reader.read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(AppError::FileTooLarge {
+            size: bytes.len() as u64,
+            max_size: max_bytes as u64,
+        });
+    }
+    Ok(bytes)
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(
+        base64_encoded_len(bytes.len()).expect("bounded file length has a base64 length"),
+    );
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        let first = bytes[index];
+        let second = bytes[index + 1];
+        let third = bytes[index + 2];
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
+        index += 3;
+    }
+
+    match bytes.len() - index {
+        1 => {
+            let first = bytes[index];
+            encoded.push(ALPHABET[(first >> 2) as usize] as char);
+            encoded.push(ALPHABET[((first & 0x03) << 4) as usize] as char);
+            encoded.push('=');
+            encoded.push('=');
+        }
+        2 => {
+            let first = bytes[index];
+            let second = bytes[index + 1];
+            encoded.push(ALPHABET[(first >> 2) as usize] as char);
+            encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+            encoded.push(ALPHABET[((second & 0x0f) << 2) as usize] as char);
+            encoded.push('=');
+        }
+        _ => {}
+    }
+    debug_assert_eq!(encoded.len(), base64_encoded_len(bytes.len()).unwrap());
+    encoded
+}
+
 fn descriptor_error(error: rustix::io::Errno) -> AppError {
     AppError::Io(std::io::Error::from_raw_os_error(error.raw_os_error()))
 }
@@ -1752,6 +1839,16 @@ pub struct ReadFileResult {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReadBinaryFileResult {
+    pub encoding: String,
+    pub data: String,
+    pub size_bytes: usize,
+    pub max_file_bytes: usize,
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HashFileResult {
     pub algorithm: String,
     pub digest: String,
@@ -1841,6 +1938,84 @@ mod tests {
             matches!(result, Err(AppError::PathTraversal { .. })),
             "expected safe-root rejection"
         );
+    }
+
+    #[test]
+    fn base64_encoder_matches_rfc_4648_canonical_vectors() {
+        for (plain, expected) in [
+            (b"".as_slice(), ""),
+            (b"f".as_slice(), "Zg=="),
+            (b"fo".as_slice(), "Zm8="),
+            (b"foo".as_slice(), "Zm9v"),
+            (b"foob".as_slice(), "Zm9vYg=="),
+            (b"fooba".as_slice(), "Zm9vYmE="),
+            (b"foobar".as_slice(), "Zm9vYmFy"),
+            (&[0x00, 0xff, 0x10, 0x80], "AP8QgA=="),
+        ] {
+            let encoded = encode_base64(plain);
+            assert_eq!(encoded, expected);
+            assert_eq!(encoded.len(), base64_encoded_len(plain.len()).unwrap());
+        }
+        assert_eq!(
+            base64_encoded_len(MAX_BINARY_READ_BYTES),
+            Some(MAX_BINARY_READ_BASE64_BYTES)
+        );
+        assert_eq!(base64_encoded_len(usize::MAX), None);
+    }
+
+    #[test]
+    fn bounded_reader_rejects_runtime_growth_without_returning_partial_data() {
+        let error = read_bounded_bytes(std::io::Cursor::new(vec![0x5a; 65]), 64).unwrap_err();
+        assert!(matches!(
+            error,
+            AppError::FileTooLarge {
+                size: 65,
+                max_size: 64
+            }
+        ));
+        assert_eq!(
+            read_bounded_bytes(std::io::Cursor::new(vec![0xa5; 64]), 64).unwrap(),
+            vec![0xa5; 64]
+        );
+    }
+
+    #[tokio::test]
+    async fn binary_read_returns_canonical_content_without_path_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let binary_path = root.path().join("payload.bin");
+        let empty_path = root.path().join("empty.bin");
+        std::fs::write(&binary_path, [0x00, 0xff, 0x10, 0x80]).unwrap();
+        std::fs::write(&empty_path, []).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let binary = tools
+            .read_binary_file(binary_path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(binary.encoding, "base64");
+        assert_eq!(binary.data, "AP8QgA==");
+        assert_eq!(binary.size_bytes, 4);
+        assert_eq!(binary.max_file_bytes, MAX_BINARY_READ_BYTES);
+        assert_eq!(binary.max_response_bytes, MAX_BINARY_READ_RESPONSE_BYTES);
+        let serialized = serde_json::to_value(binary).unwrap();
+        assert_eq!(
+            serialized.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec![
+                "data",
+                "encoding",
+                "maxFileBytes",
+                "maxResponseBytes",
+                "sizeBytes"
+            ]
+        );
+        assert!(!serialized.to_string().contains("payload.bin"));
+
+        let empty = tools
+            .read_binary_file(empty_path.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert!(empty.data.is_empty());
+        assert_eq!(empty.size_bytes, 0);
     }
 
     #[test]
@@ -2671,6 +2846,27 @@ mod tests {
             std::fs::read_to_string(outside_source).unwrap(),
             "outside-secret"
         );
+    }
+
+    #[test]
+    fn held_binary_read_descriptor_prevents_redirection_after_path_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let parked = root.path().join("source-parked");
+        let outside_source = outside.path().join("outside-source");
+        std::fs::write(&source, b"inside-binary").unwrap();
+        std::fs::write(&outside_source, b"outside-secret").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let anchored = tools.anchor(source.to_string_lossy().as_ref()).unwrap();
+        let file = open_verified_regular_file(&anchored, MAX_BINARY_READ_BYTES).unwrap();
+
+        std::fs::rename(&source, &parked).unwrap();
+        symlink(&outside_source, &source).unwrap();
+
+        let bytes = read_bounded_bytes(file, MAX_BINARY_READ_BYTES).unwrap();
+        assert_eq!(bytes, b"inside-binary");
+        assert_eq!(std::fs::read(outside_source).unwrap(), b"outside-secret");
     }
 
     #[test]

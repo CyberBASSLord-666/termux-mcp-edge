@@ -53,6 +53,7 @@ use crate::{
     },
     tools::{
         AuthorizedCreateDirectoryError, FileSystemTools, PreparedCreateDirectoryMutation,
+        MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES,
         MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
         MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
         MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
@@ -96,10 +97,11 @@ const COPY_FILE_TOOL: &str = "copy_file";
 const HASH_FILE_TOOL: &str = "hash_file";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const PATH_METADATA_TOOL: &str = "path_metadata";
+const READ_BINARY_FILE_TOOL: &str = "read_binary_file";
 const READ_FILE_TOOL: &str = "read_file";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 12] = [
+const BASE_AVAILABLE_TOOLS: [&str; 13] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
@@ -109,6 +111,7 @@ const BASE_AVAILABLE_TOOLS: [&str; 12] = [
     HASH_FILE_TOOL,
     LIST_DIRECTORY_TOOL,
     PATH_METADATA_TOOL,
+    READ_BINARY_FILE_TOOL,
     READ_FILE_TOOL,
     SEARCH_TEXT_TOOL,
     WRITE_FILE_TOOL,
@@ -168,6 +171,11 @@ const FILESYSTEM_METADATA_NOT_FOUND: &str = "filesystem_path_not_found";
 const FILESYSTEM_METADATA_UNSUPPORTED: &str = "filesystem_path_type_unsupported";
 const FILESYSTEM_METADATA_FAILED: &str = "filesystem_metadata_failed";
 const FILESYSTEM_READ_ALLOWED: &str = "safe_root_read";
+const FILESYSTEM_BINARY_READ_ALLOWED: &str = "safe_root_binary_read";
+const FILESYSTEM_BINARY_READ_NOT_FOUND: &str = "filesystem_binary_read_target_not_found";
+const FILESYSTEM_BINARY_READ_UNSUPPORTED: &str = "filesystem_binary_read_type_unsupported";
+const FILESYSTEM_BINARY_READ_TOO_LARGE: &str = "filesystem_binary_read_size_limit_exceeded";
+const FILESYSTEM_BINARY_READ_FAILED: &str = "filesystem_binary_read_failed";
 const FILESYSTEM_HASH_ALLOWED: &str = "safe_root_file_hashed";
 const FILESYSTEM_HASH_NOT_FOUND: &str = "filesystem_hash_target_not_found";
 const FILESYSTEM_HASH_UNSUPPORTED: &str = "filesystem_hash_target_type_unsupported";
@@ -487,6 +495,12 @@ struct ReadFileArguments {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReadBinaryFileArguments {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HashFileArguments {
     path: String,
 }
@@ -554,8 +568,8 @@ struct SetAndroidVolumeArguments {
 /// deterministic runtime metadata, non-sensitive platform metadata,
 /// read-only Android/Termux status metadata, read-only project-owned service
 /// status metadata, safe-rooted directory listing and object metadata, bounded
-/// safe-rooted UTF-8 reads, default-dry-run directory creation, bounded binary file copy and
-/// file writes, and optionally compiled and enabled fixed-profile command diagnostics. Android platform control,
+/// safe-rooted canonical-base64 and UTF-8 reads, default-dry-run directory creation, bounded
+/// binary file copy and file writes, and optionally compiled and enabled fixed-profile command diagnostics. Android platform control,
 /// arbitrary command execution, and high-impact actions remain unavailable.
 #[rustfmt::skip]
 pub fn router(
@@ -1426,6 +1440,23 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": READ_BINARY_FILE_TOOL,
+                        "description": "Read one bounded regular file as canonical padded base64 from inside a configured filesystem safe root.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": format!(
+                                        "Absolute regular-file path inside one configured safe root; at most {MAX_BINARY_READ_BYTES} raw bytes are returned through the retained no-follow descriptor."
+                                    ),
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": READ_FILE_TOOL,
                         "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
                         "inputSchema": {
@@ -1732,6 +1763,15 @@ async fn handle_tool_call(
         }
         PATH_METADATA_TOOL => {
             handle_path_metadata_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        READ_BINARY_FILE_TOOL => {
+            handle_read_binary_file_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -2433,7 +2473,11 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_binary_file_read_file_search_text_and_default_dry_run_write_file",
+                    "binaryFileReads": true,
+                    "binaryFileReadEncoding": "base64",
+                    "binaryFileReadMaxBytes": MAX_BINARY_READ_BYTES,
+                    "binaryFileReadMaxResponseBytes": MAX_BINARY_READ_RESPONSE_BYTES,
                     "fileHashing": true,
                     "fileHashAlgorithm": "sha256",
                     "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
@@ -2806,6 +2850,164 @@ async fn handle_path_metadata_call(
                 FILESYSTEM_METADATA_FAILED,
             );
             internal_error(id, "Filesystem metadata lookup failed.")
+        }
+    }
+}
+
+fn binary_read_success_envelope_fits(id: Option<Value>) -> bool {
+    let maximum_summary = format!(
+        "Read and base64-encoded {MAX_BINARY_READ_BYTES} bytes from one safe-rooted regular file."
+    );
+    let body = result_body(
+        id,
+        maximum_summary,
+        json!({
+            "encoding": "base64",
+            "data": "",
+            "sizeBytes": MAX_BINARY_READ_BYTES,
+            "maxFileBytes": MAX_BINARY_READ_BYTES,
+            "maxResponseBytes": MAX_BINARY_READ_RESPONSE_BYTES,
+        }),
+    );
+    serde_json::to_vec(&body)
+        .ok()
+        .and_then(|serialized| serialized.len().checked_add(MAX_BINARY_READ_BASE64_BYTES))
+        .is_some_and(|bytes| bytes <= MAX_BINARY_READ_RESPONSE_BYTES)
+}
+
+#[rustfmt::skip]
+async fn handle_read_binary_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    if !binary_read_success_envelope_fits(id.clone()) {
+        record_filesystem_denied(
+            audit_counters,
+            READ_BINARY_FILE_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "Binary file response exceeds the staged read_binary_file response byte limit.",
+            MAX_BINARY_READ_RESPONSE_BYTES,
+        );
+    }
+
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "read_binary_file requires a path argument.");
+        }
+    };
+    let args = match serde_json::from_value::<ReadBinaryFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools.read_binary_file(args.path).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = format!(
+                "Read and base64-encoded {} bytes from one safe-rooted regular file.",
+                result.size_bytes
+            );
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_BINARY_READ_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    READ_BINARY_FILE_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Binary file response exceeds the staged read_binary_file response byte limit.",
+                    MAX_BINARY_READ_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_READ_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(id, "Path is outside the configured filesystem safe roots.")
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_READ_NOT_FOUND,
+            );
+            invalid_params(id, "Binary file does not exist.")
+        }
+        Err(AppError::UnsupportedPathType) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_READ_UNSUPPORTED,
+            );
+            invalid_params(id, "Binary read target must be one regular file.")
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_READ_TOO_LARGE,
+            );
+            payload_too_large(id, "Binary file exceeds the staged read_binary_file byte limit.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_READ_FAILED,
+            );
+            internal_error(id, "Binary file read failed.")
         }
     }
 }
@@ -4115,6 +4317,7 @@ mod tests {
                 "hash_file",
                 "list_directory",
                 "path_metadata",
+                "read_binary_file",
                 "read_file",
                 "search_text",
                 "write_file",
@@ -4145,7 +4348,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            14
+            15
         );
     }
 

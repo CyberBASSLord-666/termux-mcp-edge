@@ -15,6 +15,7 @@ Enabled staged tools:
 - `hash_file` for streaming SHA-256 of exactly one no-follow safe-rooted regular file of at most 16 MiB, with a digest-and-size-only response and content/path-private audit surfaces
 - `list_directory`
 - `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers
+- `read_binary_file` for one no-follow safe-rooted regular file of at most 1 MiB, returned as canonical padded base64 without path or host metadata under a fixed complete-response ceiling
 - `read_file`
 - `search_text` for bounded literal UTF-8 location search without content excerpts
 - `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`

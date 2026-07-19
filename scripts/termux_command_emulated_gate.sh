@@ -306,6 +306,7 @@ jq -e '
     "hash_file",
     "list_directory",
     "path_metadata",
+    "read_binary_file",
     "read_file",
     "search_text",
     "write_file",
@@ -433,6 +434,7 @@ jq -e '
     "hash_file",
     "list_directory",
     "path_metadata",
+    "read_binary_file",
     "read_file",
     "search_text",
     "write_file"

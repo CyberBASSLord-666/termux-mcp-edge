@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="4"
+readonly VALIDATOR_VERSION="5"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -983,7 +983,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -1000,6 +1000,15 @@ run_mcp_runtime_checks() {
       and $schema.required == ["path"]
       and $schema.additionalProperties == false
   ' "$body" >/dev/null 2>&1 || fail hash_file_discovery_schema_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "read_binary_file"))[0].inputSchema as $schema
+    | $schema.type == "object"
+      and ($schema.properties | keys) == ["path"]
+      and $schema.properties.path.type == "string"
+      and $schema.required == ["path"]
+      and $schema.additionalProperties == false
+  ' "$body" >/dev/null 2>&1 || fail read_binary_file_discovery_schema_invalid
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1014,6 +1023,10 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
     and .result.structuredContent.createDirectoryGrantTtlSeconds == 60
     and .result.structuredContent.createDirectoryMutationMode == "dry_run_or_request_scoped_single_use_grant"
+    and .result.structuredContent.binaryFileReads == true
+    and .result.structuredContent.binaryFileReadEncoding == "base64"
+    and .result.structuredContent.binaryFileReadMaxBytes == 1048576
+    and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328
     and .result.structuredContent.fileHashing == true
     and .result.structuredContent.fileHashAlgorithm == "sha256"
     and .result.structuredContent.fileHashMaxBytes == 16777216
@@ -1141,6 +1154,43 @@ run_mcp_runtime_checks() {
   rm -f -- "$VALIDATION_SAFE_ROOT/hash-oversized.bin" || fail hash_file_oversized_fixture_cleanup_failed
   [[ ! -e "$VALIDATION_SAFE_ROOT/hash-oversized.bin" ]] || fail hash_file_oversized_fixture_cleanup_incomplete
   record_result runtime hash_file pass safe_root_file_hash_verified
+
+  binary_read_target="$VALIDATION_SAFE_ROOT/binary-read.bin"
+  printf '\000\377\200\141\012\001\376' >"$binary_read_target" || fail binary_read_fixture_create_failed
+  binary_read_expected="$(base64 <"$binary_read_target" | tr -d '\n')" || fail binary_read_expected_encoding_failed
+  payload="$(jq -cn --arg path "$binary_read_target" '{"jsonrpc":"2.0","id":"binary-read","method":"tools/call","params":{"name":"read_binary_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_binary_file "$status" 200 safe_root_binary_read_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail binary_read_response_size_failed
+  ((bytes <= 1507328)) || fail binary_read_response_too_large
+  jq -e --arg data "$binary_read_expected" '
+    .result.structuredContent as $binary
+    | ($binary | keys) == ["data","encoding","maxFileBytes","maxResponseBytes","sizeBytes"]
+      and $binary.encoding == "base64"
+      and $binary.data == $data
+      and $binary.sizeBytes == 7
+      and $binary.maxFileBytes == 1048576
+      and $binary.maxResponseBytes == 1507328
+  ' "$body" >/dev/null 2>&1 || fail binary_read_contract_invalid
+  grep -Eq 'binary-read\.bin|inode|device|uid|gid|mode|accessTime' "$body" && fail binary_read_path_or_metadata_reflected
+
+  ln -s -- "$binary_read_target" "$VALIDATION_SAFE_ROOT/binary-read-link" 2>/dev/null || fail binary_read_symlink_fixture_create_failed
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/binary-read-link" '{"jsonrpc":"2.0","id":"binary-read-link","method":"tools/call","params":{"name":"read_binary_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status binary_read_symlink "$status" 400 binary_read_symlink_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail binary_read_symlink_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail binary_read_symlink_path_reflected
+  rm -f -- "$VALIDATION_SAFE_ROOT/binary-read-link" || fail binary_read_symlink_fixture_cleanup_failed
+
+  dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" bs=1 seek=1048576 count=1 status=none 2>/dev/null || fail binary_read_oversized_fixture_create_failed
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" '{"jsonrpc":"2.0","id":"binary-read-oversized","method":"tools/call","params":{"name":"read_binary_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status binary_read_oversized "$status" 413 binary_read_oversized_rejected
+  jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail binary_read_oversized_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail binary_read_oversized_path_reflected
+  rm -f -- "$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" "$binary_read_target" || fail binary_read_fixture_cleanup_failed
+  [[ ! -e "$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" && ! -e "$binary_read_target" ]] || fail binary_read_fixture_cleanup_incomplete
+  record_result runtime read_binary_file pass safe_root_binary_read_verified
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1422,7 +1472,7 @@ run_volume_control_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
