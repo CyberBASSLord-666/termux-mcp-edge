@@ -110,6 +110,10 @@ pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
 /// `write_file` blocking mutation workers.
 pub const MAX_CONCURRENT_FILESYSTEM_MUTATION_WORKERS: usize = 1;
 
+/// Process-global commit boundary shared by every embedded router's live
+/// directory and file-write publication transaction.
+static FILESYSTEM_MUTATION_PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
+
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
 const MAX_CAPABILITY_GRANT_HEADER_BYTES: usize =
@@ -561,6 +565,14 @@ impl Default for FilesystemMutationWorkerCapacity {
     }
 }
 
+fn filesystem_mutation_publication_lock() -> std::sync::MutexGuard<'static, ()> {
+    // The lock protects no in-memory value, so a prior panic cannot corrupt a
+    // protected data invariant. Recovery keeps later transactions serialized.
+    FILESYSTEM_MUTATION_PUBLICATION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn spawn_filesystem_mutation_worker<T, F>(
     permit: OwnedSemaphorePermit,
     worker: F,
@@ -597,7 +609,15 @@ fn run_create_directory_mutation_worker(
             return FilesystemMutationWorkerOutcome::Completed(outcome);
         }
     };
+    let publication_guard = filesystem_mutation_publication_lock();
+    if let Err(error) = prepared.revalidate_destination_absent() {
+        drop(publication_guard);
+        let outcome = Err(AuthorizedCreateDirectoryError::Filesystem(error));
+        audit.finish(&outcome);
+        return FilesystemMutationWorkerOutcome::Completed(outcome);
+    }
     if !commit.claim() {
+        drop(publication_guard);
         audit.cancelled();
         return FilesystemMutationWorkerOutcome::Cancelled;
     }
@@ -610,6 +630,7 @@ fn run_create_directory_mutation_worker(
             current_unix_seconds(),
         )
     });
+    drop(publication_guard);
     audit.finish(&outcome);
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
@@ -636,7 +657,15 @@ fn run_write_file_mutation_worker(
             return FilesystemMutationWorkerOutcome::Completed(outcome);
         }
     };
+    let publication_guard = filesystem_mutation_publication_lock();
+    if let Err(error) = prepared.revalidate_target_posture() {
+        drop(publication_guard);
+        let outcome = Err(AuthorizedWriteFileError::Filesystem(error));
+        audit.finish(&outcome);
+        return FilesystemMutationWorkerOutcome::Completed(outcome);
+    }
     if !commit.claim() {
+        drop(publication_guard);
         audit.cancelled();
         return FilesystemMutationWorkerOutcome::Cancelled;
     }
@@ -644,6 +673,7 @@ fn run_write_file_mutation_worker(
     let outcome = prepared.execute_authorized(|target| {
         authority.consume(capability_grant.as_deref(), &session_id, target)
     });
+    drop(publication_guard);
     audit.finish(&outcome);
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
