@@ -901,7 +901,10 @@ fn write_cli_content_file_validation_is_bounded_no_follow_and_utf8_only() {
             "0123456789abcdef",
             "0194f9f9",
         ] {
-            assert!(!stderr.contains(private), "content-file rejection leaked {private}");
+            assert!(
+                !stderr.contains(private),
+                "content-file rejection leaked {private}"
+            );
         }
     }
 }
