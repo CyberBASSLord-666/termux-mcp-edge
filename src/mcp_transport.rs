@@ -110,10 +110,6 @@ pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
 /// `write_file` blocking mutation workers.
 pub const MAX_CONCURRENT_FILESYSTEM_MUTATION_WORKERS: usize = 1;
 
-/// Process-global commit boundary shared by every embedded router's live
-/// directory and file-write publication transaction.
-static FILESYSTEM_MUTATION_PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
-
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
 #[cfg(feature = "android-volume-control")]
@@ -354,6 +350,13 @@ impl CreateDirectoryMutationAuditGuard {
                 AuditMode::Mutating,
                 create_directory_filesystem_reason(error),
             ),
+            Err(AuthorizedCreateDirectoryError::Cancelled) => record_filesystem_denied(
+                &self.counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_MUTATION_REQUEST_CANCELLED,
+            ),
         }
         self.recorded = true;
     }
@@ -427,6 +430,13 @@ impl WriteFileMutationAuditGuard {
                 FILESYSTEM_WRITE_GATE,
                 AuditMode::Mutating,
                 write_file_filesystem_reason(error),
+            ),
+            Err(AuthorizedWriteFileError::Cancelled) => record_filesystem_denied(
+                &self.counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_MUTATION_REQUEST_CANCELLED,
             ),
         }
         self.recorded = true;
@@ -607,14 +617,6 @@ impl Default for FilesystemMutationWorkerCapacity {
     }
 }
 
-fn filesystem_mutation_publication_lock() -> std::sync::MutexGuard<'static, ()> {
-    // The lock protects no in-memory value, so a prior panic cannot corrupt a
-    // protected data invariant. Recovery keeps later transactions serialized.
-    FILESYSTEM_MUTATION_PUBLICATION_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 fn spawn_filesystem_mutation_worker<T, F>(
     permit: OwnedSemaphorePermit,
     worker: F,
@@ -672,37 +674,28 @@ fn run_prepared_create_directory_mutation(
     crate::tools::CreateDirectoryResult,
     AuthorizedCreateDirectoryError,
 > {
-    let publication_guard = filesystem_mutation_publication_lock();
-    if let Err(error) = prepared.revalidate_destination_absent() {
-        drop(publication_guard);
-        let outcome = Err(AuthorizedCreateDirectoryError::Filesystem(error));
-        audit.finish(&outcome);
-        return FilesystemMutationWorkerOutcome::Completed(outcome);
-    }
-    if !commit.claim() {
-        drop(publication_guard);
+    let outcome = prepared.execute_authorized_with_commit(|target| {
+        if !commit.claim() {
+            return Err(AuthorizedCreateDirectoryError::Cancelled);
+        }
+        authority
+            .consume_at(
+                capability_grant.as_deref(),
+                &session_id,
+                target,
+                current_unix_seconds(),
+            )
+            .map_err(AuthorizedCreateDirectoryError::Authorization)
+    });
+    if matches!(outcome, Err(AuthorizedCreateDirectoryError::Cancelled)) {
         audit.cancelled();
         return FilesystemMutationWorkerOutcome::Cancelled;
     }
-
-    let outcome = prepared.execute_authorized(|target| {
-        authority.consume_at(
-            capability_grant.as_deref(),
-            &session_id,
-            target,
-            current_unix_seconds(),
-        )
-    });
-    drop(publication_guard);
     audit.finish(&outcome);
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the detached worker owns one explicit mutation transaction"
-)]
-fn run_write_file_mutation_worker(
+struct WriteFileMutationWorker {
     file_tools: FileSystemTools,
     path: String,
     content: String,
@@ -711,7 +704,36 @@ fn run_write_file_mutation_worker(
     session_id: String,
     commit: FilesystemMutationWorkerCommitGuard,
     audit: WriteFileMutationAuditGuard,
+}
+
+fn run_write_file_mutation_worker(
+    worker: WriteFileMutationWorker,
 ) -> FilesystemMutationWorkerOutcome<crate::tools::WriteFileResult, AuthorizedWriteFileError> {
+    run_write_file_mutation_worker_inner(worker, None::<fn()>)
+}
+
+#[cfg(test)]
+fn run_write_file_mutation_worker_with_lock_contention_hook(
+    worker: WriteFileMutationWorker,
+    on_lock_contention: impl FnOnce(),
+) -> FilesystemMutationWorkerOutcome<crate::tools::WriteFileResult, AuthorizedWriteFileError> {
+    run_write_file_mutation_worker_inner(worker, Some(on_lock_contention))
+}
+
+fn run_write_file_mutation_worker_inner(
+    worker: WriteFileMutationWorker,
+    on_lock_contention: Option<impl FnOnce()>,
+) -> FilesystemMutationWorkerOutcome<crate::tools::WriteFileResult, AuthorizedWriteFileError> {
+    let WriteFileMutationWorker {
+        file_tools,
+        path,
+        content,
+        authority,
+        capability_grant,
+        session_id,
+        commit,
+        audit,
+    } = worker;
     let prepared = match file_tools.prepare_write_file_mutation_blocking(path, content) {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -720,23 +742,26 @@ fn run_write_file_mutation_worker(
             return FilesystemMutationWorkerOutcome::Completed(outcome);
         }
     };
-    let publication_guard = filesystem_mutation_publication_lock();
-    if let Err(error) = prepared.revalidate_target_posture() {
-        drop(publication_guard);
-        let outcome = Err(AuthorizedWriteFileError::Filesystem(error));
-        audit.finish(&outcome);
-        return FilesystemMutationWorkerOutcome::Completed(outcome);
-    }
-    if !commit.claim() {
-        drop(publication_guard);
+    let authorize_and_commit = |target: &crate::write_file_grant::WriteFileGrantTarget| {
+        if !commit.claim() {
+            return Err(AuthorizedWriteFileError::Cancelled);
+        }
+        authority
+            .consume(capability_grant.as_deref(), &session_id, target)
+            .map_err(AuthorizedWriteFileError::Authorization)
+    };
+    let outcome = match on_lock_contention {
+        Some(on_lock_contention) => prepared
+            .execute_authorized_with_commit_and_lock_contention_hook(
+                authorize_and_commit,
+                on_lock_contention,
+            ),
+        None => prepared.execute_authorized_with_commit(authorize_and_commit),
+    };
+    if matches!(outcome, Err(AuthorizedWriteFileError::Cancelled)) {
         audit.cancelled();
         return FilesystemMutationWorkerOutcome::Cancelled;
     }
-
-    let outcome = prepared.execute_authorized(|target| {
-        authority.consume(capability_grant.as_deref(), &session_id, target)
-    });
-    drop(publication_guard);
     audit.finish(&outcome);
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
@@ -750,6 +775,23 @@ impl McpTransportOptions {
     pub const fn with_sse_enabled(mut self, enabled: bool) -> Self {
         self.sse_enabled = enabled;
         self
+    }
+}
+
+struct FilesystemMutationAuthorities {
+    create_directory: Option<CreateDirectoryGrantAuthority>,
+    write_file: Option<WriteFileGrantAuthority>,
+}
+
+impl FilesystemMutationAuthorities {
+    fn new(
+        create_directory: Option<CreateDirectoryGrantAuthority>,
+        write_file: Option<WriteFileGrantAuthority>,
+    ) -> Self {
+        Self {
+            create_directory,
+            write_file,
+        }
     }
 }
 
@@ -1413,8 +1455,10 @@ pub fn protected_router_with_filesystem_authorities_and_options(
             android_battery_status_enabled,
             android_volume_status_enabled,
             command_execution_enabled,
-            create_directory_authority,
-            write_file_authority,
+            FilesystemMutationAuthorities::new(
+                create_directory_authority,
+                write_file_authority,
+            ),
             options,
         ),
         protection,
@@ -1575,8 +1619,7 @@ pub(crate) fn router_with_create_directory_authority_and_options(
         android_battery_status_enabled,
         android_volume_status_enabled,
         command_execution_enabled,
-        Some(create_directory_authority),
-        None,
+        FilesystemMutationAuthorities::new(Some(create_directory_authority), None),
         options,
     )
 }
@@ -1600,37 +1643,38 @@ pub(crate) fn router_with_filesystem_authorities(
         android_battery_status_enabled,
         android_volume_status_enabled,
         command_execution_enabled,
-        create_directory_authority,
-        write_file_authority,
+        FilesystemMutationAuthorities::new(
+            create_directory_authority,
+            write_file_authority,
+        ),
         McpTransportOptions::default(),
     )
 }
 
 /// Build the independently authorized filesystem transport with explicit
 /// additive transport options.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the internal constructor mirrors the protected-router boundary"
-)]
 #[rustfmt::skip]
-pub(crate) fn router_with_filesystem_authorities_and_options(
+fn router_with_filesystem_authorities_and_options(
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    write_file_authority: Option<WriteFileGrantAuthority>,
+    authorities: FilesystemMutationAuthorities,
     options: McpTransportOptions,
 ) -> Router {
+    let FilesystemMutationAuthorities {
+        create_directory,
+        write_file,
+    } = authorities;
     router_from_state(McpTransportState::new(
         security_policy,
         file_tools,
         android_battery_status_enabled,
         android_volume_status_enabled,
         command_execution_enabled,
-        create_directory_authority,
-        write_file_authority,
+        create_directory,
+        write_file,
     ).with_options(options))
 }
 
@@ -5178,7 +5222,10 @@ async fn handle_create_directory_call(
             Ok(FilesystemMutationWorkerOutcome::Completed(Err(
                 AuthorizedCreateDirectoryError::Filesystem(error),
             ))) => Err(error),
-            Ok(FilesystemMutationWorkerOutcome::Cancelled) => {
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedCreateDirectoryError::Cancelled,
+            )))
+            | Ok(FilesystemMutationWorkerOutcome::Cancelled) => {
                 return filesystem_mutation_request_cancelled(id);
             }
             Err(_error) => Err(AppError::Io(std::io::Error::other(
@@ -6112,16 +6159,16 @@ async fn handle_write_file_call(
         let worker_audit = WriteFileMutationAuditGuard::new(Arc::clone(audit_counters));
         let (waiter_guard, worker_commit) = filesystem_mutation_commit_guards();
         let joined = spawn_filesystem_mutation_worker(worker_permit, move || {
-            run_write_file_mutation_worker(
-                worker_file_tools,
-                mutation_path,
-                mutation_content,
+            run_write_file_mutation_worker(WriteFileMutationWorker {
+                file_tools: worker_file_tools,
+                path: mutation_path,
+                content: mutation_content,
                 authority,
                 capability_grant,
                 session_id,
-                worker_commit,
-                worker_audit,
-            )
+                commit: worker_commit,
+                audit: worker_audit,
+            })
         })
         .await;
         waiter_guard.complete();
@@ -6139,7 +6186,10 @@ async fn handle_write_file_call(
             Ok(FilesystemMutationWorkerOutcome::Completed(Err(
                 AuthorizedWriteFileError::Filesystem(error),
             ))) => Err(error),
-            Ok(FilesystemMutationWorkerOutcome::Cancelled) => {
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedWriteFileError::Cancelled,
+            )))
+            | Ok(FilesystemMutationWorkerOutcome::Cancelled) => {
                 return filesystem_mutation_request_cancelled(id);
             }
             Err(_error) => Err(AppError::Io(std::io::Error::other(
@@ -6729,6 +6779,59 @@ mod tests {
             .collect()
     }
 
+    /// Parks a dedicated synchronous thread while it owns the audit mutex.
+    ///
+    /// Async tests use this to stop a completed blocking mutation at its audit
+    /// boundary without carrying a `std::sync::MutexGuard` across an await.
+    /// Drop always releases and joins the thread so a test panic cannot strand
+    /// the shared process.
+    struct AuditCounterBlocker {
+        release: Option<std::sync::mpsc::Sender<()>>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl AuditCounterBlocker {
+        fn acquire(counters: SharedAuditCounters) -> Self {
+            let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _guard = counters
+                    .lock()
+                    .expect("test audit counter lock must not be poisoned");
+                acquired_tx
+                    .send(())
+                    .expect("test audit blocker owner disappeared");
+                let _ = release_rx.recv();
+            });
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("test audit counter lock was not acquired");
+            Self {
+                release: Some(release_tx),
+                worker: Some(worker),
+            }
+        }
+
+        fn release(mut self) {
+            self.finish();
+        }
+
+        fn finish(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    impl Drop for AuditCounterBlocker {
+        fn drop(&mut self) {
+            self.finish();
+        }
+    }
+
     #[test]
     fn public_protection_rejects_unauthenticated_non_loopback_listener() {
         for listener_host in ["0.0.0.0", "::", "192.0.2.10", "example.com"] {
@@ -7273,16 +7376,16 @@ mod tests {
 
         let (cancel_waiter, cancelled_worker) = filesystem_mutation_commit_guards();
         drop(cancel_waiter);
-        let cancelled = run_write_file_mutation_worker(
-            file_tools.clone(),
-            target.to_string_lossy().to_string(),
-            content.to_owned(),
-            authority.clone(),
-            Some(grant.clone()),
-            session_id.clone(),
-            cancelled_worker,
-            WriteFileMutationAuditGuard::new(Arc::clone(&counters)),
-        );
+        let cancelled = run_write_file_mutation_worker(WriteFileMutationWorker {
+            file_tools: file_tools.clone(),
+            path: target.to_string_lossy().to_string(),
+            content: content.to_owned(),
+            authority: authority.clone(),
+            capability_grant: Some(grant.clone()),
+            session_id: session_id.clone(),
+            commit: cancelled_worker,
+            audit: WriteFileMutationAuditGuard::new(Arc::clone(&counters)),
+        });
         assert!(matches!(
             cancelled,
             FilesystemMutationWorkerOutcome::Cancelled
@@ -7290,19 +7393,108 @@ mod tests {
         assert!(!target.exists());
 
         let (live_waiter, live_worker) = filesystem_mutation_commit_guards();
-        let completed = run_write_file_mutation_worker(
+        let completed = run_write_file_mutation_worker(WriteFileMutationWorker {
             file_tools,
-            target.to_string_lossy().to_string(),
-            content.to_owned(),
+            path: target.to_string_lossy().to_string(),
+            content: content.to_owned(),
             authority,
-            Some(grant),
+            capability_grant: Some(grant),
             session_id,
-            live_worker,
-            WriteFileMutationAuditGuard::new(Arc::clone(&counters)),
-        );
+            commit: live_worker,
+            audit: WriteFileMutationAuditGuard::new(Arc::clone(&counters)),
+        });
         live_waiter.complete();
         assert!(matches!(
             completed,
+            FilesystemMutationWorkerOutcome::Completed(Ok(_))
+        ));
+        assert_eq!(std::fs::read_to_string(target).unwrap(), content);
+
+        let counters = counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[WRITE_FILE_TOOL].allowed, 1);
+        assert_eq!(counters.by_tool[WRITE_FILE_TOOL].denied, 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_MUTATION_REQUEST_CANCELLED].denied,
+            1
+        );
+    }
+
+    #[test]
+    fn cancellation_while_waiting_for_publication_lock_preserves_write_grant() {
+        use crate::write_file_grant::WriteFileDisposition;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let waiting_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let retry_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let authority = WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "waiting-cancel-test-principal",
+        )
+        .unwrap();
+        let session_id = Uuid::new_v4().to_string();
+        let target = safe_root.path().join("waiting-cancel.txt");
+        let content = "waiting-cancel-content";
+        let binding = waiting_tools
+            .write_file_grant_target(
+                target.to_string_lossy().as_ref(),
+                content.as_bytes(),
+                WriteFileDisposition::Create,
+            )
+            .unwrap();
+        let grant = authority.issue(&session_id, &binding).unwrap();
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+        let publication_lock = crate::tools::acquire_filesystem_publication_lock_for_test();
+        let (waiter, worker_commit) = filesystem_mutation_commit_guards();
+        let (contended_tx, contended_rx) = std::sync::mpsc::channel();
+        let waiting_counters = Arc::clone(&counters);
+        let waiting_authority = authority.clone();
+        let waiting_grant = grant.clone();
+        let waiting_session = session_id.clone();
+        let waiting_path = target.to_string_lossy().to_string();
+        let worker = std::thread::spawn(move || {
+            run_write_file_mutation_worker_with_lock_contention_hook(
+                WriteFileMutationWorker {
+                    file_tools: waiting_tools,
+                    path: waiting_path,
+                    content: content.to_owned(),
+                    authority: waiting_authority,
+                    capability_grant: Some(waiting_grant),
+                    session_id: waiting_session,
+                    commit: worker_commit,
+                    audit: WriteFileMutationAuditGuard::new(waiting_counters),
+                },
+                || contended_tx.send(()).unwrap(),
+            )
+        });
+        contended_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("mutation worker did not contend on the held publication lock");
+        drop(waiter);
+        drop(publication_lock);
+
+        assert!(matches!(
+            worker.join().unwrap(),
+            FilesystemMutationWorkerOutcome::Cancelled
+        ));
+        assert!(!target.exists());
+
+        let (retry_waiter, retry_commit) = filesystem_mutation_commit_guards();
+        let retry = run_write_file_mutation_worker(WriteFileMutationWorker {
+            file_tools: retry_tools,
+            path: target.to_string_lossy().to_string(),
+            content: content.to_owned(),
+            authority,
+            capability_grant: Some(grant),
+            session_id,
+            commit: retry_commit,
+            audit: WriteFileMutationAuditGuard::new(Arc::clone(&counters)),
+        });
+        retry_waiter.complete();
+        assert!(matches!(
+            retry,
             FilesystemMutationWorkerOutcome::Completed(Ok(_))
         ));
         assert_eq!(std::fs::read_to_string(target).unwrap(), content);
@@ -7498,10 +7690,6 @@ mod tests {
         );
     }
 
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "the held lock deterministically parks only the detached blocking worker"
-    )]
     #[tokio::test(flavor = "current_thread")]
     async fn live_create_worker_records_exactly_once_after_http_waiter_is_dropped() {
         let safe_root = tempfile::tempdir().unwrap();
@@ -7534,7 +7722,7 @@ mod tests {
         // Holding the aggregate lock lets the mutation complete and then
         // deterministically parks its blocking worker at the audit boundary.
         let counters = Arc::clone(&state.audit_counters);
-        let counter_lock = counters.lock().unwrap();
+        let counter_blocker = AuditCounterBlocker::acquire(Arc::clone(&counters));
         let state_for_request = state.clone();
         let session_for_request = session_id.clone();
         let grant_for_request = grant.clone();
@@ -7564,7 +7752,7 @@ mod tests {
 
         request_task.abort();
         assert!(request_task.await.unwrap_err().is_cancelled());
-        drop(counter_lock);
+        counter_blocker.release();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -7589,10 +7777,6 @@ mod tests {
         assert!(target.is_dir());
     }
 
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "the held lock deterministically parks only the detached blocking worker"
-    )]
     #[tokio::test(flavor = "current_thread")]
     async fn live_write_worker_records_exactly_once_after_http_waiter_is_dropped() {
         use crate::write_file_grant::{WriteFileDisposition, WriteFileGrantError};
@@ -7630,7 +7814,7 @@ mod tests {
         // Holding the aggregate lock lets the mutation complete and then
         // deterministically parks its blocking worker at the audit boundary.
         let counters = Arc::clone(&state.audit_counters);
-        let counter_lock = counters.lock().unwrap();
+        let counter_blocker = AuditCounterBlocker::acquire(Arc::clone(&counters));
         let state_for_request = state.clone();
         let session_for_request = session_id.clone();
         let grant_for_request = grant.clone();
@@ -7661,7 +7845,7 @@ mod tests {
 
         request_task.abort();
         assert!(request_task.await.unwrap_err().is_cancelled());
-        drop(counter_lock);
+        counter_blocker.release();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -8160,10 +8344,6 @@ printf '%s\n' "$2" >"$level"
     }
 
     #[cfg(feature = "android-volume-control")]
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "the held audit lock parks only the detached worker on another runtime thread"
-    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn live_volume_worker_records_after_http_waiter_is_dropped() {
         let _provider_guard = crate::android_provider::ANDROID_PROVIDER_TEST_LOCK
@@ -8186,7 +8366,7 @@ printf '%s\n' "$2" >"$level"
             .unwrap();
 
         let counters = Arc::clone(&state.audit_counters);
-        let counter_lock = counters.lock().unwrap();
+        let counter_blocker = AuditCounterBlocker::acquire(Arc::clone(&counters));
         let request_state = state.clone();
         let request_grant = grant.clone();
         let request_task = tokio::spawn(async move {
@@ -8217,14 +8397,17 @@ printf '%s\n' "$2" >"$level"
 
         request_task.abort();
         assert!(request_task.await.unwrap_err().is_cancelled());
-        drop(counter_lock);
+        counter_blocker.release();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let snapshot = counters.lock().unwrap().clone();
-            if let Some(tool_counters) = snapshot.by_tool.get(SET_ANDROID_VOLUME_TOOL) {
-                assert_eq!(tool_counters.allowed, 1);
-                assert_eq!(tool_counters.denied, 0);
+            if let Some(counts) = snapshot
+                .by_tool
+                .get(SET_ANDROID_VOLUME_TOOL)
+                .filter(|counts| counts.allowed == 1)
+            {
+                assert_eq!(counts.denied, 0);
                 break;
             }
             assert!(
