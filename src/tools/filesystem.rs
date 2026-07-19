@@ -4014,7 +4014,7 @@ mod tests {
             write_target_before
         );
 
-        tools
+        let create_result = tools
             .prepare_create_directory_mutation_blocking(directory.to_string_lossy().to_string())
             .unwrap()
             .execute_authorized(|target| {
@@ -4024,9 +4024,13 @@ mod tests {
                     target,
                     unix_timestamp_seconds(),
                 )
-            })
-            .unwrap();
-        tools
+            });
+        assert!(
+            create_result.is_ok(),
+            "the pre-replacement create grant must authorize the pinned root"
+        );
+
+        let copy_result = tools
             .prepare_copy_file_mutation_blocking(
                 source.to_string_lossy().to_string(),
                 destination.to_string_lossy().to_string(),
@@ -4034,9 +4038,13 @@ mod tests {
             .unwrap()
             .execute_authorized(|target| {
                 copy_authority.consume(Some(&copy_grant), &copy_session, target)
-            })
-            .unwrap();
-        tools
+            });
+        assert!(
+            copy_result.is_ok(),
+            "the pre-replacement copy grant must authorize the pinned root"
+        );
+
+        let write_result = tools
             .prepare_write_file_mutation_blocking(
                 written.to_string_lossy().to_string(),
                 "pinned-write-content".to_owned(),
@@ -4044,8 +4052,11 @@ mod tests {
             .unwrap()
             .execute_authorized(|target| {
                 write_authority.consume(Some(&write_grant), &write_session, target)
-            })
-            .unwrap();
+            });
+        assert!(
+            write_result.is_ok(),
+            "the pre-replacement write grant must authorize the pinned root"
+        );
 
         assert!(original.join("authorized-directory").is_dir());
         assert_eq!(
