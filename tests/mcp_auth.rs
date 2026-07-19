@@ -12,21 +12,24 @@ use axum::{
 use serde_json::{json, Value};
 use termux_mcp_server::{
     auth::McpAuthPolicy,
+    copy_file_grant::CopyFileGrantAuthority,
+    create_directory_grant::CreateDirectoryGrantAuthority,
     mcp_transport::{
-        self, McpRouterProtection, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
+        McpRouterBuildError, McpRouterBuilder, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
         MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
     },
     request_limits::{
         McpRequestLimits, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS,
         DEFAULT_REQUEST_TIMEOUT_SECONDS,
     },
-    tools::FileSystemTools,
+    tools::{FileSystemTools, SafeRootConfigurationError},
     transport_security::TransportSecurityPolicy,
+    write_file_grant::WriteFileGrantAuthority,
 };
 use tower::ServiceExt;
 
 fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Router {
-    let protection = McpRouterProtection::new(
+    McpRouterBuilder::new(
         "127.0.0.1",
         policy,
         McpRequestLimits::from_seconds(
@@ -35,17 +38,13 @@ fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Route
             DEFAULT_MAX_BODY_BYTES,
         )
         .unwrap(),
-    )
-    .unwrap();
-
-    mcp_transport::protected_router(
-        protection,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
+        file_tools.safe_roots().to_vec(),
     )
+    .expect("test MCP router builder configuration must be valid")
+    .build()
+    .expect("test MCP router must build")
 }
 
 async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> Response {
@@ -237,8 +236,9 @@ async fn public_local_development_router_rejects_non_loopback_connect_info() {
 
 #[test]
 fn unauthenticated_policy_rejects_non_loopback_listener_declarations() {
+    let root = tempfile::tempdir().unwrap();
     for listener_host in ["0.0.0.0", "::", "192.0.2.10", "example.com"] {
-        let error = McpRouterProtection::new(
+        let error = McpRouterBuilder::new(
             listener_host,
             McpAuthPolicy::unauthenticated_localhost_only(),
             McpRequestLimits::from_seconds(
@@ -247,10 +247,16 @@ fn unauthenticated_policy_rejects_non_loopback_listener_declarations() {
                 DEFAULT_MAX_BODY_BYTES,
             )
             .unwrap(),
+            TransportSecurityPolicy::localhost(8000, false)
+                .expect("test localhost policy must be valid"),
+            vec![root.path().to_path_buf()],
         )
         .expect_err("unauthenticated public routers must declare a loopback listener");
 
-        assert!(error.to_string().contains("loopback listener host"));
+        assert_eq!(
+            error,
+            McpRouterBuildError::UnauthenticatedListenerRequiresLoopback
+        );
     }
 }
 
@@ -279,4 +285,223 @@ async fn authentication_rejects_before_transport_validation_or_body_dispatch() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let payload = response_json(response).await;
     assert_eq!(payload["error"], "unauthorized");
+}
+
+
+fn builder_error_for_roots(safe_roots: Vec<std::path::PathBuf>) -> McpRouterBuildError {
+    match McpRouterBuilder::new(
+        "127.0.0.1",
+        McpAuthPolicy::static_bearer("builder-error-test-token").unwrap(),
+        McpRequestLimits::from_seconds(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .unwrap(),
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        safe_roots,
+    ) {
+        Ok(_) => panic!("invalid safe-root configuration unexpectedly built a public router"),
+        Err(error) => error,
+    }
+}
+
+#[test]
+fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
+    let parent = tempfile::tempdir().unwrap();
+    let missing = parent.path().join("missing-root");
+    let regular_file = parent.path().join("regular-file");
+    std::fs::write(&regular_file, b"not a directory").unwrap();
+
+    let cases = [
+        (
+            Vec::new(),
+            SafeRootConfigurationError::EmptyConfiguration,
+        ),
+        (
+            vec![std::path::PathBuf::from("relative/root")],
+            SafeRootConfigurationError::RelativePath,
+        ),
+        (
+            vec![std::path::PathBuf::from("/")],
+            SafeRootConfigurationError::FilesystemRoot,
+        ),
+        (vec![missing], SafeRootConfigurationError::Unresolved),
+        (vec![regular_file], SafeRootConfigurationError::NotDirectory),
+    ];
+
+    for (safe_roots, expected) in cases {
+        assert_eq!(
+            builder_error_for_roots(safe_roots),
+            McpRouterBuildError::SafeRoots(expected)
+        );
+    }
+}
+
+#[cfg(not(feature = "android-battery-status"))]
+#[test]
+fn public_builder_rejects_requested_uncompiled_battery_client() {
+    let root = tempfile::tempdir().unwrap();
+    let builder = McpRouterBuilder::new(
+        "127.0.0.1",
+        McpAuthPolicy::static_bearer("uncompiled-client-test-token").unwrap(),
+        McpRequestLimits::from_seconds(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .unwrap(),
+        TransportSecurityPolicy::localhost(8000, false).unwrap(),
+        vec![root.path().to_path_buf()],
+    )
+    .unwrap()
+    .with_android_battery_status_enabled(true);
+
+    let error = match builder.build() {
+        Ok(_) => panic!("an uncompiled optional client unexpectedly built"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        McpRouterBuildError::CapabilityNotCompiled {
+            capability: "android_battery_status"
+        }
+    );
+}
+
+#[tokio::test]
+async fn one_public_builder_authenticates_before_every_transport_surface() {
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    let root = tempfile::tempdir().unwrap();
+    let existing = root.path().join("existing.txt");
+    let created = root.path().join("created");
+    let copied = root.path().join("copied.txt");
+    let written = root.path().join("written.txt");
+    std::fs::write(&existing, b"existing-content").unwrap();
+
+    let create_authority = CreateDirectoryGrantAuthority::from_hex_key(
+        "test-key-1",
+        KEY,
+        "builder-auth-test-principal",
+    )
+    .unwrap();
+    let copy_authority = CopyFileGrantAuthority::from_hex_key(
+        "test-key-1",
+        KEY,
+        "builder-auth-test-principal",
+    )
+    .unwrap();
+    let write_authority = WriteFileGrantAuthority::from_hex_key(
+        "test-key-1",
+        KEY,
+        "builder-auth-test-principal",
+    )
+    .unwrap();
+
+    let app = McpRouterBuilder::new(
+        "127.0.0.1",
+        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        McpRequestLimits::from_seconds(1, 5, 1_024).unwrap(),
+        TransportSecurityPolicy::localhost(8000, false).unwrap(),
+        vec![root.path().to_path_buf()],
+    )
+    .unwrap()
+    .with_create_directory_authority(create_authority)
+    .with_copy_file_authority(copy_authority)
+    .with_write_file_authority(write_authority)
+    .build()
+    .unwrap();
+
+    let requests = [
+        json!({
+            "jsonrpc": "2.0",
+            "id": "blocked-session",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "builder-auth-test", "version": "1.0.0"}
+            }
+        }),
+        json!({"jsonrpc": "2.0", "id": "blocked-discovery", "method": "tools/list"}),
+        json!({
+            "jsonrpc": "2.0",
+            "id": "blocked-read",
+            "method": "tools/call",
+            "params": {
+                "name": "read_file",
+                "arguments": {"path": existing.to_string_lossy()}
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": "blocked-create",
+            "method": "tools/call",
+            "params": {
+                "name": "create_directory",
+                "arguments": {"path": created.to_string_lossy(), "dry_run": false}
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": "blocked-copy",
+            "method": "tools/call",
+            "params": {
+                "name": "copy_file",
+                "arguments": {
+                    "source_path": existing.to_string_lossy(),
+                    "destination_path": copied.to_string_lossy(),
+                    "dry_run": false
+                }
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": "blocked-write",
+            "method": "tools/call",
+            "params": {
+                "name": "write_file",
+                "arguments": {
+                    "path": written.to_string_lossy(),
+                    "content": "blocked-content",
+                    "dry_run": false
+                }
+            }
+        }),
+    ];
+
+    for body in requests {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, MCP_POST_ACCEPT)
+                    .header("mcp-capability-grant", "attacker-controlled-grant")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let payload = response_json(response).await;
+        assert_eq!(payload["error"], "unauthorized");
+    }
+
+    for request in [
+        Request::get("/mcp").body(Body::empty()).unwrap(),
+        Request::delete("/mcp").body(Body::empty()).unwrap(),
+    ] {
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    assert_eq!(std::fs::read(&existing).unwrap(), b"existing-content");
+    assert!(!created.exists());
+    assert!(!copied.exists());
+    assert!(!written.exists());
 }
