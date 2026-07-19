@@ -21,7 +21,7 @@ Enabled staged tools:
 - `read_file`
 - `read_text_range` for one 4-to-256 KiB UTF-8 byte range from a no-follow safe-rooted regular file of at most 64 MiB, returned only on code-point boundaries with explicit next-offset and EOF metadata
 - `search_text` for bounded literal UTF-8 location search without content excerpts
-- `write_file` preview for one safe-rooted UTF-8 target up to 1 MiB; mutation additionally requires the independent default-disabled runtime gate and one principal/session/root/target/content/disposition-bound single-use grant, then publishes fixed mode `0600`
+- `write_file` preview for one bounded UTF-8 target; mutation is independently default-disabled and additionally requires `MCP__FILE__WRITE_MUTATION_ENABLED=true`, static authentication, a capability key pair, and one request-scoped single-use grant bound to the exact content and `create`/`replace` target state. Create is atomic no-replace; replace retains the displaced object in a bounded private recovery quarantine.
 
 Separately gated read-only tool:
 
@@ -60,18 +60,21 @@ The complete contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECT
 
 ### `write_file` request grant
 
-Status: implemented as a distinct narrowly scoped Class 2 authorization layer.
+Status: implemented as an independent narrowly scoped Class 2 authorization layer.
 
-- Runtime gate: `MCP__FILE__WRITE_MUTATION_ENABLED`, default `false` and independent from directory or Android gates.
-- Key configuration: the paired lowercase key ID and 32-byte HMAC-SHA-256 key; static-token authentication is mandatory.
-- Issuance: local exact-binary `--issue-write-file-grant`, never an MCP tool or HTTP endpoint.
-- Transport: exactly one bounded `MCP-Capability-Grant` header, accepted only on `tools/call` for `write_file`; a preview may carry it but cannot consume it.
-- Binding: keyed static principal, canonical session UUID, write capability, root device/inode, normalized target, exact content SHA-256, create-or-replace disposition, mutating posture, format/key ID, JTI, issuance, and expiry.
-- Consumption: atomic immediately before exclusive staging creation; complete-response preflight and all classification happen first, while every later failure retains consumption.
-- Publication: exact 1 MiB ceiling, fixed mode `0600`, create/no-replace or replace/exchange, held descriptor verification, durable sync, and exact-owned cleanup.
-- Privacy: no key, grant, fingerprint, session, JTI, content/target digest, path, content, root identity, staging name, or timestamp in responses, logs, evidence, or audit labels.
+- Runtime gate: `MCP__FILE__WRITE_MUTATION_ENABLED`, default `false`; it does not inherit the directory-creation or Android-volume gate.
+- Startup posture: an `mcp-runtime` binary, static-token authentication, and one paired lowercase key ID plus 32-byte HMAC-SHA-256 key are mandatory; partial or malformed key configuration fails closed.
+- Issuance: local exact-binary `--issue-write-file-grant`, never an MCP tool. The issuer receives the active session, safe-root target, a private stable no-follow content file of at most 1 MiB, and exact `create` or `replace` disposition through `MCP__CAPABILITY__SESSION_ID`, `MCP__CAPABILITY__WRITE_FILE_TARGET`, `MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE`, and `MCP__CAPABILITY__WRITE_FILE_DISPOSITION`.
+- Transport: exactly one bounded ASCII `MCP-Capability-Grant` header, accepted only on an active-session `tools/call` for `write_file` or another explicitly grant-aware tool; it is rejected on initialization, notifications, responses, discovery, GET, DELETE, and unrelated tools.
+- Binding: static principal, canonical session UUID, capability, safe-root device/inode, normalized target digest, exact content digest, exact `create`/`replace` disposition, and—on replacement—the existing target device, inode, size, high-resolution ctime, and one-link count, plus mutating posture. The fixed 65-byte payload (130 lowercase hex) carries only a random JTI, the signed write-family byte, keyed domain-separated operation binding, and issued/expiry timestamps; it does not serialize those binding inputs.
+- Ordering: request authentication remains outermost. The runtime then enforces transport/header context, lifecycle and exact tool context, closed schema, the default-disabled gate, complete 16 KiB response preflight, 1 MiB payload and safe-root/target validation, recovery-quarantine capacity, and exact grant matching before atomically consuming the grant immediately before publication work.
+- Transaction: each target parent reserves `.termux-mcp-write-quarantine`, which is mode `0700` and inaccessible through every MCP filesystem operation. The runtime creates one randomized mode-`0600` `.termux-mcp-write-artifact-*` staging entry there. Create publishes it with `NOREPLACE` and retains no artifact. Replace accepts only a single-link regular target of at most 1 MiB, performs one irreversible `EXCHANGE`, verifies the exact staged inode at the final name, and leaves the displaced prior inode/content under the randomized quarantine name. No automatic rollback or destructive post-capture cleanup is attempted.
+- Bounds/concurrency: each parent retains at most 32 artifacts and 32 MiB. The advisory quarantine lock is nonblocking and coordinates only cooperating writers; the limit is not global, and a same-UID peer can cause a bounded denial or denial of service. A post-commit failure may leave the authorized new inode at the target and the displaced object quarantined, with the grant consumed.
+- Result: success returns only `dryRun`, byte count, disposition, `recoveryArtifactRetained`, fixed mode, and fixed file/response limits. Replacement reports `true`; create and preview report `false`. It never returns the path, content, or artifact name, and the complete response is capped at 16 KiB.
+- Consumption/state: preview and pre-authorization failures do not consume; every failure after consumption retains it. Grants normally live 60 seconds, permit five seconds of future skew, have a 120-second hard lifetime ceiling, and use at most 4,096 unexpired replay entries.
+- Privacy: responses and aggregate audits contain only stable tool/gate/mode/decision/reason labels. They never retain the key, header, principal fingerprint, session, JTI, target/content digest, disposition-specific identity, path, content, artifact name, retained counts/bytes, or timestamp.
 
-The complete contracts are [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md).
+The complete contract is [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 
 ## Gate 1: non-sensitive platform metadata
 

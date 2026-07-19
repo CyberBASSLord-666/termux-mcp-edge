@@ -15,21 +15,26 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use uuid::Uuid;
 
-use crate::android_volume_control::AndroidVolumeStreamName;
+use crate::{
+    android_volume_control::AndroidVolumeStreamName,
+    request_grant_capability::{
+        RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+    },
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
+pub const ANDROID_VOLUME_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
 pub const ANDROID_VOLUME_GRANT_TTL_SECONDS: u64 = 60;
 pub const MAX_ANDROID_VOLUME_GRANT_LIFETIME_SECONDS: u64 = 120;
 pub const MAX_ANDROID_VOLUME_GRANT_FUTURE_SKEW_SECONDS: u64 = 5;
-pub const MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES: usize = 384;
+pub const MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
 pub const MAX_ANDROID_VOLUME_GRANT_KEY_ID_BYTES: usize = 32;
 pub const ANDROID_VOLUME_GRANT_KEY_BYTES: usize = 32;
 pub const ANDROID_VOLUME_GRANT_KEY_HEX_BYTES: usize = ANDROID_VOLUME_GRANT_KEY_BYTES * 2;
 pub const MAX_CONSUMED_ANDROID_VOLUME_GRANTS: usize = 4_096;
 
 const GRANT_VERSION: &str = "v1";
-const VOLUME_CONTROL_CAPABILITY: u8 = 2;
 const MUTATING_POSTURE: u8 = 1;
 const GRANT_ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
@@ -203,7 +208,7 @@ impl AndroidVolumeGrantAuthority {
             grant_id: *Uuid::new_v4().as_bytes(),
             principal_digest: self.principal_digest,
             session_id: parse_canonical_session(session_id)?,
-            capability: VOLUME_CONTROL_CAPABILITY,
+            capability: RequestGrantCapability::AndroidVolume.wire_code(),
             stream: target.stream.grant_code(),
             level: target.level,
             posture: MUTATING_POSTURE,
@@ -225,7 +230,7 @@ impl AndroidVolumeGrantAuthority {
         let grant = self.parse_and_verify(token)?;
         if grant.principal_digest != self.principal_digest
             || grant.session_id != expected_session
-            || grant.capability != VOLUME_CONTROL_CAPABILITY
+            || grant.capability != RequestGrantCapability::AndroidVolume.wire_code()
             || grant.stream != target.stream.grant_code()
             || grant.level != target.level
             || grant.posture != MUTATING_POSTURE
@@ -473,6 +478,25 @@ mod tests {
         AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap()
     }
 
+    fn resign_payload(
+        authority: &AndroidVolumeGrantAuthority,
+        token: &str,
+        mutate: impl FnOnce(&mut [u8; PAYLOAD_BYTES]),
+    ) -> String {
+        let mut segments = token.split('.');
+        let version = segments.next().unwrap();
+        let key_id = segments.next().unwrap();
+        let payload_hex = segments.next().unwrap();
+        let _signature = segments.next().unwrap();
+        let mut payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex).unwrap();
+        mutate(&mut payload);
+        let payload_hex = encode_hex(&payload);
+        let signed = format!("{version}.{key_id}.{payload_hex}");
+        let mut mac = HmacSha256::new_from_slice(authority.key.as_ref()).unwrap();
+        mac.update(signed.as_bytes());
+        format!("{signed}.{}", encode_hex(&mac.finalize().into_bytes()))
+    }
+
     #[test]
     fn one_grant_is_exactly_bound_and_single_use() {
         let authority = authority();
@@ -487,6 +511,33 @@ mod tests {
                 .unwrap_err(),
             AndroidVolumeGrantError::Replayed
         );
+    }
+
+    #[test]
+    fn rejects_legacy_volume_code_two_without_consuming_the_grant() {
+        const CAPABILITY_OFFSET: usize = GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES;
+
+        let authority = authority();
+        let token = authority.issue_at(SESSION, target(), NOW).unwrap();
+        let payload_hex = token.split('.').nth(2).unwrap();
+        let payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex).unwrap();
+        assert_eq!(
+            payload[CAPABILITY_OFFSET],
+            RequestGrantCapability::AndroidVolume.wire_code()
+        );
+
+        let legacy = resign_payload(&authority, &token, |payload| {
+            payload[CAPABILITY_OFFSET] = 2;
+        });
+        assert_eq!(
+            authority
+                .consume_at(Some(&legacy), SESSION, target(), NOW)
+                .unwrap_err(),
+            AndroidVolumeGrantError::BindingMismatch
+        );
+        authority
+            .consume_at(Some(&token), SESSION, target(), NOW)
+            .unwrap();
     }
 
     #[test]

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import hashlib
 import hmac
 import json
@@ -87,6 +88,7 @@ def runtime_value(name: str, default: str | None = None) -> str | None:
 POSTURE = sys.argv[1]
 VERSION = sys.argv[2] if len(sys.argv) > 2 else ""
 MCP_ENABLED = POSTURE in {"mcp", "volume-control"}
+WRITE_QUARANTINE_COMPONENT = ".termux-mcp-write-quarantine"
 VOLUME_CONTROL_COMPILED = POSTURE == "volume-control"
 PORT = int(runtime_value("MCP__SERVER__PORT", "0") or "0")
 TOKEN = runtime_value("MCP__AUTH__STATIC_TOKEN")
@@ -106,10 +108,7 @@ WRITE_FILE_CAPABILITY_ENABLED = (
 CAPABILITY_KEY_ID = runtime_value("MCP__CAPABILITY__KEY_ID", "") or ""
 CAPABILITY_KEY_HEX = runtime_value("MCP__CAPABILITY__HMAC_KEY_HEX", "") or ""
 CAPABILITY_HEADER = "MCP-Capability-Grant"
-CONSUMED_CREATE_DIRECTORY_GRANTS: set[bytes] = set()
-CONSUMED_WRITE_FILE_GRANTS: set[bytes] = set()
-MAX_WRITE_FILE_BYTES = 1_048_576
-MAX_WRITE_FILE_RESPONSE_BYTES = 16_384
+CONSUMED_GRANTS: set[bytes] = set()
 TOOLS = [
     "runtime_status",
     "platform_info",
@@ -128,6 +127,8 @@ TOOLS = [
     "search_text",
     "write_file",
 ]
+MAX_WRITE_FILE_BYTES = 1_048_576
+MAX_WRITE_FILE_RESPONSE_BYTES = 16_384
 
 
 def payload_bytes(value: Any) -> bytes:
@@ -166,6 +167,10 @@ def capability_error(identifier: Any, reason: str) -> dict[str, Any]:
     }
 
 
+def is_write_quarantine_component(component: str) -> bool:
+    return component.isascii() and component.lower() == WRITE_QUARANTINE_COMPONENT
+
+
 def safe_path(raw: str) -> pathlib.Path | None:
     try:
         candidate = pathlib.Path(raw)
@@ -175,12 +180,146 @@ def safe_path(raw: str) -> pathlib.Path | None:
         resolved = resolved_parent / candidate.name
         if os.path.commonpath((str(SAFE_ROOT), str(resolved))) != str(SAFE_ROOT):
             return None
+        relative = resolved.relative_to(SAFE_ROOT)
+        if any(is_write_quarantine_component(part) for part in relative.parts):
+            return None
         return resolved
     except (OSError, ValueError):
         return None
 
 
-def grant_binding(session_id: str, target: pathlib.Path) -> bytes:
+def publish_fixture_write(
+    target: pathlib.Path, content: bytes, disposition: str
+) -> bool:
+    """Emulate bounded native publication and return recovery retention state."""
+    quarantine = target.parent / ".termux-mcp-write-quarantine"
+    try:
+        quarantine.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    quarantine_metadata = quarantine.stat(follow_symlinks=False)
+    if (
+        quarantine.is_symlink()
+        or not stat.S_ISDIR(quarantine_metadata.st_mode)
+        or stat.S_IMODE(quarantine_metadata.st_mode) != 0o700
+    ):
+        raise OSError("fixture quarantine is invalid")
+
+    artifacts = list(quarantine.iterdir())
+    if len(artifacts) >= 32:
+        raise OSError("fixture quarantine artifact limit exceeded")
+    total_bytes = 0
+    for artifact in artifacts:
+        metadata = artifact.stat(follow_symlinks=False)
+        identifier = artifact.name.removeprefix(".termux-mcp-write-artifact-")
+        try:
+            canonical_identifier = str(uuid.UUID(identifier))
+        except ValueError:
+            canonical_identifier = ""
+        if (
+            artifact.is_symlink()
+            or not stat.S_ISREG(metadata.st_mode)
+            or canonical_identifier != identifier
+            or metadata.st_nlink != 1
+            or metadata.st_size > 1024 * 1024
+        ):
+            raise OSError("fixture quarantine entry is invalid")
+        total_bytes += metadata.st_size
+    if total_bytes + (target.stat(follow_symlinks=False).st_size if disposition == "replace" else 0) > 32 * 1024 * 1024:
+        raise OSError("fixture quarantine byte limit exceeded")
+
+    staging = quarantine / f".termux-mcp-write-artifact-{uuid.uuid4()}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    retain_staging = False
+    try:
+        descriptor = os.open(staging, flags, 0o600)
+        os.fchmod(descriptor, 0o600)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("fixture staging write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+        staged = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(staged.st_mode)
+            or stat.S_IMODE(staged.st_mode) != 0o600
+            or staged.st_size != len(content)
+        ):
+            raise OSError("fixture staging verification failed")
+        staged_descriptor = descriptor
+        descriptor = None
+        os.close(staged_descriptor)
+
+        if disposition == "create":
+            os.link(staging, target, follow_symlinks=False)
+            staging.unlink()
+        elif disposition == "replace":
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameat2 = getattr(libc, "renameat2", None)
+            if renameat2 is None:
+                raise OSError("fixture requires atomic rename exchange support")
+            renameat2.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            renameat2.restype = ctypes.c_int
+            if renameat2(
+                -100,
+                os.fsencode(staging),
+                -100,
+                os.fsencode(target),
+                2,
+            ) != 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+            # EXCHANGE leaves the displaced prior object at the randomized
+            # staging name. Match the native non-destructive recovery contract,
+            # including after any later verification or durability failure.
+            retain_staging = True
+        else:
+            raise ValueError("unsupported write disposition")
+
+        published = target.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(published.st_mode)
+            or stat.S_IMODE(published.st_mode) != 0o600
+            or published.st_size != len(content)
+            or (published.st_dev, published.st_ino) != (staged.st_dev, staged.st_ino)
+        ):
+            raise OSError("fixture publication verification failed")
+        parent_descriptor = os.open(
+            target.parent,
+            os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+        return disposition == "replace"
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if not retain_staging:
+            try:
+                staging.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def grant_binding(
+    purpose: str,
+    session_id: str,
+    target: pathlib.Path,
+    content: bytes | None = None,
+    disposition: str | None = None,
+) -> bytes:
     relative = target.relative_to(SAFE_ROOT)
     root_stat = SAFE_ROOT.stat()
     key = bytes.fromhex(CAPABILITY_KEY_HEX)
@@ -190,7 +329,9 @@ def grant_binding(session_id: str, target: pathlib.Path) -> bytes:
         hashlib.sha256,
     ).digest()
     digest = hashlib.sha256()
-    digest.update(b"termux-mcp-release-fixture:create-directory:v1\0")
+    digest.update(b"termux-mcp-release-fixture:request-capability:v2\0")
+    digest.update(purpose.encode())
+    digest.update(b"\0")
     for value in (principal, session_id.encode()):
         digest.update(struct.pack(">I", len(value)))
         digest.update(value)
@@ -199,128 +340,243 @@ def grant_binding(session_id: str, target: pathlib.Path) -> bytes:
         encoded = os.fsencode(component)
         digest.update(struct.pack(">I", len(encoded)))
         digest.update(encoded)
-    digest.update(b"filesystem.create-directory\0mutating")
+    if purpose == "create_directory":
+        digest.update(b"filesystem.create-directory\0mutating")
+    elif purpose == "write_file" and content is not None and disposition is not None:
+        digest.update(b"filesystem.write-file\0mutating\0")
+        digest.update(disposition.encode())
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(content).digest())
+        if disposition == "replace":
+            metadata = target.stat(follow_symlinks=False)
+            digest.update(struct.pack(">QQ", metadata.st_dev, metadata.st_ino))
+        else:
+            digest.update(bytes(16))
+    else:
+        raise ValueError("unsupported fixture grant purpose")
     return digest.digest()
 
 
-def capability_key() -> bytes:
+def write_grant_binding(
+    grant_id: bytes,
+    session_id: str,
+    target: pathlib.Path,
+    content: bytes,
+    disposition: str,
+) -> bytes:
+    key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    principal = hmac.new(
+        key,
+        b"termux-mcp:write-file-principal:v1\0" + TOKEN.encode(),
+        hashlib.sha256,
+    ).digest()
+    try:
+        parsed_session = uuid.UUID(session_id)
+    except ValueError as error:
+        raise ValueError("invalid canonical session") from error
+    if str(parsed_session) != session_id:
+        raise ValueError("invalid canonical session")
+
+    relative = target.relative_to(SAFE_ROOT)
+    target_digest = hashlib.sha256()
+    target_digest.update(b"termux-mcp:write-file-target:v1\0")
+    component_count = 0
+    for component in relative.parts:
+        encoded = os.fsencode(component)
+        target_digest.update(struct.pack(">I", len(encoded)))
+        target_digest.update(encoded)
+        component_count += 1
+    if component_count == 0:
+        raise ValueError("empty target")
+    target_digest.update(struct.pack(">I", component_count))
+
+    if disposition == "create":
+        disposition_code = 1
+        replacement = bytes([0]) + bytes(56)
+    elif disposition == "replace":
+        disposition_code = 2
+        metadata = target.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_size > 1_048_576
+        ):
+            raise ValueError("invalid replacement identity")
+        ctime_seconds, ctime_nanoseconds = divmod(metadata.st_ctime_ns, 1_000_000_000)
+        replacement = (
+            bytes([1])
+            + struct.pack(
+                ">QQQqqQ",
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                ctime_seconds,
+                ctime_nanoseconds,
+                metadata.st_nlink,
+            )
+            + bytes(8)
+        )
+    else:
+        raise ValueError("invalid write disposition")
+
+    root_stat = SAFE_ROOT.stat()
+    operation = (
+        b"termux-mcp:write-file-operation-binding:v1\0"
+        + grant_id
+        + principal
+        + parsed_session.bytes
+        + bytes([3, 1])
+        + struct.pack(">QQ", root_stat.st_dev, root_stat.st_ino)
+        + target_digest.digest()
+        + hashlib.sha256(content).digest()
+        + bytes([disposition_code])
+        + replacement
+    )
+    return hmac.new(key, operation, hashlib.sha256).digest()
+
+
+def read_private_write_content() -> tuple[bytes, os.stat_result]:
+    raw_path = os.environ.get("MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE", "")
+    path = pathlib.Path(raw_path)
+    if not path.is_absolute():
+        raise SystemExit(2)
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_mode & 0o077
+                or not before.st_mode & 0o400
+                or before.st_size > 1_048_576
+            ):
+                raise SystemExit(2)
+            content = b""
+            while len(content) <= 1_048_576:
+                chunk = os.read(descriptor, 1_048_577 - len(content))
+                if not chunk:
+                    break
+                content += chunk
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        raise SystemExit(2) from error
+    if (
+        len(content) > 1_048_576
+        or (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mode,
+            before.st_ctime_ns,
+            before.st_mtime_ns,
+        )
+        != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mode,
+            after.st_ctime_ns,
+            after.st_mtime_ns,
+        )
+    ):
+        raise SystemExit(2)
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise SystemExit(2) from error
+    return content, before
+
+
+def issue_fixture_grant(purpose: str) -> str:
+    enabled = (
+        CREATE_DIRECTORY_CAPABILITY_ENABLED
+        if purpose == "create_directory"
+        else WRITE_FILE_CAPABILITY_ENABLED
+    )
+    if not enabled:
+        raise SystemExit(2)
     try:
         key = bytes.fromhex(CAPABILITY_KEY_HEX)
     except ValueError as error:
         raise SystemExit(2) from error
     if len(key) != 32 or not CAPABILITY_KEY_ID:
         raise SystemExit(2)
-    return key
-
-
-def canonical_session_bytes(session_id: str) -> bytes:
-    try:
-        parsed = uuid.UUID(session_id)
-    except (ValueError, AttributeError) as error:
-        raise SystemExit(2) from error
-    if str(parsed) != session_id:
+    session_id = os.environ.get("MCP__CAPABILITY__SESSION_ID", "")
+    if purpose == "create_directory":
+        target = safe_path(os.environ.get("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", ""))
+        content = None
+        disposition = None
+        payload_size = 130
+        content_identity = None
+    elif purpose == "write_file":
+        target = safe_path(os.environ.get("MCP__CAPABILITY__WRITE_FILE_TARGET", ""))
+        content, content_identity = read_private_write_content()
+        disposition = os.environ.get("MCP__CAPABILITY__WRITE_FILE_DISPOSITION", "")
+        payload_size = 65
+    else:
         raise SystemExit(2)
-    return parsed.bytes
-
-
-def classify_write_target(target: pathlib.Path | None) -> str | None:
-    if target is None or target == SAFE_ROOT or not target.parent.is_dir():
-        return None
-    if target.exists():
-        try:
-            metadata = target.stat(follow_symlinks=False)
-        except OSError:
-            return None
-        return "replace" if stat.S_ISREG(metadata.st_mode) else None
-    return "create"
-
-
-def write_operation_digest(
-    target: pathlib.Path, content_digest: bytes, publication: str
-) -> bytes:
-    digest = hashlib.sha256()
-    digest.update(b"termux-mcp:write-file-target:v1\0")
-    component_count = 0
-    for component in target.relative_to(SAFE_ROOT).parts:
-        encoded = os.fsencode(component)
-        digest.update(struct.pack(">I", len(encoded)))
-        digest.update(encoded)
-        component_count += 1
-    if component_count == 0:
+    if not session_id or target is None or target == SAFE_ROOT or not target.parent.is_dir():
         raise SystemExit(2)
-    digest.update(struct.pack(">I", component_count))
-    digest.update(content_digest)
-    digest.update(bytes((1 if publication == "create" else 2, 1)))
-    return digest.digest()
-
-
-def principal_digest(key: bytes) -> bytes:
-    return hmac.new(
-        key,
-        b"termux-mcp:static-principal:v1\0" + TOKEN.encode(),
-        hashlib.sha256,
-    ).digest()
-
-
-def signed_grant(payload: bytes, key: bytes) -> str:
-    if len(payload) != 130:
+    if purpose == "create_directory" and (target.exists() or target.is_symlink()):
+        raise SystemExit(2)
+    if purpose == "write_file":
+        if disposition == "create" and (target.exists() or target.is_symlink()):
+            raise SystemExit(2)
+        if disposition == "replace" and (
+            target.is_symlink() or not target.is_file()
+        ):
+            raise SystemExit(2)
+        if disposition not in {"create", "replace"}:
+            raise SystemExit(2)
+        if disposition == "replace":
+            target_metadata = target.stat(follow_symlinks=False)
+            if (target_metadata.st_dev, target_metadata.st_ino) == (
+                content_identity.st_dev,
+                content_identity.st_ino,
+            ):
+                raise SystemExit(2)
+        raw_config = os.environ.get("MCP__CAPABILITY__CONFIG_FILE")
+        if raw_config:
+            try:
+                config_metadata = pathlib.Path(raw_config).stat(follow_symlinks=False)
+            except OSError as error:
+                raise SystemExit(2) from error
+            if (config_metadata.st_dev, config_metadata.st_ino) == (
+                content_identity.st_dev,
+                content_identity.st_ino,
+            ):
+                raise SystemExit(2)
+    issued = int(time.time())
+    grant_id = os.urandom(16)
+    timestamps = struct.pack(">QQ", issued, issued + 60)
+    if purpose == "write_file":
+        binding = write_grant_binding(
+            grant_id, session_id, target, content, disposition
+        )
+        payload = grant_id + bytes([2]) + binding + timestamps
+    else:
+        binding = grant_binding(purpose, session_id, target, content, disposition)
+        payload = grant_id + binding + timestamps
+        payload += bytes(payload_size - len(payload))
+        payload = payload[:64] + bytes([1]) + payload[65:]
+    if len(payload) != payload_size:
         raise SystemExit(2)
     signed = f"v1.{CAPABILITY_KEY_ID}.{payload.hex()}"
     signature = hmac.new(key, signed.encode(), hashlib.sha256).hexdigest()
     return f"{signed}.{signature}"
 
 
-def issue_create_directory_fixture_grant() -> str:
-    if not CREATE_DIRECTORY_CAPABILITY_ENABLED:
-        raise SystemExit(2)
-    key = capability_key()
-    session_id = os.environ.get("MCP__CAPABILITY__SESSION_ID", "")
-    target = safe_path(os.environ.get("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", ""))
-    if not session_id or target is None or target.exists() or not target.parent.is_dir():
-        raise SystemExit(2)
-    issued = int(time.time())
-    payload = (
-        os.urandom(16)
-        + grant_binding(session_id, target)
-        + struct.pack(">QQ", issued, issued + 60)
-        + bytes(66)
-    )
-    return signed_grant(payload, key)
-
-
-def issue_write_file_fixture_grant() -> str:
-    if not WRITE_FILE_CAPABILITY_ENABLED:
-        raise SystemExit(2)
-    key = capability_key()
-    session_id = os.environ.get("MCP__CAPABILITY__SESSION_ID", "")
-    session = canonical_session_bytes(session_id)
-    target = safe_path(os.environ.get("MCP__CAPABILITY__WRITE_FILE_TARGET", ""))
-    publication = classify_write_target(target)
-    raw_content_digest = os.environ.get(
-        "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256", ""
-    )
-    if re.fullmatch(r"[0-9a-f]{64}", raw_content_digest) is None:
-        raise SystemExit(2)
-    content_digest = bytes.fromhex(raw_content_digest)
-    if target is None or publication is None:
-        raise SystemExit(2)
-    root_metadata = SAFE_ROOT.stat()
-    issued = int(time.time())
-    payload = (
-        os.urandom(16)
-        + principal_digest(key)
-        + session
-        + bytes((2,))
-        + struct.pack(">QQ", root_metadata.st_dev, root_metadata.st_ino)
-        + write_operation_digest(target, content_digest, publication)
-        + bytes((1,))
-        + struct.pack(">QQ", issued, issued + 60)
-    )
-    return signed_grant(payload, key)
-
-
 def consume_fixture_grant(
-    raw: str | None, session_id: str, target: pathlib.Path
+    raw: str | None,
+    purpose: str,
+    session_id: str,
+    target: pathlib.Path,
+    content: bytes | None = None,
+    disposition: str | None = None,
 ) -> str | None:
     if raw is None:
         return "capability_grant_missing"
@@ -338,96 +594,46 @@ def consume_fixture_grant(
         key = bytes.fromhex(CAPABILITY_KEY_HEX)
     except ValueError:
         return "capability_grant_malformed"
-    if len(payload) != 130 or len(signature) != 32 or len(key) != 32:
+    expected_payload_size = 130 if purpose == "create_directory" else 65
+    if len(payload) != expected_payload_size or len(signature) != 32 or len(key) != 32:
         return "capability_grant_malformed"
     signed = f"{version}.{key_id}.{payload_hex}".encode()
     expected = hmac.new(key, signed, hashlib.sha256).digest()
     if not hmac.compare_digest(signature, expected):
         return "capability_grant_signature_invalid"
     grant_id = payload[:16]
-    binding = payload[16:48]
-    issued, expires = struct.unpack(">QQ", payload[48:64])
-    current = int(time.time())
-    if binding != grant_binding(session_id, target):
+    if purpose == "write_file":
+        capability = payload[16]
+        binding = payload[17:49]
+        issued, expires = struct.unpack(">QQ", payload[49:65])
+        expected_capability = 2
+    else:
+        capability = payload[64]
+        binding = payload[16:48]
+        issued, expires = struct.unpack(">QQ", payload[48:64])
+        expected_capability = 1
+    if capability != expected_capability:
         return "capability_grant_binding_mismatch"
-    if issued > current + 5:
-        return "capability_grant_future_issued"
-    if expires <= issued or expires - issued > 120:
-        return "capability_grant_lifetime_exceeded"
-    if current >= expires:
-        return "capability_grant_expired"
-    if grant_id in CONSUMED_CREATE_DIRECTORY_GRANTS:
-        return "capability_grant_replayed"
-    CONSUMED_CREATE_DIRECTORY_GRANTS.add(grant_id)
-    return None
-
-
-def consume_write_file_fixture_grant(
-    raw: str | None,
-    session_id: str,
-    target: pathlib.Path,
-    content_digest: bytes,
-    publication: str,
-) -> str | None:
-    if raw is None:
-        return "capability_grant_missing"
-    parts = raw.split(".")
-    if len(parts) != 4:
-        return "capability_grant_malformed"
-    version, key_id, payload_hex, signature_hex = parts
-    if version != "v1":
-        return "capability_grant_version_unknown"
-    if key_id != CAPABILITY_KEY_ID:
-        return "capability_grant_key_unknown"
+    current = int(time.time())
     try:
-        payload = bytes.fromhex(payload_hex)
-        signature = bytes.fromhex(signature_hex)
-        key = bytes.fromhex(CAPABILITY_KEY_HEX)
-        session = uuid.UUID(session_id)
-    except (ValueError, AttributeError):
-        return "capability_grant_malformed"
-    if (
-        len(payload) != 130
-        or len(signature) != 32
-        or len(key) != 32
-        or str(session) != session_id
-    ):
-        return "capability_grant_malformed"
-    signed = f"{version}.{key_id}.{payload_hex}".encode()
-    expected_signature = hmac.new(key, signed, hashlib.sha256).digest()
-    if not hmac.compare_digest(signature, expected_signature):
-        return "capability_grant_signature_invalid"
-
-    grant_id = payload[0:16]
-    grant_principal = payload[16:48]
-    grant_session = payload[48:64]
-    capability = payload[64]
-    root_device, root_inode = struct.unpack(">QQ", payload[65:81])
-    operation_digest = payload[81:113]
-    posture = payload[113]
-    issued, expires = struct.unpack(">QQ", payload[114:130])
-    root_metadata = SAFE_ROOT.stat()
-    expected_operation = write_operation_digest(target, content_digest, publication)
-    if (
-        grant_principal != principal_digest(key)
-        or grant_session != session.bytes
-        or capability != 2
-        or root_device != root_metadata.st_dev
-        or root_inode != root_metadata.st_ino
-        or operation_digest != expected_operation
-        or posture != 1
-    ):
+        expected_binding = (
+            write_grant_binding(grant_id, session_id, target, content, disposition)
+            if purpose == "write_file" and content is not None and disposition is not None
+            else grant_binding(purpose, session_id, target, content, disposition)
+        )
+    except (OSError, ValueError):
         return "capability_grant_binding_mismatch"
-    current = int(time.time())
+    if not hmac.compare_digest(binding, expected_binding):
+        return "capability_grant_binding_mismatch"
     if issued > current + 5:
         return "capability_grant_future_issued"
     if expires <= issued or expires - issued > 120:
         return "capability_grant_lifetime_exceeded"
     if current >= expires:
         return "capability_grant_expired"
-    if grant_id in CONSUMED_WRITE_FILE_GRANTS:
+    if grant_id in CONSUMED_GRANTS:
         return "capability_grant_replayed"
-    CONSUMED_WRITE_FILE_GRANTS.add(grant_id)
+    CONSUMED_GRANTS.add(grant_id)
     return None
 
 
@@ -573,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
         identifier = request.get("id")
         grant_values = self.headers.get_all(CAPABILITY_HEADER) or []
         if len(grant_values) > 1 or any(
-            not value.isascii() or not value or len(value) > 384
+            not value.isascii() or not value or len(value) > 512
             for value in grant_values
         ):
             self.send_json(
@@ -637,43 +843,24 @@ class Handler(BaseHTTPRequestHandler):
             tools = []
             for name in TOOLS:
                 if name == "create_directory":
+                    create_dry_run: dict[str, Any] = {"type": "boolean"}
+                    if not CREATE_DIRECTORY_CAPABILITY_ENABLED:
+                        create_dry_run["const"] = True
                     tools.append(
                         {
                             "name": name,
                             "description": (
-                                "Fixture create_directory requires MCP-Capability-Grant "
-                                "for explicit mutation."
+                                "Fixture create_directory requires MCP-Capability-Grant for explicit mutation."
+                                if CREATE_DIRECTORY_CAPABILITY_ENABLED
+                                else "Fixture create_directory mutation gate is disabled."
                             ),
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
                                     "path": {"type": "string"},
-                                    "dry_run": {"type": "boolean"},
+                                    "dry_run": create_dry_run,
                                 },
                                 "required": ["path"],
-                                "additionalProperties": False,
-                            },
-                        }
-                    )
-                elif name == "write_file":
-                    dry_run_schema: dict[str, Any] = {"type": "boolean"}
-                    if not WRITE_FILE_CAPABILITY_ENABLED:
-                        dry_run_schema["const"] = True
-                    tools.append(
-                        {
-                            "name": name,
-                            "description": (
-                                "Fixture write_file requires MCP-Capability-Grant "
-                                "for explicit mutation."
-                            ),
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string"},
-                                    "content": {"type": "string"},
-                                    "dry_run": dry_run_schema,
-                                },
-                                "required": ["path", "content"],
                                 "additionalProperties": False,
                             },
                         }
@@ -784,6 +971,34 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "write_file":
+                    write_dry_run: dict[str, Any] = {"type": "boolean"}
+                    if not WRITE_FILE_CAPABILITY_ENABLED:
+                        write_dry_run["const"] = True
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": (
+                                "Fixture write_file requires a target/content/disposition-bound MCP-Capability-Grant for explicit mutation."
+                                if WRITE_FILE_CAPABILITY_ENABLED
+                                else "Fixture write_file mutation gate is disabled."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "content": {
+                                        "type": "string",
+                                        "maxLength": 1_048_576,
+                                        "x-maxBytes": 1_048_576,
+                                    },
+                                    "dry_run": write_dry_run,
+                                },
+                                "required": ["path", "content"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -881,7 +1096,7 @@ class Handler(BaseHTTPRequestHandler):
                         ),
                         "fileWrites": True,
                         "fileWriteMode": (
-                            "dry_run_or_request_scoped_single_use_grant"
+                            "dry_run_or_target_content_disposition_scoped_single_use_grant"
                             if WRITE_FILE_CAPABILITY_ENABLED
                             else "dry_run_only_mutation_disabled"
                         ),
@@ -889,8 +1104,8 @@ class Handler(BaseHTTPRequestHandler):
                         "fileWriteGrantRequired": WRITE_FILE_CAPABILITY_ENABLED,
                         "fileWriteGrantHeader": "mcp-capability-grant",
                         "fileWriteGrantTtlSeconds": 60,
-                        "fileWriteMaxBytes": MAX_WRITE_FILE_BYTES,
-                        "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
+                        "fileWriteMaxBytes": 1048576,
+                        "fileWriteMaxResponseBytes": 16384,
                     },
                 ),
             )
@@ -992,7 +1207,9 @@ class Handler(BaseHTTPRequestHandler):
                         capability_error(identifier, "create_directory_mutation_disabled"),
                     )
                     return
-                denial = consume_fixture_grant(grant, SESSION_ID, target)
+                denial = consume_fixture_grant(
+                    grant, "create_directory", SESSION_ID, target
+                )
                 if denial is not None:
                     self.send_json(403, capability_error(identifier, denial))
                     return
@@ -1099,6 +1316,8 @@ class Handler(BaseHTTPRequestHandler):
                     skipped_unreadable_entries += 1
                     continue
                 for entry in entries:
+                    if is_write_quarantine_component(entry.name):
+                        continue
                     if entries_examined >= 8192 or len(matches) >= 512:
                         truncated = True
                         break
@@ -1222,6 +1441,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entries = []
             for child in sorted(target.iterdir(), key=lambda item: str(item)):
+                if is_write_quarantine_component(child.name):
+                    continue
                 metadata = child.stat()
                 entries.append(
                     {
@@ -1586,6 +1807,8 @@ class Handler(BaseHTTPRequestHandler):
             truncated = False
             match_limit_reached = False
             for child in sorted(target.iterdir(), key=lambda item: str(item)):
+                if is_write_quarantine_component(child.name):
+                    continue
                 entries_examined += 1
                 if child.is_symlink():
                     skipped_unsafe_entries += 1
@@ -1680,47 +1903,57 @@ class Handler(BaseHTTPRequestHandler):
                     rpc_error(identifier, -32602, "Invalid params", "Tool arguments are invalid."),
                 )
                 return
+            content_bytes = content.encode("utf-8")
             if not dry_run and not WRITE_FILE_CAPABILITY_ENABLED:
                 self.send_json(
                     403,
                     capability_error(identifier, "write_file_mutation_disabled"),
                 )
                 return
+            if not dry_run and grant is None:
+                self.send_json(403, capability_error(identifier, "capability_grant_missing"))
+                return
 
-            content_bytes = content.encode()
-            message = "DRY-RUN" if dry_run else f"Wrote {len(content_bytes)} bytes"
-            response = result(
+            response_preview = result(
                 identifier,
                 {
                     "dryRun": dry_run,
-                    "bytes": len(content_bytes),
-                    "message": message,
+                    "sizeBytes": len(content_bytes),
+                    "disposition": "replace",
+                    "mode": "0600",
+                    "maxFileBytes": MAX_WRITE_FILE_BYTES,
+                    "maxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
+                    "recoveryArtifactRetained": False,
                 },
             )
-            response["result"]["content"][0]["text"] = message
-            if len(payload_bytes(response)) > MAX_WRITE_FILE_RESPONSE_BYTES:
+            if len(payload_bytes(response_preview)) > MAX_WRITE_FILE_RESPONSE_BYTES:
                 error = rpc_error(
                     identifier,
                     -32001,
                     "Payload too large",
-                    "File-write response exceeds the staged response byte limit.",
+                    "File write response exceeds the staged response byte limit.",
                 )
                 if len(payload_bytes(error)) > MAX_WRITE_FILE_RESPONSE_BYTES:
                     error = rpc_error(
                         None,
                         -32001,
                         "Payload too large",
-                        "File-write response exceeds the staged response byte limit.",
+                        "File write response exceeds the staged response byte limit.",
                     )
                 self.send_json(413, error)
                 return
 
             target = safe_path(raw_path)
-            publication = classify_write_target(target)
-            if target is None or publication is None:
+            if (
+                target is None
+                or target == SAFE_ROOT
+                or not target.parent.is_dir()
+                or target.is_symlink()
+                or (target.exists() and not target.is_file())
+            ):
                 self.send_json(
                     400,
-                    rpc_error(identifier, -32602, "Invalid params", "Safe-root rejection."),
+                    rpc_error(identifier, -32602, "Invalid params", "File write invalid."),
                 )
                 return
             if len(content_bytes) > MAX_WRITE_FILE_BYTES:
@@ -1734,44 +1967,39 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 return
-            if dry_run:
-                self.send_json(200, response)
-                return
-
-            denial = consume_write_file_fixture_grant(
-                grant,
-                SESSION_ID,
-                target,
-                hashlib.sha256(content_bytes).digest(),
-                publication,
-            )
-            if denial is not None:
-                self.send_json(403, capability_error(identifier, denial))
-                return
-
-            flags = os.O_WRONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
-            if publication == "create":
-                flags |= os.O_CREAT | os.O_EXCL
-            else:
-                flags |= os.O_TRUNC
-            try:
-                descriptor = os.open(target, flags, 0o600)
-                try:
-                    os.fchmod(descriptor, 0o600)
-                    view = memoryview(content_bytes)
-                    while view:
-                        written = os.write(descriptor, view)
-                        view = view[written:]
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-            except OSError:
-                self.send_json(
-                    500,
-                    rpc_error(identifier, -32603, "Internal error", "Filesystem write failed."),
+            disposition = "replace" if target.exists() else "create"
+            if not dry_run:
+                denial = consume_fixture_grant(
+                    grant,
+                    "write_file",
+                    SESSION_ID,
+                    target,
+                    content_bytes,
+                    disposition,
                 )
-                return
-            self.send_json(200, response)
+                if denial is not None:
+                    self.send_json(403, capability_error(identifier, denial))
+                    return
+                recovery_artifact_retained = publish_fixture_write(
+                    target, content_bytes, disposition
+                )
+            else:
+                recovery_artifact_retained = False
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "dryRun": dry_run,
+                        "sizeBytes": len(content_bytes),
+                        "disposition": disposition,
+                        "mode": "0600",
+                        "maxFileBytes": MAX_WRITE_FILE_BYTES,
+                        "maxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
+                        "recoveryArtifactRetained": recovery_artifact_retained,
+                    },
+                ),
+            )
             return
 
         self.send_json(
@@ -1780,12 +2008,12 @@ class Handler(BaseHTTPRequestHandler):
         )
 
 
-if POSTURE in {"issue", "issue-create-directory"}:
-    print(issue_create_directory_fixture_grant())
+if POSTURE == "issue-create":
+    print(issue_fixture_grant("create_directory"))
     raise SystemExit(0)
 
-if POSTURE == "issue-write-file":
-    print(issue_write_file_fixture_grant())
+if POSTURE == "issue-write":
+    print(issue_fixture_grant("write_file"))
     raise SystemExit(0)
 
 if POSTURE not in {"default", "mcp", "volume-control"}:

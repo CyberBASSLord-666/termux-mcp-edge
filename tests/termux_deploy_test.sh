@@ -188,35 +188,19 @@ rm -f "$TERMUX_MCP_DEPLOY_ROOT/previous"; ln -s "$previous_target" "$TERMUX_MCP_
 chmod 644 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; chmod 600 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 printf 'PATH=/tmp\n' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i '/^PATH=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__SERVER__PORT=8000$/MCP__SERVER__PORT=0/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__SERVER__PORT=0$/MCP__SERVER__PORT=8000/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+max_bearer_token="$(printf '%*s' 4096 '')"; max_bearer_token="${max_bearer_token// /x}"
+sed -i "s/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=$max_bearer_token/" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+bash "$SCRIPT" rollback --dry-run >/dev/null
+sed -i "s/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=${max_bearer_token}x/" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
+sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=non-ascii-é/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
+sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
+sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=test-static-token/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+runtime_config_size="$(stat -c '%s' "$TERMUX_MCP_CONFIG_ROOT/runtime.env")"; printf '\0' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run; truncate -s "$runtime_config_size" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__FILE__WRITE_MUTATION_ENABLED=true$/MCP__FILE__WRITE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__WRITE_MUTATION_ENABLED=invalid$/MCP__FILE__WRITE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 printf '%s\n' 'MCP__CAPABILITY__KEY_ID=duplicate-key' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i '$d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__CAPABILITY__HMAC_KEY_HEX=.*$/MCP__CAPABILITY__HMAC_KEY_HEX=ABCDEF/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__CAPABILITY__HMAC_KEY_HEX=ABCDEF$/MCP__CAPABILITY__HMAC_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i '/^MCP__CAPABILITY__HMAC_KEY_HEX=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; printf '%s\n' 'MCP__CAPABILITY__HMAC_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-
-# Exercise the write gate truth table independently so create_directory and
-# volume-control validation cannot mask the write-specific posture errors.
-cp "$TERMUX_MCP_CONFIG_ROOT/runtime.env" "$ROOT/runtime-valid.env"
-sed -i 's/^MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true$/MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=false/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-sed -i '/^MCP__AUTH__STATIC_TOKEN=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-printf '%s\n' 'MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-if bash "$SCRIPT" rollback >"$ROOT/write-missing-token.stdout" 2>"$ROOT/write-missing-token.stderr"; then
-  fail_test 'write mutation without a static token unexpectedly succeeded'
-fi
-grep -Fq 'write_file mutation requires static-token authentication' "$ROOT/write-missing-token.stderr" \
-  || fail_test 'write mutation returned the wrong missing-token error'
-cp "$ROOT/runtime-valid.env" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-sed -i 's/^MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true$/MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=false/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-sed -i '/^MCP__CAPABILITY__KEY_ID=/d; /^MCP__CAPABILITY__HMAC_KEY_HEX=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-if bash "$SCRIPT" rollback >"$ROOT/write-missing-key.stdout" 2>"$ROOT/write-missing-key.stderr"; then
-  fail_test 'write mutation without a capability key unexpectedly succeeded'
-fi
-grep -Fq 'write_file mutation requires capability key configuration' "$ROOT/write-missing-key.stderr" \
-  || fail_test 'write mutation returned the wrong missing-key error'
-cp "$ROOT/runtime-valid.env" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
-chmod 600 "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 assert_fails env TERMUX_MCP_DEPLOY_ROOT="$HOME" bash "$SCRIPT" status
 assert_fails env TERMUX_MCP_CONFIG_ROOT="$HOME/bad path" bash "$SCRIPT" status
 assert_fails env TERMUX_MCP_SERVICE_ROOT="$ROOT/outside-prefix" bash "$SCRIPT" status

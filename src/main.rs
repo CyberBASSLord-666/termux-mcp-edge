@@ -9,11 +9,18 @@
 //! - Graceful shutdown under runit supervision
 //! - Single-binary deployment optimized for Android Termux
 
-use std::{ffi::OsStr, path::PathBuf};
+use std::ffi::OsStr;
 
 #[cfg(feature = "mcp-runtime")]
-use axum::{extract::DefaultBodyLimit, middleware};
+use std::{
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+};
+
 use axum::{extract::State, routing::get, Json, Router};
+#[cfg(feature = "mcp-runtime")]
+use rustix::fs::{fstat, open, FileType, Mode, OFlags};
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::health::McpRequestLimitReadiness;
 #[cfg(feature = "android-volume-control")]
@@ -23,11 +30,13 @@ use termux_mcp_server::{
 };
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
-    auth::{require_mcp_auth, McpAuthPolicy},
+    auth::McpAuthPolicy,
     create_directory_grant::CreateDirectoryGrantAuthority,
-    request_limits::{enforce_mcp_request_limits, McpRequestLimits},
+    mcp_transport::McpRouterProtection,
+    request_limits::McpRequestLimits,
     transport_security::TransportSecurityPolicy,
-    write_file_grant::{parse_content_sha256_hex, WriteFileGrantAuthority},
+    write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
+    write_policy::DEFAULT_MAX_WRITE_BYTES,
 };
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
@@ -47,7 +56,9 @@ const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DI
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_WRITE_FILE_TARGET_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_TARGET";
 #[cfg(feature = "mcp-runtime")]
-const CAPABILITY_WRITE_FILE_CONTENT_SHA256_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256";
+const CAPABILITY_WRITE_FILE_CONTENT_FILE_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE";
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_WRITE_FILE_DISPOSITION_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_DISPOSITION";
 #[cfg(feature = "android-volume-control")]
 const CAPABILITY_VOLUME_STREAM_ENV: &str = "MCP__CAPABILITY__VOLUME_STREAM";
 #[cfg(feature = "android-volume-control")]
@@ -113,17 +124,11 @@ async fn main() -> anyhow::Result<()> {
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
 
-    // Anchor every configured jail root to an existing directory before any
-    // listener is opened. Termux storage permissions and mount availability can
-    // change independently of configuration; retaining an unresolved lexical
-    // path would make startup appear healthy without a trustworthy jail anchor.
-    let safe_roots = anchor_safe_roots(config.file.safe_roots.clone())?;
-    let safe_root_count = safe_roots.len();
-
-    // Initialize filesystem tools once so the optional staged MCP runtime reuses
-    // the exact anchored roots for bounded listing, reads, dry-run previews, and
-    // explicitly requested writes.
-    let file_tools = FileSystemTools::new(safe_roots);
+    // Validate and anchor every configured jail root before any listener is
+    // opened. Termux storage permissions and mount availability can change
+    // independently of configuration; unresolved lexical paths must fail closed.
+    let file_tools = FileSystemTools::try_new(config.file.safe_roots.clone())?;
+    let safe_root_count = file_tools.safe_roots().len();
 
     #[cfg(feature = "mcp-runtime")]
     let create_directory_authority = configured_create_directory_authority(&config)?;
@@ -161,23 +166,25 @@ async fn main() -> anyhow::Result<()> {
         )?;
         let transport_options = termux_mcp_server::mcp_transport::McpTransportOptions::default()
             .with_sse_enabled(config.transport.sse_enabled);
+        let mcp_router_protection =
+            McpRouterProtection::new(&config.server.host, mcp_auth_policy, mcp_request_limits)?;
         #[cfg(not(feature = "android-volume-control"))]
         let mcp_app =
-            termux_mcp_server::mcp_transport::router_with_filesystem_authorities_and_options(
+            termux_mcp_server::mcp_transport::protected_router_with_filesystem_authorities_and_options(
+                mcp_router_protection,
                 transport_security,
                 file_tools,
                 config.android.battery_status_enabled,
                 config.android.volume_status_enabled,
                 config.command.enabled,
-                termux_mcp_server::mcp_transport::McpFilesystemAuthorities::new(
-                    create_directory_authority,
-                    write_file_authority,
-                ),
+                create_directory_authority,
+                write_file_authority,
                 transport_options,
             );
         #[cfg(feature = "android-volume-control")]
         let mcp_app =
-            termux_mcp_server::mcp_transport::router_with_capability_authorities_and_options(
+            termux_mcp_server::mcp_transport::protected_router_with_capability_authorities_and_options(
+                mcp_router_protection,
                 transport_security,
                 file_tools,
                 config.android.battery_status_enabled,
@@ -185,21 +192,11 @@ async fn main() -> anyhow::Result<()> {
                 config.command.enabled,
                 termux_mcp_server::mcp_transport::McpCapabilityAuthorities::new(
                     create_directory_authority,
+                    write_file_authority,
                     android_volume_control_authority,
-                )
-                .with_write_file_authority(write_file_authority),
+                ),
                 transport_options,
             );
-        let mcp_app = mcp_app
-            .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
-            .route_layer(middleware::from_fn_with_state(
-                mcp_request_limits,
-                enforce_mcp_request_limits,
-            ))
-            .route_layer(middleware::from_fn_with_state(
-                mcp_auth_policy,
-                require_mcp_auth,
-            ));
         app.merge(mcp_app)
     };
 
@@ -209,39 +206,18 @@ async fn main() -> anyhow::Result<()> {
     info!("Listening on http://{}", display_addr);
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Supplying peer connection metadata is part of the MCP authentication
+    // boundary. Explicit localhost-only development mode rejects every `/mcp`
+    // request whose actual TCP peer is absent or non-loopback.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!("Server shutdown complete");
     Ok(())
-}
-
-fn anchor_safe_roots(safe_roots: Vec<PathBuf>) -> anyhow::Result<Vec<PathBuf>> {
-    if safe_roots.is_empty() {
-        anyhow::bail!("at least one filesystem safe root must be configured");
-    }
-
-    let mut anchored = Vec::with_capacity(safe_roots.len());
-    for (index, root) in safe_roots.into_iter().enumerate() {
-        let position = index + 1;
-        let canonical = root.canonicalize().map_err(|_| {
-            anyhow::anyhow!("configured filesystem safe root {position} cannot be resolved")
-        })?;
-        let metadata = std::fs::metadata(&canonical).map_err(|_| {
-            anyhow::anyhow!("configured filesystem safe root {position} cannot be inspected")
-        })?;
-
-        if !metadata.is_dir() {
-            anyhow::bail!("configured filesystem safe root {position} is not a directory");
-        }
-
-        anchored.push(canonical);
-    }
-
-    anchored.sort_unstable();
-    anchored.dedup();
-    Ok(anchored)
 }
 
 fn handle_cli() -> anyhow::Result<bool> {
@@ -335,7 +311,7 @@ fn configured_create_directory_authority(
 fn configured_write_file_authority(
     config: &AppConfig,
 ) -> anyhow::Result<Option<WriteFileGrantAuthority>> {
-    if !config.file.write_mutation_enabled {
+    if !config.file.write_file_mutation_enabled {
         return Ok(None);
     }
     let key_id = config
@@ -389,8 +365,7 @@ fn issue_create_directory_grant() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("create_directory mutation gate is disabled"))?;
     let session_id = required_grant_environment(CAPABILITY_SESSION_ENV)?;
     let target_path = required_grant_environment(CAPABILITY_CREATE_DIRECTORY_TARGET_ENV)?;
-    let safe_roots = anchor_safe_roots(config.file.safe_roots)?;
-    let file_tools = FileSystemTools::new(safe_roots);
+    let file_tools = FileSystemTools::try_new(config.file.safe_roots)?;
     let target = file_tools
         .create_directory_grant_target(&target_path)
         .map_err(|_| anyhow::anyhow!("create_directory grant target validation failed"))?;
@@ -408,7 +383,7 @@ fn issue_create_directory_grant() -> anyhow::Result<()> {
 #[cfg(feature = "mcp-runtime")]
 fn issue_write_file_grant() -> anyhow::Result<()> {
     let config = load_offline_issuer_config()?;
-    if !config.file.write_mutation_enabled {
+    if !config.file.write_file_mutation_enabled {
         anyhow::bail!("write_file mutation gate is disabled");
     }
     let _ = validate_runtime_auth_posture(&config)?;
@@ -416,23 +391,147 @@ fn issue_write_file_grant() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("write_file mutation gate is disabled"))?;
     let session_id = required_grant_environment(CAPABILITY_SESSION_ENV)?;
     let target_path = required_grant_environment(CAPABILITY_WRITE_FILE_TARGET_ENV)?;
-    let content_digest = parse_content_sha256_hex(&required_grant_environment(
-        CAPABILITY_WRITE_FILE_CONTENT_SHA256_ENV,
-    )?)
-    .map_err(|_| anyhow::anyhow!("write_file grant content digest validation failed"))?;
-    let safe_roots = anchor_safe_roots(config.file.safe_roots)?;
-    let file_tools = FileSystemTools::new(safe_roots);
+    let content_file = required_grant_environment(CAPABILITY_WRITE_FILE_CONTENT_FILE_ENV)?;
+    let disposition = required_grant_environment(CAPABILITY_WRITE_FILE_DISPOSITION_ENV)?
+        .parse::<WriteFileDisposition>()
+        .map_err(|_| anyhow::anyhow!("write_file grant disposition validation failed"))?;
+    let content = read_write_grant_content(Path::new(&content_file))?;
+    reject_write_grant_content_config_alias(&content)?;
+    let file_tools = FileSystemTools::try_new(config.file.safe_roots)?;
     let target = file_tools
-        .write_file_grant_target(&target_path, content_digest)
+        .write_file_grant_target(&target_path, content.as_bytes(), disposition)
         .map_err(|_| anyhow::anyhow!("write_file grant target validation failed"))?;
-    let now_unix_seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
-        .as_secs();
+    target
+        .ensure_distinct_source_identity(content.device, content.inode)
+        .map_err(|_| {
+            anyhow::anyhow!("write_file grant content file must not alias the replacement target")
+        })?;
     let grant = authority
-        .issue_at(&session_id, &target, now_unix_seconds)
+        .issue(&session_id, &target)
         .map_err(|_| anyhow::anyhow!("write_file grant issuance failed"))?;
     println!("{grant}");
+    Ok(())
+}
+
+#[cfg(feature = "mcp-runtime")]
+struct PrivateWriteGrantContent {
+    bytes: Vec<u8>,
+    device: u64,
+    inode: u64,
+    _descriptor: File,
+}
+
+#[cfg(feature = "mcp-runtime")]
+impl std::fmt::Debug for PrivateWriteGrantContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PrivateWriteGrantContent")
+            .field("content", &"<redacted>")
+            .field("identity", &"<redacted>")
+            .finish()
+    }
+}
+
+#[cfg(feature = "mcp-runtime")]
+impl PrivateWriteGrantContent {
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn read_write_grant_content(path: &Path) -> anyhow::Result<PrivateWriteGrantContent> {
+    if !path.is_absolute() {
+        anyhow::bail!("write_file grant content file must be absolute");
+    }
+    let descriptor = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|_| anyhow::anyhow!("write_file grant content file could not be opened"))?;
+    let opened = fstat(&descriptor)
+        .map_err(|_| anyhow::anyhow!("write_file grant content file could not be inspected"))?;
+    if !FileType::from_raw_mode(opened.st_mode).is_file() {
+        anyhow::bail!("write_file grant content file must be a regular non-symlink file");
+    }
+    if opened.st_mode & 0o077 != 0 || opened.st_mode & 0o400 == 0 {
+        anyhow::bail!(
+            "write_file grant content file must be owner-readable and inaccessible to group/other"
+        );
+    }
+    let configured_bytes = usize::try_from(opened.st_size)
+        .map_err(|_| anyhow::anyhow!("write_file grant content file size is invalid"))?;
+    if configured_bytes > DEFAULT_MAX_WRITE_BYTES {
+        anyhow::bail!("write_file grant content file exceeds its byte limit");
+    }
+
+    let mut file = File::from(descriptor);
+    let mut content = Vec::with_capacity(configured_bytes);
+    (&mut file)
+        .take((DEFAULT_MAX_WRITE_BYTES + 1) as u64)
+        .read_to_end(&mut content)
+        .map_err(|_| anyhow::anyhow!("write_file grant content file could not be read"))?;
+    if content.len() > DEFAULT_MAX_WRITE_BYTES {
+        anyhow::bail!("write_file grant content file exceeds its byte limit");
+    }
+    let read = fstat(&file)
+        .map_err(|_| anyhow::anyhow!("write_file grant content file could not be inspected"))?;
+    if !FileType::from_raw_mode(read.st_mode).is_file()
+        || read.st_dev != opened.st_dev
+        || read.st_ino != opened.st_ino
+        || read.st_size != opened.st_size
+        || read.st_mode & 0o7777 != opened.st_mode & 0o7777
+        || read.st_ctime != opened.st_ctime
+        || read.st_ctime_nsec != opened.st_ctime_nsec
+        || read.st_mtime != opened.st_mtime
+        || read.st_mtime_nsec != opened.st_mtime_nsec
+        || usize::try_from(read.st_size).ok() != Some(content.len())
+    {
+        anyhow::bail!("write_file grant content file changed while it was read");
+    }
+    if std::str::from_utf8(&content).is_err() {
+        anyhow::bail!("write_file grant content file must contain valid UTF-8");
+    }
+    Ok(PrivateWriteGrantContent {
+        bytes: content,
+        device: opened.st_dev,
+        inode: opened.st_ino,
+        _descriptor: file,
+    })
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn reject_write_grant_content_config_alias(
+    content: &PrivateWriteGrantContent,
+) -> anyhow::Result<()> {
+    let Some(config_path) = std::env::var_os(CAPABILITY_CONFIG_FILE_ENV) else {
+        return Ok(());
+    };
+    if config_path.is_empty() {
+        anyhow::bail!("offline issuer runtime configuration could not be revalidated");
+    }
+    let descriptor = open(
+        Path::new(&config_path),
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|_| {
+        anyhow::anyhow!("offline issuer runtime configuration could not be revalidated")
+    })?;
+    let metadata = fstat(&descriptor).map_err(|_| {
+        anyhow::anyhow!("offline issuer runtime configuration could not be revalidated")
+    })?;
+    if metadata.st_dev == content.device && metadata.st_ino == content.inode {
+        anyhow::bail!(
+            "write_file grant content file must not alias the runtime configuration file"
+        );
+    }
     Ok(())
 }
 
@@ -467,13 +566,16 @@ fn issue_android_volume_grant() -> anyhow::Result<()> {
 
 #[cfg(feature = "mcp-runtime")]
 fn load_offline_issuer_config() -> anyhow::Result<AppConfig> {
-    let Some(config_file) = std::env::var_os(CAPABILITY_CONFIG_FILE_ENV) else {
-        return AppConfig::load();
+    let config = match std::env::var_os(CAPABILITY_CONFIG_FILE_ENV) {
+        None => AppConfig::load()?,
+        Some(config_file) if config_file.is_empty() => {
+            anyhow::bail!("{CAPABILITY_CONFIG_FILE_ENV} must not be empty")
+        }
+        Some(config_file) => AppConfig::load_from_literal_file(&PathBuf::from(config_file))?,
     };
-    if config_file.is_empty() {
-        anyhow::bail!("{CAPABILITY_CONFIG_FILE_ENV} must not be empty");
-    }
-    AppConfig::load_from_literal_file(&PathBuf::from(config_file))
+    let posture = validate_runtime_auth_posture(&config)?;
+    let _ = McpAuthPolicy::from_config(&config.auth, posture)?;
+    Ok(config)
 }
 
 #[cfg(feature = "mcp-runtime")]
@@ -546,72 +648,58 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "mcp-runtime", unix))]
     #[test]
-    fn safe_roots_anchor_existing_directories_and_deduplicate_aliases() {
+    fn write_grant_content_reader_is_bounded_no_follow_and_utf8_only() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
         let root = tempfile::tempdir().unwrap();
-        let expected = root.path().canonicalize().unwrap();
+        let exact = root.path().join("exact.txt");
+        let invalid = root.path().join("invalid.bin");
+        let oversized = root.path().join("oversized.txt");
+        let linked = root.path().join("linked.txt");
+        std::fs::write(&exact, vec![b'x'; DEFAULT_MAX_WRITE_BYTES]).unwrap();
+        std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        std::fs::write(&oversized, vec![b'x'; DEFAULT_MAX_WRITE_BYTES + 1]).unwrap();
+        for path in [&exact, &invalid, &oversized] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        symlink(&exact, &linked).unwrap();
 
-        let anchored = anchor_safe_roots(vec![
-            root.path().to_path_buf(),
-            root.path().join("."),
-            root.path().to_path_buf(),
-        ])
-        .unwrap();
-
-        assert_eq!(anchored, vec![expected]);
-    }
-
-    #[test]
-    fn safe_roots_keep_distinct_directories_in_deterministic_order() {
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let mut expected = vec![
-            first.path().canonicalize().unwrap(),
-            second.path().canonicalize().unwrap(),
-        ];
-        expected.sort_unstable();
-
-        let anchored = anchor_safe_roots(vec![
-            second.path().to_path_buf(),
-            first.path().to_path_buf(),
-        ])
-        .unwrap();
-
-        assert_eq!(anchored, expected);
-    }
-
-    #[test]
-    fn safe_roots_reject_missing_paths_without_disclosing_them() {
-        let parent = tempfile::tempdir().unwrap();
-        let missing = parent.path().join("private-missing-root");
-
-        let error = anchor_safe_roots(vec![missing.clone()]).unwrap_err();
-        let message = error.to_string();
-
-        assert!(message.contains("safe root 1 cannot be resolved"));
-        assert!(!message.contains(missing.to_string_lossy().as_ref()));
-    }
-
-    #[test]
-    fn safe_roots_reject_regular_files_without_disclosing_them() {
-        let parent = tempfile::tempdir().unwrap();
-        let file = parent.path().join("not-a-root.txt");
-        std::fs::write(&file, "not a directory").unwrap();
-
-        let error = anchor_safe_roots(vec![file.clone()]).unwrap_err();
-        let message = error.to_string();
-
-        assert!(message.contains("safe root 1 is not a directory"));
-        assert!(!message.contains(file.to_string_lossy().as_ref()));
-    }
-
-    #[test]
-    fn safe_roots_reject_empty_configuration() {
-        let error = anchor_safe_roots(Vec::new()).unwrap_err();
         assert_eq!(
-            error.to_string(),
-            "at least one filesystem safe root must be configured"
+            read_write_grant_content(&exact).unwrap().len(),
+            DEFAULT_MAX_WRITE_BYTES
         );
+        assert!(read_write_grant_content(Path::new("relative.txt"))
+            .unwrap_err()
+            .to_string()
+            .contains("must be absolute"));
+        assert!(read_write_grant_content(&linked).is_err());
+        assert!(read_write_grant_content(&invalid)
+            .unwrap_err()
+            .to_string()
+            .contains("valid UTF-8"));
+        assert!(read_write_grant_content(&oversized)
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit"));
+        assert!(read_write_grant_content(root.path())
+            .unwrap_err()
+            .to_string()
+            .contains("regular non-symlink file"));
+
+        let exposed = root.path().join("exposed.txt");
+        std::fs::write(&exposed, "private").unwrap();
+        std::fs::set_permissions(&exposed, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(read_write_grant_content(&exposed)
+            .unwrap_err()
+            .to_string()
+            .contains("inaccessible to group/other"));
+    }
+
+    #[test]
+    fn help_lists_the_offline_write_grant_issuer() {
+        assert!(CLI_HELP.contains("termux-mcp-server --issue-write-file-grant"));
     }
 
     #[test]

@@ -6,7 +6,8 @@ use termux_mcp_server::tools::{FileSystemTools, SystemTools};
 fn filesystem_tools_preserve_anchored_safe_roots_without_transport_exposure() {
     let root = tempfile::tempdir().unwrap();
     let anchored = root.path().canonicalize().unwrap();
-    let tools = FileSystemTools::new(vec![anchored.clone()]);
+    let tools =
+        FileSystemTools::try_new(vec![anchored.clone()]).expect("test safe root must validate");
 
     assert_eq!(tools.safe_roots(), &[anchored]);
 }

@@ -76,7 +76,7 @@ The harness records and verifies:
 15. disabled command, Android-control, and high-impact gates;
 16. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, SHA-256 hashing, and UTF-8 read;
 17. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
-18. default-disabled write mutation discovery/status, exact-binary content/disposition-bound issuance, preview non-consumption, missing/mismatch/replay denial, mode-`0600` create and replace, create/replace mismatch, exact 1 MiB plus-one boundary, and actual-ID preflight grant reuse;
+18. disabled/enabled/grant/replay file-write truth, preview/create `recoveryArtifactRetained:false`, mode-`0600` no-replace create, irreversible replace with `recoveryArtifactRetained:true`, one preserved bounded recovery artifact, and reserved-quarantine isolation;
 19. out-of-root read denial without content reflection;
 20. unavailable shell/high-impact invocation;
 21. authenticated request-body limiting and unauthenticated-before-limit ordering;

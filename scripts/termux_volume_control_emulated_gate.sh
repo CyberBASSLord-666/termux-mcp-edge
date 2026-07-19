@@ -377,7 +377,7 @@ initialize_session() {
 }
 
 issue_grant() {
-  local stream="$1" level="$2" output="$3"
+  local stream="$1" level="$2" output="$3" grant payload
   : >"$output"; chmod 600 "$output"
   MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_CONFIG" \
   MCP__CAPABILITY__SESSION_ID="$SESSION_ID" \
@@ -385,6 +385,13 @@ issue_grant() {
   MCP__CAPABILITY__VOLUME_LEVEL="$level" \
     "$ARTIFACT" --issue-android-volume-grant >"$output" 2>/dev/null || fail grant_issuance_failed
   [[ "$(wc -l <"$output")" == 1 ]] || fail grant_line_count_invalid
+  grant="$(<"$output")"
+  [[ "$grant" == v1.native-volume-1.* ]] || fail grant_prefix_invalid
+  payload="${grant#v1.native-volume-1.}"
+  payload="${payload%%.*}"
+  [[ ${#payload} == 182 && "$payload" != *[!0-9a-f]* ]] || fail grant_payload_invalid
+  [[ "${payload:128:2}" == 03 ]] || fail volume_capability_byte_invalid
+  unset grant payload
 }
 
 log 'validating disabled runtime posture'

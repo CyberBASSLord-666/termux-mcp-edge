@@ -319,7 +319,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             "write_file",
             json!({
                 "path": mutation_target.to_string_lossy(),
-                "content": "full dry-run preview",
+                "content": "explicit full-schema preview",
                 "dry_run": true
             }),
         ),

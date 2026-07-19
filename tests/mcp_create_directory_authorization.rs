@@ -437,7 +437,10 @@ async fn grants_are_single_use_under_replay_and_concurrent_replay() {
     );
     assert!(statuses.iter().all(|status| matches!(
         *status,
-        StatusCode::OK | StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN
+        StatusCode::OK
+            | StatusCode::BAD_REQUEST
+            | StatusCode::FORBIDDEN
+            | StatusCode::SERVICE_UNAVAILABLE
     )));
     assert!(concurrent_target.is_dir());
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);

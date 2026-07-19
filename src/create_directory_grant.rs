@@ -16,20 +16,23 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::request_grant_capability::{
+    RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+};
+
 type HmacSha256 = Hmac<Sha256>;
 
-pub const CREATE_DIRECTORY_GRANT_HEADER: &str = "mcp-capability-grant";
+pub const CREATE_DIRECTORY_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
 pub const CREATE_DIRECTORY_GRANT_VERSION: &str = "v1";
 pub const CREATE_DIRECTORY_GRANT_TTL_SECONDS: u64 = 60;
 pub const MAX_CREATE_DIRECTORY_GRANT_LIFETIME_SECONDS: u64 = 120;
 pub const MAX_CREATE_DIRECTORY_GRANT_FUTURE_SKEW_SECONDS: u64 = 5;
-pub const MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES: usize = 384;
+pub const MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
 pub const MAX_CREATE_DIRECTORY_GRANT_KEY_ID_BYTES: usize = 32;
 pub const CREATE_DIRECTORY_GRANT_KEY_BYTES: usize = 32;
 pub const CREATE_DIRECTORY_GRANT_KEY_HEX_BYTES: usize = CREATE_DIRECTORY_GRANT_KEY_BYTES * 2;
 pub const MAX_CONSUMED_CREATE_DIRECTORY_GRANTS: usize = 4_096;
 
-const CREATE_DIRECTORY_CAPABILITY: u8 = 1;
 const MUTATING_POSTURE: u8 = 1;
 const GRANT_ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
@@ -236,7 +239,7 @@ impl CreateDirectoryGrantAuthority {
             grant_id: *Uuid::new_v4().as_bytes(),
             principal_digest: self.principal_digest,
             session_id,
-            capability: CREATE_DIRECTORY_CAPABILITY,
+            capability: RequestGrantCapability::CreateDirectory.wire_code(),
             root_device: target.root_device,
             root_inode: target.root_inode,
             target_digest: target.target_digest,
@@ -260,7 +263,7 @@ impl CreateDirectoryGrantAuthority {
 
         if grant.principal_digest != self.principal_digest
             || grant.session_id != expected_session
-            || grant.capability != CREATE_DIRECTORY_CAPABILITY
+            || grant.capability != RequestGrantCapability::CreateDirectory.wire_code()
             || grant.root_device != target.root_device
             || grant.root_inode != target.root_inode
             || grant.target_digest != target.target_digest

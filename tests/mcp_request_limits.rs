@@ -2,20 +2,18 @@
 
 use axum::{
     body::{to_bytes, Body},
-    extract::DefaultBodyLimit,
     http::{header, Request, StatusCode},
-    middleware,
     response::Response,
     Router,
 };
 use serde_json::{json, Value};
 use termux_mcp_server::{
-    auth::{require_mcp_auth, McpAuthPolicy},
+    auth::McpAuthPolicy,
     mcp_transport::{
-        self, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
-        MCP_SESSION_ID_HEADER,
+        self, McpRouterProtection, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
+        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
     },
-    request_limits::{enforce_mcp_request_limits, McpRequestLimits},
+    request_limits::McpRequestLimits,
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
 };
@@ -23,10 +21,18 @@ use tower::ServiceExt;
 
 fn protected_limited_router(max_body_bytes: usize) -> Router {
     let root = tempfile::tempdir().unwrap();
-    let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
+    let protection = McpRouterProtection::new(
+        "127.0.0.1",
+        McpAuthPolicy::static_bearer("expected-token").unwrap(),
+        limits,
+    )
+    .unwrap();
 
-    mcp_transport::router(
+    mcp_transport::protected_router(
+        protection,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
@@ -34,15 +40,6 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
         false,
         false,
     )
-    .layer(DefaultBodyLimit::max(max_body_bytes))
-    .route_layer(middleware::from_fn_with_state(
-        limits,
-        enforce_mcp_request_limits,
-    ))
-    .route_layer(middleware::from_fn_with_state(
-        McpAuthPolicy::static_bearer("expected-token").unwrap(),
-        require_mcp_auth,
-    ))
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {
@@ -81,8 +78,8 @@ async fn response_json(response: Response) -> Value {
 
 #[tokio::test]
 async fn unauthenticated_oversized_request_is_rejected_before_body_limit() {
-    let app = protected_limited_router(128);
-    let response = app.oneshot(request("x".repeat(256), None)).await.unwrap();
+    let app = protected_limited_router(1024);
+    let response = app.oneshot(request("x".repeat(2048), None)).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let payload = response_json(response).await;
@@ -92,9 +89,9 @@ async fn unauthenticated_oversized_request_is_rejected_before_body_limit() {
 
 #[tokio::test]
 async fn authenticated_oversized_request_is_rejected_with_body_limit() {
-    let app = protected_limited_router(128);
+    let app = protected_limited_router(1024);
     let response = app
-        .oneshot(request("x".repeat(256), Some("Bearer expected-token")))
+        .oneshot(request("x".repeat(2048), Some("Bearer expected-token")))
         .await
         .unwrap();
 

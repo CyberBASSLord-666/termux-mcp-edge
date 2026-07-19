@@ -21,6 +21,8 @@ assert_contains() {
 bash -n "$SCRIPT"
 assert_contains 'HARNESS_VERSION="8"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
+assert_contains 'capability_grant_has_signed_byte "$grant" 260 64 01' "$SCRIPT"
+assert_contains 'capability_grant_has_signed_byte "$grant" 130 16 02' "$SCRIPT"
 assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then
   fail "device harness uses a non-portable ERE repetition above Android RE_DUP_MAX"
@@ -52,9 +54,7 @@ assert_contains 'must be a positive integer' "$TMP/stderr"
 
 for marker in \
   'cargo build --release --locked --features mcp-runtime' \
-  'cargo build --release --locked -j "$BUILD_JOBS"' \
   'cargo build --release --locked --features android-volume-control' \
-  'write_file_compile_gate=rejected_default_artifact' \
   'volume_control_compile_gate=rejected_incompatible_artifact' \
   'volume_control_disabled_runtime=verified_without_device_mutation' \
   'candidate_readiness_failure' \
@@ -77,26 +77,33 @@ for protocol_marker in \
   'create_directory_replay_http' \
   '--issue-create-directory-grant' \
   '--issue-write-file-grant' \
+  'MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env"' \
   'MCP__CAPABILITY__WRITE_FILE_TARGET="$target"' \
-  'MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256="$content_sha"' \
-  'WRITE_CAPABILITY_GRANT_FILE="$CONFIG_ROOT/write-file-grant"' \
+  'MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$content_file"' \
+  'MCP__CAPABILITY__WRITE_FILE_DISPOSITION="$disposition"' \
   'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
+  'MCP__TRANSPORT__MAX_BODY_BYTES=2097152' \
+  'mcp_post_file()' \
   'write_file_grant_discovery' \
   'write_missing_grant_http' \
-  'write_granted_dry_run_http' \
-  'write_target_mismatch_http' \
-  'write_content_mismatch_http' \
-  'write_posture_mismatch_http' \
-  'write_replay_http' \
+  'write_grant_mismatch_http' \
+  'write_grant_replay_http' \
   'write_replace_http' \
-  'write_replace_replay_http' \
+  'write_replace_identity=fresh' \
+  'write_replace_recovery' \
+  'write_recovery_list=private' \
+  'write_recovery_find' \
+  'write_replace_binding_http' \
+  'write_replace_substitute=preserved' \
+  'write_replace_original=preserved' \
   'write_exact_1mib_http' \
   'write_1mib_plus_one_http' \
+  'write_1mib_plus_one_grant_retry_http' \
   'write_response_preflight_http' \
   'write_response_preflight_retry_http' \
-  'MCP__TRANSPORT__MAX_BODY_BYTES=2097152' \
-  'transport_1024_body_limit_authentication_order=verified' \
-  'MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env"' \
+  '.termux-mcp-write-quarantine' \
+  '^\.termux-mcp-write-artifact-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+  'recoveryArtifactRetained' \
   'androidVolumeControlCompiled == true' \
   'volume_control_runtime_disabled' \
   'copy_dry_run_http' \

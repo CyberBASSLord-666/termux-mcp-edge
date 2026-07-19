@@ -86,6 +86,7 @@ CAPABILITY_KEY_ID="device-smoke-1"
 CAPABILITY_KEY_HEX=""
 CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_GRANT_FILE=""
+WRITE_CAPABILITY_CONTENT_FILE=""
 SMOKE_SUCCEEDED=0
 
 mkdir -p -- "$WORK_ROOT" "$ARTIFACT_DIR" "$LOG_DIR"
@@ -304,8 +305,20 @@ valid_capability_grant() {
   payload="${remainder%%.*}"
   signature="${remainder#*.}"
   [[ "$signature" != *.* ]] || return 1
-  ((${#payload} == 260 && ${#signature} == 64)) || return 1
+  (((${#payload} == 130 || ${#payload} == 260) && ${#signature} == 64)) || return 1
   [[ "$payload$signature" != *[!0-9a-f]* ]]
+}
+
+capability_grant_has_signed_byte() {
+  local grant="$1" expected_payload_hex_length="$2" byte_offset="$3" expected="$4" prefix remainder payload hex_offset
+  valid_capability_grant "$grant" || return 1
+  prefix="v1.${CAPABILITY_KEY_ID}."
+  remainder="${grant#"$prefix"}"
+  payload="${remainder%%.*}"
+  [[ "${#payload}" == "$expected_payload_hex_length" ]] || return 1
+  hex_offset=$((byte_offset * 2))
+  ((${#payload} >= hex_offset + 2)) || return 1
+  [[ "${payload:hex_offset:2}" == "$expected" ]]
 }
 
 mcp_post() {
@@ -337,7 +350,8 @@ mcp_post() {
 
 mcp_post_file() {
   local output="$1" request_file="$2" session_id="${3:-}" grant_file="${4:-}" grant=""
-  [[ -f "$request_file" && ! -L "$request_file" && "$(stat -c '%a' "$request_file")" == 600 ]] || fail "MCP request staging is invalid"
+  [[ -f "$request_file" && ! -L "$request_file" && "$(stat -c '%a' "$request_file")" == 600 ]] \
+    || fail "MCP request staging is invalid"
   local -a args=(
     -sS
     -o "$output"
@@ -355,7 +369,8 @@ mcp_post_file() {
     )
   fi
   if [[ -n "$grant_file" ]]; then
-    [[ -f "$grant_file" && ! -L "$grant_file" && "$(stat -c '%a' "$grant_file")" == 600 ]] || fail "capability grant staging is invalid"
+    [[ -f "$grant_file" && ! -L "$grant_file" && "$(stat -c '%a' "$grant_file")" == 600 ]] \
+      || fail "capability grant staging is invalid"
     grant="$(<"$grant_file")"
     valid_capability_grant "$grant" || fail "candidate emitted an invalid capability grant"
     args+=( -H "MCP-Capability-Grant: $grant" )
@@ -377,35 +392,79 @@ issue_create_directory_grant() {
   [[ "$(wc -l <"$CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid capability grant"
   grant="$(<"$CAPABILITY_GRANT_FILE")"
   valid_capability_grant "$grant" || fail "candidate emitted an invalid capability grant"
+  capability_grant_has_signed_byte "$grant" 260 64 01 || fail "candidate emitted an invalid create_directory capability byte"
   unset grant
 }
 
 issue_write_file_grant() {
-  local target="$1" content_file="$2" content_sha grant=""
-  [[ -f "$content_file" && ! -L "$content_file" && "$(stat -c '%a' "$content_file")" == 600 ]] || fail "write_file content staging is invalid"
-  content_sha="$(sha256sum -- "$content_file" | awk '{print $1}')"
-  [[ "$content_sha" =~ ^[0-9a-f]{64}$ ]] || fail "write_file content digest is invalid"
+  local target="$1" content_file="$2" disposition="$3" grant=""
+  [[ -f "$content_file" && ! -L "$content_file" && "$(stat -c '%a' "$content_file")" == 600 ]] || fail "write_file capability content staging is invalid"
   : >"$WRITE_CAPABILITY_GRANT_FILE"
   chmod 600 "$WRITE_CAPABILITY_GRANT_FILE"
   if ! MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env" \
     MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
     MCP__CAPABILITY__WRITE_FILE_TARGET="$target" \
-    MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256="$content_sha" \
+    MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$content_file" \
+    MCP__CAPABILITY__WRITE_FILE_DISPOSITION="$disposition" \
       "$CANDIDATE_ARTIFACT" --issue-write-file-grant >"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null
   then
     fail "exact candidate could not issue a write_file grant"
   fi
-  [[ "$(wc -l <"$WRITE_CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid write_file grant"
+  [[ "$(wc -l <"$WRITE_CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid write_file capability grant"
   grant="$(<"$WRITE_CAPABILITY_GRANT_FILE")"
-  valid_capability_grant "$grant" || fail "candidate emitted an invalid write_file grant"
-  unset grant content_sha
+  valid_capability_grant "$grant" || fail "candidate emitted an invalid write_file capability grant"
+  capability_grant_has_signed_byte "$grant" 130 16 02 || fail "candidate emitted an invalid write_file capability byte"
+  unset grant
+}
+
+inspect_write_file_recovery() {
+  local label="$1" expected_content="${2-}" expected_mode="${3-}" quarantine entry base mode size links
+  local count=0 total_bytes=0 content_matches=0 residue
+  quarantine="$SAFE_ROOT/.termux-mcp-write-quarantine"
+  residue="$(find "$SAFE_ROOT" -name '.termux-mcp-write-file-*.tmp' -print -quit 2>/dev/null)" \
+    || fail "write_file legacy staging inspection failed"
+  [[ -z "$residue" ]] || fail "write_file left legacy staging state"
+
+  if [[ -e "$quarantine" || -L "$quarantine" ]]; then
+    [[ -d "$quarantine" && ! -L "$quarantine" ]] || fail "write_file recovery namespace is invalid"
+    [[ "$(stat -c '%a' "$quarantine" 2>/dev/null)" == 700 ]] \
+      || fail "write_file recovery namespace mode is invalid"
+    while IFS= read -r -d '' entry; do
+      base="${entry##*/}"
+      [[ "$base" =~ ^\.termux-mcp-write-artifact-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ \
+        && -f "$entry" && ! -L "$entry" ]] \
+        || fail "write_file recovery entry is invalid"
+      mode="$(stat -c '%a' "$entry" 2>/dev/null)" || fail "write_file recovery entry stat failed"
+      size="$(stat -c '%s' "$entry" 2>/dev/null)" || fail "write_file recovery entry stat failed"
+      links="$(stat -c '%h' "$entry" 2>/dev/null)" || fail "write_file recovery entry stat failed"
+      [[ "$mode" =~ ^[0-7]{3,4}$ && "$size" =~ ^[0-9]+$ && "$links" == 1 ]] \
+        || fail "write_file recovery entry contract is invalid"
+      ((size <= 1048576)) || fail "write_file recovery entry exceeds the file bound"
+      ((count += 1, total_bytes += size))
+      if [[ -n "$expected_content" && "$(<"$entry")" == "$expected_content" \
+        && ( -z "$expected_mode" || "$mode" == "$expected_mode" ) ]]; then
+        ((content_matches += 1))
+      fi
+    done < <(find "$quarantine" -mindepth 1 -maxdepth 1 -print0 2>/dev/null) \
+      || fail "write_file recovery namespace inspection failed"
+  fi
+
+  ((count <= 32 && total_bytes <= 33554432)) \
+    || fail "write_file recovery namespace exceeds its bounds"
+  WRITE_FILE_RECOVERY_COUNT="$count"
+  WRITE_FILE_RECOVERY_CONTENT_MATCHES="$content_matches"
+  log "PASS ${label}=bounded"
 }
 
 protocol_smoke() {
   local label="$1"
   local body headers status payload target outside oversized copy_source copy_target copy_bytes directory_target hash_digest binary_read_target binary_read_expected
-  local write_content write_request write_target write_other_target write_posture_target write_replace_target
-  local write_large_content write_large_request write_oversized_content write_oversized_request write_id_file write_preflight_target
+  local replacement_content old_identity new_identity preflight_identity substitute_identity preserved_target
+  local recovery_count_before recovery_count_after
+  local write_large_content write_large_request write_exact_target
+  local write_oversized_content write_oversized_request write_oversized_target
+  local write_id_file write_preflight_request write_preflight_target response_bytes
+  local body_limit_content body_limit_request
   headers="$LOG_DIR/$label-initialize.headers"
   body="$LOG_DIR/$label-response.json"
 
@@ -444,7 +503,7 @@ protocol_smoke() {
   assert_eq "${label}_tools_list_http" "$status" 200
   assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
   assert_json "${label}_create_directory_grant_discovery" "$body" '.result.tools | map(select(.name == "create_directory"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant"))'
-  assert_json "${label}_write_file_grant_discovery" "$body" '.result.tools | map(select(.name == "write_file"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant")) and $tool.inputSchema.properties.content.type == "string" and $tool.inputSchema.additionalProperties == false'
+  assert_json "${label}_write_file_grant_discovery" "$body" '.result.tools | map(select(.name == "write_file"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.inputSchema.additionalProperties == false) and ($tool.description | contains("MCP-Capability-Grant")) and ($tool.description | contains("target/content/disposition-bound"))'
   assert_json "${label}_find_paths_schema" "$body" '.result.tools | map(select(.name == "find_paths"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["kind","max_depth","path","query"] and $schema.properties.path.type == "string" and $schema.properties.query.type == "string" and $schema.properties.query.minLength == 1 and $schema.properties.query.maxLength == 256 and $schema.properties.query."x-maxBytes" == 256 and $schema.properties.kind.enum == ["any","regular_file","directory"] and $schema.properties.max_depth.minimum == 1 and $schema.properties.max_depth.maximum == 5 and $schema.required == ["path","query"] and $schema.additionalProperties == false'
   assert_json "${label}_hash_file_schema" "$body" '.result.tools | map(select(.name == "hash_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
   assert_json "${label}_read_binary_file_schema" "$body" '.result.tools | map(select(.name == "read_binary_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
@@ -454,7 +513,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_runtime_status_http" "$status" 200
-  assert_json "${label}_bounded_write_posture" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_or_request_scoped_single_use_grant" and .result.structuredContent.fileWriteMutationEnabled == true and .result.structuredContent.fileWriteGrantRequired == true and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.fileWriteMaxBytes == 1048576 and .result.structuredContent.fileWriteMaxResponseBytes == 16384 and .result.structuredContent.pathDiscovery == true and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename" and .result.structuredContent.pathDiscoveryMaxDepth == 5 and .result.structuredContent.pathDiscoveryMaxEntries == 8192 and .result.structuredContent.pathDiscoveryMaxMatches == 512 and .result.structuredContent.pathDiscoveryMaxQueryBytes == 256 and .result.structuredContent.pathDiscoveryMaxResponseBytes == 262144 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadEncoding == "base64" and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_or_target_content_disposition_scoped_single_use_grant" and .result.structuredContent.fileWriteMutationEnabled == true and .result.structuredContent.fileWriteGrantRequired == true and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.fileWriteMaxBytes == 1048576 and .result.structuredContent.fileWriteMaxResponseBytes == 16384 and .result.structuredContent.pathDiscovery == true and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename" and .result.structuredContent.pathDiscoveryMaxDepth == 5 and .result.structuredContent.pathDiscoveryMaxEntries == 8192 and .result.structuredContent.pathDiscoveryMaxMatches == 512 and .result.structuredContent.pathDiscoveryMaxQueryBytes == 256 and .result.structuredContent.pathDiscoveryMaxResponseBytes == 262144 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadEncoding == "base64" and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
 
   payload="$(jq -cn --arg path "$SAFE_ROOT" '{"jsonrpc":"2.0","id":"list-directory","method":"tools/call","params":{"name":"list_directory","arguments":{"path":$path,"max_depth":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -655,130 +714,204 @@ protocol_smoke() {
   cmp -s "$copy_source" "$copy_target" || fail "copy_file existing-destination denial modified content"
   log "PASS ${label}_copy_existing=unchanged"
 
-  write_content="$CONFIG_ROOT/write-content.txt"
-  write_request="$CONFIG_ROOT/write-request.json"
-  write_target="$SAFE_ROOT/write-target.txt"
-  printf '%s' 'device-smoke-write' >"$write_content"
-  chmod 600 "$write_content"
-
-  payload="$(jq -cn --arg path "$write_target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"
+  target="$SAFE_ROOT/write-target.txt"
+  payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_write_dry_run_http" "$status" 200
-  assert_json "${label}_write_dry_run_body" "$body" '.result.structuredContent.dryRun == true and .result.structuredContent.bytes == 18'
-  assert_absent "${label}_write_dry_run_target" "$write_target"
+  assert_json "${label}_write_dry_run_body" "$body" '.result.structuredContent.dryRun == true'
+  assert_absent "${label}_write_dry_run_target" "$target"
 
-  payload="$(jq -cn --arg path "$write_target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-missing-grant","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
+  printf '%s' 'device-smoke-write' >"$WRITE_CAPABILITY_CONTENT_FILE"
+  chmod 600 "$WRITE_CAPABILITY_CONTENT_FILE"
+
+  payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-missing-grant","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_write_missing_grant_http" "$status" 403
   assert_json "${label}_write_missing_grant_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_missing"'
-  assert_absent "${label}_write_missing_grant_target" "$write_target"
+  assert_absent "${label}_write_missing_grant_target" "$target"
 
-  issue_write_file_grant "$write_target" "$write_content"
-  payload="$(jq -cn --arg path "$write_target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-granted-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"
+  issue_write_file_grant "$target" "$WRITE_CAPABILITY_CONTENT_FILE" create
+
+  payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write-mismatch' '{"jsonrpc":"2.0","id":"write-grant-mismatch","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_granted_dry_run_http" "$status" 200
-  assert_absent "${label}_write_granted_dry_run_target" "$write_target"
+  assert_eq "${label}_write_grant_mismatch_http" "$status" 403
+  assert_json "${label}_write_grant_mismatch_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
+  assert_absent "${label}_write_grant_mismatch_target" "$target"
 
-  payload="$(jq -cn --arg path "$write_target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-create","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
+  payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-explicit","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_create_http" "$status" 200
-  assert_json "${label}_write_create_body" "$body" '.result.structuredContent.dryRun == false and .result.structuredContent.bytes == 18'
-  assert_eq "${label}_write_content" "$(<"$write_target")" "device-smoke-write"
-  assert_eq "${label}_write_mode" "$(stat -c '%a' "$write_target")" 600
+  assert_eq "${label}_write_explicit_http" "$status" 200
+  assert_json "${label}_write_explicit_body" "$body" '.result.structuredContent.dryRun == false and .result.structuredContent.sizeBytes == 18 and .result.structuredContent.disposition == "create" and .result.structuredContent.mode == "0600" and .result.structuredContent.recoveryArtifactRetained == false'
+  assert_eq "${label}_write_content" "$(<"$target")" "device-smoke-write"
+  assert_eq "${label}_write_mode" "$(stat -c '%a' "$target")" 600
 
-  rm -f -- "$write_target"
+  rm -f -- "$target"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_replay_http" "$status" 403
-  assert_json "${label}_write_replay_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"'
-  assert_absent "${label}_write_replay_target" "$write_target"
+  assert_eq "${label}_write_grant_replay_http" "$status" 403
+  assert_json "${label}_write_grant_replay_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"'
+  assert_absent "${label}_write_grant_replay_target" "$target"
 
-  write_other_target="$SAFE_ROOT/write-other-target.txt"
-  issue_write_file_grant "$write_target" "$write_content"
-  payload="$(jq -cn --arg path "$write_other_target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-target-mismatch","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_target_mismatch_http" "$status" 403
-  assert_json "${label}_write_target_mismatch_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
-  assert_absent "${label}_write_target_mismatch_target" "$write_other_target"
+  printf '%s' 'device-smoke-replace-original' >"$target"
+  chmod 640 "$target"
+  inspect_write_file_recovery "${label}_write_replace_recovery_preflight"
+  recovery_count_before="$WRITE_FILE_RECOVERY_COUNT"
+  old_identity="$(stat -c '%d:%i' "$target")" || fail "write_file replacement identity preflight failed"
+  replacement_content='device-smoke-replacement'
+  printf '%s' "$replacement_content" >"$WRITE_CAPABILITY_CONTENT_FILE"
+  chmod 600 "$WRITE_CAPABILITY_CONTENT_FILE"
+  issue_write_file_grant "$target" "$WRITE_CAPABILITY_CONTENT_FILE" replace
 
-  issue_write_file_grant "$write_other_target" "$write_content"
-  payload="$(jq -cn --arg path "$write_other_target" --arg content 'device-smoke-different' '{"jsonrpc":"2.0","id":"write-content-mismatch","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_content_mismatch_http" "$status" 403
-  assert_json "${label}_write_content_mismatch_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
-  assert_absent "${label}_write_content_mismatch_target" "$write_other_target"
-
-  write_posture_target="$SAFE_ROOT/write-posture-target.txt"
-  issue_write_file_grant "$write_posture_target" "$write_content"
-  printf '%s' 'foreign-content' >"$write_posture_target"
-  chmod 600 "$write_posture_target"
-  payload="$(jq -cn --arg path "$write_posture_target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-posture-mismatch","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_posture_mismatch_http" "$status" 403
-  assert_json "${label}_write_posture_mismatch_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
-  assert_eq "${label}_write_posture_mismatch_preserved" "$(<"$write_posture_target")" foreign-content
-
-  write_replace_target="$SAFE_ROOT/write-replace-target.txt"
-  printf '%s' 'replace-before' >"$write_replace_target"
-  chmod 644 "$write_replace_target"
-  printf '%s' 'device-smoke-replace' >"$write_content"
-  issue_write_file_grant "$write_replace_target" "$write_content"
-  payload="$(jq -cn --arg path "$write_replace_target" --arg content 'device-smoke-replace' '{"jsonrpc":"2.0","id":"write-replace","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
+  payload="$(jq -cn --arg path "$target" --arg content "$replacement_content" '{"jsonrpc":"2.0","id":"write-replace","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_write_replace_http" "$status" 200
-  assert_json "${label}_write_replace_body" "$body" '.result.structuredContent.dryRun == false and .result.structuredContent.bytes == 20'
-  assert_eq "${label}_write_replace_content" "$(<"$write_replace_target")" device-smoke-replace
-  assert_eq "${label}_write_replace_mode" "$(stat -c '%a' "$write_replace_target")" 600
+  assert_json "${label}_write_replace_body" "$body" ".result.structuredContent.dryRun == false and .result.structuredContent.sizeBytes == ${#replacement_content} and .result.structuredContent.disposition == \"replace\" and .result.structuredContent.mode == \"0600\" and .result.structuredContent.recoveryArtifactRetained == true"
+  [[ "$(<"$target")" == "$replacement_content" ]] || fail "write_file replacement content verification failed"
+  log "PASS ${label}_write_replace_content=valid"
+  assert_eq "${label}_write_replace_mode" "$(stat -c '%a' "$target")" 600
+  new_identity="$(stat -c '%d:%i' "$target")" || fail "write_file replacement identity verification failed"
+  [[ "$new_identity" != "$old_identity" ]] || fail "write_file replacement retained the old target identity"
+  log "PASS ${label}_write_replace_identity=fresh"
+  inspect_write_file_recovery "${label}_write_replace_recovery" 'device-smoke-replace-original' 640
+  recovery_count_after="$WRITE_FILE_RECOVERY_COUNT"
+  ((recovery_count_after == recovery_count_before + 1)) \
+    || fail "write_file replacement did not retain exactly one recovery artifact"
+  ((WRITE_FILE_RECOVERY_CONTENT_MATCHES == 1)) \
+    || fail "write_file replacement did not retain the displaced content exactly once"
+
+  payload="$(jq -cn --arg path "$SAFE_ROOT" '{"jsonrpc":"2.0","id":"write-recovery-list","method":"tools/call","params":{"name":"list_directory","arguments":{"path":$path,"max_depth":1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_write_recovery_list_http" "$status" 200
+  if grep -Fq '.termux-mcp-write-quarantine' "$body"; then
+    fail "write_file recovery namespace was visible through list_directory"
+  fi
+  log "PASS ${label}_write_recovery_list=private"
+
+  payload="$(jq -cn --arg path "$SAFE_ROOT" --arg query '.termux-mcp-write-quarantine' '{"jsonrpc":"2.0","id":"write-recovery-find","method":"tools/call","params":{"name":"find_paths","arguments":{"path":$path,"query":$query,"kind":"directory","max_depth":1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_write_recovery_find_http" "$status" 200
+  assert_json "${label}_write_recovery_find" "$body" '.result.structuredContent.matches == []'
+
+  preserved_target="$SAFE_ROOT/write-preflight-original.txt"
+  printf '%s' 'device-smoke-preflight-original' >"$target"
+  chmod 600 "$target"
+  preflight_identity="$(stat -c '%d:%i' "$target")" || fail "write_file binding identity preflight failed"
+  printf '%s' 'device-smoke-binding-denied' >"$WRITE_CAPABILITY_CONTENT_FILE"
+  chmod 600 "$WRITE_CAPABILITY_CONTENT_FILE"
+  issue_write_file_grant "$target" "$WRITE_CAPABILITY_CONTENT_FILE" replace
+  mv -- "$target" "$preserved_target" || fail "write_file binding fixture preservation failed"
+  printf '%s' 'device-smoke-substitute' >"$target"
+  chmod 600 "$target"
+  substitute_identity="$(stat -c '%d:%i' "$target")" || fail "write_file substitute identity preflight failed"
+
+  payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-binding-denied' '{"jsonrpc":"2.0","id":"write-replace-binding","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_replace_replay_http" "$status" 403
-  assert_json "${label}_write_replace_replay_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"'
+  assert_eq "${label}_write_replace_binding_http" "$status" 403
+  assert_json "${label}_write_replace_binding_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
+  [[ "$(<"$target")" == device-smoke-substitute \
+    && "$(stat -c '%d:%i' "$target")" == "$substitute_identity" ]] \
+    || fail "write_file binding denial modified the substitute"
+  log "PASS ${label}_write_replace_substitute=preserved"
+  [[ "$(<"$preserved_target")" == device-smoke-preflight-original \
+    && "$(stat -c '%d:%i' "$preserved_target")" == "$preflight_identity" ]] \
+    || fail "write_file binding denial modified the preflight original"
+  log "PASS ${label}_write_replace_original=preserved"
+  inspect_write_file_recovery "${label}_write_replace_binding_recovery" 'device-smoke-replace-original' 640
+  ((WRITE_FILE_RECOVERY_COUNT == recovery_count_after)) \
+    || fail "write_file binding denial changed recovery state"
+  ((WRITE_FILE_RECOVERY_CONTENT_MATCHES == 1)) \
+    || fail "write_file binding denial changed retained recovery content"
+  rm -f -- "$target" "$preserved_target"
 
   write_large_content="$CONFIG_ROOT/write-exact-1mib.txt"
   write_large_request="$CONFIG_ROOT/write-exact-1mib.json"
-  target="$SAFE_ROOT/write-exact-1mib.txt"
-  head -c 1048576 /dev/zero | tr '\0' x >"$write_large_content"
+  write_exact_target="$SAFE_ROOT/write-exact-1mib.txt"
+  dd if=/dev/zero bs=1048576 count=1 status=none 2>/dev/null \
+    | tr '\000' x >"$write_large_content" \
+    || fail "could not stage the exact-limit write_file content"
   chmod 600 "$write_large_content"
-  jq -n --arg path "$target" --rawfile content "$write_large_content" '{jsonrpc:"2.0",id:"write-exact-1mib",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}' >"$write_large_request"
+  jq -cn --arg path "$write_exact_target" --rawfile content "$write_large_content" \
+    '{jsonrpc:"2.0",id:"write-exact-1mib",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}' \
+    >"$write_large_request" || fail "could not stage the exact-limit write_file request"
   chmod 600 "$write_large_request"
-  issue_write_file_grant "$target" "$write_large_content"
+  issue_write_file_grant "$write_exact_target" "$write_large_content" create
   status="$(mcp_post_file "$body" "$write_large_request" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_write_exact_1mib_http" "$status" 200
-  assert_json "${label}_write_exact_1mib_body" "$body" '.result.structuredContent.dryRun == false and .result.structuredContent.bytes == 1048576'
-  assert_eq "${label}_write_exact_1mib_size" "$(stat -c '%s' "$target")" 1048576
-  assert_eq "${label}_write_exact_1mib_mode" "$(stat -c '%a' "$target")" 600
-  cmp -s "$write_large_content" "$target" || fail "exact-limit write_file content differs"
+  assert_json "${label}_write_exact_1mib_body" "$body" '
+    .result.structuredContent.dryRun == false
+    and .result.structuredContent.sizeBytes == 1048576
+    and .result.structuredContent.disposition == "create"
+    and .result.structuredContent.mode == "0600"
+    and .result.structuredContent.maxFileBytes == 1048576
+    and .result.structuredContent.maxResponseBytes == 16384
+    and .result.structuredContent.recoveryArtifactRetained == false
+  '
+  assert_eq "${label}_write_exact_1mib_size" "$(stat -c '%s' "$write_exact_target")" 1048576
+  assert_eq "${label}_write_exact_1mib_mode" "$(stat -c '%a' "$write_exact_target")" 600
+  cmp -s "$write_large_content" "$write_exact_target" \
+    || fail "exact-limit write_file content differs"
   log "PASS ${label}_write_exact_1mib=exact"
 
   write_oversized_content="$CONFIG_ROOT/write-1mib-plus-one.txt"
   write_oversized_request="$CONFIG_ROOT/write-1mib-plus-one.json"
-  write_other_target="$SAFE_ROOT/write-1mib-plus-one.txt"
-  head -c 1048577 /dev/zero | tr '\0' y >"$write_oversized_content"
+  write_oversized_target="$SAFE_ROOT/write-1mib-plus-one.txt"
+  dd if=/dev/zero bs=1048577 count=1 status=none 2>/dev/null \
+    | tr '\000' y >"$write_oversized_content" \
+    || fail "could not stage the over-limit write_file content"
   chmod 600 "$write_oversized_content"
-  jq -n --arg path "$write_other_target" --rawfile content "$write_oversized_content" '{jsonrpc:"2.0",id:"write-1mib-plus-one",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}' >"$write_oversized_request"
+  jq -cn --arg path "$write_oversized_target" --rawfile content "$write_oversized_content" \
+    '{jsonrpc:"2.0",id:"write-1mib-plus-one",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}' \
+    >"$write_oversized_request" || fail "could not stage the over-limit write_file request"
   chmod 600 "$write_oversized_request"
-  issue_write_file_grant "$write_other_target" "$write_oversized_content"
+  printf '%s' 'device-smoke-over-limit-grant-retry' >"$WRITE_CAPABILITY_CONTENT_FILE"
+  chmod 600 "$WRITE_CAPABILITY_CONTENT_FILE"
+  issue_write_file_grant "$write_oversized_target" "$WRITE_CAPABILITY_CONTENT_FILE" create
   status="$(mcp_post_file "$body" "$write_oversized_request" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_write_1mib_plus_one_http" "$status" 413
-  assert_json "${label}_write_1mib_plus_one_body" "$body" '.id == "write-1mib-plus-one" and .error.code == -32001'
-  assert_absent "${label}_write_1mib_plus_one_target" "$write_other_target"
-  status="$(mcp_post_file "$body" "$write_oversized_request" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
-  assert_eq "${label}_write_1mib_plus_one_retry_http" "$status" 413
+  assert_json "${label}_write_1mib_plus_one_body" "$body" \
+    '.id == "write-1mib-plus-one" and .error.code == -32001'
+  assert_absent "${label}_write_1mib_plus_one_target" "$write_oversized_target"
+  payload="$(jq -cn --arg path "$write_oversized_target" --arg content 'device-smoke-over-limit-grant-retry' '{jsonrpc:"2.0",id:"write-1mib-plus-one-grant-retry",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_write_1mib_plus_one_grant_retry_http" "$status" 200
+  assert_eq "${label}_write_1mib_plus_one_grant_retry_content" \
+    "$(<"$write_oversized_target")" device-smoke-over-limit-grant-retry
 
-  printf '%s' 'preflight-content' >"$write_content"
-  write_preflight_target="$SAFE_ROOT/write-preflight-target.txt"
+  printf '%s' preflight-content >"$WRITE_CAPABILITY_CONTENT_FILE"
+  chmod 600 "$WRITE_CAPABILITY_CONTENT_FILE"
+  write_preflight_target="$SAFE_ROOT/write-response-preflight.txt"
   write_id_file="$CONFIG_ROOT/write-oversized-id.txt"
-  head -c 16384 /dev/zero | tr '\0' z >"$write_id_file"
+  write_preflight_request="$CONFIG_ROOT/write-response-preflight.json"
+  printf '%*s' 17000 '' | tr ' ' z >"$write_id_file" \
+    || fail "could not stage the oversized write_file response identifier"
   chmod 600 "$write_id_file"
-  jq -n --rawfile request_id "$write_id_file" --arg path "$write_preflight_target" --rawfile content "$write_content" '{jsonrpc:"2.0",id:$request_id,method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}' >"$write_request"
-  chmod 600 "$write_request"
-  issue_write_file_grant "$write_preflight_target" "$write_content"
-  status="$(mcp_post_file "$body" "$write_request" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
+  jq -cn --rawfile request_id "$write_id_file" --arg path "$write_preflight_target" \
+    --rawfile content "$WRITE_CAPABILITY_CONTENT_FILE" \
+    '{jsonrpc:"2.0",id:$request_id,method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}' \
+    >"$write_preflight_request" || fail "could not stage the write_file response-preflight request"
+  chmod 600 "$write_preflight_request"
+  issue_write_file_grant "$write_preflight_target" "$WRITE_CAPABILITY_CONTENT_FILE" create
+  status="$(mcp_post_file "$body" "$write_preflight_request" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_write_response_preflight_http" "$status" 413
   assert_json "${label}_write_response_preflight_body" "$body" '.id == null and .error.code == -32001'
+  response_bytes="$(wc -c <"$body")"
+  ((response_bytes <= 16384)) || fail "write_file response-preflight error exceeded its bound"
   assert_absent "${label}_write_response_preflight_target" "$write_preflight_target"
-  payload="$(jq -cn --arg path "$write_preflight_target" --arg content 'preflight-content' '{"jsonrpc":"2.0","id":"write-preflight-retry","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
+  payload="$(jq -cn --arg path "$write_preflight_target" --arg content preflight-content '{jsonrpc:"2.0",id:"write-response-preflight-retry",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:$content,dry_run:false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$WRITE_CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_write_response_preflight_retry_http" "$status" 200
-  assert_eq "${label}_write_response_preflight_content" "$(<"$write_preflight_target")" preflight-content
+  assert_eq "${label}_write_response_preflight_content" \
+    "$(<"$write_preflight_target")" preflight-content
+  inspect_write_file_recovery "${label}_write_boundary_recovery"
+  ((WRITE_FILE_RECOVERY_COUNT == recovery_count_after)) \
+    || fail "write_file boundary checks changed retained recovery state"
+
+  rm -f -- "$write_exact_target" "$write_oversized_target" "$write_preflight_target" \
+    "$write_large_content" "$write_large_request" "$write_oversized_content" \
+    "$write_oversized_request" "$write_id_file" "$write_preflight_request"
+
+  rm -f -- "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE"
+  WRITE_CAPABILITY_GRANT_FILE=""
+  WRITE_CAPABILITY_CONTENT_FILE=""
 
   outside="$WORK_ROOT/outside-secret.txt"
   printf '%s' 'outside-secret-must-not-be-returned' >"$outside"
@@ -795,6 +928,30 @@ protocol_smoke() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_forbidden_tool_http" "$status" 501
   assert_json "${label}_forbidden_tool_body" "$body" '.error.code == -32601 and .error.message == "Method not found"'
+
+  body_limit_content="$CONFIG_ROOT/request-body-limit-content.txt"
+  body_limit_request="$CONFIG_ROOT/request-body-limit.json"
+  dd if=/dev/zero bs=2097152 count=1 status=none 2>/dev/null \
+    | tr '\000' q >"$body_limit_content" \
+    || fail "could not stage the request-body-limit fixture"
+  chmod 600 "$body_limit_content"
+  jq -cn --rawfile content "$body_limit_content" \
+    '{jsonrpc:"2.0",id:"oversized",method:"tools/call",params:{name:"write_file",arguments:{path:"/ignored",content:$content}}}' \
+    >"$body_limit_request" || fail "could not stage the request-body-limit request"
+  chmod 600 "$body_limit_request"
+  status="$(mcp_post_file "$body" "$body_limit_request" "$MCP_SESSION_ID")"
+  assert_eq "${label}_authenticated_oversized_http" "$status" 413
+  assert_json "${label}_authenticated_oversized_body" "$body" '.error == "mcp_request_body_too_large"'
+
+  status="$(curl_local -sS -o "$body" -w '%{http_code}' \
+    -H "Host: localhost:$PORT" \
+    -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$body_limit_request" "$MCP_URL")"
+  assert_eq "${label}_unauthenticated_oversized_http" "$status" 401
+  assert_json "${label}_unauthenticated_oversized_body" "$body" '.error == "unauthorized"'
+  rm -f -- "$body_limit_content" "$body_limit_request"
 
   status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
     -H "Authorization: Bearer $MCP_TOKEN" \
@@ -813,7 +970,7 @@ volume_control_disabled_smoke() {
   local body="$LOG_DIR/volume-control-disabled-response.json"
   local headers="$LOG_DIR/volume-control-disabled-initialize.headers"
   local server_log="$LOG_DIR/volume-control-disabled-server.log"
-  local status payload attempt oversized
+  local status payload attempt
 
   env -i \
     "HOME=$HOME" \
@@ -866,31 +1023,12 @@ volume_control_disabled_smoke() {
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_status_http "$status" 200
-  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.fileWriteMaxBytes == 1048576 and .result.structuredContent.fileWriteMaxResponseBytes == 16384 and .result.structuredContent.highImpactTools == false and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
-
-  payload="$(jq -cn --arg path "$SAFE_ROOT/disabled-write.txt" --arg content disabled '{"jsonrpc":"2.0","id":"write-disabled","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  assert_eq volume_control_disabled_write_http "$status" 403
-  assert_json volume_control_disabled_write "$body" '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"'
-  assert_absent volume_control_disabled_write_target "$SAFE_ROOT/disabled-write.txt"
+  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_call_http "$status" 200
   assert_json volume_control_disabled_call "$body" '.result.isError == true and .result.structuredContent.reasonCode == "volume_control_runtime_disabled"'
-
-  oversized="$(printf '%*s' 1500 '' | tr ' ' x)"
-  payload="$(jq -cn --arg content "$oversized" '{"jsonrpc":"2.0","id":"body-order","method":"tools/call","params":{"name":"write_file","arguments":{"path":"/ignored","content":$content}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  assert_eq volume_control_disabled_authenticated_oversized_http "$status" 413
-  assert_json volume_control_disabled_authenticated_oversized "$body" '.error == "mcp_request_body_too_large"'
-  status="$(curl_local -sS -o "$body" -w '%{http_code}' \
-    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
-    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-    --data-binary "$payload" "$MCP_URL")"
-  assert_eq volume_control_disabled_unauthenticated_oversized_http "$status" 401
-  assert_json volume_control_disabled_unauthenticated_oversized "$body" '.error == "unauthorized"'
-  log "PASS transport_1024_body_limit_authentication_order=verified"
 
   status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
     -H "Authorization: Bearer $MCP_TOKEN" \
@@ -953,7 +1091,7 @@ else
   log "package_bootstrap=skipped"
 fi
 
-for command_name in git bash cargo rustc clang sv runsvdir awk base64 curl file grep head install jq realpath sed seq sha256sum stat tee timeout tr ss; do
+for command_name in git bash cargo rustc clang sv runsvdir awk base64 cmp curl dd file find grep install jq realpath sed seq sha256sum stat tee timeout tr ss wc; do
   require_command "$command_name"
 done
 
@@ -1016,7 +1154,6 @@ CANDIDATE_VERSION="$(awk '
 BASELINE_VERSION="0.0.0-device-smoke.$HEAD_LABEL"
 BASELINE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$BASELINE_VERSION"
 CANDIDATE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION"
-DEFAULT_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION-default"
 VOLUME_CONTROL_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION-android-volume-control"
 
 log "Building baseline and exact candidate; detailed output is in $BUILD_LOG"
@@ -1036,11 +1173,6 @@ if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features mcp-runtime -
   fail "exact candidate Rust build failed"
 fi
 install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$CANDIDATE_ARTIFACT"
-if ! CARGO_INCREMENTAL=1 cargo build --release --locked -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
-  tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
-  fail "exact default candidate Rust build failed"
-fi
-install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$DEFAULT_ARTIFACT"
 if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features android-volume-control -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
   tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
   fail "exact volume-control candidate Rust build failed"
@@ -1049,44 +1181,21 @@ install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$VOLUME_CONTROL_AR
 
 assert_eq baseline_reported_version "$("$BASELINE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$BASELINE_VERSION"
 assert_eq candidate_reported_version "$("$CANDIDATE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
-assert_eq default_reported_version "$("$DEFAULT_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
 assert_eq volume_control_reported_version "$("$VOLUME_CONTROL_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
 BASELINE_FILE="$(file -b "$BASELINE_ARTIFACT")"
 CANDIDATE_FILE="$(file -b "$CANDIDATE_ARTIFACT")"
-DEFAULT_FILE="$(file -b "$DEFAULT_ARTIFACT")"
 VOLUME_CONTROL_FILE="$(file -b "$VOLUME_CONTROL_ARTIFACT")"
 log "baseline_file=$BASELINE_FILE"
 log "candidate_file=$CANDIDATE_FILE"
-log "default_file=$DEFAULT_FILE"
 log "volume_control_file=$VOLUME_CONTROL_FILE"
 [[ "$CANDIDATE_FILE" == *"ARM aarch64"* && "$CANDIDATE_FILE" == *"Android"* ]] || fail "candidate is not an AArch64 Android ELF executable"
-[[ "$DEFAULT_FILE" == *"ARM aarch64"* && "$DEFAULT_FILE" == *"Android"* ]] || fail "default candidate is not an AArch64 Android ELF executable"
 [[ "$VOLUME_CONTROL_FILE" == *"ARM aarch64"* && "$VOLUME_CONTROL_FILE" == *"Android"* ]] || fail "volume-control candidate is not an AArch64 Android ELF executable"
 BASELINE_SHA="$(file_sha "$BASELINE_ARTIFACT")"
 CANDIDATE_SHA="$(file_sha "$CANDIDATE_ARTIFACT")"
-DEFAULT_SHA="$(file_sha "$DEFAULT_ARTIFACT")"
 VOLUME_CONTROL_SHA="$(file_sha "$VOLUME_CONTROL_ARTIFACT")"
 log "baseline_sha256=$BASELINE_SHA"
 log "candidate_sha256=$CANDIDATE_SHA"
-log "default_sha256=$DEFAULT_SHA"
 log "volume_control_sha256=$VOLUME_CONTROL_SHA"
-
-set +e
-timeout -k 2 5 env -i \
-  "HOME=$HOME" \
-  "PREFIX=$PREFIX" \
-  "PATH=$ORIGINAL_PATH" \
-  MCP__AUTH__STATIC_TOKEN=device-smoke-compile-gate \
-  MCP__FILE__WRITE_MUTATION_ENABLED=true \
-  MCP__CAPABILITY__KEY_ID=device-smoke-compile-gate \
-  MCP__CAPABILITY__HMAC_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000000 \
-  MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT=18765 \
-  "$DEFAULT_ARTIFACT" >"$LOG_DIR/write-file-compile-gate.log" 2>&1
-write_file_compile_rc=$?
-set -e
-((write_file_compile_rc != 0 && write_file_compile_rc != 124 && write_file_compile_rc != 137)) || fail "default candidate did not reject the write_file runtime gate"
-grep -Fq 'MCP__FILE__WRITE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature' "$LOG_DIR/write-file-compile-gate.log" || fail "default candidate returned the wrong write_file compile-gate error"
-log "PASS write_file_compile_gate=rejected_default_artifact"
 
 set +e
 timeout -k 2 5 env -i \
@@ -1127,6 +1236,10 @@ CAPABILITY_KEY_HEX="$(head -c 32 /dev/urandom | sha256sum | awk '{print $1}')"
 [[ "$CAPABILITY_KEY_HEX" =~ ^[0-9a-f]{64}$ ]] || fail "could not generate a private capability key"
 CAPABILITY_GRANT_FILE="$CONFIG_ROOT/create-directory-grant"
 WRITE_CAPABILITY_GRANT_FILE="$CONFIG_ROOT/write-file-grant"
+WRITE_CAPABILITY_CONTENT_FILE="$CONFIG_ROOT/write-file-content"
+: >"$WRITE_CAPABILITY_GRANT_FILE"
+: >"$WRITE_CAPABILITY_CONTENT_FILE"
+chmod 600 "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE"
 cat >"$CONFIG_ROOT/runtime.env" <<EOF
 MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN
 MCP__SERVER__HOST=127.0.0.1
@@ -1263,7 +1376,6 @@ assert_exists uninstall_preserved_config "$CONFIG_ROOT/runtime.env"
 
 log "exact_head=$EXPECTED_HEAD"
 log "candidate_sha256=$CANDIDATE_SHA"
-log "default_sha256=$DEFAULT_SHA"
 log "volume_control_sha256=$VOLUME_CONTROL_SHA"
 log "TERMUX_MCP_DEVICE_RESULT=PASS"
 SMOKE_SUCCEEDED=1

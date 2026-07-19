@@ -4,11 +4,9 @@ mod support;
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{
-    empty_test_file_tools, initialize_session, post_json_to_session, response_json, test_router,
-};
+use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
 use termux_mcp_server::{
-    error::AppError,
+    error::{AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE},
     tools::{
         FileSystemTools, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
         MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES,
@@ -170,7 +168,8 @@ async fn range_read_enforces_exact_range_and_sparse_file_limits() {
         .unwrap()
         .set_len((MAX_BINARY_RANGE_FILE_BYTES + 1) as u64)
         .unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let result = tools
         .read_binary_range(
@@ -249,7 +248,8 @@ async fn range_read_rejects_missing_outside_symlinked_and_unsupported_targets() 
     let _listener = UnixListener::bind(&socket).unwrap();
     let linked_parent = root.path().join("linked-parent");
     symlink(outside.path(), &linked_parent).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     assert!(matches!(
         tools
@@ -350,13 +350,16 @@ async fn range_read_arguments_response_preflight_and_audits_are_bounded_and_priv
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        if index == 3 {
-            let payload = response_json(response).await;
-            assert_eq!(
-                payload["error"]["data"],
-                "Requested binary range is not valid"
-            );
-        }
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), MAX_BINARY_RANGE_RESPONSE_BYTES)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["error"]["data"],
+            INVALID_BINARY_RANGE_PUBLIC_MESSAGE
+        );
     }
 
     let allowed = post_json_to_session(

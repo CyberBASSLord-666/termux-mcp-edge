@@ -1,24 +1,34 @@
 #![cfg(feature = "mcp-runtime")]
 #![allow(dead_code)]
 
+use std::net::SocketAddr;
+
 use axum::{
     body::{to_bytes, Body},
+    extract::{ConnectInfo, Request as AxumRequest},
     http::{header, Request},
+    middleware::{self, Next},
     response::Response,
     Router,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use termux_mcp_server::{
+    auth::McpAuthPolicy,
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        router, router_with_create_directory_authority, router_with_options,
-        router_with_write_file_authority, McpTransportOptions, MCP_POST_ACCEPT,
-        MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+        protected_router, protected_router_with_create_directory_authority,
+        protected_router_with_filesystem_authorities, protected_router_with_options,
+        McpRouterProtection, McpTransportOptions, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
+        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+    },
+    request_limits::{
+        McpRequestLimits, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS,
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
-    write_file_grant::{content_sha256, WriteFileGrantAuthority},
+    write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
 };
 use tower::ServiceExt;
 
@@ -26,32 +36,61 @@ pub(super) const TEST_CAPABILITY_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 pub(super) const TEST_STATIC_PRINCIPAL: &str = "test-static-principal";
 
+fn test_router_protection() -> McpRouterProtection {
+    McpRouterProtection::new(
+        "127.0.0.1",
+        McpAuthPolicy::unauthenticated_localhost_only(),
+        McpRequestLimits::from_seconds(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .expect("default test request limits must be valid"),
+    )
+    .expect("unauthenticated test routers declare an exact loopback listener")
+}
+
+async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Response {
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+    next.run(request).await
+}
+
+fn with_loopback_test_peer(router: Router) -> Router {
+    router.route_layer(middleware::from_fn(attach_loopback_test_peer))
+}
+
 pub(super) fn test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("visible.txt"), "safe content").unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     (root, tools)
 }
 
 pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
     let root = tempfile::tempdir().unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     (root, tools)
 }
 
 pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
-    router(
+    with_loopback_test_peer(protected_router(
+        test_router_protection(),
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
         false,
         false,
         false,
-    )
+    ))
 }
 
 pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
-    router_with_options(
+    with_loopback_test_peer(protected_router_with_options(
+        test_router_protection(),
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
@@ -59,7 +98,7 @@ pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
         false,
         false,
         McpTransportOptions::default().with_sse_enabled(true),
-    )
+    ))
 }
 
 pub(super) fn create_directory_authorized_test_router(
@@ -71,7 +110,8 @@ pub(super) fn create_directory_authorized_test_router(
         TEST_STATIC_PRINCIPAL,
     )
     .unwrap();
-    let router = router_with_create_directory_authority(
+    let router = with_loopback_test_peer(protected_router_with_create_directory_authority(
+        test_router_protection(),
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
@@ -79,7 +119,37 @@ pub(super) fn create_directory_authorized_test_router(
         false,
         false,
         authority.clone(),
-    );
+    ));
+    (router, authority)
+}
+
+pub(super) fn write_file_authorized_test_router(
+    file_tools: FileSystemTools,
+) -> (Router, WriteFileGrantAuthority) {
+    let authority = WriteFileGrantAuthority::from_hex_key(
+        "test-key-1",
+        TEST_CAPABILITY_KEY,
+        TEST_STATIC_PRINCIPAL,
+    )
+    .unwrap();
+    let protection = McpRouterProtection::new(
+        "127.0.0.1",
+        McpAuthPolicy::unauthenticated_localhost_only(),
+        McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
+            .expect("write authorization tests require bounded parallel replay attempts"),
+    )
+    .expect("unauthenticated test routers declare an exact loopback listener");
+    let router = with_loopback_test_peer(protected_router_with_filesystem_authorities(
+        protection,
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+        false,
+        false,
+        false,
+        None,
+        Some(authority.clone()),
+    ));
     (router, authority)
 }
 
@@ -99,54 +169,31 @@ pub(super) fn issue_create_directory_grant(
     authority.issue_at(session_id, &target, now).unwrap()
 }
 
-pub(super) fn write_file_authorized_test_router(
-    file_tools: FileSystemTools,
-) -> (Router, WriteFileGrantAuthority) {
-    let authority = WriteFileGrantAuthority::from_hex_key(
-        "test-key-1",
-        TEST_CAPABILITY_KEY,
-        TEST_STATIC_PRINCIPAL,
-    )
-    .unwrap();
-    let router = router_with_write_file_authority(
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-        false,
-        authority.clone(),
-    );
-    (router, authority)
-}
-
 pub(super) fn issue_write_file_grant(
     authority: &WriteFileGrantAuthority,
     file_tools: &FileSystemTools,
     session_id: &str,
     target_path: &str,
-    content: &str,
+    content: &[u8],
+    disposition: WriteFileDisposition,
 ) -> String {
     let target = file_tools
-        .write_file_grant_target(target_path, content_sha256(content.as_bytes()))
-        .expect("test write grant target must be valid");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    authority.issue_at(session_id, &target, now).unwrap()
+        .write_file_grant_target(target_path, content, disposition)
+        .expect("test grant target must be valid");
+    authority.issue(session_id, &target).unwrap()
 }
 
 #[cfg(feature = "command-execution")]
 pub(super) fn command_test_router(file_tools: FileSystemTools) -> Router {
-    router(
+    with_loopback_test_peer(protected_router(
+        test_router_protection(),
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
         false,
         false,
         true,
-    )
+    ))
 }
 
 pub(super) async fn post_raw(body: impl Into<Body>) -> Response {

@@ -35,11 +35,11 @@ See [Write-file capability grants](WRITE_FILE_CAPABILITY_GRANTS.md) for configur
 After argument and complete-response preflight, the runtime:
 
 1. Lexically anchors `path` to the most specific configured safe root and rejects relative paths, NUL bytes, parent traversal, the safe-root path itself, and paths outside every root.
-2. Opens the anchored root and resolves the existing parent one component at a time with no-follow descriptors.
-3. Retains both the safe-root and mutation-parent descriptors through authorization, staging, publication, verification, cleanup, and durability sync.
+2. Opens the anchored root, captures its device/inode identity, and resolves the existing parent one component at a time with no-follow descriptors.
+3. Retains the mutation-parent descriptor through authorization, private-quarantine staging, publication, verification, and durability sync. Replacement also retains a no-follow descriptor for the classified target. The safe-root descriptor is no longer needed after parent resolution.
 4. Classifies the final name without following it:
    - absence selects **create**;
-   - one regular file selects **replace** and retains a descriptor plus its type, device, inode, mode, and size snapshot;
+   - one single-link regular file of at most 1 MiB selects **replace** and retains a descriptor plus its device, inode, size, high-resolution ctime, and link-count identity;
    - a symlink, directory, FIFO, socket, device, or other special object is rejected.
 5. Builds the authorization target from the anchored root identity, normalized root-relative components, exact content SHA-256, create-or-replace disposition, and mutating posture.
 
@@ -51,34 +51,33 @@ Omitted `dry_run` and explicit `dry_run:true` perform the same validation and cl
 
 ## Authorized mutation sequence
 
-For `dry_run:false`, the runtime acquires one process-wide mutex shared by every in-process `FileSystemTools` instance, then follows this order while retaining the mutex:
+For `dry_run:false`, the transport first tries to acquire the one shared, non-queueing filesystem-mutation worker permit. This permit is shared with other authorized filesystem mutation families. If another worker owns it, the request fails immediately with a private capacity response before descriptor preparation, grant consumption, or filesystem mutation. The runtime does not maintain a queue of waiting writes.
 
-1. Revalidate the classified destination posture and any held replacement identity.
-2. At one atomic request commit point immediately before grant consumption, transition from pending to either request-cancelled or worker-owned. A cancellation winner stops before grant consumption or mutation; a worker winner owns completion independently of later request cancellation.
-3. Atomically validate and consume the exact grant immediately before the first filesystem mutation attempt. Consumption survives every later success, failure, timeout, or client cancellation.
-4. Create one unpredictable same-parent staging name with exclusive no-follow creation, force mode `0600`, and capture its regular-file device/inode identity.
-5. Write the exact bytes, sync the staging descriptor, then verify its held and named type, device, inode, mode, size, and SHA-256.
-6. Revalidate the create-or-replace posture immediately before publication.
-7. Publish atomically:
-   - **create:** `RENAME_NOREPLACE`, followed by held/named identity, mode, and size verification;
-   - **replace:** `RENAME_EXCHANGE`, followed by verification that the new staged identity owns the final name and the exact captured old identity owns the displaced name.
-8. Sync the parent directory at the publication boundary, remove only the exact displaced regular-file identity for replacement, and sync the parent again after cleanup.
+Inside the permit-owned blocking worker, the runtime follows this order:
 
-The mutex remains held through staging, publication, verification, any rollback, operation-owned cleanup, and the final parent sync. Consequently, two mutations prepared against the same old destination cannot race inside one server process: after the winner completes, the waiting operation fails its first destination revalidation before authorization or grant consumption. Its distinct, still-valid grant remains reusable with a newly prepared request.
+1. Prepare and classify the target while retaining the mutation-parent descriptor and, for replacement, the exact existing-target identity and descriptor.
+2. Acquire the one process-global filesystem-publication lock shared by every router and both live filesystem mutation families. Under that lock, revalidate the exact create-or-replace posture and held replacement identity before any cancellation or grant state changes.
+3. Resolve the atomic request-cancellation/worker-ownership commit guard. A cancellation winner stops without consuming the grant or changing the filesystem. A worker winner owns the rest of the operation even if the async request later times out or disconnects.
+4. Perform a read-only quarantine-capacity preflight. If the fixed `.termux-mcp-write-quarantine` child exists, open it without following links, require a mode-`0700` directory, acquire its nonblocking advisory lock, and reject malformed contents, contention, more than 32 artifacts, or insufficient remaining capacity within the 32 MiB bound. This preflight descriptor and lock are released before authorization.
+5. Atomically validate and consume the exact grant immediately before the first mutating operation. Consumption survives every later success or failure.
+6. Open or create the quarantine. Creating the directory, when absent, is the first mutation attempt. Revalidate its type and mode, reacquire and retain its nonblocking lock, and recheck capacity so a change after preflight fails closed.
+7. Create one unpredictable `.termux-mcp-write-artifact-*` regular file inside the held quarantine directory with exclusive no-follow creation and mode `0600`. Write the exact bytes, sync it, and verify its held and named type, identity, mode, and size.
+8. Publish atomically:
+   - **create:** move the staged inode to the final name with `RENAME_NOREPLACE`; no recovery artifact remains;
+   - **replace:** revalidate the bound target again, then perform one `RENAME_EXCHANGE`; the authorized staged inode becomes the final target and the displaced prior inode remains under the randomized quarantine name.
+9. Verify the exact final identity, mode, and size, sync the held target parent and quarantine directories, and revalidate the quarantine bounds.
 
-In-process `write_file` namespace changes are serialized; detected namespace changes may cause a bounded private failure, but cannot turn create into overwrite, follow a symlink, publish a special object, or delete a name whose observed identity is not owned by the operation.
+The process-global lock remains held from the pre-consumption posture check through publication and verification, so separately embedded routers cannot both consume grants for one cooperating target race. The retained quarantine advisory lock additionally serializes cooperating runtime writers for the same target parent. A stale prepared create or write fails before cancellation ownership or grant consumption. The non-queueing worker permit remains a fail-fast resource bound, not the cross-router transaction lock. An independent process under the same Unix UID can ignore both project conventions and advisory locks and race namespace operations; such interference can force a bounded denial or a documented post-commit failure. Production mutation safe roots therefore require exclusive operational ownership by this service: do not run independent writers against a configured root while live `create_directory` or `write_file` gates are enabled.
 
-## Failure, cancellation, and cleanup
+## Failure, cancellation, and retained recovery
 
-Cleanup is descriptor-relative and identity checked. A cleanup guard is armed only after the staging identity is captured. It may unlink only a named regular file whose device and inode still match that captured identity; a missing, exchanged, linked, or foreign object is preserved. Successful publication disarms staging cleanup only after the required durability boundary. The process-wide mutex makes this guarantee complete against every other in-process `write_file` mutation.
+Replacement has one irreversible commit point: `RENAME_EXCHANGE`. After that exchange the runtime never automatically rolls back, unlinks, truncates, renames, or deliberately changes the displaced object's content, mode, ownership, or extended attributes. The prior inode and content remain in the mode-`0700` quarantine. Its mode, ownership, and extended attributes are not deliberately modified, but the rename operation can update ctime, and other filesystem-managed metadata is not guaranteed to remain unchanged. A successful replacement reports `recoveryArtifactRetained:true`; create and preview report `false`.
 
-When replacement publication verification fails, rollback first requires the exact staged inode at the final name, then non-destructively exchanges it back with the displaced name regardless of the displaced object's identity. This restores a late foreign replacement instead of leaving authorized content published by a call that reports failure. Failures never make a consumed grant reusable.
+If verification or directory synchronization fails after exchange, the request reports failure and the grant remains consumed. The authorized new inode may remain at the public target and the displaced prior inode remains quarantined. This is an explicit preservation rule: POSIX pathname operations cannot provide an inode-conditional rollback or cleanup that is safe against a hostile same-UID namespace peer.
 
-The mutation runs in an owned blocking worker with a three-state pending/request-cancelled/worker-owned commit point immediately before grant consumption. If request cancellation wins, the worker performs no mutation and the grant remains reusable. If the worker wins, later request cancellation cannot abandon grant-consumed staging, verification, publication, rollback, cleanup, or durability work.
+Before worker ownership, cancellation consumes no grant and changes no state. After the worker wins the commit guard, later timeout, disconnect, or task cancellation does not detach the permit-owned blocking operation. It continues through its bounded publication, verification, and durability work without destructive post-capture cleanup.
 
-Against other in-process server writes, no success or failure path leaves an operation-owned staging file, and a foreign object placed at a former staging name is not removed.
-
-An independent local OS process with direct write access to the same parent directory is outside the process mutex. Linux provides no conditional unlink-by-inode operation, so such a process can race the identity check and subsequent name-based `unlinkat`. Operators must give the server exclusive operational ownership of configured safe roots and must not run independent writers there; otherwise the foreign-object cleanup guarantee cannot be absolute across processes.
+Recovery artifacts are operator-managed material, not an automatic version history. Do not remove them while the runtime or another same-UID writer is active. To reclaim capacity, stop and quiesce the service and other writers, inspect the exact quarantine entry locally, remove only the selected entry without broad globs or recursive deletion, then restart and verify health and readiness. Back up any retained content that must survive device or filesystem loss.
 
 ## Stable private failures and audit behavior
 
@@ -99,9 +98,9 @@ Release evidence must cover:
 - exact 1 MiB acceptance and 1 MiB plus one byte rejection;
 - fixed `0600` create and replace with exact content;
 - create/replace mismatch, create no-replace, missing parent, root target, outside root, linked parent, final symlink, directory, FIFO, and other special-object rejection;
-- process-wide serialization across separate `FileSystemTools` instances, including two pre-prepared same-target replacements where the stale loser fails before grant consumption and reuses that grant only after re-preparation;
+- fail-fast shared-worker capacity across mutation families, including denial before preparation or grant consumption and owned-worker completion after request cancellation;
 - request cancellation on both sides of the pending/request-cancelled/worker-owned commit point;
-- parent/final/staging exchange races, target mode/size/identity races, every post-consumption failure boundary, non-destructive exchange rollback despite a changed displaced identity, no staging residue, and in-process foreign-object preservation;
+- quarantine mode, naming, visibility, capacity, lock contention, and malformed-entry denial; create `NOREPLACE`; irreversible replace `EXCHANGE`; exact retained displaced identity, content, and mode; and every post-consumption failure state without automatic rollback or destructive cleanup;
 - oversized actual JSON-RPC ID preflight followed by successful reuse of the same unconsumed grant;
 - private responses and aggregate audits;
 - default and all-feature Rust suites, fixture parity, validator v8, device harness v8, every optional emulated posture, Android cross-builds, native official-Termux ARM64 execution, exact-head CI/Security, and direct physical observation when required by release classification.

@@ -3,66 +3,150 @@
 mod support;
 
 use std::{
-    os::unix::fs::{symlink, PermissionsExt},
+    os::unix::fs::PermissionsExt,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::{body::to_bytes, http::StatusCode};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{json, Value};
+use sha2::Sha256;
 use support::{
     empty_test_file_tools, initialize_session, issue_write_file_grant, post_json_to_session,
-    post_json_to_session_with_grant, test_router, write_file_authorized_test_router,
-    TEST_CAPABILITY_KEY,
+    post_json_to_session_with_grant, response_json, test_router, write_file_authorized_test_router,
+    TEST_CAPABILITY_KEY, TEST_STATIC_PRINCIPAL,
 };
 use termux_mcp_server::{
-    create_directory_grant::CreateDirectoryGrantAuthority,
-    tools::{MAX_WRITE_FILE_RESPONSE_BYTES, WRITE_FILE_MODE},
-    write_file_grant::{content_sha256, WriteFileGrantAuthority},
+    tools::MAX_WRITE_FILE_RESPONSE_BYTES,
+    write_file_grant::{
+        WriteFileDisposition, WriteFileGrantAuthority, WRITE_FILE_GRANT_HEADER,
+        WRITE_FILE_GRANT_TTL_SECONDS,
+    },
+    write_policy::DEFAULT_MAX_WRITE_BYTES,
 };
 
-fn write_call(id: impl Into<Value>, path: &str, content: &str, dry_run: Option<bool>) -> Value {
-    let mut arguments = json!({"path": path, "content": content});
-    if let Some(dry_run) = dry_run {
-        arguments["dry_run"] = json!(dry_run);
-    }
+type HmacSha256 = Hmac<Sha256>;
+
+const DRY_RUN_SUMMARY: &str =
+    "Validated one bounded safe-rooted UTF-8 file write without mutation.";
+const MUTATION_SUMMARY: &str = "Wrote one bounded safe-rooted UTF-8 file with fixed mode 0600.";
+const PAYLOAD_BYTES: usize = 65;
+const ISSUED_OFFSET: usize = 49;
+const EXPIRES_OFFSET: usize = 57;
+
+fn write_call(id: impl Into<Value>, path: &str, content: &str, dry_run: bool) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id.into(),
         "method": "tools/call",
         "params": {
             "name": "write_file",
-            "arguments": arguments,
+            "arguments": {
+                "path": path,
+                "content": content,
+                "dry_run": dry_run,
+            },
         },
     })
 }
 
-async fn response_json(response: axum::response::Response, limit: usize) -> Value {
-    let body = to_bytes(response.into_body(), limit).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
+fn runtime_status_call(id: impl Into<Value>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.into(),
+        "method": "tools/call",
+        "params": {"name": "runtime_status", "arguments": {}}
+    })
 }
 
 fn corrupt_signature(token: &str) -> String {
-    let mut token = token.as_bytes().to_vec();
-    let last = token.last_mut().unwrap();
+    let mut corrupted = token.as_bytes().to_vec();
+    let last = corrupted.last_mut().expect("grant is non-empty");
     *last = if *last == b'0' { b'1' } else { b'0' };
-    String::from_utf8(token).unwrap()
+    String::from_utf8(corrupted).unwrap()
 }
 
-fn assert_no_write_staging_entries(root: &std::path::Path) {
-    for entry in std::fs::read_dir(root).unwrap() {
-        let name = entry.unwrap().file_name();
-        assert!(
-            !name
-                .to_string_lossy()
-                .starts_with(".termux-mcp-write-file-"),
-            "operation-owned staging entry leaked"
-        );
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn decode_hex(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0);
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16).unwrap() as u8;
+            let low = (pair[1] as char).to_digit(16).unwrap() as u8;
+            (high << 4) | low
+        })
+        .collect()
+}
+
+fn encode_hex(value: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value {
+        write!(&mut encoded, "{byte:02x}").unwrap();
     }
+    encoded
+}
+
+fn resign_with_times(token: &str, issued: u64, expires: u64) -> String {
+    let segments = token.split('.').collect::<Vec<_>>();
+    assert_eq!(segments.len(), 4);
+    let mut payload = decode_hex(segments[2]);
+    assert_eq!(payload.len(), PAYLOAD_BYTES);
+    payload[ISSUED_OFFSET..EXPIRES_OFFSET].copy_from_slice(&issued.to_be_bytes());
+    payload[EXPIRES_OFFSET..PAYLOAD_BYTES].copy_from_slice(&expires.to_be_bytes());
+
+    let payload = encode_hex(&payload);
+    let signed = format!("{}.{}.{}", segments[0], segments[1], payload);
+    let key = decode_hex(TEST_CAPABILITY_KEY);
+    let mut mac = <HmacSha256 as KeyInit>::new_from_slice(&key).unwrap();
+    mac.update(signed.as_bytes());
+    format!("{signed}.{}", encode_hex(&mac.finalize().into_bytes()))
+}
+
+fn assert_capability_denial(body: &Value, reason: &str) {
+    assert_eq!(body["error"]["code"], -32003);
+    assert_eq!(body["error"]["data"]["reason"], reason);
+}
+
+fn assert_write_result(body: &Value, dry_run: bool, size: usize, disposition: &str) {
+    let result = &body["result"];
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["content"][0]["text"],
+        if dry_run {
+            DRY_RUN_SUMMARY
+        } else {
+            MUTATION_SUMMARY
+        }
+    );
+    assert_eq!(
+        result["structuredContent"],
+        json!({
+            "dryRun": dry_run,
+            "sizeBytes": size,
+            "disposition": disposition,
+            "mode": "0600",
+            "maxFileBytes": DEFAULT_MAX_WRITE_BYTES,
+            "maxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
+            "recoveryArtifactRetained": !dry_run && disposition == "replace",
+        })
+    );
 }
 
 #[tokio::test]
-async fn disabled_gate_is_dry_run_only_and_denies_before_filesystem_resolution() {
+async fn disabled_gate_is_dry_run_only_and_denies_mutation_before_path_validation() {
     let (root, file_tools) = empty_test_file_tools();
+    let target = root.path().join("disabled.txt");
     let router = test_router(file_tools);
     let session_id = initialize_session(&router).await;
 
@@ -73,7 +157,7 @@ async fn disabled_gate_is_dry_run_only_and_denies_before_filesystem_resolution()
     )
     .await;
     assert_eq!(discovery.status(), StatusCode::OK);
-    let discovery = response_json(discovery, 128 * 1024).await;
+    let discovery = response_json(discovery).await;
     let write = discovery["result"]["tools"]
         .as_array()
         .unwrap()
@@ -81,91 +165,73 @@ async fn disabled_gate_is_dry_run_only_and_denies_before_filesystem_resolution()
         .find(|tool| tool["name"] == "write_file")
         .unwrap();
     assert_eq!(write["inputSchema"]["properties"]["dry_run"]["const"], true);
+    assert_eq!(
+        write["inputSchema"]["properties"]["content"]["x-maxBytes"],
+        DEFAULT_MAX_WRITE_BYTES
+    );
     assert!(write["description"]
         .as_str()
         .unwrap()
         .contains("mutation gate is disabled"));
 
-    let target = root.path().join("disabled.txt");
     let denied = post_json_to_session(
         router.clone(),
         &session_id,
         write_call(
             "disabled",
             target.to_string_lossy().as_ref(),
-            "private-content",
-            Some(false),
+            "must-not-write",
+            false,
         ),
     )
     .await;
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-    let denied = response_json(denied, 16 * 1024).await;
-    assert_eq!(denied["error"]["code"], -32003);
-    assert_eq!(
-        denied["error"]["data"]["reason"],
-        "write_file_mutation_disabled"
-    );
+    assert_capability_denial(&response_json(denied).await, "write_file_mutation_disabled");
     assert!(!target.exists());
-    assert!(!denied.to_string().contains("private-content"));
 
-    let outside = tempfile::tempdir().unwrap().path().join("outside.txt");
-    let outside_denied = post_json_to_session(
+    let outside_root = tempfile::tempdir().unwrap();
+    let outside = outside_root.path().join("outside.txt");
+    let denied = post_json_to_session(
         router.clone(),
         &session_id,
         write_call(
             "disabled-outside",
             outside.to_string_lossy().as_ref(),
-            "secret",
-            Some(false),
+            "must-not-write",
+            false,
         ),
     )
     .await;
-    assert_eq!(outside_denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response_json(outside_denied, 16 * 1024).await["error"]["data"]["reason"],
-        "write_file_mutation_disabled"
-    );
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_capability_denial(&response_json(denied).await, "write_file_mutation_disabled");
+    assert!(!outside.exists());
 
-    let runtime = post_json_to_session(
-        router,
-        &session_id,
-        json!({
-            "jsonrpc":"2.0",
-            "id":"status",
-            "method":"tools/call",
-            "params":{"name":"runtime_status","arguments":{}}
-        }),
+    let status = response_json(
+        post_json_to_session(router, &session_id, runtime_status_call("status")).await,
     )
     .await;
-    let runtime = response_json(runtime, 128 * 1024).await;
-    let structured = &runtime["result"]["structuredContent"];
-    assert_eq!(structured["fileWriteMutationEnabled"], false);
-    assert_eq!(structured["fileWriteGrantRequired"], false);
-    assert_eq!(
-        structured["fileWriteMode"],
-        "dry_run_only_mutation_disabled"
-    );
-    assert_eq!(structured["fileWriteMaxBytes"], 1_048_576);
-    assert_eq!(
-        structured["fileWriteMaxResponseBytes"],
-        MAX_WRITE_FILE_RESPONSE_BYTES
-    );
+    let runtime = &status["result"]["structuredContent"];
+    assert_eq!(runtime["fileWriteMutationEnabled"], false);
+    assert_eq!(runtime["fileWriteGrantRequired"], false);
+    assert_eq!(runtime["fileWriteMode"], "dry_run_only_mutation_disabled");
 }
 
 #[tokio::test]
-async fn enabled_gate_discovers_grant_contract_and_valid_create_replace_are_exact() {
+async fn enabled_gate_discovery_status_and_missing_grant_fail_closed() {
     let (root, file_tools) = empty_test_file_tools();
-    let issuer_tools = file_tools.clone();
-    let (router, authority) = write_file_authorized_test_router(file_tools);
+    let (router, _authority) = write_file_authorized_test_router(file_tools);
     let session_id = initialize_session(&router).await;
+    let target = root.path().join("missing.txt");
 
-    let discovery = post_json_to_session(
-        router.clone(),
-        &session_id,
-        json!({"jsonrpc":"2.0","id":"tools","method":"tools/list"}),
+    let discovery = response_json(
+        post_json_to_session(
+            router.clone(),
+            &session_id,
+            json!({"jsonrpc":"2.0","id":"tools","method":"tools/list"}),
+        )
+        .await,
     )
     .await;
-    let discovery = response_json(discovery, 128 * 1024).await;
     let write = discovery["result"]["tools"]
         .as_array()
         .unwrap()
@@ -178,428 +244,389 @@ async fn enabled_gate_discovers_grant_contract_and_valid_create_replace_are_exac
     assert!(write["description"]
         .as_str()
         .unwrap()
-        .contains("MCP-Capability-Grant"));
+        .contains("target/content/disposition-bound MCP-Capability-Grant"));
 
-    let target = root.path().join("authorized.txt");
-    let create_content = "created content";
-    let create_grant = issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        target.to_string_lossy().as_ref(),
-        create_content,
-    );
-    let create = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "create",
-            target.to_string_lossy().as_ref(),
-            create_content,
-            Some(false),
-        ),
-        &create_grant,
-    )
-    .await;
-    assert_eq!(create.status(), StatusCode::OK);
-    let create = response_json(create, MAX_WRITE_FILE_RESPONSE_BYTES + 1).await;
-    assert_eq!(create["result"]["structuredContent"]["dryRun"], false);
-    assert_eq!(
-        create["result"]["structuredContent"]["bytes"],
-        create_content.len()
-    );
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), create_content);
-    assert_eq!(
-        std::fs::symlink_metadata(&target)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o7777,
-        WRITE_FILE_MODE
-    );
-
-    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o666)).unwrap();
-    let replace_content = "replacement content";
-    let replace_grant = issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        target.to_string_lossy().as_ref(),
-        replace_content,
-    );
-    let replace = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "replace",
-            target.to_string_lossy().as_ref(),
-            replace_content,
-            Some(false),
-        ),
-        &replace_grant,
-    )
-    .await;
-    assert_eq!(replace.status(), StatusCode::OK);
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), replace_content);
-    assert_eq!(
-        std::fs::symlink_metadata(&target)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o7777,
-        WRITE_FILE_MODE
-    );
-    assert_no_write_staging_entries(root.path());
-
-    let runtime = post_json_to_session(
-        router,
-        &session_id,
-        json!({
-            "jsonrpc":"2.0",
-            "id":"status",
-            "method":"tools/call",
-            "params":{"name":"runtime_status","arguments":{}}
-        }),
-    )
-    .await;
-    let runtime = response_json(runtime, 128 * 1024).await;
-    let structured = &runtime["result"]["structuredContent"];
-    assert_eq!(structured["fileWriteMutationEnabled"], true);
-    assert_eq!(structured["fileWriteGrantRequired"], true);
-    assert_eq!(structured["fileWriteGrantHeader"], "mcp-capability-grant");
-    assert_eq!(structured["fileWriteGrantTtlSeconds"], 60);
-    assert_eq!(
-        structured["fileWriteMode"],
-        "dry_run_or_request_scoped_single_use_grant"
-    );
-    assert_eq!(structured["highImpactTools"], false);
-}
-
-#[tokio::test]
-async fn missing_malformed_and_binding_mismatched_grants_are_private_and_unconsumed() {
-    let (root, file_tools) = empty_test_file_tools();
-    let issuer_tools = file_tools.clone();
-    let (router, authority) = write_file_authorized_test_router(file_tools);
-    let session_id = initialize_session(&router).await;
-    let target = root.path().join("private-target.txt");
-    let content = "private-content-value";
-    let valid = issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        target.to_string_lossy().as_ref(),
-        content,
-    );
-
-    let missing = post_json_to_session(
-        router.clone(),
-        &session_id,
-        write_call(
-            "missing",
-            target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-    )
-    .await;
-    assert_eq!(missing.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response_json(missing, 16 * 1024).await["error"]["data"]["reason"],
-        "capability_grant_missing"
-    );
-
-    for (index, (grant, path, attempted_content, expected_reason)) in [
+    let outside_root = tempfile::tempdir().unwrap();
+    let outside_target = outside_root.path().join("outside.txt");
+    let missing_parent_target = root.path().join("absent-parent/target.txt");
+    let oversized_response_id = "x".repeat(MAX_WRITE_FILE_RESPONSE_BYTES + 1);
+    for (index, (id, path)) in [
+        (Value::from("missing"), target.as_path()),
+        (Value::from("missing-outside"), outside_target.as_path()),
         (
-            "not-a-grant".to_owned(),
-            target.clone(),
-            content,
-            "capability_grant_malformed",
+            Value::from("missing-parent"),
+            missing_parent_target.as_path(),
         ),
-        (
-            corrupt_signature(&valid),
-            target.clone(),
-            content,
-            "capability_grant_signature_invalid",
-        ),
-        (
-            valid.clone(),
-            root.path().join("other-target.txt"),
-            content,
-            "capability_grant_binding_mismatch",
-        ),
-        (
-            valid.clone(),
-            target.clone(),
-            "different-content",
-            "capability_grant_binding_mismatch",
-        ),
+        (Value::from(oversized_response_id), target.as_path()),
     ]
     .into_iter()
     .enumerate()
     {
-        let denied = post_json_to_session_with_grant(
+        let denied = post_json_to_session(
+            router.clone(),
+            &session_id,
+            write_call(id, path.to_string_lossy().as_ref(), "content", false),
+        )
+        .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let body = to_bytes(denied.into_body(), MAX_WRITE_FILE_RESPONSE_BYTES + 1)
+            .await
+            .unwrap();
+        assert!(body.len() <= MAX_WRITE_FILE_RESPONSE_BYTES);
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_capability_denial(&payload, "capability_grant_missing");
+        if index == 3 {
+            assert_eq!(payload["id"], Value::Null);
+        }
+        assert!(!path.exists());
+    }
+
+    let preview = post_json_to_session(
+        router.clone(),
+        &session_id,
+        write_call(
+            "grant-free-preview",
+            target.to_string_lossy().as_ref(),
+            "content",
+            true,
+        ),
+    )
+    .await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert_write_result(&response_json(preview).await, true, 7, "create");
+    assert!(!target.exists());
+
+    let status = response_json(
+        post_json_to_session(router, &session_id, runtime_status_call("status")).await,
+    )
+    .await;
+    let runtime = &status["result"]["structuredContent"];
+    assert_eq!(runtime["fileWriteMutationEnabled"], true);
+    assert_eq!(runtime["fileWriteGrantRequired"], true);
+    assert_eq!(
+        runtime["fileWriteMode"],
+        "dry_run_or_target_content_disposition_scoped_single_use_grant"
+    );
+    assert_eq!(runtime["fileWriteGrantHeader"], WRITE_FILE_GRANT_HEADER);
+    assert_eq!(
+        runtime["fileWriteGrantTtlSeconds"],
+        WRITE_FILE_GRANT_TTL_SECONDS
+    );
+    assert_eq!(runtime["fileWriteMaxBytes"], DEFAULT_MAX_WRITE_BYTES);
+    assert_eq!(
+        runtime["fileWriteMaxResponseBytes"],
+        MAX_WRITE_FILE_RESPONSE_BYTES
+    );
+    assert_eq!(
+        runtime["auditCounters"]["by_tool"]["write_file"]["denied"],
+        4
+    );
+    assert_eq!(
+        runtime["auditCounters"]["by_reason_code"]["capability_grant_missing"]["denied"],
+        4
+    );
+    assert_eq!(
+        runtime["auditCounters"]["by_tool"]["write_file"]["allowed"],
+        1
+    );
+}
+
+#[tokio::test]
+async fn malformed_signature_session_principal_path_and_content_bindings_are_enforced_privately() {
+    let (root, file_tools) = empty_test_file_tools();
+    let issuer_tools = file_tools.clone();
+    let (router, authority) = write_file_authorized_test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+    let other_authority = WriteFileGrantAuthority::from_hex_key(
+        "test-key-1",
+        TEST_CAPABILITY_KEY,
+        "write-file-private-other-principal",
+    )
+    .unwrap();
+
+    let targets = (0..6)
+        .map(|index| root.path().join(format!("private-{index}.txt")))
+        .collect::<Vec<_>>();
+    let valid = issue_write_file_grant(
+        &authority,
+        &issuer_tools,
+        &session_id,
+        targets[1].to_string_lossy().as_ref(),
+        b"private-content",
+        WriteFileDisposition::Create,
+    );
+    let other_path = root.path().join("private-other-path.txt");
+    let cases = [
+        (
+            "not-a-grant".to_owned(),
+            "capability_grant_malformed",
+            "private-content",
+        ),
+        (
+            corrupt_signature(&valid),
+            "capability_grant_signature_invalid",
+            "private-content",
+        ),
+        (
+            issue_write_file_grant(
+                &authority,
+                &issuer_tools,
+                &uuid::Uuid::new_v4().to_string(),
+                targets[2].to_string_lossy().as_ref(),
+                b"private-content",
+                WriteFileDisposition::Create,
+            ),
+            "capability_grant_binding_mismatch",
+            "private-content",
+        ),
+        (
+            issue_write_file_grant(
+                &other_authority,
+                &issuer_tools,
+                &session_id,
+                targets[3].to_string_lossy().as_ref(),
+                b"private-content",
+                WriteFileDisposition::Create,
+            ),
+            "capability_grant_binding_mismatch",
+            "private-content",
+        ),
+        (
+            issue_write_file_grant(
+                &authority,
+                &issuer_tools,
+                &session_id,
+                other_path.to_string_lossy().as_ref(),
+                b"private-content",
+                WriteFileDisposition::Create,
+            ),
+            "capability_grant_binding_mismatch",
+            "private-content",
+        ),
+        (
+            issue_write_file_grant(
+                &authority,
+                &issuer_tools,
+                &session_id,
+                targets[5].to_string_lossy().as_ref(),
+                b"granted-private-content",
+                WriteFileDisposition::Create,
+            ),
+            "capability_grant_binding_mismatch",
+            "requested-private-content",
+        ),
+    ];
+
+    let mut private_output = String::new();
+    for (index, (grant, reason, content)) in cases.iter().enumerate() {
+        let response = post_json_to_session_with_grant(
             router.clone(),
             &session_id,
             write_call(
                 format!("private-{index}"),
-                path.to_string_lossy().as_ref(),
-                attempted_content,
-                Some(false),
+                targets[index].to_string_lossy().as_ref(),
+                content,
+                false,
+            ),
+            grant,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "case {index}");
+        let body = response_json(response).await;
+        assert_capability_denial(&body, reason);
+        private_output.push_str(&body.to_string());
+        assert!(!targets[index].exists());
+    }
+
+    let status = response_json(
+        post_json_to_session(router, &session_id, runtime_status_call("audit")).await,
+    )
+    .await;
+    let counters = &status["result"]["structuredContent"]["auditCounters"];
+    assert_eq!(counters["by_tool"]["write_file"]["denied"], 6);
+    assert_eq!(
+        counters["by_reason_code"]["capability_grant_binding_mismatch"]["denied"],
+        4
+    );
+    private_output.push_str(&status.to_string());
+    for forbidden in [
+        TEST_CAPABILITY_KEY,
+        TEST_STATIC_PRINCIPAL,
+        "write-file-private-other-principal",
+        "private-other-path",
+        "private-content",
+        valid.as_str(),
+    ] {
+        assert!(!private_output.contains(forbidden));
+    }
+}
+
+#[tokio::test]
+async fn disposition_existing_identity_expiry_and_future_time_bindings_are_enforced() {
+    let (root, file_tools) = empty_test_file_tools();
+    let issuer_tools = file_tools.clone();
+    let (router, authority) = write_file_authorized_test_router(file_tools);
+    let session_id = initialize_session(&router).await;
+
+    let disposition_target = root.path().join("disposition.txt");
+    let disposition_grant = issue_write_file_grant(
+        &authority,
+        &issuer_tools,
+        &session_id,
+        disposition_target.to_string_lossy().as_ref(),
+        b"new-content",
+        WriteFileDisposition::Create,
+    );
+    std::fs::write(&disposition_target, "existing-content").unwrap();
+    let denied = post_json_to_session_with_grant(
+        router.clone(),
+        &session_id,
+        write_call(
+            "disposition",
+            disposition_target.to_string_lossy().as_ref(),
+            "new-content",
+            false,
+        ),
+        &disposition_grant,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_capability_denial(
+        &response_json(denied).await,
+        "capability_grant_binding_mismatch",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&disposition_target).unwrap(),
+        "existing-content"
+    );
+
+    let identity_target = root.path().join("identity.txt");
+    let parked_target = root.path().join("identity-original.txt");
+    std::fs::write(&identity_target, "identity-original").unwrap();
+    let identity_grant = issue_write_file_grant(
+        &authority,
+        &issuer_tools,
+        &session_id,
+        identity_target.to_string_lossy().as_ref(),
+        b"identity-authorized",
+        WriteFileDisposition::Replace,
+    );
+    std::fs::rename(&identity_target, &parked_target).unwrap();
+    std::fs::write(&identity_target, "identity-substitute").unwrap();
+    let denied = post_json_to_session_with_grant(
+        router.clone(),
+        &session_id,
+        write_call(
+            "identity",
+            identity_target.to_string_lossy().as_ref(),
+            "identity-authorized",
+            false,
+        ),
+        &identity_grant,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_capability_denial(
+        &response_json(denied).await,
+        "capability_grant_binding_mismatch",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&identity_target).unwrap(),
+        "identity-substitute"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&parked_target).unwrap(),
+        "identity-original"
+    );
+
+    let current_time = now();
+    for (name, issued, expires, reason) in [
+        (
+            "expired",
+            current_time - 61,
+            current_time - 1,
+            "capability_grant_expired",
+        ),
+        (
+            "future",
+            current_time + 30,
+            current_time + 30 + WRITE_FILE_GRANT_TTL_SECONDS,
+            "capability_grant_future_issued",
+        ),
+    ] {
+        let target = root.path().join(format!("{name}.txt"));
+        let grant = issue_write_file_grant(
+            &authority,
+            &issuer_tools,
+            &session_id,
+            target.to_string_lossy().as_ref(),
+            b"time-content",
+            WriteFileDisposition::Create,
+        );
+        let grant = resign_with_times(&grant, issued, expires);
+        let denied = post_json_to_session_with_grant(
+            router.clone(),
+            &session_id,
+            write_call(
+                name,
+                target.to_string_lossy().as_ref(),
+                "time-content",
+                false,
             ),
             &grant,
         )
         .await;
-        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "case {index}");
-        let body = response_json(denied, 16 * 1024).await;
-        assert_eq!(body["error"]["data"]["reason"], expected_reason);
-        let serialized = body.to_string();
-        assert!(!serialized.contains(content));
-        assert!(!serialized.contains(&grant));
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{name}");
+        assert_capability_denial(&response_json(denied).await, reason);
+        assert!(!target.exists());
     }
-    assert!(!target.exists());
-
-    // A create grant cannot authorize replacement. Binding failure must not
-    // consume it, so restoring the original create posture permits one retry.
-    std::fs::write(&target, "interposed").unwrap();
-    let posture_denied = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "posture",
-            target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-        &valid,
-    )
-    .await;
-    assert_eq!(posture_denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response_json(posture_denied, 16 * 1024).await["error"]["data"]["reason"],
-        "capability_grant_binding_mismatch"
-    );
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), "interposed");
-    std::fs::remove_file(&target).unwrap();
-
-    let allowed = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "allowed",
-            target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-        &valid,
-    )
-    .await;
-    assert_eq!(allowed.status(), StatusCode::OK);
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
-
-    let other_session = uuid::Uuid::new_v4().to_string();
-    let other_target = root.path().join("other-session.txt");
-    let other_session_target = issuer_tools
-        .write_file_grant_target(
-            other_target.to_string_lossy().as_ref(),
-            content_sha256(content.as_bytes()),
-        )
-        .unwrap();
-    let other_session_grant = authority
-        .issue_at(
-            &other_session,
-            &other_session_target,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
-    let session_denied = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "other-session",
-            other_target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-        &other_session_grant,
-    )
-    .await;
-    assert_eq!(session_denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response_json(session_denied, 16 * 1024).await["error"]["data"]["reason"],
-        "capability_grant_binding_mismatch"
-    );
-
-    let other_principal = WriteFileGrantAuthority::from_hex_key(
-        "test-key-1",
-        TEST_CAPABILITY_KEY,
-        "other-private-principal",
-    )
-    .unwrap();
-    let principal_target = root.path().join("other-principal.txt");
-    let principal_binding = issuer_tools
-        .write_file_grant_target(
-            principal_target.to_string_lossy().as_ref(),
-            content_sha256(content.as_bytes()),
-        )
-        .unwrap();
-    let other_principal_grant = other_principal
-        .issue_at(
-            &session_id,
-            &principal_binding,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
-    let principal_denied = post_json_to_session_with_grant(
-        router,
-        &session_id,
-        write_call(
-            "other-principal",
-            principal_target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-        &other_principal_grant,
-    )
-    .await;
-    assert_eq!(principal_denied.status(), StatusCode::FORBIDDEN);
-    let principal_denied = response_json(principal_denied, 16 * 1024).await;
-    assert_eq!(
-        principal_denied["error"]["data"]["reason"],
-        "capability_grant_binding_mismatch"
-    );
-    let serialized = principal_denied.to_string();
-    assert!(!serialized.contains("other-private-principal"));
-    assert!(!serialized.contains(&other_principal_grant));
 }
 
 #[tokio::test]
-async fn dry_run_and_response_preflight_do_not_consume_or_mutate() {
-    let (root, file_tools) = empty_test_file_tools();
-    let issuer_tools = file_tools.clone();
-    let (router, authority) = write_file_authorized_test_router(file_tools);
-    let session_id = initialize_session(&router).await;
-    let target = root.path().join("preflight.txt");
-    let content = "preflight-content";
-    let grant = issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        target.to_string_lossy().as_ref(),
-        content,
-    );
-
-    let preview = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call("preview", target.to_string_lossy().as_ref(), content, None),
-        &grant,
-    )
-    .await;
-    assert_eq!(preview.status(), StatusCode::OK);
-    assert_eq!(
-        response_json(preview, MAX_WRITE_FILE_RESPONSE_BYTES + 1).await["result"]
-            ["structuredContent"]["dryRun"],
-        true
-    );
-    assert!(!target.exists());
-
-    let oversized_id = "x".repeat(MAX_WRITE_FILE_RESPONSE_BYTES);
-    let bounded = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            oversized_id,
-            target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-        &grant,
-    )
-    .await;
-    assert_eq!(bounded.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let bounded = response_json(bounded, MAX_WRITE_FILE_RESPONSE_BYTES + 1).await;
-    assert_eq!(bounded["id"], Value::Null);
-    assert_eq!(bounded["error"]["code"], -32001);
-    assert!(!target.exists());
-
-    let allowed = post_json_to_session_with_grant(
-        router,
-        &session_id,
-        write_call(
-            "allowed",
-            target.to_string_lossy().as_ref(),
-            content,
-            Some(false),
-        ),
-        &grant,
-    )
-    .await;
-    assert_eq!(allowed.status(), StatusCode::OK);
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
-    assert_no_write_staging_entries(root.path());
-}
-
-#[tokio::test]
-async fn grant_is_single_use_under_sequential_and_concurrent_replay() {
+async fn grants_are_single_use_for_replay_and_concurrent_replay() {
     let (root, file_tools) = empty_test_file_tools();
     let issuer_tools = file_tools.clone();
     let (router, authority) = write_file_authorized_test_router(file_tools);
     let session_id = initialize_session(&router).await;
 
-    let target = root.path().join("replay.txt");
-    let grant = issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        target.to_string_lossy().as_ref(),
-        "once",
-    );
-    let first = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "first",
-            target.to_string_lossy().as_ref(),
-            "once",
-            Some(false),
-        ),
-        &grant,
-    )
-    .await;
-    assert_eq!(first.status(), StatusCode::OK);
-    std::fs::remove_file(&target).unwrap();
+    let replay_target = root.path().join("replay.txt");
+    let replay_target_string = replay_target.to_string_lossy();
+    let replay_binding = issuer_tools
+        .write_file_grant_target(
+            replay_target_string.as_ref(),
+            b"replay-content",
+            WriteFileDisposition::Create,
+        )
+        .unwrap();
+    let replay_grant = authority.issue(&session_id, &replay_binding).unwrap();
+    authority
+        .consume(Some(&replay_grant), &session_id, &replay_binding)
+        .unwrap();
     let replay = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
         write_call(
             "replay",
-            target.to_string_lossy().as_ref(),
-            "once",
-            Some(false),
+            replay_target_string.as_ref(),
+            "replay-content",
+            false,
         ),
-        &grant,
+        &replay_grant,
     )
     .await;
     assert_eq!(replay.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response_json(replay, 16 * 1024).await["error"]["data"]["reason"],
-        "capability_grant_replayed"
-    );
+    assert_capability_denial(&response_json(replay).await, "capability_grant_replayed");
+    assert!(!replay_target.exists());
 
     let concurrent_target = root.path().join("concurrent.txt");
-    let concurrent_grant = Arc::new(issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        concurrent_target.to_string_lossy().as_ref(),
-        "concurrent-content",
-    ));
+    let concurrent_binding = issuer_tools
+        .write_file_grant_target(
+            concurrent_target.to_string_lossy().as_ref(),
+            b"concurrent-content",
+            WriteFileDisposition::Create,
+        )
+        .unwrap();
+    let concurrent_grant = Arc::new(authority.issue(&session_id, &concurrent_binding).unwrap());
     let barrier = Arc::new(tokio::sync::Barrier::new(9));
     let mut calls = tokio::task::JoinSet::new();
     for index in 0..8 {
@@ -610,249 +637,212 @@ async fn grant_is_single_use_under_sequential_and_concurrent_replay() {
         let barrier = Arc::clone(&barrier);
         calls.spawn(async move {
             barrier.wait().await;
-            post_json_to_session_with_grant(
+            let response = post_json_to_session_with_grant(
                 router,
                 &session_id,
                 write_call(
                     format!("concurrent-{index}"),
                     target.to_string_lossy().as_ref(),
                     "concurrent-content",
-                    Some(false),
+                    false,
                 ),
                 &grant,
             )
-            .await
+            .await;
+            let status = response.status();
+            let body = response_json(response).await;
+            (status, body)
         });
     }
     barrier.wait().await;
-    let mut responses = Vec::new();
+    let mut successes = 0;
+    let mut denied = 0;
+    let mut busy = 0;
+    let mut capacity_denied = 0;
     while let Some(result) = calls.join_next().await {
-        responses.push(result.unwrap());
+        let (status, body) = result.unwrap();
+        match status {
+            StatusCode::OK => successes += 1,
+            StatusCode::FORBIDDEN => {
+                assert_eq!(body["error"]["code"], -32003);
+                assert!(matches!(
+                    body["error"]["data"]["reason"].as_str(),
+                    Some("capability_grant_replayed" | "capability_grant_binding_mismatch")
+                ));
+                denied += 1;
+            }
+            StatusCode::CONFLICT => {
+                assert_eq!(body["error"]["code"], -32006);
+                busy += 1;
+            }
+            StatusCode::SERVICE_UNAVAILABLE => {
+                assert_eq!(body["error"]["code"], -32007);
+                assert_eq!(
+                    body["error"]["message"],
+                    "Filesystem mutation capacity unavailable"
+                );
+                capacity_denied += 1;
+            }
+            other => panic!("unexpected concurrent status {other}: {body}"),
+        }
     }
+    assert_eq!(successes, 1);
+    assert_eq!(denied + busy + capacity_denied, 7);
     assert_eq!(
-        responses
-            .iter()
-            .filter(|response| response.status() == StatusCode::OK)
-            .count(),
-        1
+        authority
+            .consume(
+                Some(concurrent_grant.as_str()),
+                &session_id,
+                &concurrent_binding,
+            )
+            .unwrap_err(),
+        termux_mcp_server::write_file_grant::WriteFileGrantError::Replayed
     );
-    assert!(responses.iter().all(|response| matches!(
-        response.status(),
-        StatusCode::OK | StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN
-    )));
     assert_eq!(
         std::fs::read_to_string(&concurrent_target).unwrap(),
         "concurrent-content"
     );
-    assert_no_write_staging_entries(root.path());
+    assert_eq!(
+        std::fs::metadata(&concurrent_target)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }
 
 #[tokio::test]
-async fn capability_header_is_confined_to_exact_tool_context() {
+async fn dry_run_does_not_consume_create_grant_and_success_uses_fixed_mode() {
     let (root, file_tools) = empty_test_file_tools();
     let issuer_tools = file_tools.clone();
     let (router, authority) = write_file_authorized_test_router(file_tools);
     let session_id = initialize_session(&router).await;
-    let target = root.path().join("context.txt");
+    let target = root.path().join("create.txt");
+    let target_path = target.to_string_lossy();
+    let content = "authorized-create";
     let grant = issue_write_file_grant(
         &authority,
         &issuer_tools,
         &session_id,
-        target.to_string_lossy().as_ref(),
-        "context-content",
+        target_path.as_ref(),
+        content.as_bytes(),
+        WriteFileDisposition::Create,
     );
 
-    let wrong_context = post_json_to_session_with_grant(
+    let preview = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        json!({
-            "jsonrpc":"2.0",
-            "id":"wrong-context",
-            "method":"tools/call",
-            "params":{"name":"runtime_status","arguments":{}}
-        }),
+        write_call("preview", target_path.as_ref(), content, true),
         &grant,
     )
     .await;
-    assert_eq!(wrong_context.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        response_json(wrong_context, 16 * 1024).await["error"]["code"],
-        -32600
-    );
-
-    let smuggled = post_json_to_session(
-        router.clone(),
-        &session_id,
-        json!({
-            "jsonrpc":"2.0",
-            "id":"smuggled",
-            "method":"tools/call",
-            "params":{
-                "name":"write_file",
-                "arguments":{
-                    "path":target.to_string_lossy(),
-                    "content":"context-content",
-                    "dry_run":false,
-                    "capability_grant":grant,
-                }
-            }
-        }),
-    )
-    .await;
-    assert_eq!(smuggled.status(), StatusCode::BAD_REQUEST);
-    let smuggled = response_json(smuggled, 16 * 1024).await;
-    assert_eq!(smuggled["error"]["code"], -32602);
-    assert!(!smuggled.to_string().contains(&grant));
+    assert_eq!(preview.status(), StatusCode::OK);
+    assert_write_result(&response_json(preview).await, true, content.len(), "create");
     assert!(!target.exists());
 
-    let allowed = post_json_to_session_with_grant(
-        router,
+    let oversized = post_json_to_session_with_grant(
+        router.clone(),
         &session_id,
         write_call(
-            "allowed",
-            target.to_string_lossy().as_ref(),
-            "context-content",
-            Some(false),
+            "x".repeat(MAX_WRITE_FILE_RESPONSE_BYTES + 1),
+            target_path.as_ref(),
+            content,
+            false,
         ),
         &grant,
     )
     .await;
-    assert_eq!(allowed.status(), StatusCode::OK);
-    assert_eq!(std::fs::read_to_string(target).unwrap(), "context-content");
-}
-
-#[tokio::test]
-async fn other_capability_family_grant_cannot_authorize_write_file() {
-    let (root, file_tools) = empty_test_file_tools();
-    let issuer_tools = file_tools.clone();
-    let (router, _write_authority) = write_file_authorized_test_router(file_tools);
-    let session_id = initialize_session(&router).await;
-    let directory_target = root.path().join("directory-capability-target");
-    let write_target = root.path().join("write-capability-target.txt");
-    let create_authority = CreateDirectoryGrantAuthority::from_hex_key(
-        "test-key-1",
-        TEST_CAPABILITY_KEY,
-        support::TEST_STATIC_PRINCIPAL,
-    )
-    .unwrap();
-    let create_binding = issuer_tools
-        .create_directory_grant_target(directory_target.to_string_lossy().as_ref())
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let oversized_body = to_bytes(oversized.into_body(), MAX_WRITE_FILE_RESPONSE_BYTES + 1)
+        .await
         .unwrap();
-    let create_grant = create_authority
-        .issue_at(
-            &session_id,
-            &create_binding,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
+    assert!(oversized_body.len() <= MAX_WRITE_FILE_RESPONSE_BYTES);
+    let oversized_payload: Value = serde_json::from_slice(&oversized_body).unwrap();
+    assert_eq!(oversized_payload["id"], Value::Null);
+    assert_eq!(oversized_payload["error"]["code"], -32001);
+    assert!(!target.exists());
 
-    let denied = post_json_to_session_with_grant(
+    let created = post_json_to_session_with_grant(
         router,
         &session_id,
-        write_call(
-            "cross-capability",
-            write_target.to_string_lossy().as_ref(),
-            "must-not-write",
-            Some(false),
-        ),
-        &create_grant,
+        write_call("create", target_path.as_ref(), content, false),
+        &grant,
     )
     .await;
-    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        response_json(denied, 16 * 1024).await["error"]["data"]["reason"],
-        "capability_grant_binding_mismatch"
+    assert_eq!(created.status(), StatusCode::OK);
+    assert_write_result(
+        &response_json(created).await,
+        false,
+        content.len(),
+        "create",
     );
-    assert!(!directory_target.exists());
-    assert!(!write_target.exists());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[tokio::test]
-async fn exact_limit_succeeds_over_limit_fails_and_unsafe_types_are_preserved() {
+async fn replace_grant_atomically_replaces_exact_identity_with_fixed_mode_and_private_audit() {
     let (root, file_tools) = empty_test_file_tools();
     let issuer_tools = file_tools.clone();
     let (router, authority) = write_file_authorized_test_router(file_tools);
     let session_id = initialize_session(&router).await;
-
-    let exact_target = root.path().join("exact-limit.txt");
-    let exact_content = "x".repeat(1_048_576);
-    let exact_grant = issue_write_file_grant(
+    let target = root.path().join("replace.txt");
+    std::fs::write(&target, "old-content").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let target_path = target.to_string_lossy();
+    let content = "private-replacement-content";
+    let grant = issue_write_file_grant(
         &authority,
         &issuer_tools,
         &session_id,
-        exact_target.to_string_lossy().as_ref(),
-        &exact_content,
+        target_path.as_ref(),
+        content.as_bytes(),
+        WriteFileDisposition::Replace,
     );
-    let exact = post_json_to_session_with_grant(
+
+    let replaced = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        write_call(
-            "exact-limit",
-            exact_target.to_string_lossy().as_ref(),
-            &exact_content,
-            Some(false),
-        ),
-        &exact_grant,
+        write_call("replace", target_path.as_ref(), content, false),
+        &grant,
     )
     .await;
-    assert_eq!(exact.status(), StatusCode::OK);
-    assert_eq!(std::fs::metadata(&exact_target).unwrap().len(), 1_048_576);
-
-    let over_target = root.path().join("over-limit.txt");
-    let over_content = "y".repeat(1_048_577);
-    let over_grant = issue_write_file_grant(
-        &authority,
-        &issuer_tools,
-        &session_id,
-        over_target.to_string_lossy().as_ref(),
-        &over_content,
+    assert_eq!(replaced.status(), StatusCode::OK);
+    assert_write_result(
+        &response_json(replaced).await,
+        false,
+        content.len(),
+        "replace",
     );
-    let over = post_json_to_session_with_grant(
-        router.clone(),
-        &session_id,
-        write_call(
-            "over-limit",
-            over_target.to_string_lossy().as_ref(),
-            &over_content,
-            Some(false),
-        ),
-        &over_grant,
-    )
-    .await;
-    assert_eq!(over.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(!over_target.exists());
-
-    let outside = tempfile::tempdir().unwrap();
-    let outside_target = outside.path().join("outside.txt");
-    std::fs::write(&outside_target, "outside-safe").unwrap();
-    let link = root.path().join("linked.txt");
-    symlink(&outside_target, &link).unwrap();
-    let directory = root.path().join("directory-target");
-    std::fs::create_dir(&directory).unwrap();
-
-    for (index, path) in [link, directory].into_iter().enumerate() {
-        let denied = post_json_to_session(
-            router.clone(),
-            &session_id,
-            write_call(
-                format!("unsafe-{index}"),
-                path.to_string_lossy().as_ref(),
-                "must-not-write",
-                Some(false),
-            ),
-        )
-        .await;
-        assert!(matches!(
-            denied.status(),
-            StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN
-        ));
-    }
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
     assert_eq!(
-        std::fs::read_to_string(outside_target).unwrap(),
-        "outside-safe"
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
     );
-    assert_no_write_staging_entries(root.path());
+
+    let status = response_json(
+        post_json_to_session(router, &session_id, runtime_status_call("audit")).await,
+    )
+    .await;
+    let counters = &status["result"]["structuredContent"]["auditCounters"];
+    assert_eq!(counters["denied_total"], 0);
+    assert_eq!(counters["by_tool"]["write_file"]["allowed"], 1);
+    assert_eq!(counters["by_tool"]["write_file"]["denied"], 0);
+    assert_eq!(
+        counters["by_reason_code"]["explicit_write_allowed"]["allowed"],
+        1
+    );
+    let serialized = status.to_string();
+    for forbidden in [
+        target_path.as_ref(),
+        content,
+        grant.as_str(),
+        TEST_CAPABILITY_KEY,
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
 }

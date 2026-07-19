@@ -228,7 +228,8 @@ async fn find_paths_skips_unsafe_and_invalid_names_and_rejects_linked_parents() 
     let invalid_name = OsString::from_vec(vec![b'i', b'n', b'v', 0xff, b'n']);
     std::fs::write(root.path().join(&invalid_name), "invalid-name-private").unwrap();
     symlink(outside.path(), root.path().join("linked-parent")).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let result = tools
         .find_paths(
@@ -281,7 +282,8 @@ async fn find_paths_enforces_match_entry_and_complete_response_bounds() {
         )
         .unwrap();
     }
-    let tools = FileSystemTools::new(vec![match_root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![match_root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let result = tools
         .find_paths(
             match_root.path().to_string_lossy().to_string(),
@@ -306,7 +308,8 @@ async fn find_paths_enforces_match_entry_and_complete_response_bounds() {
         )
         .unwrap();
     }
-    let tools = FileSystemTools::new(vec![entry_root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![entry_root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let result = tools
         .find_paths(
             entry_root.path().to_string_lossy().to_string(),
@@ -332,7 +335,8 @@ async fn find_paths_enforces_match_entry_and_complete_response_bounds() {
         )
         .unwrap();
     }
-    let tools = FileSystemTools::new(vec![response_root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![response_root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let result = tools
         .find_paths(
             response_root.path().to_string_lossy().to_string(),

@@ -3,8 +3,8 @@
 use axum::http::StatusCode;
 use thiserror::Error;
 
-pub(crate) const INVALID_BINARY_RANGE_PUBLIC_MESSAGE: &str = "Requested binary range is not valid";
-pub(crate) const INVALID_TEXT_RANGE_PUBLIC_MESSAGE: &str = "Requested text range is not valid";
+pub const INVALID_BINARY_RANGE_PUBLIC_MESSAGE: &str = "Requested binary range is not valid";
+pub const INVALID_TEXT_RANGE_PUBLIC_MESSAGE: &str = "Requested text range is not valid";
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -53,8 +53,20 @@ pub enum AppError {
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
-    #[error("File mutation requires request-scoped authorization")]
+    #[error("Write target changed after validation")]
+    WriteTargetChanged,
+
+    #[error("Write mutation requires request-scoped authorization")]
     WriteMutationAuthorizationRequired,
+
+    #[error("Directory mutation requires request-scoped authorization")]
+    CreateDirectoryMutationAuthorizationRequired,
+
+    #[error("Write recovery quarantine capacity is exhausted")]
+    WriteQuarantineCapacityExceeded,
+
+    #[error("Write recovery quarantine is busy")]
+    WriteQuarantineBusy,
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -128,10 +140,25 @@ impl AppError {
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
             ),
+            AppError::WriteTargetChanged => (
+                StatusCode::CONFLICT,
+                "Write target changed after validation",
+            ),
             AppError::WriteMutationAuthorizationRequired => (
                 StatusCode::FORBIDDEN,
-                "File mutation requires request authorization",
+                "Write mutation requires request-scoped authorization",
             ),
+            AppError::CreateDirectoryMutationAuthorizationRequired => (
+                StatusCode::FORBIDDEN,
+                "Directory mutation requires request-scoped authorization",
+            ),
+            AppError::WriteQuarantineCapacityExceeded => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "Write recovery quarantine capacity is exhausted",
+            ),
+            AppError::WriteQuarantineBusy => {
+                (StatusCode::CONFLICT, "Write recovery quarantine is busy")
+            }
             AppError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
         }
     }
@@ -179,6 +206,47 @@ mod tests {
     }
 
     #[test]
+    fn direct_write_mutation_denial_has_a_stable_non_sensitive_response() {
+        assert_eq!(
+            AppError::WriteMutationAuthorizationRequired.public_response(),
+            (
+                StatusCode::FORBIDDEN,
+                "Write mutation requires request-scoped authorization",
+            )
+        );
+    }
+
+    #[test]
+    fn direct_directory_mutation_denial_has_a_stable_non_sensitive_response() {
+        assert_eq!(
+            AppError::CreateDirectoryMutationAuthorizationRequired.public_response(),
+            (
+                StatusCode::FORBIDDEN,
+                "Directory mutation requires request-scoped authorization",
+            )
+        );
+    }
+
+    #[test]
+    fn write_quarantine_capacity_has_a_stable_non_sensitive_response() {
+        assert_eq!(
+            AppError::WriteQuarantineCapacityExceeded.public_response(),
+            (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "Write recovery quarantine capacity is exhausted",
+            )
+        );
+    }
+
+    #[test]
+    fn write_quarantine_busy_has_a_stable_non_sensitive_response() {
+        assert_eq!(
+            AppError::WriteQuarantineBusy.public_response(),
+            (StatusCode::CONFLICT, "Write recovery quarantine is busy",)
+        );
+    }
+
+    #[test]
     fn bounded_input_errors_keep_distinct_safe_contracts() {
         assert_eq!(
             AppError::FileTooLarge {
@@ -203,13 +271,6 @@ mod tests {
             )
         );
         assert_eq!(
-            AppError::WriteMutationAuthorizationRequired.public_response(),
-            (
-                StatusCode::FORBIDDEN,
-                "File mutation requires request authorization",
-            )
-        );
-        assert_eq!(
             AppError::InvalidFileEncoding.public_response(),
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -218,14 +279,11 @@ mod tests {
         );
         assert_eq!(
             AppError::InvalidBinaryRange.public_response(),
-            (
-                StatusCode::BAD_REQUEST,
-                "Requested binary range is not valid",
-            )
+            (StatusCode::BAD_REQUEST, INVALID_BINARY_RANGE_PUBLIC_MESSAGE,)
         );
         assert_eq!(
             AppError::InvalidTextRange.public_response(),
-            (StatusCode::BAD_REQUEST, "Requested text range is not valid",)
+            (StatusCode::BAD_REQUEST, INVALID_TEXT_RANGE_PUBLIC_MESSAGE,)
         );
         assert_eq!(
             AppError::FileChangedDuringRead.public_response(),
@@ -285,6 +343,13 @@ mod tests {
             (
                 StatusCode::BAD_REQUEST,
                 "Copy source and destination must be different paths",
+            )
+        );
+        assert_eq!(
+            AppError::WriteTargetChanged.public_response(),
+            (
+                StatusCode::CONFLICT,
+                "Write target changed after validation",
             )
         );
     }

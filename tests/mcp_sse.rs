@@ -415,9 +415,9 @@ async fn large_json_rpc_responses_fall_back_to_json_without_unbounded_replay() {
 }
 
 #[tokio::test]
-async fn maximum_escaped_text_range_falls_back_to_bounded_json() {
+async fn maximum_escaped_text_range_reaches_bounded_json_fallback() {
     let (root, file_tools) = empty_test_file_tools();
-    let path = root.path().join("maximum-escaped-text-range.txt");
+    let path = root.path().join("escaped-text-range.txt");
     std::fs::write(&path, vec![0_u8; MAX_TEXT_RANGE_BYTES]).unwrap();
     let router = sse_test_router(file_tools);
     let (session_id, _) = initialize_active_sse(&router).await;
@@ -426,7 +426,7 @@ async fn maximum_escaped_text_range_falls_back_to_bounded_json() {
         .oneshot(session_request(
             json!({
                 "jsonrpc":"2.0",
-                "id":"maximum-escaped-text-range",
+                "id":"escaped-text-range",
                 "method":"tools/call",
                 "params":{
                     "name":"read_text_range",
@@ -441,7 +441,6 @@ async fn maximum_escaped_text_range_falls_back_to_bounded_json() {
         ))
         .await
         .unwrap();
-
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response
         .headers()
@@ -450,19 +449,17 @@ async fn maximum_escaped_text_range_falls_back_to_bounded_json() {
         .to_str()
         .unwrap()
         .starts_with("application/json"));
-    let body = to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES)
+    let body = to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES + 1)
         .await
         .unwrap();
     assert!(body.len() > MAX_BINARY_READ_RESPONSE_BYTES);
     assert!(body.len() <= MAX_TEXT_RANGE_RESPONSE_BYTES);
-
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["id"], "maximum-escaped-text-range");
+    assert_eq!(payload["id"], "escaped-text-range");
     let content = payload["result"]["structuredContent"]["content"]
         .as_str()
         .unwrap();
-    assert_eq!(content.len(), MAX_TEXT_RANGE_BYTES);
-    assert!(content.bytes().all(|byte| byte == 0));
+    assert_eq!(content, "\0".repeat(MAX_TEXT_RANGE_BYTES));
 }
 
 #[tokio::test]

@@ -128,7 +128,8 @@ async fn hash_file_accepts_exact_limit_and_rejects_one_byte_over() {
     let exact = vec![0xa5; MAX_HASH_FILE_BYTES];
     std::fs::write(&exact_path, &exact).unwrap();
     std::fs::write(&oversized_path, vec![0x5a; MAX_HASH_FILE_BYTES + 1]).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let result = tools
         .hash_file(exact_path.to_string_lossy().to_string())
@@ -164,7 +165,8 @@ async fn hash_file_rejects_missing_outside_symlinked_and_unsupported_targets() {
     let _listener = UnixListener::bind(&socket).unwrap();
     let linked_parent = root.path().join("linked-parent");
     symlink(outside.path(), &linked_parent).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     assert!(matches!(
         tools

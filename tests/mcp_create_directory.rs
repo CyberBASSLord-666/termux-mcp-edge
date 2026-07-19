@@ -282,7 +282,7 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
         ),
     )
     .await;
-    assert_eq!(denied_response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(denied_response.status(), StatusCode::FORBIDDEN);
 
     let oversized_id = "x".repeat(MAX_CREATE_DIRECTORY_RESPONSE_BYTES);
     let oversized_response = post_json_to_session(
@@ -311,7 +311,13 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
     assert_eq!(payload["error"]["code"], -32001);
 
     let bounded_mutation = root.path().join("bounded-mutation");
-    let oversized_mutation_response = post_json_to_session(
+    let oversized_grant = issue_create_directory_grant(
+        &authority,
+        &issuer_tools,
+        &session_id,
+        bounded_mutation.to_string_lossy().as_ref(),
+    );
+    let oversized_mutation_response = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
         create_call(
@@ -319,6 +325,7 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
             bounded_mutation.to_string_lossy().as_ref(),
             Some(false),
         ),
+        &oversized_grant,
     )
     .await;
     assert_eq!(
@@ -358,7 +365,7 @@ async fn create_directory_response_bound_and_audit_counters_remain_private() {
         1
     );
     assert_eq!(
-        counters["by_reason_code"]["safe_root_rejected"]["denied"],
+        counters["by_reason_code"]["capability_grant_missing"]["denied"],
         1
     );
     assert_eq!(

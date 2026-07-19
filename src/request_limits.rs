@@ -21,7 +21,9 @@ pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 4;
 pub const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+pub const MIN_CONFIGURED_CONCURRENT_REQUESTS: usize = 1;
 pub const MAX_CONFIGURED_CONCURRENT_REQUESTS: usize = 64;
+pub const MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS: u64 = 1;
 pub const MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS: u64 = 300;
 pub const MIN_CONFIGURED_BODY_BYTES: usize = 1_024;
 pub const MAX_CONFIGURED_BODY_BYTES: usize = 8 * 1024 * 1024;
@@ -40,14 +42,24 @@ impl McpRequestLimits {
         request_timeout: Duration,
         max_body_bytes: usize,
     ) -> anyhow::Result<Self> {
-        if max_concurrent_requests == 0 {
-            bail!("MCP maximum concurrent requests must be greater than zero");
+        if !(MIN_CONFIGURED_CONCURRENT_REQUESTS..=MAX_CONFIGURED_CONCURRENT_REQUESTS)
+            .contains(&max_concurrent_requests)
+        {
+            bail!(
+                "MCP maximum concurrent requests must be between {MIN_CONFIGURED_CONCURRENT_REQUESTS} and {MAX_CONFIGURED_CONCURRENT_REQUESTS}"
+            );
         }
-        if request_timeout.is_zero() {
-            bail!("MCP request timeout must be greater than zero");
+        let minimum_timeout = Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS);
+        let maximum_timeout = Duration::from_secs(MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS);
+        if !(minimum_timeout..=maximum_timeout).contains(&request_timeout) {
+            bail!(
+                "MCP request timeout must be between {MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS} and {MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS} seconds"
+            );
         }
-        if max_body_bytes == 0 {
-            bail!("MCP maximum request-body bytes must be greater than zero");
+        if !(MIN_CONFIGURED_BODY_BYTES..=MAX_CONFIGURED_BODY_BYTES).contains(&max_body_bytes) {
+            bail!(
+                "MCP maximum request-body bytes must be between {MIN_CONFIGURED_BODY_BYTES} and {MAX_CONFIGURED_BODY_BYTES}"
+            );
         }
 
         Ok(Self {
@@ -232,9 +244,23 @@ mod tests {
             ))
     }
 
+    fn test_limits(request_timeout: Duration) -> McpRequestLimits {
+        McpRequestLimits {
+            max_concurrent_requests: MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            request_timeout,
+            max_body_bytes: MIN_CONFIGURED_BODY_BYTES,
+            semaphore: Arc::new(Semaphore::new(MIN_CONFIGURED_CONCURRENT_REQUESTS)),
+        }
+    }
+
     #[tokio::test]
     async fn request_inside_limits_reaches_handler() {
-        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 64).unwrap();
+        let limits = McpRequestLimits::new(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        )
+        .unwrap();
         let response = limited_router(limits)
             .oneshot(request("small-body"))
             .await
@@ -245,9 +271,14 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_chunked_body_is_rejected_with_non_sensitive_response() {
-        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 8).unwrap();
+        let limits = McpRequestLimits::new(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        )
+        .unwrap();
         let response = limited_router(limits)
-            .oneshot(request("123456789"))
+            .oneshot(request("sensitive".repeat(129)))
             .await
             .unwrap();
 
@@ -258,16 +289,21 @@ mod tests {
         );
         let payload = json_body(response).await;
         assert_eq!(payload["error"], "mcp_request_body_too_large");
-        assert!(!payload.to_string().contains("123456789"));
+        assert!(!payload.to_string().contains("sensitive"));
     }
 
     #[tokio::test]
     async fn oversized_content_length_is_rejected_before_handler() {
-        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 8).unwrap();
+        let limits = McpRequestLimits::new(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        )
+        .unwrap();
         let response = limited_router(limits)
             .oneshot(
                 HttpRequest::post("/mcp")
-                    .header(header::CONTENT_LENGTH, "9")
+                    .header(header::CONTENT_LENGTH, "1025")
                     .body(Body::from("small"))
                     .unwrap(),
             )
@@ -281,7 +317,9 @@ mod tests {
 
     #[tokio::test]
     async fn request_timeout_returns_gateway_timeout() {
-        let limits = McpRequestLimits::new(1, Duration::from_millis(5), 64).unwrap();
+        // Exercise the middleware promptly without weakening the bounded public
+        // constructor, whose supported minimum is one second.
+        let limits = test_limits(Duration::from_millis(5));
         let app = Router::new()
             .route(
                 "/mcp",
@@ -315,7 +353,12 @@ mod tests {
 
     #[tokio::test]
     async fn saturated_concurrency_fails_fast() {
-        let limits = McpRequestLimits::new(1, Duration::from_secs(1), 64).unwrap();
+        let limits = McpRequestLimits::new(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        )
+        .unwrap();
         let gate = TestGate {
             entered: Arc::new(Notify::new()),
             release: Arc::new(Notify::new()),
@@ -347,10 +390,72 @@ mod tests {
     }
 
     #[test]
-    fn invalid_zero_limits_are_rejected() {
-        assert!(McpRequestLimits::new(0, Duration::from_secs(1), 1).is_err());
-        assert!(McpRequestLimits::new(1, Duration::ZERO, 1).is_err());
-        assert!(McpRequestLimits::new(1, Duration::from_secs(1), 0).is_err());
+    fn constructor_enforces_every_exported_range() {
+        let valid = |concurrency, timeout, body_bytes| {
+            McpRequestLimits::new(concurrency, timeout, body_bytes).is_ok()
+        };
+
+        assert!(valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(valid(
+            MAX_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MAX_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(!valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS - 1,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(!valid(
+            MAX_CONFIGURED_CONCURRENT_REQUESTS + 1,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(!valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_millis(999),
+            MIN_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_millis(1_500),
+            MIN_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(!valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS) + Duration::from_nanos(1),
+            MIN_CONFIGURED_BODY_BYTES,
+        ));
+        assert!(!valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MIN_CONFIGURED_BODY_BYTES - 1,
+        ));
+        assert!(!valid(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            Duration::from_secs(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS),
+            MAX_CONFIGURED_BODY_BYTES + 1,
+        ));
+    }
+
+    #[test]
+    fn from_seconds_enforces_timeout_range_without_truncation() {
+        assert!(McpRequestLimits::from_seconds(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS,
+            MIN_CONFIGURED_BODY_BYTES,
+        )
+        .is_ok());
+        assert!(McpRequestLimits::from_seconds(
+            MIN_CONFIGURED_CONCURRENT_REQUESTS,
+            MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS + 1,
+            MIN_CONFIGURED_BODY_BYTES,
+        )
+        .is_err());
     }
 
     #[test]

@@ -122,7 +122,8 @@ async fn binary_read_accepts_exact_limit_and_rejects_one_byte_over() {
     let oversized_path = root.path().join("oversized.bin");
     std::fs::write(&exact_path, vec![0xa5; MAX_BINARY_READ_BYTES]).unwrap();
     std::fs::write(&oversized_path, vec![0x5a; MAX_BINARY_READ_BYTES + 1]).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let result = tools
         .read_binary_file(exact_path.to_string_lossy().to_string())
@@ -182,7 +183,8 @@ async fn binary_read_rejects_missing_outside_symlinked_and_unsupported_targets()
     let _listener = UnixListener::bind(&socket).unwrap();
     let linked_parent = root.path().join("linked-parent");
     symlink(outside.path(), &linked_parent).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     assert!(matches!(
         tools
@@ -261,6 +263,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
 
     std::fs::remove_file(&path).unwrap();
     let oversized_id = "x".repeat(MAX_BINARY_READ_BYTES / 4);
+    let expected_id = json!(oversized_id.clone());
     let oversized_missing = post_json_to_session(
         router.clone(),
         &session_id,
@@ -281,7 +284,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
     .unwrap();
     assert!(body.len() <= MAX_BINARY_READ_RESPONSE_BYTES);
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
+    assert_eq!(payload["id"], expected_id);
     assert_eq!(payload["error"]["code"], -32001);
 
     let oversized = post_json_to_session(
@@ -296,7 +299,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
         .unwrap();
     assert!(body.len() <= MAX_BINARY_READ_RESPONSE_BYTES);
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
+    assert_eq!(payload["id"], expected_id);
     assert_eq!(payload["error"]["code"], -32001);
 
     let status = post_json_to_session(

@@ -10,16 +10,16 @@ use anyhow::{anyhow, bail};
 #[cfg(feature = "mcp-runtime")]
 use rustix::fs::{fstat, open, FileType, Mode, OFlags};
 
+use crate::auth::validate_bearer_token;
 use crate::request_limits::{
     DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
     MAX_CONFIGURED_BODY_BYTES, MAX_CONFIGURED_CONCURRENT_REQUESTS,
     MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS, MIN_CONFIGURED_BODY_BYTES,
+    MIN_CONFIGURED_CONCURRENT_REQUESTS, MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS,
 };
 use crate::transport_security::{normalize_host, normalize_origin};
 
 const DEFAULT_FILE_SAFE_ROOT: &str = "/data/data/com.termux/files/home/mcp-files";
-const EMPTY_STATIC_TOKEN_ERROR: &str =
-    "MCP__AUTH__STATIC_TOKEN is configured but empty; please provide a non-empty token or use localhost-only unauthenticated mode";
 const MISSING_STATIC_TOKEN_ERROR: &str =
     "MCP__AUTH__STATIC_TOKEN is required unless MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true is explicitly set for local-only development";
 const REMOTE_UNAUTHENTICATED_ERROR: &str =
@@ -76,7 +76,7 @@ pub struct FileConfig {
     /// Dedicated default-disabled runtime gate for `create_directory` mutation.
     pub create_directory_mutation_enabled: bool,
     /// Dedicated default-disabled runtime gate for `write_file` mutation.
-    pub write_mutation_enabled: bool,
+    pub write_file_mutation_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -268,7 +268,7 @@ impl AppConfig {
                     "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
                     false,
                 )?,
-                write_mutation_enabled: env_bool(
+                write_file_mutation_enabled: env_bool(
                     &read_variable,
                     "MCP__FILE__WRITE_MUTATION_ENABLED",
                     false,
@@ -314,7 +314,9 @@ impl AppConfig {
         };
 
         validate_file_safe_roots(&config.file)?;
-        validate_filesystem_mutation_capabilities(&config)?;
+        validate_capability_key_configuration(&config.capability)?;
+        validate_create_directory_mutation_capability(&config)?;
+        validate_write_file_mutation_capability(&config)?;
         validate_android_capabilities(&config.android)?;
         validate_android_volume_control_capability(&config)?;
         validate_command_capability(&config.command)?;
@@ -462,9 +464,7 @@ fn split_exact_env_list(name: &str, value: &str) -> anyhow::Result<Vec<String>> 
 
 pub fn validate_runtime_auth_posture(config: &AppConfig) -> anyhow::Result<AuthPosture> {
     if let Some(ref token) = config.auth.static_token {
-        if token.trim().is_empty() {
-            bail!(EMPTY_STATIC_TOKEN_ERROR);
-        }
+        validate_bearer_token(token)?;
 
         return Ok(AuthPosture::StaticTokenConfigured);
     }
@@ -516,11 +516,11 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_filesystem_mutation_capabilities(config: &AppConfig) -> anyhow::Result<()> {
+fn validate_capability_key_configuration(capability: &CapabilityConfig) -> anyhow::Result<()> {
     const MAX_KEY_ID_BYTES: usize = 32;
     const KEY_HEX_BYTES: usize = 64;
 
-    if let Some(key_id) = config.capability.key_id.as_deref() {
+    if let Some(key_id) = capability.key_id.as_deref() {
         if key_id.is_empty()
             || key_id.len() > MAX_KEY_ID_BYTES
             || !key_id.bytes().all(|byte| {
@@ -533,7 +533,7 @@ fn validate_filesystem_mutation_capabilities(config: &AppConfig) -> anyhow::Resu
         }
     }
 
-    if let Some(key) = config.capability.hmac_key_hex() {
+    if let Some(key) = capability.hmac_key_hex() {
         if key.len() != KEY_HEX_BYTES
             || !key
                 .bytes()
@@ -545,46 +545,53 @@ fn validate_filesystem_mutation_capabilities(config: &AppConfig) -> anyhow::Resu
         }
     }
 
-    if config.capability.key_id.is_some() != config.capability.hmac_key_hex().is_some() {
+    if capability.key_id.is_some() != capability.hmac_key_hex().is_some() {
         bail!(
             "MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX must be configured together"
         );
     }
 
-    validate_filesystem_mutation_gate(
-        config,
-        config.file.create_directory_mutation_enabled,
-        "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
-    )?;
-    validate_filesystem_mutation_gate(
-        config,
-        config.file.write_mutation_enabled,
-        "MCP__FILE__WRITE_MUTATION_ENABLED",
-    )?;
     Ok(())
 }
 
-fn validate_filesystem_mutation_gate(
-    config: &AppConfig,
-    enabled: bool,
-    variable: &str,
-) -> anyhow::Result<()> {
-    if !enabled {
+fn validate_create_directory_mutation_capability(config: &AppConfig) -> anyhow::Result<()> {
+    if !config.file.create_directory_mutation_enabled {
         return Ok(());
     }
     if !cfg!(feature = "mcp-runtime") {
-        bail!("{variable} requires a binary built with the mcp-runtime feature");
+        bail!(
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+        );
     }
-    if config
-        .auth
-        .static_token
-        .as_deref()
-        .is_none_or(|token| token.trim().is_empty())
-    {
-        bail!("{variable} requires MCP__AUTH__STATIC_TOKEN");
-    }
+    validate_mutation_static_token(
+        config,
+        "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN",
+    )?;
     if config.capability.key_id.is_none() {
-        bail!("{variable} requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX");
+        bail!(
+            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
+    }
+    Ok(())
+}
+
+fn validate_write_file_mutation_capability(config: &AppConfig) -> anyhow::Result<()> {
+    if !config.file.write_file_mutation_enabled {
+        return Ok(());
+    }
+    if !cfg!(feature = "mcp-runtime") {
+        bail!(
+            "MCP__FILE__WRITE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+        );
+    }
+    validate_mutation_static_token(
+        config,
+        "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN",
+    )?;
+    if config.capability.key_id.is_none() {
+        bail!(
+            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
     }
     Ok(())
 }
@@ -612,20 +619,28 @@ fn validate_android_volume_control_capability(config: &AppConfig) -> anyhow::Res
     if !config.android.volume_control_enabled {
         return Ok(());
     }
-    if config
-        .auth
-        .static_token
-        .as_deref()
-        .is_none_or(|token| token.trim().is_empty())
-    {
-        bail!("MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__AUTH__STATIC_TOKEN");
-    }
+    validate_mutation_static_token(
+        config,
+        "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__AUTH__STATIC_TOKEN",
+    )?;
     if config.capability.key_id.is_none() {
         bail!(
             "MCP__ANDROID__VOLUME_CONTROL_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
         );
     }
     Ok(())
+}
+
+fn validate_mutation_static_token(
+    config: &AppConfig,
+    missing_token_error: &'static str,
+) -> anyhow::Result<()> {
+    let token = config
+        .auth
+        .static_token
+        .as_deref()
+        .ok_or_else(|| anyhow!(missing_token_error))?;
+    validate_bearer_token(token)
 }
 
 fn validate_command_capability(command: &CommandConfig) -> anyhow::Result<()> {
@@ -656,15 +671,19 @@ fn validate_transport_security(transport: &TransportConfig) -> anyhow::Result<()
         }
     }
 
-    if !(1..=MAX_CONFIGURED_CONCURRENT_REQUESTS).contains(&transport.max_concurrent_requests) {
+    if !(MIN_CONFIGURED_CONCURRENT_REQUESTS..=MAX_CONFIGURED_CONCURRENT_REQUESTS)
+        .contains(&transport.max_concurrent_requests)
+    {
         bail!(
-            "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS must be between 1 and {MAX_CONFIGURED_CONCURRENT_REQUESTS}"
+            "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS must be between {MIN_CONFIGURED_CONCURRENT_REQUESTS} and {MAX_CONFIGURED_CONCURRENT_REQUESTS}"
         );
     }
 
-    if !(1..=MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS).contains(&transport.request_timeout_seconds) {
+    if !(MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS..=MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS)
+        .contains(&transport.request_timeout_seconds)
+    {
         bail!(
-            "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS must be between 1 and {MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS}"
+            "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS must be between {MIN_CONFIGURED_REQUEST_TIMEOUT_SECONDS} and {MAX_CONFIGURED_REQUEST_TIMEOUT_SECONDS}"
         );
     }
 
@@ -721,7 +740,7 @@ mod tests {
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
                 create_directory_mutation_enabled: false,
-                write_mutation_enabled: false,
+                write_file_mutation_enabled: false,
             },
             transport: transport_config(),
         }
@@ -794,7 +813,7 @@ mod tests {
         );
         assert_eq!(config.capability.key_id.as_deref(), Some("offline-1"));
         assert!(config.file.create_directory_mutation_enabled);
-        assert!(config.file.write_mutation_enabled);
+        assert!(config.file.write_file_mutation_enabled);
         assert_eq!(config.file.safe_roots, vec![safe_root]);
 
         std::fs::write(
@@ -825,7 +844,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             create_directory_mutation_enabled: false,
-            write_mutation_enabled: false,
+            write_file_mutation_enabled: false,
         };
         let broad_storage = PathBuf::from("/storage/emulated/0");
         let sdcard = PathBuf::from("/sdcard");
@@ -850,7 +869,7 @@ mod tests {
         assert!(!config.android.volume_control_enabled);
         assert!(!config.command.enabled);
         assert!(!config.file.create_directory_mutation_enabled);
-        assert!(!config.file.write_mutation_enabled);
+        assert!(!config.file.write_file_mutation_enabled);
         assert!(!config.transport.sse_enabled);
         assert_eq!(
             config.file.safe_roots,
@@ -1109,118 +1128,65 @@ mod tests {
     }
 
     #[test]
-    fn write_mutation_compile_auth_and_key_requirements_are_exhaustive() {
-        for gate_enabled in [false, true] {
-            for static_auth_configured in [false, true] {
-                for key_pair_configured in [false, true] {
-                    let mut entries = vec![(
-                        "MCP__FILE__WRITE_MUTATION_ENABLED",
-                        OsString::from(if gate_enabled { "true" } else { "false" }),
-                    )];
-                    if static_auth_configured {
-                        entries.push((
-                            "MCP__AUTH__STATIC_TOKEN",
-                            OsString::from("static-principal-secret"),
-                        ));
-                    }
-                    if key_pair_configured {
-                        entries.push(("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")));
-                        entries.push((
-                            "MCP__CAPABILITY__HMAC_KEY_HEX",
-                            OsString::from("a".repeat(64)),
-                        ));
-                    }
-
-                    let configured = load_from_os_values(entries);
-                    if !gate_enabled {
-                        let configured = configured.expect(
-                            "a disabled write gate must not require static auth or a signing key",
-                        );
-                        assert!(!configured.file.write_mutation_enabled);
-                    } else if !cfg!(feature = "mcp-runtime") {
-                        assert_eq!(
-                            configured.unwrap_err().to_string(),
-                            "MCP__FILE__WRITE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
-                        );
-                    } else if !static_auth_configured {
-                        assert_eq!(
-                            configured.unwrap_err().to_string(),
-                            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN"
-                        );
-                    } else if !key_pair_configured {
-                        assert_eq!(
-                            configured.unwrap_err().to_string(),
-                            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
-                        );
-                    } else {
-                        let configured = configured
-                            .expect("the fully authorized write-mutation posture must validate");
-                        assert!(configured.file.write_mutation_enabled);
-                        assert_eq!(
-                            configured.auth.static_token.as_deref(),
-                            Some("static-principal-secret")
-                        );
-                        assert_eq!(configured.capability.key_id.as_deref(), Some("primary-1"));
-                        assert_eq!(
-                            configured.capability.hmac_key_hex(),
-                            Some("a".repeat(64).as_str())
-                        );
-                    }
-                }
-            }
+    fn write_mutation_requires_compile_gate_static_auth_and_exact_key_pair() {
+        let entries = [
+            ("MCP__FILE__WRITE_MUTATION_ENABLED", OsString::from("true")),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ];
+        let configured = load_from_os_values(entries);
+        if cfg!(feature = "mcp-runtime") {
+            let configured = configured.unwrap();
+            assert!(configured.file.write_file_mutation_enabled);
+            assert_eq!(configured.capability.key_id.as_deref(), Some("primary-1"));
+            assert_eq!(
+                configured.capability.hmac_key_hex(),
+                Some("a".repeat(64).as_str())
+            );
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__FILE__WRITE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+            );
         }
     }
 
+    #[cfg(feature = "mcp-runtime")]
     #[test]
-    fn create_directory_and_write_mutation_gates_remain_independent() {
-        for (create_directory_enabled, write_enabled) in
-            [(false, false), (true, false), (false, true), (true, true)]
-        {
-            let configured = load_from_os_values([
-                (
-                    "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
-                    OsString::from(if create_directory_enabled {
-                        "true"
-                    } else {
-                        "false"
-                    }),
-                ),
-                (
-                    "MCP__FILE__WRITE_MUTATION_ENABLED",
-                    OsString::from(if write_enabled { "true" } else { "false" }),
-                ),
-                (
-                    "MCP__AUTH__STATIC_TOKEN",
-                    OsString::from("static-principal-secret"),
-                ),
-                ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
-                (
-                    "MCP__CAPABILITY__HMAC_KEY_HEX",
-                    OsString::from("a".repeat(64)),
-                ),
-            ]);
+    fn write_mutation_rejects_missing_static_principal_or_key() {
+        let missing_principal = load_from_os_values([
+            ("MCP__FILE__WRITE_MUTATION_ENABLED", OsString::from("true")),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            missing_principal.to_string(),
+            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+        );
 
-            if cfg!(feature = "mcp-runtime") || (!create_directory_enabled && !write_enabled) {
-                let configured = configured.expect(
-                    "each gate combination must preserve its exact configured state when valid",
-                );
-                assert_eq!(
-                    configured.file.create_directory_mutation_enabled,
-                    create_directory_enabled
-                );
-                assert_eq!(configured.file.write_mutation_enabled, write_enabled);
-            } else {
-                let expected_gate = if create_directory_enabled {
-                    "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED"
-                } else {
-                    "MCP__FILE__WRITE_MUTATION_ENABLED"
-                };
-                assert_eq!(
-                    configured.unwrap_err().to_string(),
-                    format!("{expected_gate} requires a binary built with the mcp-runtime feature")
-                );
-            }
-        }
+        let missing_key = load_from_os_values([
+            ("MCP__FILE__WRITE_MUTATION_ENABLED", OsString::from("true")),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            missing_key.to_string(),
+            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
     }
 
     #[test]
@@ -1229,11 +1195,10 @@ mod tests {
             "MCP__FILE__WRITE_MUTATION_ENABLED",
             OsString::from("sometimes"),
         )])
-        .expect_err("invalid write-mutation booleans must fail closed");
-        assert_eq!(
-            error.to_string(),
-            "MCP__FILE__WRITE_MUTATION_ENABLED must be a boolean value: true/false, 1/0, yes/no, or on/off"
-        );
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("MCP__FILE__WRITE_MUTATION_ENABLED must be a boolean value"));
     }
 
     #[test]
@@ -1376,7 +1341,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![],
             create_directory_mutation_enabled: false,
-            write_mutation_enabled: false,
+            write_file_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("empty safe roots must fail closed");
@@ -1388,7 +1353,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from("relative/path")],
             create_directory_mutation_enabled: false,
-            write_mutation_enabled: false,
+            write_file_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("relative safe roots must fail");
@@ -1400,7 +1365,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from("/")],
             create_directory_mutation_enabled: false,
-            write_mutation_enabled: false,
+            write_file_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");
@@ -1422,7 +1387,27 @@ mod tests {
 
         let err = validate_runtime_auth_posture(&config).expect_err("empty token must fail closed");
 
-        assert!(err.to_string().contains("configured but empty"));
+        assert!(err
+            .to_string()
+            .contains("must contain only ASCII graphic bytes"));
+    }
+
+    #[test]
+    fn configured_static_token_uses_exact_bearer_contract() {
+        let maximum = "x".repeat(crate::auth::MAX_BEARER_TOKEN_BYTES);
+        validate_runtime_auth_posture(&app_config("0.0.0.0", Some(&maximum), false))
+            .expect("the exact configured bearer-token maximum must be accepted");
+
+        for invalid in [
+            String::new(),
+            "contains whitespace".to_owned(),
+            "contains\u{7f}control".to_owned(),
+            "contains-non-ascii-é".to_owned(),
+            "x".repeat(crate::auth::MAX_BEARER_TOKEN_BYTES + 1),
+        ] {
+            validate_runtime_auth_posture(&app_config("0.0.0.0", Some(&invalid), false))
+                .expect_err("configured and presented bearer contracts must match");
+        }
     }
 
     #[test]

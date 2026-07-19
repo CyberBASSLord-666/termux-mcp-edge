@@ -18,7 +18,8 @@ fn sanitize_rejects_link_resolving_beyond_safe_root() {
     let link_path = root.path().join("peer-link.txt");
     std::os::unix::fs::symlink(&peer_file, &link_path).unwrap();
 
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     assert_path_traversal(tools.sanitize(link_path.to_string_lossy().as_ref()));
 }
@@ -32,7 +33,8 @@ async fn read_file_rejects_link_resolving_beyond_safe_root() {
     let link_path = root.path().join("peer-link.txt");
     std::os::unix::fs::symlink(&peer_file, &link_path).unwrap();
 
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let result = tools
         .read_file(link_path.to_string_lossy().to_string())
         .await;
@@ -48,7 +50,8 @@ async fn create_list_hash_metadata_read_and_search_reject_symlinked_parent_compo
     tokio::fs::write(&peer_file, "peer data").await.unwrap();
     let linked_parent = root.path().join("linked-parent");
     std::os::unix::fs::symlink(peer.path(), &linked_parent).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let list_result = tools
         .list_directory(linked_parent.to_string_lossy().to_string(), Some(1))
@@ -56,7 +59,7 @@ async fn create_list_hash_metadata_read_and_search_reject_symlinked_parent_compo
     let create_result = tools
         .create_directory(
             linked_parent.join("created").to_string_lossy().to_string(),
-            Some(false),
+            Some(true),
         )
         .await;
     let read_result = tools

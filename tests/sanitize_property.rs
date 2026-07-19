@@ -13,7 +13,7 @@ proptest! {
         let root = tempfile::tempdir().unwrap();
         let child = root.path().join(format!("{name}.txt"));
         std::fs::write(&child, b"safe").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).expect("test safe root must validate");
 
         let sanitized = tools.sanitize(child.to_string_lossy().as_ref()).unwrap();
 
@@ -25,7 +25,7 @@ proptest! {
         name in "[a-zA-Z0-9_-]{1,48}"
     ) {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).expect("test safe root must validate");
         let relative = format!("relative/{name}.txt");
         let parent_escape = root.path().join("..").join(format!("{name}.txt"));
 

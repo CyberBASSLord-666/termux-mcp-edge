@@ -136,6 +136,25 @@ impl AndroidVolumeControlError {
     }
 }
 
+/// Preview-only Android volume-control client for library consumers.
+///
+/// Live preparation and execution are intentionally crate-private so an
+/// embedding cannot bypass the request-grant authority enforced by the MCP
+/// transport.
+///
+/// ```compile_fail
+/// use termux_mcp_server::android_volume_control::{
+///     AndroidVolumeControlClient, AndroidVolumeStreamName,
+/// };
+///
+/// # async fn cannot_bypass_request_grants() {
+/// let client = AndroidVolumeControlClient::termux();
+/// let _prepared = client
+///     .prepare_mutation(AndroidVolumeStreamName::Music, 9)
+///     .await
+///     .unwrap();
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct AndroidVolumeControlClient {
     status: AndroidVolumeClient,
@@ -183,7 +202,7 @@ impl AndroidVolumeControlClient {
     /// Authorization is intentionally not accepted here. The caller validates
     /// and consumes the request grant only after this preparation succeeds and
     /// immediately before spawning [`PreparedAndroidVolumeMutation::execute`].
-    pub async fn prepare_mutation(
+    pub(crate) async fn prepare_mutation(
         &self,
         stream: AndroidVolumeStreamName,
         requested_level: i64,
@@ -268,7 +287,7 @@ impl Default for AndroidVolumeControlClient {
 }
 
 #[derive(Debug)]
-pub struct PreparedAndroidVolumeMutation {
+pub(crate) struct PreparedAndroidVolumeMutation {
     client: AndroidVolumeControlClient,
     _permit: OwnedSemaphorePermit,
     stream: AndroidVolumeStreamName,
@@ -282,7 +301,9 @@ impl PreparedAndroidVolumeMutation {
     /// This value is intended to be moved into an independently owned Tokio
     /// task. Dropping the HTTP request future then detaches, rather than
     /// cancels, the recovery sequence.
-    pub async fn execute(self) -> Result<AndroidVolumeControlResult, AndroidVolumeControlError> {
+    pub(crate) async fn execute(
+        self,
+    ) -> Result<AndroidVolumeControlResult, AndroidVolumeControlError> {
         if self
             .client
             .set_level(self.stream, self.requested_level)

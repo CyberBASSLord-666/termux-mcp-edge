@@ -9,18 +9,23 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use metrics::{counter, histogram};
-use rustix::fs::{self as descriptor_fs, AtFlags, Dir, FileType, Mode, OFlags, RenameFlags};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
+use super::{
+    canonical_safe_roots, is_write_quarantine_name, SafeRootConfigurationError,
+    WRITE_FILE_QUARANTINE_DIRECTORY,
+};
 use crate::audit::AuditEvent;
 use crate::create_directory_grant::{CreateDirectoryGrantError, CreateDirectoryGrantTarget};
 use crate::error::AppError;
 use crate::write_file_grant::{
-    content_sha256, WriteFileGrantError, WriteFileGrantTarget, WriteFilePublication,
+    WriteFileDisposition, WriteFileExistingIdentity, WriteFileGrantError, WriteFileGrantTarget,
 };
 use crate::write_policy::{WritePolicy, WritePolicyError};
+use metrics::{counter, histogram};
+use rustix::fs::{
+    self as descriptor_fs, AtFlags, Dir, FileType, FlockOperation, Mode, OFlags, RenameFlags,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const DEFAULT_LIST_DEPTH: u32 = 1;
 const MAX_LIST_DEPTH: u32 = 5;
@@ -66,26 +71,16 @@ pub const MAX_SEARCH_TOTAL_BYTES: usize = 8_388_608;
 pub const MAX_SEARCH_MATCHES: usize = 256;
 pub const MAX_SEARCH_RESPONSE_BYTES: usize = 262_144;
 
-// Write publication is deliberately serialized process-wide. The critical
-// section is rare, operates on at most one bounded payload, and must cover every
-// in-process FileSystemTools instance so two separately prepared replacements
-// cannot both act on the same captured destination identity. A single lock
-// also protects unpredictable staging names from another in-process write.
-static WRITE_FILE_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 // Leave deterministic room for the JSON-RPC envelope, bounded summary, and a
 // normally sized request id. The transport independently enforces the exact
 // full-response ceilings above, including caller-controlled ids.
 const MAX_LIST_STRUCTURED_BYTES: usize = MAX_LIST_RESPONSE_BYTES - 1_024;
 const MAX_FIND_STRUCTURED_BYTES: usize = MAX_FIND_RESPONSE_BYTES - 1_024;
 const MAX_SEARCH_STRUCTURED_BYTES: usize = MAX_SEARCH_RESPONSE_BYTES - 1_024;
-
-struct DescriptorTempFileCleanup<'a> {
-    parent: &'a OwnedFd,
-    name: OsString,
-    expected_identity: Option<(u64, u64)>,
-    armed: bool,
-}
+const WRITE_FILE_ARTIFACT_PREFIX: &str = ".termux-mcp-write-artifact-";
+pub const MAX_WRITE_FILE_QUARANTINE_ARTIFACTS: usize = 32;
+pub const MAX_WRITE_FILE_QUARANTINE_BYTES: u64 =
+    MAX_WRITE_FILE_QUARANTINE_ARTIFACTS as u64 * 1_048_576;
 
 struct DescriptorDirectoryCleanup<'a> {
     parent: &'a OwnedFd,
@@ -201,54 +196,6 @@ impl Drop for DescriptorDirectoryCleanup<'_> {
     }
 }
 
-impl<'a> DescriptorTempFileCleanup<'a> {
-    fn new(parent: &'a OwnedFd, name: OsString) -> Self {
-        Self {
-            parent,
-            name,
-            expected_identity: None,
-            armed: true,
-        }
-    }
-
-    fn set_expected_identity(&mut self, device: u64, inode: u64) {
-        self.expected_identity = Some((device, inode));
-    }
-
-    fn published_as(&mut self, name: OsString) {
-        self.name = name;
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for DescriptorTempFileCleanup<'_> {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let Some((expected_device, expected_inode)) = self.expected_identity else {
-            return;
-        };
-        let Ok(metadata) =
-            descriptor_fs::statat(self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
-        else {
-            return;
-        };
-        if !FileType::from_raw_mode(metadata.st_mode).is_file()
-            || metadata.st_dev != expected_device
-            || metadata.st_ino != expected_inode
-        {
-            return;
-        }
-        if descriptor_fs::unlinkat(self.parent, &self.name, AtFlags::empty()).is_ok() {
-            let _ = descriptor_fs::fsync(self.parent);
-        }
-    }
-}
-
 struct AnchoredPath {
     display_path: PathBuf,
     root_path: PathBuf,
@@ -268,31 +215,15 @@ pub(crate) enum AuthorizedCreateDirectoryError {
     Filesystem(AppError),
 }
 
-struct HeldWriteDestination {
-    descriptor: OwnedFd,
-    device: u64,
-    inode: u64,
-    mode: u32,
-    size: u64,
-}
-
-struct PreparedWriteFileTarget {
-    root_fd: OwnedFd,
-    parent_fd: OwnedFd,
-    file_name: OsString,
-    publication: WriteFilePublication,
-    existing: Option<HeldWriteDestination>,
-    grant_target: WriteFileGrantTarget,
-}
-
 pub(crate) struct PreparedWriteFileMutation {
     result: WriteFileResult,
-    _root_fd: OwnedFd,
     parent_fd: OwnedFd,
     file_name: OsString,
     content: Vec<u8>,
-    publication: WriteFilePublication,
-    existing: Option<HeldWriteDestination>,
+    disposition: WriteFileDisposition,
+    existing_target_fd: Option<OwnedFd>,
+    existing_identity: Option<WriteFileExistingIdentity>,
+    existing_size: Option<u64>,
     grant_target: WriteFileGrantTarget,
     started: Instant,
 }
@@ -308,6 +239,18 @@ impl PreparedCreateDirectoryMutation {
             .record(self.started.elapsed().as_secs_f64());
         counter!("mcp.fs.create_directory.dry_runs_total").increment(1);
         self.result
+    }
+
+    pub(crate) fn revalidate_destination_absent(&self) -> Result<(), AppError> {
+        match descriptor_fs::statat(
+            &self.parent_fd,
+            &self.directory_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Ok(_) => Err(AppError::PathAlreadyExists),
+            Err(error) => Err(descriptor_error(error)),
+        }
     }
 
     pub(crate) fn execute_authorized(
@@ -398,259 +341,227 @@ impl PreparedWriteFileMutation {
         self.result
     }
 
+    pub(crate) fn revalidate_target_posture(&self) -> Result<(), AppError> {
+        match self.disposition {
+            WriteFileDisposition::Create => match descriptor_fs::statat(
+                &self.parent_fd,
+                &self.file_name,
+                AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Err(rustix::io::Errno::NOENT) => Ok(()),
+                Ok(_) => Err(AppError::PathAlreadyExists),
+                Err(error) => Err(descriptor_error(error)),
+            },
+            WriteFileDisposition::Replace => {
+                let expected_identity =
+                    self.existing_identity.ok_or(AppError::WriteTargetChanged)?;
+                let existing_target_fd = self
+                    .existing_target_fd
+                    .as_ref()
+                    .ok_or(AppError::WriteTargetChanged)?;
+                let held_target =
+                    descriptor_fs::fstat(existing_target_fd).map_err(descriptor_error)?;
+                if !write_file_existing_identity_matches(&held_target, expected_identity) {
+                    return Err(AppError::WriteTargetChanged);
+                }
+                let current_target = descriptor_fs::statat(
+                    &self.parent_fd,
+                    &self.file_name,
+                    AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map_err(|error| {
+                    if error == rustix::io::Errno::NOENT {
+                        AppError::WriteTargetChanged
+                    } else {
+                        descriptor_error(error)
+                    }
+                })?;
+                if write_file_existing_identity_matches(&current_target, expected_identity) {
+                    Ok(())
+                } else {
+                    Err(AppError::WriteTargetChanged)
+                }
+            }
+        }
+    }
+
     pub(crate) fn execute_authorized(
         self,
         authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
     ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
-        self.execute_authorized_with_publication_hook(authorize, |_, _, _| {})
+        self.execute_authorized_with_capture_hook(authorize, || {})
     }
 
-    fn execute_authorized_with_publication_hook(
+    fn execute_authorized_with_capture_hook(
         self,
         authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
-        before_publication: impl FnOnce(&OwnedFd, &OsStr, &OsStr),
+        before_replace_capture: impl FnOnce(),
     ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
-        let _mutation_guard = WRITE_FILE_MUTATION_LOCK.lock().map_err(|_| {
-            AuthorizedWriteFileError::Filesystem(AppError::Io(std::io::Error::other(
-                "write mutation state is unavailable",
-            )))
-        })?;
-        self.validate_destination_posture()
+        let required_bytes = self
+            .existing_size
+            .unwrap_or(0)
+            .max(self.content.len() as u64);
+        preflight_write_quarantine_capacity(&self.parent_fd, required_bytes)
             .map_err(AuthorizedWriteFileError::Filesystem)?;
-        let temp_name = OsString::from(format!(
-            ".termux-mcp-write-file-{}.tmp",
-            uuid::Uuid::new_v4()
-        ));
         authorize(&self.grant_target).map_err(AuthorizedWriteFileError::Authorization)?;
 
         let started = self.started;
-        let bytes = self.result.bytes;
         let result = self
-            .execute_after_authorization(temp_name, before_publication)
+            .execute_after_authorization(before_replace_capture)
             .map_err(AuthorizedWriteFileError::Filesystem)?;
         histogram!("mcp.fs.write.latency_seconds").record(started.elapsed().as_secs_f64());
-        counter!("mcp.fs.write.bytes_total").increment(bytes as u64);
-        counter!("mcp.fs.write.mutations_total").increment(1);
+        counter!("mcp.fs.write.calls_total").increment(1);
+        counter!("mcp.fs.write.bytes_total").increment(result.size_bytes as u64);
         Ok(result)
     }
 
-    fn validate_destination_posture(&self) -> Result<(), AppError> {
-        match self.publication {
-            WriteFilePublication::Create => {
+    fn execute_after_authorization(
+        self,
+        before_replace_capture: impl FnOnce(),
+    ) -> Result<WriteFileResult, AppError> {
+        // Grant consumption occurs immediately before this first mutating
+        // operation. The advisory lock serializes cooperating writers only;
+        // descriptor-relative identity checks and preservation provide safety.
+        let quarantine = open_write_file_quarantine(&self.parent_fd)?;
+        let required_bytes = self
+            .existing_size
+            .unwrap_or(0)
+            .max(self.content.len() as u64);
+        ensure_write_quarantine_capacity(&quarantine, required_bytes)?;
+        let (artifact_name, mut file, staged_identity) = create_write_artifact(&quarantine)?;
+        file.write_all(&self.content)?;
+        file.sync_all()?;
+        let staged_metadata = descriptor_fs::fstat(&file).map_err(descriptor_error)?;
+        if !write_file_identity_and_contract_match(
+            &staged_metadata,
+            staged_identity.0,
+            staged_identity.1,
+            self.content.len(),
+        ) {
+            return Err(AppError::WriteTargetChanged);
+        }
+        validate_write_quarantine_bounds(&quarantine)?;
+
+        let staged_name_metadata =
+            descriptor_fs::statat(&quarantine, &artifact_name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|_| AppError::WriteTargetChanged)?;
+        if !write_file_identity_and_contract_match(
+            &staged_name_metadata,
+            staged_identity.0,
+            staged_identity.1,
+            self.content.len(),
+        ) {
+            return Err(AppError::WriteTargetChanged);
+        }
+
+        match self.disposition {
+            WriteFileDisposition::Create => {
                 match descriptor_fs::statat(
                     &self.parent_fd,
                     &self.file_name,
                     AtFlags::SYMLINK_NOFOLLOW,
                 ) {
-                    Err(rustix::io::Errno::NOENT) => Ok(()),
-                    Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
-                        Err(path_rejected("write_file target"))
-                    }
-                    Ok(_) => Err(AppError::PathAlreadyExists),
-                    Err(error) => Err(descriptor_error(error)),
+                    Err(rustix::io::Errno::NOENT) => {}
+                    Ok(_) => return Err(AppError::PathAlreadyExists),
+                    Err(error) => return Err(descriptor_error(error)),
                 }
-            }
-            WriteFilePublication::Replace => {
-                let existing = self.existing.as_ref().ok_or_else(|| {
-                    AppError::Io(std::io::Error::other(
-                        "write replacement identity is unavailable",
-                    ))
-                })?;
-                let held = descriptor_fs::fstat(&existing.descriptor).map_err(descriptor_error)?;
-                let named = descriptor_fs::statat(
-                    &self.parent_fd,
-                    &self.file_name,
-                    AtFlags::SYMLINK_NOFOLLOW,
-                )
-                .map_err(|error| match error {
-                    rustix::io::Errno::NOENT => AppError::PathNotFound,
-                    _ => descriptor_error(error),
-                })?;
-                if !held_write_destination_matches(&held, existing)
-                    || !held_write_destination_matches(&named, existing)
-                {
-                    return Err(AppError::Io(std::io::Error::other(
-                        "write replacement identity changed",
-                    )));
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn execute_after_authorization(
-        self,
-        temp_name: OsString,
-        before_publication: impl FnOnce(&OwnedFd, &OsStr, &OsStr),
-    ) -> Result<WriteFileResult, AppError> {
-        let temp_fd = descriptor_fs::openat(
-            &self.parent_fd,
-            &temp_name,
-            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .map_err(descriptor_error)?;
-        let mut cleanup = DescriptorTempFileCleanup::new(&self.parent_fd, temp_name.clone());
-        let created = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
-        if !FileType::from_raw_mode(created.st_mode).is_file() {
-            return Err(AppError::Io(std::io::Error::other(
-                "write staging verification failed",
-            )));
-        }
-        cleanup.set_expected_identity(created.st_dev, created.st_ino);
-        descriptor_fs::fchmod(&temp_fd, Mode::RUSR | Mode::WUSR).map_err(descriptor_error)?;
-
-        let mut staged_file = File::from(temp_fd);
-        staged_file.write_all(&self.content)?;
-        staged_file.sync_all()?;
-        let staged = descriptor_fs::fstat(&staged_file).map_err(descriptor_error)?;
-        if !write_file_identity_and_contract_match(
-            &staged,
-            created.st_dev,
-            created.st_ino,
-            self.content.len(),
-        ) || hash_exact_file(&mut staged_file, self.content.len())?
-            != content_sha256(&self.content)
-        {
-            return Err(AppError::Io(std::io::Error::other(
-                "write staging verification failed",
-            )));
-        }
-
-        self.validate_destination_posture()?;
-        let staged_named =
-            descriptor_fs::statat(&self.parent_fd, &temp_name, AtFlags::SYMLINK_NOFOLLOW)
-                .map_err(descriptor_error)?;
-        if !write_file_identity_and_contract_match(
-            &staged_named,
-            created.st_dev,
-            created.st_ino,
-            self.content.len(),
-        ) {
-            return Err(AppError::Io(std::io::Error::other(
-                "write staging identity changed",
-            )));
-        }
-
-        before_publication(&self.parent_fd, &temp_name, &self.file_name);
-
-        match self.publication {
-            WriteFilePublication::Create => {
                 match descriptor_fs::renameat_with(
-                    &self.parent_fd,
-                    &temp_name,
+                    &quarantine,
+                    &artifact_name,
                     &self.parent_fd,
                     &self.file_name,
                     RenameFlags::NOREPLACE,
                 ) {
-                    Ok(()) => cleanup.published_as(self.file_name.clone()),
+                    Ok(()) => {}
                     Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
                     Err(error) => return Err(descriptor_error(error)),
                 }
-                let published = descriptor_fs::statat(
+            }
+            WriteFileDisposition::Replace => {
+                let Some(expected_identity) = self.existing_identity else {
+                    return Err(AppError::WriteTargetChanged);
+                };
+                let Some(existing_target_fd) = self.existing_target_fd.as_ref() else {
+                    return Err(AppError::WriteTargetChanged);
+                };
+                let held_target =
+                    descriptor_fs::fstat(existing_target_fd).map_err(descriptor_error)?;
+                if !write_file_existing_identity_matches(&held_target, expected_identity) {
+                    return Err(AppError::WriteTargetChanged);
+                }
+                let current_target = descriptor_fs::statat(
                     &self.parent_fd,
                     &self.file_name,
                     AtFlags::SYMLINK_NOFOLLOW,
                 )
-                .map_err(descriptor_error)?;
-                let held = descriptor_fs::fstat(&staged_file).map_err(descriptor_error)?;
-                if !write_file_identity_and_contract_match(
-                    &published,
-                    created.st_dev,
-                    created.st_ino,
-                    self.content.len(),
-                ) || !write_file_identity_and_contract_match(
-                    &held,
-                    created.st_dev,
-                    created.st_ino,
-                    self.content.len(),
-                ) {
-                    return Err(AppError::Io(std::io::Error::other(
-                        "published write verification failed",
-                    )));
-                }
-                descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
-                cleanup.disarm();
-            }
-            WriteFilePublication::Replace => {
-                let existing = self.existing.as_ref().ok_or_else(|| {
-                    AppError::Io(std::io::Error::other(
-                        "write replacement identity is unavailable",
-                    ))
+                .map_err(|error| {
+                    if error == rustix::io::Errno::NOENT {
+                        AppError::WriteTargetChanged
+                    } else {
+                        descriptor_error(error)
+                    }
                 })?;
+                if !write_file_existing_identity_matches(&current_target, expected_identity) {
+                    return Err(AppError::WriteTargetChanged);
+                }
+                // Deterministic adversarial tests swap the verified public
+                // target here. EXCHANGE captures whichever identity is present
+                // into quarantine without deleting or modifying either inode.
+                before_replace_capture();
                 descriptor_fs::renameat_with(
-                    &self.parent_fd,
-                    &temp_name,
+                    &quarantine,
+                    &artifact_name,
                     &self.parent_fd,
                     &self.file_name,
                     RenameFlags::EXCHANGE,
                 )
-                .map_err(descriptor_error)?;
-
-                let published = descriptor_fs::statat(
-                    &self.parent_fd,
-                    &self.file_name,
+                .map_err(|error| {
+                    if error == rustix::io::Errno::NOENT {
+                        AppError::WriteTargetChanged
+                    } else {
+                        descriptor_error(error)
+                    }
+                })?;
+                let captured_metadata = match descriptor_fs::statat(
+                    &quarantine,
+                    &artifact_name,
                     AtFlags::SYMLINK_NOFOLLOW,
-                );
-                let displaced =
-                    descriptor_fs::statat(&self.parent_fd, &temp_name, AtFlags::SYMLINK_NOFOLLOW);
-                let held_staged = descriptor_fs::fstat(&staged_file);
-                let held_existing = descriptor_fs::fstat(&existing.descriptor);
-                let identities_match = published.as_ref().is_ok_and(|metadata| {
-                    write_file_identity_and_contract_match(
-                        metadata,
-                        created.st_dev,
-                        created.st_ino,
-                        self.content.len(),
-                    )
-                }) && held_staged.as_ref().is_ok_and(|metadata| {
-                    write_file_identity_and_contract_match(
-                        metadata,
-                        created.st_dev,
-                        created.st_ino,
-                        self.content.len(),
-                    )
-                }) && displaced
-                    .as_ref()
-                    .is_ok_and(|metadata| held_write_destination_matches(metadata, existing))
-                    && held_existing
-                        .as_ref()
-                        .is_ok_and(|metadata| held_write_destination_matches(metadata, existing));
-                if !identities_match {
-                    rollback_write_exchange_if_staged(
-                        &self.parent_fd,
-                        &temp_name,
-                        &self.file_name,
-                        created.st_dev,
-                        created.st_ino,
-                        self.content.len(),
-                    );
-                    return Err(AppError::Io(std::io::Error::other(
-                        "write replacement publication verification failed",
-                    )));
+                ) {
+                    Ok(metadata) => metadata,
+                    // Without a captured identity, neither rollback nor cleanup
+                    // is allowed to act on the randomized name. Preservation is
+                    // safer than risking deletion of a foreign entry.
+                    Err(_) => return Err(AppError::WriteTargetChanged),
+                };
+                if !write_file_existing_object_matches(&captured_metadata, expected_identity) {
+                    return Err(AppError::WriteTargetChanged);
                 }
-
-                if let Err(error) = descriptor_fs::fsync(&self.parent_fd) {
-                    rollback_write_exchange_if_staged(
-                        &self.parent_fd,
-                        &temp_name,
-                        &self.file_name,
-                        created.st_dev,
-                        created.st_ino,
-                        self.content.len(),
-                    );
-                    return Err(descriptor_error(error));
-                }
-
-                // The replacement is now durably published. From this point
-                // onward no failure path may remove the new final file or any
-                // displaced entry whose full captured contract has changed.
-                unlink_exact_regular(&self.parent_fd, &temp_name, existing)?;
-                descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
-                cleanup.disarm();
             }
         }
 
+        let published_metadata =
+            descriptor_fs::statat(&self.parent_fd, &self.file_name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(descriptor_error)?;
+        let held_metadata = descriptor_fs::fstat(&file).map_err(descriptor_error)?;
+        if !write_file_identity_and_contract_match(
+            &published_metadata,
+            staged_identity.0,
+            staged_identity.1,
+            self.content.len(),
+        ) || !write_file_identity_and_contract_match(
+            &held_metadata,
+            staged_identity.0,
+            staged_identity.1,
+            self.content.len(),
+        ) {
+            return Err(AppError::WriteTargetChanged);
+        }
+        descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
+        descriptor_fs::fsync(&quarantine).map_err(descriptor_error)?;
+        validate_write_quarantine_bounds(&quarantine)?;
+        // A displaced inode remains as a bounded recovery artifact. It may have
+        // aliases, so success performs no unlink, truncation, chmod, rollback,
+        // or other content/metadata mutation after the single commit exchange.
         Ok(self.result)
     }
 }
@@ -747,13 +658,11 @@ pub struct FileSystemTools {
 }
 
 impl FileSystemTools {
-    pub fn new(safe_roots: Vec<PathBuf>) -> Self {
-        let safe_roots = safe_roots
-            .into_iter()
-            .map(|root| root.canonicalize().unwrap_or(root))
-            .collect();
-
-        Self { safe_roots }
+    /// Validate, canonicalize, and deterministically deduplicate safe roots.
+    pub fn try_new(safe_roots: Vec<PathBuf>) -> Result<Self, SafeRootConfigurationError> {
+        Ok(Self {
+            safe_roots: canonical_safe_roots(safe_roots)?,
+        })
     }
 
     pub fn safe_roots(&self) -> &[PathBuf] {
@@ -788,10 +697,10 @@ impl FileSystemTools {
             return Err(path_rejected(input));
         };
 
-        if relative_path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        {
+        if relative_path.components().any(|component| match component {
+            Component::Normal(name) => is_write_quarantine_name(name),
+            _ => true,
+        }) {
             return Err(path_rejected(input));
         }
 
@@ -840,6 +749,18 @@ impl FileSystemTools {
             });
         }
 
+        if self.safe_roots.iter().any(|root| {
+            candidate.strip_prefix(root).is_ok_and(|relative| {
+                relative.components().any(|component| {
+                    matches!(component, Component::Normal(name) if is_write_quarantine_name(name))
+                })
+            })
+        }) {
+            return Err(AppError::PathTraversal {
+                attempted: input.to_string(),
+            });
+        }
+
         if candidate
             .components()
             .any(|component| matches!(component, Component::ParentDir))
@@ -849,38 +770,49 @@ impl FileSystemTools {
             });
         }
 
-        let resolved = if candidate.exists() {
-            candidate
+        let resolved = match std::fs::symlink_metadata(candidate) {
+            Ok(_) => candidate
                 .canonicalize()
                 .map_err(|_| AppError::PathTraversal {
                     attempted: input.to_string(),
-                })?
-        } else {
-            let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
-                attempted: input.to_string(),
-            })?;
-            let file_name = candidate
-                .file_name()
-                .ok_or_else(|| AppError::PathTraversal {
+                })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = candidate.parent().ok_or_else(|| AppError::PathTraversal {
                     attempted: input.to_string(),
                 })?;
-            let canonical_parent = parent.canonicalize().map_err(|_| AppError::PathTraversal {
-                attempted: input.to_string(),
-            })?;
-            canonical_parent.join(file_name)
+                let file_name = candidate
+                    .file_name()
+                    .ok_or_else(|| AppError::PathTraversal {
+                        attempted: input.to_string(),
+                    })?;
+                let canonical_parent =
+                    parent.canonicalize().map_err(|_| AppError::PathTraversal {
+                        attempted: input.to_string(),
+                    })?;
+                canonical_parent.join(file_name)
+            }
+            Err(_) => {
+                return Err(AppError::PathTraversal {
+                    attempted: input.to_string(),
+                });
+            }
         };
 
-        if self
-            .safe_roots
-            .iter()
-            .any(|root| resolved.starts_with(root))
-        {
-            Ok(resolved)
-        } else {
-            Err(AppError::PathTraversal {
-                attempted: input.to_string(),
+        let remains_in_public_namespace = self.safe_roots.iter().any(|root| {
+            resolved.strip_prefix(root).is_ok_and(|relative| {
+                !relative.components().any(|component| {
+                    matches!(component, Component::Normal(name) if is_write_quarantine_name(name))
+                })
             })
+        });
+
+        if !remains_in_public_namespace {
+            return Err(AppError::PathTraversal {
+                attempted: input.to_string(),
+            });
         }
+
+        Ok(resolved)
     }
 
     fn collect_entries_descriptor_relative(
@@ -901,6 +833,7 @@ impl FileSystemTools {
             }
 
             let mut read_dir = Dir::read_from(&dir_fd).map_err(descriptor_error)?;
+            let quarantine_identity = write_quarantine_identity(&dir_fd)?;
             // Keep only the lexicographically smallest candidates that can fit
             // the remaining published entry and byte budgets. Removing the
             // largest key after each insertion makes the selected subset
@@ -912,7 +845,10 @@ impl FileSystemTools {
             for entry in &mut read_dir {
                 let entry = entry.map_err(descriptor_error)?;
                 let name_bytes = entry.file_name().to_bytes();
-                if name_bytes == b"." || name_bytes == b".." {
+                if name_bytes == b"."
+                    || name_bytes == b".."
+                    || is_write_quarantine_name(OsStr::from_bytes(name_bytes))
+                {
                     continue;
                 }
                 let name = OsString::from_vec(name_bytes.to_vec());
@@ -922,7 +858,10 @@ impl FileSystemTools {
                     continue;
                 };
                 let file_type = FileType::from_raw_mode(metadata.st_mode);
-                if file_type.is_symlink() {
+                if file_type.is_symlink()
+                    || quarantine_identity
+                        .is_some_and(|identity| stat_matches_identity(&metadata, identity))
+                {
                     counter!("mcp.fs.list.skipped_unsafe_entries_total").increment(1);
                     continue;
                 }
@@ -1319,26 +1258,29 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<CreateDirectoryResult, AppError> {
         let dry_run = dry_run.unwrap_or(true);
-        let prepared = self.prepare_create_directory(path, dry_run).await?;
-        if dry_run {
-            Ok(prepared.preview())
-        } else {
-            prepared
-                .execute_authorized(|_| Ok(()))
-                .map_err(|error| match error {
-                    AuthorizedCreateDirectoryError::Authorization(_) => AppError::Io(
-                        std::io::Error::other("unexpected direct create authorization failure"),
-                    ),
-                    AuthorizedCreateDirectoryError::Filesystem(error) => error,
-                })
+        if !dry_run {
+            return Err(AppError::CreateDirectoryMutationAuthorizationRequired);
         }
+        Ok(self.prepare_create_directory(path, true).await?.preview())
     }
 
+    #[cfg(test)]
     pub(crate) async fn prepare_create_directory_mutation(
         &self,
         path: String,
     ) -> Result<PreparedCreateDirectoryMutation, AppError> {
         self.prepare_create_directory(path, false).await
+    }
+
+    /// Perform the blocking descriptor preparation for one live directory
+    /// mutation. The transport must call this only inside its permit-owned
+    /// mutation worker so cancellation cannot detach uncounted preparation.
+    pub(crate) fn prepare_create_directory_mutation_blocking(
+        &self,
+        path: String,
+    ) -> Result<PreparedCreateDirectoryMutation, AppError> {
+        let anchored = self.anchor(&path)?;
+        prepare_create_directory(anchored, false)
     }
 
     pub fn create_directory_grant_target(
@@ -1740,18 +1682,29 @@ impl FileSystemTools {
         Ok(result)
     }
 
-    /// Validate and preview one bounded file write.
-    ///
-    /// The public library entry point never mutates. Passing `Some(false)` is
-    /// rejected because live mutation must flow through the crate-private
-    /// prepared operation and request-scoped grant authority used by the MCP
-    /// transport.
+    pub fn write_file_grant_target(
+        &self,
+        path: &str,
+        content: &[u8],
+        disposition: WriteFileDisposition,
+    ) -> Result<WriteFileGrantTarget, AppError> {
+        WritePolicy::default()
+            .validate_payload_size(content.len())
+            .map_err(write_policy_error_to_app_error)?;
+        let anchored = self.anchor(path)?;
+        let prepared = prepare_write_file(anchored, content.to_vec(), false)?;
+        if prepared.disposition != disposition {
+            return Err(AppError::WriteTargetChanged);
+        }
+        Ok(prepared.grant_target)
+    }
+
     pub async fn write_file(
         &self,
         path: String,
         content: String,
         dry_run: Option<bool>,
-    ) -> Result<String, AppError> {
+    ) -> Result<WriteFileResult, AppError> {
         let policy = WritePolicy::default();
         let content_bytes = content.len();
         let _audit_event =
@@ -1763,12 +1716,29 @@ impl FileSystemTools {
         if !dry_run {
             return Err(AppError::WriteMutationAuthorizationRequired);
         }
-        let prepared = self.prepare_write_file(path, content, dry_run).await?;
-        let result = prepared.preview();
-        Ok(result.message)
+        Ok(self
+            .prepare_write_file(path, content, true)
+            .await?
+            .preview())
     }
 
+    #[cfg(test)]
     pub(crate) async fn prepare_write_file_mutation(
+        &self,
+        path: String,
+        content: String,
+    ) -> Result<PreparedWriteFileMutation, AppError> {
+        let policy = WritePolicy::default();
+        policy
+            .validate_payload_size(content.len())
+            .map_err(write_policy_error_to_app_error)?;
+        self.prepare_write_file(path, content, false).await
+    }
+
+    /// Perform the blocking descriptor preparation for one live file write.
+    /// The transport must call this only inside its permit-owned mutation
+    /// worker so cancellation cannot detach uncounted preparation.
+    pub(crate) fn prepare_write_file_mutation_blocking(
         &self,
         path: String,
         content: String,
@@ -1776,16 +1746,17 @@ impl FileSystemTools {
         WritePolicy::default()
             .validate_payload_size(content.len())
             .map_err(write_policy_error_to_app_error)?;
-        self.prepare_write_file(path, content, false).await
+        let anchored = self.anchor(&path)?;
+        prepare_write_file(anchored, content.into_bytes(), false)
     }
 
-    pub fn write_file_grant_target(
-        &self,
-        path: &str,
-        content_digest: [u8; 32],
-    ) -> Result<WriteFileGrantTarget, AppError> {
-        let anchored = self.anchor(path)?;
-        Ok(prepare_write_file_target(anchored, content_digest)?.grant_target)
+    /// Return the longest valid serialized write-result shape for transport
+    /// response-bound preflight. `false` is one byte longer than `true`, and
+    /// `replace` is longer than `create`.
+    pub(crate) fn write_file_response_preview(&self, size_bytes: usize) -> WriteFileResult {
+        let mut result = write_file_result(false, size_bytes, WriteFileDisposition::Replace);
+        result.recovery_artifact_retained = false;
+        result
     }
 
     async fn prepare_write_file(
@@ -1837,6 +1808,7 @@ fn collect_path_matches_descriptor_relative(
         }
 
         let mut read_dir = Dir::read_from(&dir_fd).map_err(descriptor_error)?;
+        let quarantine_identity = write_quarantine_identity(&dir_fd)?;
         let mut candidates = BTreeMap::new();
         for entry in &mut read_dir {
             if state.entries_examined >= MAX_FIND_ENTRIES {
@@ -1851,7 +1823,10 @@ fn collect_path_matches_descriptor_relative(
                 }
             };
             let name_bytes = entry.file_name().to_bytes();
-            if name_bytes == b"." || name_bytes == b".." {
+            if name_bytes == b"."
+                || name_bytes == b".."
+                || is_write_quarantine_name(OsStr::from_bytes(name_bytes))
+            {
                 continue;
             }
             state.entries_examined += 1;
@@ -1867,6 +1842,11 @@ fn collect_path_matches_descriptor_relative(
                     continue;
                 }
             };
+            if quarantine_identity
+                .is_some_and(|identity| stat_matches_identity(&metadata, identity))
+            {
+                continue;
+            }
             let file_type = FileType::from_raw_mode(metadata.st_mode);
             let kind = if file_type.is_file() {
                 FindPathKind::RegularFile
@@ -1940,6 +1920,7 @@ fn collect_text_matches_descriptor_relative(
         }
 
         let mut read_dir = Dir::read_from(&dir_fd).map_err(descriptor_error)?;
+        let quarantine_identity = write_quarantine_identity(&dir_fd)?;
         let mut candidates = BTreeMap::new();
 
         for entry in &mut read_dir {
@@ -1955,7 +1936,10 @@ fn collect_text_matches_descriptor_relative(
                 }
             };
             let name_bytes = entry.file_name().to_bytes();
-            if name_bytes == b"." || name_bytes == b".." {
+            if name_bytes == b"."
+                || name_bytes == b".."
+                || is_write_quarantine_name(OsStr::from_bytes(name_bytes))
+            {
                 continue;
             }
             state.entries_examined += 1;
@@ -1971,6 +1955,11 @@ fn collect_text_matches_descriptor_relative(
                     continue;
                 }
             };
+            if quarantine_identity
+                .is_some_and(|identity| stat_matches_identity(&metadata, identity))
+            {
+                continue;
+            }
             let file_type = FileType::from_raw_mode(metadata.st_mode);
             if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
                 state.skipped_unsafe_entries += 1;
@@ -2354,13 +2343,23 @@ fn open_root_directory(root: &Path) -> Result<OwnedFd, AppError> {
 }
 
 fn open_child_directory(parent: &OwnedFd, name: &OsStr) -> Result<OwnedFd, AppError> {
-    descriptor_fs::openat(
+    if is_write_quarantine_name(name) {
+        return Err(path_rejected(name.to_string_lossy().as_ref()));
+    }
+    let child = descriptor_fs::openat(
         parent,
         name,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(descriptor_error)
+    .map_err(descriptor_error)?;
+    let metadata = descriptor_fs::fstat(&child).map_err(descriptor_error)?;
+    if write_quarantine_identity(parent)?
+        .is_some_and(|identity| stat_matches_identity(&metadata, identity))
+    {
+        return Err(path_rejected(name.to_string_lossy().as_ref()));
+    }
+    Ok(child)
 }
 
 fn open_descendant_directory(
@@ -2384,7 +2383,10 @@ fn open_metadata_descriptor(root_fd: OwnedFd, relative_path: &Path) -> Result<Ow
 
     let (parent_relative, file_name) = split_parent_and_name(relative_path)?;
     let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
-    descriptor_fs::openat(
+    if is_write_quarantine_name(&file_name) {
+        return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+    }
+    let descriptor = descriptor_fs::openat(
         &parent_fd,
         &file_name,
         OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -2396,7 +2398,14 @@ fn open_metadata_descriptor(root_fd: OwnedFd, relative_path: &Path) -> Result<Ow
         } else {
             descriptor_error(error)
         }
-    })
+    })?;
+    let metadata = descriptor_fs::fstat(&descriptor).map_err(descriptor_error)?;
+    if write_quarantine_identity(&parent_fd)?
+        .is_some_and(|identity| stat_matches_identity(&metadata, identity))
+    {
+        return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+    }
+    Ok(descriptor)
 }
 
 fn open_metadata_parent_directory(
@@ -2407,6 +2416,9 @@ fn open_metadata_parent_directory(
         let Component::Normal(name) = component else {
             return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
         };
+        if is_write_quarantine_name(name) {
+            return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+        }
         let child = descriptor_fs::openat(
             &directory,
             name,
@@ -2428,6 +2440,11 @@ fn open_metadata_parent_directory(
         if !file_type.is_dir() {
             return Err(AppError::PathNotFound);
         }
+        if write_quarantine_identity(&directory)?
+            .is_some_and(|identity| stat_matches_identity(&metadata, identity))
+        {
+            return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
+        }
         directory = child;
     }
     Ok(directory)
@@ -2447,6 +2464,216 @@ fn open_mutation_parent_directory(
     .map_err(descriptor_error)
 }
 
+fn write_quarantine_identity(parent: &OwnedFd) -> Result<Option<(u64, u64)>, AppError> {
+    match descriptor_fs::statat(
+        parent,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(metadata) => Ok(Some((metadata.st_dev, metadata.st_ino))),
+        Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(descriptor_error(error)),
+    }
+}
+
+fn stat_matches_identity(metadata: &descriptor_fs::Stat, identity: (u64, u64)) -> bool {
+    (metadata.st_dev, metadata.st_ino) == identity
+}
+
+fn open_write_file_quarantine(parent: &OwnedFd) -> Result<OwnedFd, AppError> {
+    let created = match descriptor_fs::mkdirat(
+        parent,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+        Mode::RUSR | Mode::WUSR | Mode::XUSR,
+    ) {
+        Ok(()) => true,
+        Err(rustix::io::Errno::EXIST) => false,
+        Err(error) => return Err(descriptor_error(error)),
+    };
+    let quarantine = descriptor_fs::openat(
+        parent,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| AppError::WriteTargetChanged)?;
+    let held = descriptor_fs::fstat(&quarantine).map_err(descriptor_error)?;
+    let named = descriptor_fs::statat(
+        parent,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+        AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(|_| AppError::WriteTargetChanged)?;
+    if !FileType::from_raw_mode(held.st_mode).is_dir()
+        || !FileType::from_raw_mode(named.st_mode).is_dir()
+        || (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+        || (held.st_mode & 0o7777) != 0o700
+        || (named.st_mode & 0o7777) != 0o700
+    {
+        return Err(AppError::WriteTargetChanged);
+    }
+    lock_write_quarantine(&quarantine)?;
+    if created {
+        descriptor_fs::fsync(&quarantine).map_err(descriptor_error)?;
+        descriptor_fs::fsync(parent).map_err(descriptor_error)?;
+    }
+    Ok(quarantine)
+}
+
+fn write_quarantine_usage(quarantine: &OwnedFd) -> Result<(usize, u64), AppError> {
+    let mut count = 0_usize;
+    let mut bytes = 0_u64;
+    let mut entries = Dir::read_from(quarantine).map_err(descriptor_error)?;
+    for entry in &mut entries {
+        let entry = entry.map_err(descriptor_error)?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if !is_canonical_write_artifact_name(name) {
+            return Err(write_quarantine_capacity_error());
+        }
+        let metadata = descriptor_fs::statat(
+            quarantine,
+            OsStr::from_bytes(name),
+            AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(|_| write_quarantine_capacity_error())?;
+        if !FileType::from_raw_mode(metadata.st_mode).is_file()
+            || metadata.st_size < 0
+            || metadata.st_nlink != 1
+            || metadata.st_size as u64 > crate::write_policy::DEFAULT_MAX_WRITE_BYTES as u64
+        {
+            return Err(write_quarantine_capacity_error());
+        }
+        count = count.saturating_add(1);
+        bytes = bytes
+            .checked_add(metadata.st_size as u64)
+            .ok_or_else(write_quarantine_capacity_error)?;
+    }
+    Ok((count, bytes))
+}
+
+fn write_quarantine_capacity_error() -> AppError {
+    AppError::WriteQuarantineCapacityExceeded
+}
+
+fn lock_write_quarantine(quarantine: &OwnedFd) -> Result<(), AppError> {
+    descriptor_fs::flock(quarantine, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
+        if error == rustix::io::Errno::AGAIN {
+            AppError::WriteQuarantineBusy
+        } else {
+            descriptor_error(error)
+        }
+    })
+}
+
+fn ensure_write_quarantine_capacity(
+    quarantine: &OwnedFd,
+    required_bytes: u64,
+) -> Result<(), AppError> {
+    let (count, bytes) = write_quarantine_usage(quarantine)?;
+    if count >= MAX_WRITE_FILE_QUARANTINE_ARTIFACTS
+        || bytes
+            .checked_add(required_bytes)
+            .is_none_or(|total| total > MAX_WRITE_FILE_QUARANTINE_BYTES)
+    {
+        return Err(write_quarantine_capacity_error());
+    }
+    Ok(())
+}
+
+fn validate_write_quarantine_bounds(quarantine: &OwnedFd) -> Result<(), AppError> {
+    let (count, bytes) = write_quarantine_usage(quarantine)?;
+    if count > MAX_WRITE_FILE_QUARANTINE_ARTIFACTS || bytes > MAX_WRITE_FILE_QUARANTINE_BYTES {
+        return Err(write_quarantine_capacity_error());
+    }
+    Ok(())
+}
+
+fn preflight_write_quarantine_capacity(
+    parent: &OwnedFd,
+    required_bytes: u64,
+) -> Result<(), AppError> {
+    let expected = match descriptor_fs::statat(
+        parent,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Err(rustix::io::Errno::NOENT) => {
+            return if required_bytes <= MAX_WRITE_FILE_QUARANTINE_BYTES {
+                Ok(())
+            } else {
+                Err(write_quarantine_capacity_error())
+            };
+        }
+        Err(_) => return Err(write_quarantine_capacity_error()),
+        Ok(metadata) if !FileType::from_raw_mode(metadata.st_mode).is_dir() => {
+            return Err(write_quarantine_capacity_error());
+        }
+        Ok(metadata) => metadata,
+    };
+    let quarantine = descriptor_fs::openat(
+        parent,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| write_quarantine_capacity_error())?;
+    let held = descriptor_fs::fstat(&quarantine).map_err(descriptor_error)?;
+    if (held.st_dev, held.st_ino) != (expected.st_dev, expected.st_ino)
+        || (held.st_mode & 0o7777) != 0o700
+    {
+        return Err(write_quarantine_capacity_error());
+    }
+    lock_write_quarantine(&quarantine)?;
+    ensure_write_quarantine_capacity(&quarantine, required_bytes)
+}
+
+fn is_canonical_write_artifact_name(name: &[u8]) -> bool {
+    let Ok(name) = std::str::from_utf8(name) else {
+        return false;
+    };
+    let Some(identifier) = name.strip_prefix(WRITE_FILE_ARTIFACT_PREFIX) else {
+        return false;
+    };
+    uuid::Uuid::parse_str(identifier)
+        .is_ok_and(|parsed| parsed.hyphenated().to_string() == identifier)
+}
+
+fn create_write_artifact(quarantine: &OwnedFd) -> Result<(OsString, File, (u64, u64)), AppError> {
+    for _ in 0..16 {
+        let name = OsString::from(format!(
+            "{WRITE_FILE_ARTIFACT_PREFIX}{}",
+            uuid::Uuid::new_v4()
+        ));
+        let fd = match descriptor_fs::openat(
+            quarantine,
+            &name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(error) => return Err(descriptor_error(error)),
+        };
+        let held = descriptor_fs::fstat(&fd).map_err(descriptor_error)?;
+        let named = descriptor_fs::statat(quarantine, &name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| AppError::WriteTargetChanged)?;
+        if !FileType::from_raw_mode(held.st_mode).is_file()
+            || (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+            || (held.st_mode & 0o7777) != WRITE_FILE_MODE
+            || (named.st_mode & 0o7777) != WRITE_FILE_MODE
+        {
+            return Err(AppError::WriteTargetChanged);
+        }
+        return Ok((name, File::from(fd), (held.st_dev, held.st_ino)));
+    }
+    Err(AppError::Io(std::io::Error::other(
+        "could not allocate write quarantine artifact",
+    )))
+}
+
 fn split_parent_and_name(relative_path: &Path) -> Result<(PathBuf, OsString), AppError> {
     let Some(name) = relative_path.file_name() else {
         return Err(path_rejected(relative_path.to_string_lossy().as_ref()));
@@ -2462,6 +2689,182 @@ fn create_directory_result(anchored: &AnchoredPath, dry_run: bool) -> CreateDire
         mode: "0700".to_owned(),
         max_response_bytes: MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
     }
+}
+
+fn write_file_result(
+    dry_run: bool,
+    size_bytes: usize,
+    disposition: WriteFileDisposition,
+) -> WriteFileResult {
+    WriteFileResult {
+        dry_run,
+        size_bytes,
+        disposition,
+        recovery_artifact_retained: !dry_run && disposition == WriteFileDisposition::Replace,
+        mode: "0600".to_owned(),
+        max_file_bytes: WritePolicy::default().max_write_bytes(),
+        max_response_bytes: MAX_WRITE_FILE_RESPONSE_BYTES,
+    }
+}
+
+fn prepare_write_file(
+    anchored: AnchoredPath,
+    content: Vec<u8>,
+    dry_run: bool,
+) -> Result<PreparedWriteFileMutation, AppError> {
+    let started = Instant::now();
+    WritePolicy::default()
+        .validate_payload_size(content.len())
+        .map_err(write_policy_error_to_app_error)?;
+    let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
+    let root_fd = open_root_directory(&anchored.root_path)?;
+    let root_metadata = descriptor_fs::fstat(&root_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(root_metadata.st_mode).is_dir() {
+        return Err(path_rejected(
+            anchored.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+
+    let mut normalized_components = Vec::new();
+    for component in anchored.relative_path.components() {
+        let Component::Normal(component) = component else {
+            return Err(path_rejected(
+                anchored.display_path.to_string_lossy().as_ref(),
+            ));
+        };
+        normalized_components.push(component.as_bytes());
+    }
+
+    let parent_fd = open_mutation_parent_directory(root_fd, &parent_relative)?;
+    let parent_metadata = descriptor_fs::fstat(&parent_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(parent_metadata.st_mode).is_dir() {
+        return Err(AppError::WriteTargetChanged);
+    }
+    let (disposition, existing_target_fd, existing_identity, existing_size) =
+        match descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW) {
+            Err(rustix::io::Errno::NOENT) => (WriteFileDisposition::Create, None, None, None),
+            Ok(metadata) => {
+                let file_type = FileType::from_raw_mode(metadata.st_mode);
+                if file_type.is_symlink() {
+                    return Err(path_rejected(
+                        anchored.display_path.to_string_lossy().as_ref(),
+                    ));
+                }
+                if !file_type.is_file() {
+                    return Err(AppError::UnsupportedPathType);
+                }
+                let initial_identity = write_file_existing_identity(&metadata)?;
+                let existing_size = initial_identity.size;
+                if existing_size > WritePolicy::default().max_write_bytes() as u64 {
+                    return Err(AppError::WriteTargetChanged);
+                }
+                let target_fd = descriptor_fs::openat(
+                    &parent_fd,
+                    &file_name,
+                    OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| {
+                    if error == rustix::io::Errno::NOENT {
+                        AppError::WriteTargetChanged
+                    } else {
+                        descriptor_error(error)
+                    }
+                })?;
+                let held_metadata = descriptor_fs::fstat(&target_fd).map_err(descriptor_error)?;
+                let held_identity = write_file_existing_identity(&held_metadata)?;
+                if held_identity != initial_identity {
+                    return Err(AppError::WriteTargetChanged);
+                }
+                (
+                    WriteFileDisposition::Replace,
+                    Some(target_fd),
+                    Some(held_identity),
+                    Some(existing_size),
+                )
+            }
+            Err(error) => return Err(descriptor_error(error)),
+        };
+
+    let grant_target = WriteFileGrantTarget::from_normalized_components(
+        root_metadata.st_dev,
+        root_metadata.st_ino,
+        normalized_components,
+        &content,
+        disposition,
+        existing_identity,
+    )
+    .map_err(|_| {
+        AppError::Io(std::io::Error::other(
+            "write file authorization target is invalid",
+        ))
+    })?;
+
+    Ok(PreparedWriteFileMutation {
+        result: write_file_result(dry_run, content.len(), disposition),
+        parent_fd,
+        file_name,
+        content,
+        disposition,
+        existing_target_fd,
+        existing_identity,
+        existing_size,
+        grant_target,
+        started,
+    })
+}
+
+fn write_file_identity_and_contract_match(
+    metadata: &descriptor_fs::Stat,
+    expected_device: u64,
+    expected_inode: u64,
+    expected_size: usize,
+) -> bool {
+    FileType::from_raw_mode(metadata.st_mode).is_file()
+        && metadata.st_dev == expected_device
+        && metadata.st_ino == expected_inode
+        && metadata.st_nlink == 1
+        && (metadata.st_mode & 0o7777) == WRITE_FILE_MODE
+        && u64::try_from(metadata.st_size).ok() == Some(expected_size as u64)
+}
+
+fn normalized_link_count<T: Into<u64>>(link_count: T) -> u64 {
+    link_count.into()
+}
+
+fn write_file_existing_identity(
+    metadata: &descriptor_fs::Stat,
+) -> Result<WriteFileExistingIdentity, AppError> {
+    if !FileType::from_raw_mode(metadata.st_mode).is_file() {
+        return Err(AppError::WriteTargetChanged);
+    }
+    WriteFileExistingIdentity::new(
+        metadata.st_dev,
+        metadata.st_ino,
+        u64::try_from(metadata.st_size).map_err(|_| AppError::WriteTargetChanged)?,
+        metadata.st_ctime,
+        i64::try_from(metadata.st_ctime_nsec).map_err(|_| AppError::WriteTargetChanged)?,
+        normalized_link_count(metadata.st_nlink),
+    )
+    .map_err(|_| AppError::WriteTargetChanged)
+}
+
+fn write_file_existing_identity_matches(
+    metadata: &descriptor_fs::Stat,
+    expected: WriteFileExistingIdentity,
+) -> bool {
+    write_file_existing_identity(metadata).ok() == Some(expected)
+}
+
+fn write_file_existing_object_matches(
+    metadata: &descriptor_fs::Stat,
+    expected: WriteFileExistingIdentity,
+) -> bool {
+    FileType::from_raw_mode(metadata.st_mode).is_file()
+        && metadata.st_dev == expected.device
+        && metadata.st_ino == expected.inode
+        && u64::try_from(metadata.st_size).ok() == Some(expected.size)
+        && normalized_link_count(metadata.st_nlink) == expected.link_count
 }
 
 fn prepare_create_directory(
@@ -2516,241 +2919,6 @@ fn prepare_create_directory(
         grant_target,
         started,
     })
-}
-
-fn prepare_write_file(
-    anchored: AnchoredPath,
-    content: Vec<u8>,
-    dry_run: bool,
-) -> Result<PreparedWriteFileMutation, AppError> {
-    let started = Instant::now();
-    let bytes = content.len();
-    let digest = content_sha256(&content);
-    let target = prepare_write_file_target(anchored, digest)?;
-    let message = if dry_run {
-        "DRY-RUN".to_owned()
-    } else {
-        format!("Wrote {bytes} bytes")
-    };
-    Ok(PreparedWriteFileMutation {
-        result: WriteFileResult {
-            dry_run,
-            bytes,
-            message,
-        },
-        _root_fd: target.root_fd,
-        parent_fd: target.parent_fd,
-        file_name: target.file_name,
-        content,
-        publication: target.publication,
-        existing: target.existing,
-        grant_target: target.grant_target,
-        started,
-    })
-}
-
-fn prepare_write_file_target(
-    anchored: AnchoredPath,
-    content_digest: [u8; 32],
-) -> Result<PreparedWriteFileTarget, AppError> {
-    let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
-    let root_fd = open_root_directory(&anchored.root_path)?;
-    let root_metadata = descriptor_fs::fstat(&root_fd).map_err(descriptor_error)?;
-    if !FileType::from_raw_mode(root_metadata.st_mode).is_dir() {
-        return Err(path_rejected(
-            anchored.display_path.to_string_lossy().as_ref(),
-        ));
-    }
-    let parent_fd = open_mutation_parent_directory(
-        root_fd.try_clone().map_err(AppError::Io)?,
-        &parent_relative,
-    )?;
-
-    let (publication, existing) =
-        match descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW) {
-            Err(rustix::io::Errno::NOENT) => (WriteFilePublication::Create, None),
-            Ok(metadata) => {
-                let file_type = FileType::from_raw_mode(metadata.st_mode);
-                if file_type.is_symlink() {
-                    return Err(path_rejected(
-                        anchored.display_path.to_string_lossy().as_ref(),
-                    ));
-                }
-                if !file_type.is_file() {
-                    return Err(AppError::UnsupportedPathType);
-                }
-                let descriptor = descriptor_fs::openat(
-                    &parent_fd,
-                    &file_name,
-                    OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )
-                .map_err(|error| match error {
-                    rustix::io::Errno::NOENT => AppError::PathNotFound,
-                    rustix::io::Errno::LOOP => {
-                        path_rejected(anchored.display_path.to_string_lossy().as_ref())
-                    }
-                    _ => descriptor_error(error),
-                })?;
-                let opened = descriptor_fs::fstat(&descriptor).map_err(descriptor_error)?;
-                if !regular_identity_matches(&opened, metadata.st_dev, metadata.st_ino) {
-                    return Err(AppError::Io(std::io::Error::other(
-                        "write replacement identity changed during classification",
-                    )));
-                }
-                let size = u64::try_from(opened.st_size).map_err(|_| {
-                    AppError::Io(std::io::Error::other(
-                        "write replacement reported an invalid size",
-                    ))
-                })?;
-                (
-                    WriteFilePublication::Replace,
-                    Some(HeldWriteDestination {
-                        descriptor,
-                        device: opened.st_dev,
-                        inode: opened.st_ino,
-                        mode: opened.st_mode & 0o7777,
-                        size,
-                    }),
-                )
-            }
-            Err(error) => return Err(descriptor_error(error)),
-        };
-
-    let mut normalized_components = Vec::new();
-    for component in anchored.relative_path.components() {
-        let Component::Normal(component) = component else {
-            return Err(path_rejected(
-                anchored.display_path.to_string_lossy().as_ref(),
-            ));
-        };
-        normalized_components.push(component.as_bytes());
-    }
-    let grant_target = WriteFileGrantTarget::from_normalized_components(
-        root_metadata.st_dev,
-        root_metadata.st_ino,
-        normalized_components,
-        content_digest,
-        publication,
-    )
-    .map_err(|_| {
-        AppError::Io(std::io::Error::other(
-            "write authorization target is invalid",
-        ))
-    })?;
-
-    Ok(PreparedWriteFileTarget {
-        root_fd,
-        parent_fd,
-        file_name,
-        publication,
-        existing,
-        grant_target,
-    })
-}
-
-fn regular_identity_matches(
-    metadata: &descriptor_fs::Stat,
-    expected_device: u64,
-    expected_inode: u64,
-) -> bool {
-    FileType::from_raw_mode(metadata.st_mode).is_file()
-        && metadata.st_dev == expected_device
-        && metadata.st_ino == expected_inode
-}
-
-fn write_file_identity_and_contract_match(
-    metadata: &descriptor_fs::Stat,
-    expected_device: u64,
-    expected_inode: u64,
-    expected_size: usize,
-) -> bool {
-    regular_identity_matches(metadata, expected_device, expected_inode)
-        && (metadata.st_mode & 0o7777) == WRITE_FILE_MODE
-        && u64::try_from(metadata.st_size).ok() == Some(expected_size as u64)
-}
-
-fn held_write_destination_matches(
-    metadata: &descriptor_fs::Stat,
-    expected: &HeldWriteDestination,
-) -> bool {
-    regular_identity_matches(metadata, expected.device, expected.inode)
-        && (metadata.st_mode & 0o7777) == expected.mode
-        && u64::try_from(metadata.st_size).ok() == Some(expected.size)
-}
-
-fn hash_exact_file(file: &mut File, expected_size: usize) -> Result<[u8; 32], AppError> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut reader = file.take((expected_size + 1) as u64);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1_024];
-    let mut bytes = 0_usize;
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        bytes = bytes.checked_add(read).ok_or_else(|| {
-            AppError::Io(std::io::Error::other("write staging byte count overflowed"))
-        })?;
-        if bytes > expected_size {
-            return Err(AppError::Io(std::io::Error::other(
-                "write staging size changed",
-            )));
-        }
-        hasher.update(&buffer[..read]);
-    }
-    if bytes != expected_size {
-        return Err(AppError::Io(std::io::Error::other(
-            "write staging size changed",
-        )));
-    }
-    Ok(hasher.finalize().into())
-}
-
-fn rollback_write_exchange_if_staged(
-    parent: &OwnedFd,
-    temp_name: &OsStr,
-    file_name: &OsStr,
-    staged_device: u64,
-    staged_inode: u64,
-    staged_size: usize,
-) {
-    let Ok(published) = descriptor_fs::statat(parent, file_name, AtFlags::SYMLINK_NOFOLLOW) else {
-        return;
-    };
-    if !write_file_identity_and_contract_match(&published, staged_device, staged_inode, staged_size)
-    {
-        return;
-    }
-    if descriptor_fs::statat(parent, temp_name, AtFlags::SYMLINK_NOFOLLOW).is_err() {
-        return;
-    }
-
-    // Exchange rollback is non-destructive: when publication placed the exact
-    // staged inode at the final name, swap it back regardless of which object
-    // was displaced. This restores a late foreign replacement instead of
-    // leaving authorized content published by a call that reports failure.
-    if descriptor_fs::renameat_with(parent, temp_name, parent, file_name, RenameFlags::EXCHANGE)
-        .is_ok()
-    {
-        let _ = descriptor_fs::fsync(parent);
-    }
-}
-
-fn unlink_exact_regular(
-    parent: &OwnedFd,
-    name: &OsStr,
-    expected: &HeldWriteDestination,
-) -> Result<(), AppError> {
-    let metadata =
-        descriptor_fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(descriptor_error)?;
-    if !held_write_destination_matches(&metadata, expected) {
-        return Err(AppError::Io(std::io::Error::other(
-            "write displaced identity changed",
-        )));
-    }
-    descriptor_fs::unlinkat(parent, name, AtFlags::empty()).map_err(descriptor_error)
 }
 
 fn copy_file_result(
@@ -2940,12 +3108,16 @@ pub struct CopyFileResult {
     pub max_response_bytes: usize,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteFileResult {
     pub dry_run: bool,
-    pub bytes: usize,
-    pub message: String,
+    pub size_bytes: usize,
+    pub disposition: WriteFileDisposition,
+    pub recovery_artifact_retained: bool,
+    pub mode: String,
+    pub max_file_bytes: usize,
+    pub max_response_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3033,15 +3205,11 @@ pub struct SearchTextResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::io::Write;
-    use std::os::unix::fs::{symlink, PermissionsExt};
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc, TryLockError,
-    };
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 
     use crate::audit::{AuditDecision, AuditMode};
-    use crate::write_file_grant::WriteFileGrantAuthority;
     use crate::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
@@ -3101,7 +3269,8 @@ mod tests {
         let empty_path = root.path().join("empty.bin");
         std::fs::write(&binary_path, [0x00, 0xff, 0x10, 0x80]).unwrap();
         std::fs::write(&empty_path, []).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let binary = tools
             .read_binary_file(binary_path.to_string_lossy().to_string())
@@ -3138,7 +3307,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("range.bin");
         std::fs::write(&path, [0x00, 0xff, 0x80, b'a', b'\n', 0x01, 0xfe]).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let range = tools
             .read_binary_range(path.to_string_lossy().to_string(), 2, 4)
@@ -3218,7 +3388,8 @@ mod tests {
             .unwrap()
             .set_len((MAX_BINARY_RANGE_FILE_BYTES + 1) as u64)
             .unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let range = tools
             .read_binary_range(
@@ -3258,7 +3429,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("changing.bin");
         std::fs::write(&path, b"12345678").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let anchored = tools.anchor(path.to_string_lossy().as_ref()).unwrap();
         let file = open_verified_regular_file(&anchored, MAX_BINARY_RANGE_FILE_BYTES).unwrap();
         std::fs::OpenOptions::new()
@@ -3279,7 +3451,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("range.txt");
         std::fs::write(&path, "aé🙂z").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let path = path.to_string_lossy().to_string();
 
         let first = tools
@@ -3343,7 +3516,8 @@ mod tests {
             .unwrap()
             .set_len((MAX_TEXT_RANGE_FILE_BYTES + 1) as u64)
             .unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         for path in [invalid, truncated] {
             assert!(matches!(
@@ -3403,7 +3577,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("private-range.txt");
         std::fs::write(&path, "x".repeat(MAX_TEXT_RANGE_BYTES)).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let result = tools
             .read_text_range(path.to_string_lossy().to_string(), 0, MAX_TEXT_RANGE_BYTES)
@@ -3435,7 +3610,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("changing.txt");
         std::fs::write(&path, b"12345678").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let anchored = tools.anchor(path.to_string_lossy().as_ref()).unwrap();
         let file = open_verified_regular_file(&anchored, MAX_TEXT_RANGE_FILE_BYTES).unwrap();
         std::fs::OpenOptions::new()
@@ -3454,7 +3630,8 @@ mod tests {
     #[test]
     fn sanitize_rejects_empty_relative_nul_and_parent_components() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         assert_rejected(tools.sanitize(""));
         assert_rejected(tools.sanitize("   "));
@@ -3470,7 +3647,8 @@ mod tests {
     fn sanitize_rejects_new_file_when_existing_parent_is_outside_safe_root() {
         let root = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = other.path().join("outside.txt");
 
         assert_rejected(tools.sanitize(target.to_string_lossy().as_ref()));
@@ -3479,7 +3657,8 @@ mod tests {
     #[test]
     fn sanitize_rejects_new_file_when_parent_does_not_exist() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("missing-parent").join("file.txt");
 
         assert_rejected(tools.sanitize(target.to_string_lossy().as_ref()));
@@ -3488,7 +3667,8 @@ mod tests {
     #[test]
     fn sanitize_allows_new_file_under_existing_safe_root_parent() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("new-file.txt");
 
         let sanitized = tools.sanitize(target.to_string_lossy().as_ref()).unwrap();
@@ -3499,9 +3679,39 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_rejects_symlink_aliases_into_write_quarantine() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        let artifact = quarantine.join(format!(
+            "{WRITE_FILE_ARTIFACT_PREFIX}44444444-4444-4444-4444-444444444444"
+        ));
+        let alias = root.path().join("recovery-alias");
+        let dangling_alias = root.path().join("future-recovery-alias");
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::write(&artifact, "private-recovery-content").unwrap();
+        std::os::unix::fs::symlink(&quarantine, &alias).unwrap();
+        std::os::unix::fs::symlink(quarantine.join("future-artifact"), &dangling_alias).unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+
+        assert_rejected(
+            tools.sanitize(
+                alias
+                    .join(artifact.file_name().unwrap())
+                    .to_string_lossy()
+                    .as_ref(),
+            ),
+        );
+        assert_rejected(tools.sanitize(alias.join("future-artifact").to_string_lossy().as_ref()));
+        assert!(!dangling_alias.exists());
+        assert_rejected(tools.sanitize(dangling_alias.to_string_lossy().as_ref()));
+    }
+
+    #[test]
     fn write_file_audit_defaults_to_dry_run_without_sensitive_fields() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let event = tools.audit_write_decision(1_725_000_000, 14, None);
 
         assert_eq!(event.timestamp_unix_seconds, 1_725_000_000);
@@ -3525,13 +3735,34 @@ mod tests {
     #[test]
     fn write_file_audit_tracks_explicit_mutation_without_runtime_surface_change() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let event = tools.audit_write_decision(2, 38, Some(false));
 
         assert_eq!(event.mode, AuditMode::Mutating);
         assert_eq!(event.decision, AuditDecision::Allowed);
         assert_eq!(event.reason_code, "explicit_mutation");
         assert_eq!(event.metadata["content_bytes"], 38);
+    }
+
+    #[test]
+    fn write_file_response_preview_uses_the_exact_worst_case_shape() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let preview = tools.write_file_response_preview(DEFAULT_MAX_WRITE_BYTES);
+
+        assert!(!preview.dry_run);
+        assert_eq!(preview.size_bytes, DEFAULT_MAX_WRITE_BYTES);
+        assert_eq!(preview.disposition, WriteFileDisposition::Replace);
+        assert!(!preview.recovery_artifact_retained);
+        assert_eq!(preview.mode, "0600");
+        assert_eq!(preview.max_file_bytes, DEFAULT_MAX_WRITE_BYTES);
+        assert_eq!(preview.max_response_bytes, MAX_WRITE_FILE_RESPONSE_BYTES);
+        assert!(serde_json::to_value(preview)
+            .unwrap()
+            .get("recoveryArtifactRetained")
+            .is_some_and(serde_json::Value::is_boolean));
     }
 
     #[test]
@@ -3557,7 +3788,8 @@ mod tests {
         let other_file = other.path().join("outside.txt");
         tokio::fs::write(&other_file, "outside").await.unwrap();
 
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let result = tools
             .read_file(other_file.to_string_lossy().to_string())
             .await;
@@ -3566,12 +3798,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_preview_rejects_outside_root() {
+    async fn write_file_dry_run_rejects_outside_root() {
         let root = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let target = other.path().join("outside.txt");
 
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let result = tools
             .write_file(
                 target.to_string_lossy().to_string(),
@@ -3585,11 +3818,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_preview_rejects_missing_parent() {
+    async fn write_file_dry_run_rejects_missing_parent() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("missing-parent").join("file.txt");
 
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let result = tools
             .write_file(
                 target.to_string_lossy().to_string(),
@@ -3609,7 +3843,8 @@ mod tests {
         let target = outside.path().join("outside.txt");
         let oversized_content = "x".repeat(DEFAULT_MAX_WRITE_BYTES + 1);
 
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let result = tools
             .write_file(
                 target.to_string_lossy().to_string(),
@@ -3632,7 +3867,8 @@ mod tests {
     #[tokio::test]
     async fn write_file_rejects_oversized_explicit_mutation_without_creating_file() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("oversized.txt");
         let oversized_content = "x".repeat(DEFAULT_MAX_WRITE_BYTES + 1);
 
@@ -3658,7 +3894,8 @@ mod tests {
     #[tokio::test]
     async fn write_file_defaults_to_dry_run_without_creating_file() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("default_dry_run.txt");
 
         let result = tools
@@ -3670,144 +3907,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, "DRY-RUN");
+        assert!(result.dry_run);
+        assert_eq!(result.size_bytes, "should not be written".len());
+        assert_eq!(result.disposition, WriteFileDisposition::Create);
+        assert!(!result.recovery_artifact_retained);
+        assert_eq!(result.mode, "0600");
         assert!(!target.exists());
-    }
-
-    #[test]
-    fn armed_temp_file_cleanup_removes_file_on_drop() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("armed.tmp");
-        std::fs::write(&path, "temporary").unwrap();
-        let root_fd = open_root_directory(root.path()).unwrap();
-        let metadata =
-            descriptor_fs::statat(&root_fd, "armed.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
-
-        {
-            let mut cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from("armed.tmp"));
-            cleanup.set_expected_identity(metadata.st_dev, metadata.st_ino);
-        }
-
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn disarmed_temp_file_cleanup_preserves_file() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("disarmed.tmp");
-        std::fs::write(&path, "temporary").unwrap();
-        let root_fd = open_root_directory(root.path()).unwrap();
-
-        {
-            let mut cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from("disarmed.tmp"));
-            cleanup.disarm();
-        }
-
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn temp_file_cleanup_without_captured_identity_preserves_file() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("unknown.tmp");
-        std::fs::write(&path, "foreign").unwrap();
-        let root_fd = open_root_directory(root.path()).unwrap();
-
-        {
-            let _cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from("unknown.tmp"));
-        }
-
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "foreign");
-    }
-
-    #[test]
-    fn temp_file_cleanup_preserves_replacement_identity() {
-        let root = tempfile::tempdir().unwrap();
-        let original = root.path().join("staged.tmp");
-        let parked = root.path().join("staged.parked");
-        std::fs::write(&original, "operation-owned").unwrap();
-        let root_fd = open_root_directory(root.path()).unwrap();
-        let metadata =
-            descriptor_fs::statat(&root_fd, "staged.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
-
-        {
-            let mut cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from("staged.tmp"));
-            cleanup.set_expected_identity(metadata.st_dev, metadata.st_ino);
-            std::fs::rename(&original, &parked).unwrap();
-            std::fs::write(&original, "foreign").unwrap();
-        }
-
-        assert_eq!(std::fs::read_to_string(original).unwrap(), "foreign");
-        assert_eq!(std::fs::read_to_string(parked).unwrap(), "operation-owned");
-    }
-
-    #[test]
-    fn temp_file_cleanup_preserves_foreign_symlink_directory_and_fifo() {
-        let root = tempfile::tempdir().unwrap();
-        let root_fd = open_root_directory(root.path()).unwrap();
-
-        let symlink_name = "foreign-link.tmp";
-        let symlink_path = root.path().join(symlink_name);
-        let symlink_parked = root.path().join("foreign-link.parked");
-        std::fs::write(&symlink_path, "operation-owned").unwrap();
-        let symlink_metadata =
-            descriptor_fs::statat(&root_fd, symlink_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
-        {
-            let mut cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from(symlink_name));
-            cleanup.set_expected_identity(symlink_metadata.st_dev, symlink_metadata.st_ino);
-            std::fs::rename(&symlink_path, &symlink_parked).unwrap();
-            symlink(&symlink_parked, &symlink_path).unwrap();
-        }
-        assert!(std::fs::symlink_metadata(&symlink_path)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        assert_eq!(
-            std::fs::read_to_string(&symlink_parked).unwrap(),
-            "operation-owned"
-        );
-
-        let directory_name = "foreign-directory.tmp";
-        let directory_path = root.path().join(directory_name);
-        let directory_parked = root.path().join("foreign-directory.parked");
-        std::fs::write(&directory_path, "operation-owned").unwrap();
-        let directory_metadata =
-            descriptor_fs::statat(&root_fd, directory_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
-        {
-            let mut cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from(directory_name));
-            cleanup.set_expected_identity(directory_metadata.st_dev, directory_metadata.st_ino);
-            std::fs::rename(&directory_path, &directory_parked).unwrap();
-            std::fs::create_dir(&directory_path).unwrap();
-        }
-        assert!(std::fs::symlink_metadata(&directory_path).unwrap().is_dir());
-        assert_eq!(
-            std::fs::read_to_string(&directory_parked).unwrap(),
-            "operation-owned"
-        );
-
-        let fifo_name = "foreign-fifo.tmp";
-        let fifo_path = root.path().join(fifo_name);
-        let fifo_parked = root.path().join("foreign-fifo.parked");
-        std::fs::write(&fifo_path, "operation-owned").unwrap();
-        let fifo_metadata =
-            descriptor_fs::statat(&root_fd, fifo_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
-        {
-            let mut cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from(fifo_name));
-            cleanup.set_expected_identity(fifo_metadata.st_dev, fifo_metadata.st_ino);
-            std::fs::rename(&fifo_path, &fifo_parked).unwrap();
-            descriptor_fs::mkfifoat(&root_fd, fifo_name, Mode::RUSR | Mode::WUSR).unwrap();
-        }
-        let fifo_after =
-            descriptor_fs::statat(&root_fd, fifo_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
-        assert!(FileType::from_raw_mode(fifo_after.st_mode).is_fifo());
-        assert_eq!(
-            std::fs::read_to_string(&fifo_parked).unwrap(),
-            "operation-owned"
-        );
     }
 
     #[test]
@@ -3865,9 +3970,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_write_file_api_rejects_unauthorized_mutation() {
+    async fn public_write_file_requires_transport_authorization_for_mutation() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("explicit_write.txt");
 
         let result = tools
@@ -3886,269 +3992,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_create_rejects_pre_authorization_posture_change_without_consuming() {
+    async fn write_file_atomically_replaces_only_the_prepared_regular_identity() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("pre-authorization-race.txt");
-        let prepared = tools
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("replace.txt");
+        std::fs::write(&target, "old-content").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = tools
             .prepare_write_file_mutation(
                 target.to_string_lossy().to_string(),
-                "authorized-content".to_owned(),
-            )
-            .await
-            .unwrap();
-        std::fs::write(&target, "foreign-content").unwrap();
-        let mut authorization_called = false;
-
-        let result = prepared.execute_authorized(|_| {
-            authorization_called = true;
-            Ok(())
-        });
-
-        assert!(matches!(
-            result,
-            Err(AuthorizedWriteFileError::Filesystem(
-                AppError::PathAlreadyExists
-            ))
-        ));
-        assert!(!authorization_called);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "foreign-content");
-        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".termux-mcp-write-file-")
-        }));
-    }
-
-    #[tokio::test]
-    async fn prepared_create_preserves_foreign_file_that_appears_after_authorization() {
-        let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("post-authorization-create-race.txt");
-        let prepared = tools
-            .prepare_write_file_mutation(
-                target.to_string_lossy().to_string(),
-                "authorized-content".to_owned(),
-            )
-            .await
-            .unwrap();
-
-        let result = prepared.execute_authorized(|_| {
-            std::fs::write(&target, "foreign-content").unwrap();
-            Ok(())
-        });
-
-        assert!(matches!(
-            result,
-            Err(AuthorizedWriteFileError::Filesystem(
-                AppError::PathAlreadyExists
-            ))
-        ));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "foreign-content");
-        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".termux-mcp-write-file-")
-        }));
-    }
-
-    #[tokio::test]
-    async fn prepared_replace_detects_mode_and_size_change_after_authorization() {
-        let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("post-authorization-replace-race.txt");
-        std::fs::write(&target, "captured-original").unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let prepared = tools
-            .prepare_write_file_mutation(
-                target.to_string_lossy().to_string(),
-                "authorized-replacement".to_owned(),
-            )
-            .await
-            .unwrap();
-
-        let result = prepared.execute_authorized(|_| {
-            std::fs::write(&target, "foreign-size-and-mode-change").unwrap();
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o666)).unwrap();
-            Ok(())
-        });
-
-        assert!(matches!(
-            result,
-            Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
-        ));
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "foreign-size-and-mode-change"
-        );
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
-            0o666
-        );
-        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".termux-mcp-write-file-")
-        }));
-    }
-
-    #[tokio::test]
-    async fn prepared_replace_preserves_swapped_foreign_identity_after_authorization() {
-        let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("replace-identity-race.txt");
-        let parked = root.path().join("replace-identity-race.parked");
-        std::fs::write(&target, "captured-original").unwrap();
-        let prepared = tools
-            .prepare_write_file_mutation(
-                target.to_string_lossy().to_string(),
-                "authorized-replacement".to_owned(),
-            )
-            .await
-            .unwrap();
-
-        let result = prepared.execute_authorized(|_| {
-            std::fs::rename(&target, &parked).unwrap();
-            std::fs::write(&target, "foreign-identity").unwrap();
-            Ok(())
-        });
-
-        assert!(matches!(
-            result,
-            Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
-        ));
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "foreign-identity"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&parked).unwrap(),
-            "captured-original"
-        );
-        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
-            !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".termux-mcp-write-file-")
-        }));
-    }
-
-    #[tokio::test]
-    async fn distinct_replace_grants_serialize_before_authorization_and_loser_is_reusable() {
-        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-
-        let root = tempfile::tempdir().unwrap();
-        let first_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let second_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("serialized-replacement.txt");
-        std::fs::write(&target, "captured-original").unwrap();
-        let first_content = "first-authorized-replacement";
-        let second_content = "second-authorized-replacement";
-        let first = first_tools
-            .prepare_write_file_mutation(
-                target.to_string_lossy().to_string(),
-                first_content.to_owned(),
-            )
-            .await
-            .unwrap();
-        let second = second_tools
-            .prepare_write_file_mutation(
-                target.to_string_lossy().to_string(),
-                second_content.to_owned(),
-            )
-            .await
-            .unwrap();
-        let authority =
-            WriteFileGrantAuthority::from_hex_key("test-key-1", TEST_KEY, "test-static-principal")
-                .unwrap();
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let now = unix_timestamp_seconds();
-        let first_token = authority
-            .issue_at(&session_id, &first.grant_target, now)
-            .unwrap();
-        let second_token = authority
-            .issue_at(&session_id, &second.grant_target, now)
-            .unwrap();
-        let second_authorized = Arc::new(AtomicBool::new(false));
-        let (first_entered_tx, first_entered_rx) = mpsc::channel();
-        let (release_first_tx, release_first_rx) = mpsc::channel();
-        let (second_started_tx, second_started_rx) = mpsc::channel();
-
-        let (first_result, second_result) = std::thread::scope(|scope| {
-            let first_authority = authority.clone();
-            let first_session = session_id.clone();
-            let first_token_for_worker = first_token.clone();
-            let first_handle = scope.spawn(move || {
-                first.execute_authorized(|grant_target| {
-                    first_entered_tx.send(()).unwrap();
-                    release_first_rx.recv().unwrap();
-                    first_authority.consume_at(
-                        Some(&first_token_for_worker),
-                        &first_session,
-                        grant_target,
-                        now,
-                    )
-                })
-            });
-
-            first_entered_rx.recv().unwrap();
-            assert!(matches!(
-                WRITE_FILE_MUTATION_LOCK.try_lock(),
-                Err(TryLockError::WouldBlock)
-            ));
-
-            let second_authority = authority.clone();
-            let second_session = session_id.clone();
-            let second_token_for_worker = second_token.clone();
-            let second_authorized_for_worker = Arc::clone(&second_authorized);
-            let second_handle = scope.spawn(move || {
-                second_started_tx.send(()).unwrap();
-                second.execute_authorized(|grant_target| {
-                    second_authorized_for_worker.store(true, Ordering::SeqCst);
-                    second_authority.consume_at(
-                        Some(&second_token_for_worker),
-                        &second_session,
-                        grant_target,
-                        now,
-                    )
-                })
-            });
-
-            second_started_rx.recv().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(!second_authorized.load(Ordering::SeqCst));
-            release_first_tx.send(()).unwrap();
-
-            (first_handle.join().unwrap(), second_handle.join().unwrap())
-        });
-
-        assert!(first_result.is_ok());
-        assert!(matches!(
-            second_result,
-            Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
-        ));
-        assert!(!second_authorized.load(Ordering::SeqCst));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), first_content);
-
-        let retry = second_tools
-            .prepare_write_file_mutation(
-                target.to_string_lossy().to_string(),
-                second_content.to_owned(),
+                "new-content".to_owned(),
             )
             .await
             .unwrap()
-            .execute_authorized(|grant_target| {
-                authority.consume_at(Some(&second_token), &session_id, grant_target, now)
-            });
-        assert!(retry.is_ok());
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), second_content);
+            .execute_authorized(|_| Ok(()));
+        let Ok(result) = result else {
+            panic!("authorized replacement unexpectedly failed");
+        };
+
+        assert_eq!(result.disposition, WriteFileDisposition::Replace);
+        assert!(result.recovery_artifact_retained);
+        assert!(!result.dry_run);
+        assert_eq!(result.size_bytes, "new-content".len());
+        assert_eq!(result.mode, "0600");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new-content");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            WRITE_FILE_MODE
+        );
         assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
             !entry
                 .unwrap()
@@ -4156,43 +4029,169 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".termux-mcp-write-file-")
         }));
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        assert!(quarantine.is_dir());
+        assert_eq!(
+            std::fs::metadata(&quarantine).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let artifacts = std::fs::read_dir(quarantine)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0]
+            .file_name()
+            .to_string_lossy()
+            .starts_with(WRITE_FILE_ARTIFACT_PREFIX));
+        assert_eq!(
+            std::fs::read_to_string(artifacts[0].path()).unwrap(),
+            "old-content"
+        );
+        assert_eq!(
+            artifacts[0].metadata().unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 
     #[tokio::test]
-    async fn late_foreign_replace_is_restored_when_exchange_verification_fails() {
+    async fn replacement_capture_race_preserves_substituted_foreign_inode_without_rollback() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("late-replace-race.txt");
-        let parked = root.path().join("late-replace-race.parked");
-        std::fs::write(&target, "captured-original").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("replace.txt");
+        let prepared_old = root.path().join("replace.prepared-old");
+        std::fs::write(&target, "prepared-old").unwrap();
         let prepared = tools
             .prepare_write_file_mutation(
                 target.to_string_lossy().to_string(),
-                "authorized-replacement".to_owned(),
+                "authorized-new".to_owned(),
             )
             .await
             .unwrap();
 
-        let result = prepared.execute_authorized_with_publication_hook(
+        let result = prepared.execute_authorized_with_capture_hook(
             |_| Ok(()),
-            |_, _, _| {
-                std::fs::rename(&target, &parked).unwrap();
-                std::fs::write(&target, "late-foreign-replacement").unwrap();
+            || {
+                std::fs::rename(&target, &prepared_old).unwrap();
+                std::fs::write(&target, "foreign-after-verification").unwrap();
             },
         );
 
         assert!(matches!(
             result,
-            Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteTargetChanged
+            ))
+        ));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "authorized-new");
+        assert_eq!(
+            std::fs::read_to_string(prepared_old).unwrap(),
+            "prepared-old"
+        );
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        let entries = std::fs::read_dir(quarantine)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(entries[0].path()).unwrap(),
+            "foreign-after-verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_grant_stays_consumed_after_post_authorization_filesystem_failure() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("replace.txt");
+        let prepared_old = root.path().join("replace.prepared-old");
+        std::fs::write(&target, "prepared-old").unwrap();
+        let prepared = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                "authorized-new".to_owned(),
+            )
+            .await
+            .unwrap();
+        let binding = prepared.grant_target.clone();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let authority = crate::write_file_grant::WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let token = authority
+            .issue_at(&session_id, &binding, unix_timestamp_seconds())
+            .unwrap();
+
+        let result = prepared.execute_authorized_with_capture_hook(
+            |grant_target| {
+                authority.consume_at(
+                    Some(&token),
+                    &session_id,
+                    grant_target,
+                    unix_timestamp_seconds(),
+                )
+            },
+            || {
+                std::fs::rename(&target, &prepared_old).unwrap();
+                std::fs::write(&target, "foreign-after-verification").unwrap();
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteTargetChanged
+            ))
         ));
         assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "late-foreign-replacement"
+            authority
+                .consume_at(
+                    Some(&token),
+                    &session_id,
+                    &binding,
+                    unix_timestamp_seconds(),
+                )
+                .unwrap_err(),
+            WriteFileGrantError::Replayed
         );
-        assert_eq!(
-            std::fs::read_to_string(&parked).unwrap(),
-            "captured-original"
-        );
+    }
+
+    #[tokio::test]
+    async fn prepared_write_rejects_target_exchange_without_deleting_either_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("replace.txt");
+        let parked = root.path().join("replace.parked");
+        std::fs::write(&target, "prepared-old").unwrap();
+        let prepared = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                "authorized-new".to_owned(),
+            )
+            .await
+            .unwrap();
+        std::fs::rename(&target, &parked).unwrap();
+        std::fs::write(&target, "foreign-current").unwrap();
+
+        let result = prepared.execute_authorized(|_| Ok(()));
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteTargetChanged
+            ))
+        ));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "foreign-current");
+        assert_eq!(std::fs::read_to_string(&parked).unwrap(), "prepared-old");
         assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
             !entry
                 .unwrap()
@@ -4200,12 +4199,472 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".termux-mcp-write-file-")
         }));
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        let artifacts = std::fs::read_dir(quarantine)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(artifacts[0].path()).unwrap(),
+            "authorized-new"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_file_rejects_hard_linked_target_without_modifying_any_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = root.path().join("linked.txt");
+        let outside_alias = outside.path().join("outside-alias.txt");
+        std::fs::write(&target, "shared-content").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::hard_link(&target, &outside_alias).unwrap();
+        let target_before = std::fs::metadata(&target).unwrap();
+        let alias_before = std::fs::metadata(&outside_alias).unwrap();
+
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let result = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                "authorized-new".to_owned(),
+            )
+            .await;
+
+        assert!(matches!(result, Err(AppError::WriteTargetChanged)));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "shared-content");
+        assert_eq!(
+            std::fs::read_to_string(&outside_alias).unwrap(),
+            "shared-content"
+        );
+        let target_after = std::fs::metadata(&target).unwrap();
+        let alias_after = std::fs::metadata(&outside_alias).unwrap();
+        assert_eq!(target_after.ino(), target_before.ino());
+        assert_eq!(alias_after.ino(), alias_before.ino());
+        assert_eq!(target_after.ino(), alias_after.ino());
+        assert_eq!(target_after.nlink(), 2);
+        assert_eq!(target_after.permissions().mode() & 0o777, 0o640);
+        assert!(!root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY).exists());
+    }
+
+    #[tokio::test]
+    async fn quarantine_count_capacity_survives_restart_and_precedes_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for index in 0..MAX_WRITE_FILE_QUARANTINE_ARTIFACTS {
+            std::fs::write(
+                quarantine.join(format!(
+                    "{WRITE_FILE_ARTIFACT_PREFIX}00000000-0000-0000-0000-{index:012x}"
+                )),
+                format!("preserved-{index}"),
+            )
+            .unwrap();
+        }
+
+        // A newly constructed tool instance models a process restart: capacity
+        // is derived from the fixed on-disk namespace, never process memory.
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("new.txt");
+        let prepared = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                "authorized-new".to_owned(),
+            )
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteQuarantineCapacityExceeded
+            ))
+        ));
+        assert!(!authorization_called.get());
+        assert!(!target.exists());
+        let artifacts = std::fs::read_dir(&quarantine)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(artifacts.len(), MAX_WRITE_FILE_QUARANTINE_ARTIFACTS);
+        for artifact in artifacts {
+            assert!(artifact
+                .file_name()
+                .to_string_lossy()
+                .starts_with(WRITE_FILE_ARTIFACT_PREFIX));
+        }
+    }
+
+    #[tokio::test]
+    async fn quarantine_oversized_artifact_fails_closed_before_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let retained = quarantine.join(format!(
+            "{WRITE_FILE_ARTIFACT_PREFIX}11111111-1111-1111-1111-111111111111"
+        ));
+        File::create(&retained)
+            .unwrap()
+            .set_len(DEFAULT_MAX_WRITE_BYTES as u64 + 1)
+            .unwrap();
+
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("new.txt");
+        let prepared = tools
+            .prepare_write_file_mutation(target.to_string_lossy().to_string(), "x".to_owned())
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteQuarantineCapacityExceeded
+            ))
+        ));
+        assert!(!authorization_called.get());
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::metadata(retained).unwrap().len(),
+            DEFAULT_MAX_WRITE_BYTES as u64 + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn quarantine_lock_contention_fails_before_authorization_without_blocking() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let held_quarantine = descriptor_fs::openat(
+            &root_fd,
+            WRITE_FILE_QUARANTINE_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        descriptor_fs::flock(&held_quarantine, FlockOperation::LockExclusive).unwrap();
+
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("new.txt");
+        let prepared = tools
+            .prepare_write_file_mutation(target.to_string_lossy().to_string(), "x".to_owned())
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+        let started = Instant::now();
+
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteQuarantineBusy
+            ))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!authorization_called.get());
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(quarantine).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn quarantine_unknown_entry_fails_closed_without_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let unknown = quarantine.join("unrecognized-entry");
+        std::fs::write(&unknown, "do-not-delete").unwrap();
+
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("new.txt");
+        let prepared = tools
+            .prepare_write_file_mutation(target.to_string_lossy().to_string(), "x".to_owned())
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::WriteQuarantineCapacityExceeded
+            ))
+        ));
+        assert!(!authorization_called.get());
+        assert_eq!(std::fs::read_to_string(unknown).unwrap(), "do-not-delete");
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn quarantine_symlink_and_directory_entries_fail_closed_without_cleanup() {
+        for (index, is_directory) in [(1_u128, true), (2_u128, false)] {
+            let root = tempfile::tempdir().unwrap();
+            let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+            std::fs::create_dir(&quarantine).unwrap();
+            std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let special = quarantine.join(format!(
+                "{WRITE_FILE_ARTIFACT_PREFIX}00000000-0000-0000-0000-{index:012x}"
+            ));
+            if is_directory {
+                std::fs::create_dir(&special).unwrap();
+            } else {
+                symlink("missing-target", &special).unwrap();
+            }
+            let root_fd = open_root_directory(root.path()).unwrap();
+
+            assert!(matches!(
+                preflight_write_quarantine_capacity(&root_fd, 1),
+                Err(AppError::WriteQuarantineCapacityExceeded)
+            ));
+            let metadata = std::fs::symlink_metadata(&special).unwrap();
+            assert_eq!(metadata.file_type().is_dir(), is_directory);
+            assert_eq!(metadata.file_type().is_symlink(), !is_directory);
+        }
+    }
+
+    #[test]
+    fn quarantine_hardlinked_entry_fails_closed_without_modifying_any_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let artifact = quarantine.join(format!(
+            "{WRITE_FILE_ARTIFACT_PREFIX}22222222-2222-2222-2222-222222222222"
+        ));
+        let alias = outside.path().join("artifact-alias");
+        std::fs::write(&artifact, "retained-private-content").unwrap();
+        std::fs::hard_link(&artifact, &alias).unwrap();
+        let before = std::fs::metadata(&artifact).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+
+        assert!(matches!(
+            preflight_write_quarantine_capacity(&root_fd, 1),
+            Err(AppError::WriteQuarantineCapacityExceeded)
+        ));
+
+        let artifact_after = std::fs::metadata(&artifact).unwrap();
+        let alias_after = std::fs::metadata(&alias).unwrap();
+        assert_eq!(artifact_after.ino(), before.ino());
+        assert_eq!(alias_after.ino(), before.ino());
+        assert_eq!(artifact_after.nlink(), 2);
+        assert_eq!(alias_after.nlink(), 2);
+        assert_eq!(
+            std::fs::read_to_string(&artifact).unwrap(),
+            "retained-private-content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&alias).unwrap(),
+            "retained-private-content"
+        );
+        assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn quarantine_accepts_only_canonical_uuid_artifact_names() {
+        assert!(is_canonical_write_artifact_name(
+            b".termux-mcp-write-artifact-12345678-1234-1234-1234-123456789abc"
+        ));
+        for invalid in [
+            b"unrecognized-entry".as_slice(),
+            b".termux-mcp-write-artifact-not-a-uuid".as_slice(),
+            b".termux-mcp-write-artifact-12345678123412341234123456789abc".as_slice(),
+            b".termux-mcp-write-artifact-12345678-1234-1234-1234-123456789ABC".as_slice(),
+            b".termux-mcp-write-artifact-\xff".as_slice(),
+        ] {
+            assert!(!is_canonical_write_artifact_name(invalid));
+        }
+    }
+
+    #[tokio::test]
+    async fn quarantine_namespace_is_hidden_from_direct_and_recursive_surfaces() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        let artifact = quarantine.join(format!(
+            "{WRITE_FILE_ARTIFACT_PREFIX}33333333-3333-3333-3333-333333333333"
+        ));
+        let visible = root.path().join("visible.txt");
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(&artifact, "quarantine-secret").unwrap();
+        std::fs::write(&visible, "public").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+
+        assert_rejected(tools.sanitize(quarantine.to_string_lossy().as_ref()));
+        assert_rejected(tools.sanitize(artifact.to_string_lossy().as_ref()));
+        assert!(matches!(
+            tools
+                .read_file(artifact.to_string_lossy().to_string())
+                .await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools
+                .path_metadata(quarantine.to_string_lossy().to_string())
+                .await,
+            Err(AppError::PathTraversal { .. })
+        ));
+
+        let listed = tools
+            .list_directory(root.path().to_string_lossy().to_string(), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(listed.entries.len(), 1);
+        assert_eq!(listed.entries[0].path, visible.to_string_lossy());
+
+        let found = tools
+            .find_paths(
+                root.path().to_string_lossy().to_string(),
+                "termux".to_owned(),
+                FindPathFilter::Any,
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(found.matches.is_empty());
+        assert_eq!(found.entries_examined, 1);
+
+        let searched = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "quarantine-secret".to_owned(),
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(searched.matches.is_empty());
+        assert_eq!(searched.entries_examined, 1);
+        assert_eq!(searched.files_scanned, 1);
+        assert_eq!(searched.bytes_scanned, "public".len());
+    }
+
+    #[tokio::test]
+    async fn mixed_case_quarantine_namespace_is_hidden_from_all_runtime_surfaces() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(".TeRmUx-McP-WrItE-qUaRaNtInE");
+        let secret = quarantine.join("secret.txt");
+        let visible = root.path().join("visible.txt");
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::write(&secret, "mixed-case-quarantine-secret").unwrap();
+        std::fs::write(&visible, "public").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+
+        assert_rejected(tools.sanitize(quarantine.to_string_lossy().as_ref()));
+        assert_rejected(tools.sanitize(secret.to_string_lossy().as_ref()));
+        assert!(matches!(
+            tools.read_file(secret.to_string_lossy().to_string()).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+
+        let listed = tools
+            .list_directory(root.path().to_string_lossy().to_string(), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(listed.entries.len(), 1);
+        assert_eq!(listed.entries[0].path, visible.to_string_lossy());
+
+        let found = tools
+            .find_paths(
+                root.path().to_string_lossy().to_string(),
+                "termux".to_owned(),
+                FindPathFilter::Any,
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(found.matches.is_empty());
+        assert_eq!(found.entries_examined, 1);
+
+        let searched = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "mixed-case-quarantine-secret".to_owned(),
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(searched.matches.is_empty());
+        assert_eq!(searched.entries_examined, 1);
+        assert_eq!(searched.files_scanned, 1);
+        assert_eq!(searched.bytes_scanned, "public".len());
+    }
+
+    #[test]
+    fn write_grant_target_requires_the_live_create_or_replace_disposition() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let absent = root.path().join("absent.txt");
+        let existing = root.path().join("existing.txt");
+        std::fs::write(&existing, "old").unwrap();
+
+        assert!(tools
+            .write_file_grant_target(
+                absent.to_string_lossy().as_ref(),
+                b"new",
+                WriteFileDisposition::Create,
+            )
+            .is_ok());
+        assert!(matches!(
+            tools.write_file_grant_target(
+                absent.to_string_lossy().as_ref(),
+                b"new",
+                WriteFileDisposition::Replace,
+            ),
+            Err(AppError::WriteTargetChanged)
+        ));
+        assert!(tools
+            .write_file_grant_target(
+                existing.to_string_lossy().as_ref(),
+                b"new",
+                WriteFileDisposition::Replace,
+            )
+            .is_ok());
+        assert!(matches!(
+            tools.write_file_grant_target(
+                existing.to_string_lossy().as_ref(),
+                b"new",
+                WriteFileDisposition::Create,
+            ),
+            Err(AppError::WriteTargetChanged)
+        ));
     }
 
     #[tokio::test]
     async fn create_directory_defaults_to_validated_dry_run() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("preview-directory");
 
         let result = tools
@@ -4224,15 +4683,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_directory_requires_explicit_false_and_publishes_mode_0700() {
+    async fn public_create_directory_requires_transport_authorization_for_mutation() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("created-directory");
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("unauthorized-directory");
 
         let result = tools
             .create_directory(target.to_string_lossy().to_string(), Some(false))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::CreateDirectoryMutationAuthorizationRequired)
+        ));
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn create_directory_internal_authorization_publishes_mode_0700() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("created-directory");
+
+        let result = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
             .await
-            .unwrap();
+            .unwrap()
+            .execute_authorized(|_| Ok(()));
+        let Ok(result) = result else {
+            panic!("authorized directory creation unexpectedly failed");
+        };
 
         assert!(!result.dry_run);
         assert_eq!(result.mode, "0700");
@@ -4245,7 +4727,8 @@ mod tests {
     #[tokio::test]
     async fn create_directory_rejects_existing_and_missing_parent_targets() {
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let existing_file = root.path().join("existing-file");
         let existing_directory = root.path().join("existing-directory");
         std::fs::write(&existing_file, "unchanged").unwrap();
@@ -4253,14 +4736,14 @@ mod tests {
 
         for target in [&existing_file, &existing_directory] {
             let result = tools
-                .create_directory(target.to_string_lossy().to_string(), Some(false))
+                .create_directory(target.to_string_lossy().to_string(), Some(true))
                 .await;
             assert!(matches!(result, Err(AppError::PathAlreadyExists)));
         }
 
         let missing_parent = root.path().join("missing-parent").join("child");
         let result = tools
-            .create_directory(missing_parent.to_string_lossy().to_string(), Some(false))
+            .create_directory(missing_parent.to_string_lossy().to_string(), Some(true))
             .await;
         assert!(matches!(result, Err(AppError::PathNotFound)));
         assert!(!missing_parent.exists());
@@ -4271,7 +4754,8 @@ mod tests {
     async fn create_directory_rejects_root_outside_and_symlink_boundaries() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let linked_parent = root.path().join("linked-parent");
         symlink(outside.path(), &linked_parent).unwrap();
         let linked_target = root.path().join("linked-target");
@@ -4284,7 +4768,7 @@ mod tests {
             linked_target,
         ] {
             let result = tools
-                .create_directory(target.to_string_lossy().to_string(), Some(false))
+                .create_directory(target.to_string_lossy().to_string(), Some(true))
                 .await;
             assert!(matches!(result, Err(AppError::PathTraversal { .. })));
         }
@@ -4299,7 +4783,8 @@ mod tests {
         const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let target = root.path().join("post-authorization-failure");
         let session_id = uuid::Uuid::new_v4().to_string();
         let authority = crate::create_directory_grant::CreateDirectoryGrantAuthority::from_hex_key(
@@ -4371,7 +4856,8 @@ mod tests {
         std::fs::write(&source, bytes).unwrap();
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o777)).unwrap();
         std::fs::write(&empty_source, []).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let dry_run = tools
             .copy_file(
@@ -4430,7 +4916,8 @@ mod tests {
         let oversized_destination = root.path().join("oversized-copy.bin");
         std::fs::write(&exact, vec![0x5a; MAX_COPY_FILE_BYTES]).unwrap();
         std::fs::write(&oversized, vec![0x5b; MAX_COPY_FILE_BYTES + 1]).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let result = tools
             .copy_file(
@@ -4471,7 +4958,8 @@ mod tests {
         std::fs::write(&source, "source").unwrap();
         std::fs::write(&existing, "unchanged").unwrap();
         std::fs::create_dir(&directory_source).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let missing_source = tools
             .copy_file(
@@ -4547,10 +5035,11 @@ mod tests {
         symlink(&source, &source_link).unwrap();
         symlink(outside.path().join("destination"), &destination_link).unwrap();
         symlink(outside.path(), &linked_parent).unwrap();
-        let tools = FileSystemTools::new(vec![
+        let tools = FileSystemTools::try_new(vec![
             first.path().to_path_buf(),
             second.path().to_path_buf(),
-        ]);
+        ])
+        .expect("test safe root must validate");
 
         for (copy_source, copy_destination) in [
             (
@@ -4705,7 +5194,8 @@ mod tests {
         let outside_source = outside.path().join("outside-source");
         std::fs::write(&source, b"inside-binary").unwrap();
         std::fs::write(&outside_source, b"outside-secret").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let anchored = tools.anchor(source.to_string_lossy().as_ref()).unwrap();
         let file = open_verified_regular_file(&anchored, MAX_BINARY_READ_BYTES).unwrap();
 
@@ -4726,7 +5216,8 @@ mod tests {
         let outside_source = outside.path().join("outside-source");
         std::fs::write(&source, b"inside-binary").unwrap();
         std::fs::write(&outside_source, b"outside-secret").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let anchored = tools.anchor(source.to_string_lossy().as_ref()).unwrap();
         let file = open_verified_regular_file(&anchored, MAX_BINARY_RANGE_FILE_BYTES).unwrap();
 
@@ -4748,7 +5239,8 @@ mod tests {
         let outside_source = outside.path().join("outside-source");
         std::fs::write(&source, b"inside-text").unwrap();
         std::fs::write(&outside_source, b"outside-secret").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let anchored = tools.anchor(source.to_string_lossy().as_ref()).unwrap();
         let file = open_verified_regular_file(&anchored, MAX_TEXT_RANGE_FILE_BYTES).unwrap();
 
@@ -4874,7 +5366,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let file_path = root.path().join("visible.txt");
         std::fs::write(&file_path, "five!").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let file = tools
             .path_metadata(file_path.to_string_lossy().to_string())
@@ -4926,7 +5419,8 @@ mod tests {
         let fifo_path = root.path().join("runtime.fifo");
         let root_fd = open_root_directory(root.path()).unwrap();
         descriptor_fs::mkfifoat(&root_fd, "runtime.fifo", Mode::RUSR | Mode::WUSR).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         assert!(matches!(
             tools
@@ -4975,7 +5469,8 @@ mod tests {
         std::fs::create_dir(&child).unwrap();
         std::fs::write(child.join("target.txt"), "safe").unwrap();
         std::fs::write(outside.path().join("target.txt"), "outside-secret").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let requested = child.join("target.txt");
         let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
         let root_fd = open_root_directory(&anchored.root_path).unwrap();
@@ -5001,7 +5496,8 @@ mod tests {
         std::fs::create_dir(&child).unwrap();
         std::fs::write(outside.path().join("secret.txt"), "outside-secret").unwrap();
         let requested = child.join("secret.txt");
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
         std::fs::rename(&child, &parked).unwrap();
@@ -5021,7 +5517,8 @@ mod tests {
         let child = root.path().join("child");
         let parked = root.path().join("parked");
         std::fs::create_dir(&child).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let requested = child.join("result.txt");
         let anchored = tools.anchor(requested.to_string_lossy().as_ref()).unwrap();
         let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path).unwrap();
@@ -5039,13 +5536,11 @@ mod tests {
             Mode::RUSR | Mode::WUSR,
         )
         .unwrap();
-        let mut cleanup = DescriptorTempFileCleanup::new(&parent_fd, temp_name.clone());
         let mut file = File::from(temp_fd);
         file.write_all(b"safe-write").unwrap();
         file.sync_all().unwrap();
         drop(file);
         descriptor_fs::renameat(&parent_fd, &temp_name, &parent_fd, &file_name).unwrap();
-        cleanup.disarm();
         descriptor_fs::fsync(&parent_fd).unwrap();
 
         assert!(!outside.path().join("result.txt").exists());
@@ -5084,7 +5579,8 @@ mod tests {
         .unwrap();
         std::fs::write(root.path().join("a.txt"), "prefix needle").unwrap();
         std::fs::write(nested.join("b.txt"), "needle nested").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let shallow = tools
             .search_text(
@@ -5147,7 +5643,8 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret.txt"), "needle outside").unwrap();
         symlink(outside.path(), root.path().join("escape")).unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         assert!(matches!(
             tools
@@ -5181,7 +5678,8 @@ mod tests {
         .unwrap();
         std::fs::write(root.path().join("binary.dat"), [0xff, 0xfe, 0xfd]).unwrap();
         std::fs::write(root.path().join("valid.txt"), "needle").unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let result = tools
             .search_text(
@@ -5206,7 +5704,8 @@ mod tests {
             "x ".repeat(MAX_SEARCH_MATCHES + 1),
         )
         .unwrap();
-        let match_tools = FileSystemTools::new(vec![match_root.path().to_path_buf()]);
+        let match_tools = FileSystemTools::try_new(vec![match_root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let matches = match_tools
             .search_text(
                 match_root.path().to_string_lossy().to_string(),
@@ -5226,7 +5725,8 @@ mod tests {
             )
             .unwrap();
         }
-        let byte_tools = FileSystemTools::new(vec![byte_root.path().to_path_buf()]);
+        let byte_tools = FileSystemTools::try_new(vec![byte_root.path().to_path_buf()])
+            .expect("test safe root must validate");
         let bytes = byte_tools
             .search_text(
                 byte_root.path().to_string_lossy().to_string(),
@@ -5252,7 +5752,8 @@ mod tests {
         for index in 0..MAX_SEARCH_MATCHES {
             std::fs::write(directory.join(format!("{index:03}.txt")), "needle").unwrap();
         }
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
 
         let result = tools
             .search_text(

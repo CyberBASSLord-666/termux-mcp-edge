@@ -13,7 +13,8 @@ async fn write_file_rejects_link_resolving_beyond_safe_root() {
     let link_path = root.path().join("peer-link.txt");
     std::os::unix::fs::symlink(&peer_file, &link_path).unwrap();
 
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let result = tools
         .write_file(
             link_path.to_string_lossy().to_string(),
@@ -36,7 +37,8 @@ async fn write_file_rejects_symlinked_parent_component() {
     let linked_parent = root.path().join("linked-parent");
     std::os::unix::fs::symlink(peer.path(), &linked_parent).unwrap();
     let peer_target = peer.path().join("escaped.txt");
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let result = tools
         .write_file(
