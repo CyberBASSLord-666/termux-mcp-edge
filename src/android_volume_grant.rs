@@ -17,15 +17,18 @@ use uuid::Uuid;
 
 use crate::{
     android_volume_control::AndroidVolumeStreamName,
-    request_grant_capability::RequestGrantCapability,
+    request_grant_capability::{
+        RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+    },
 };
 
 type HmacSha256 = Hmac<Sha256>;
 
+pub const ANDROID_VOLUME_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
 pub const ANDROID_VOLUME_GRANT_TTL_SECONDS: u64 = 60;
 pub const MAX_ANDROID_VOLUME_GRANT_LIFETIME_SECONDS: u64 = 120;
 pub const MAX_ANDROID_VOLUME_GRANT_FUTURE_SKEW_SECONDS: u64 = 5;
-pub const MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES: usize = 384;
+pub const MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
 pub const MAX_ANDROID_VOLUME_GRANT_KEY_ID_BYTES: usize = 32;
 pub const ANDROID_VOLUME_GRANT_KEY_BYTES: usize = 32;
 pub const ANDROID_VOLUME_GRANT_KEY_HEX_BYTES: usize = ANDROID_VOLUME_GRANT_KEY_BYTES * 2;
