@@ -60,6 +60,7 @@ Current controls:
 
 - `McpRouterBuilder` is the complete public construction surface and requires sealed authentication, validated request limits, a transport-security policy, a declared listener host, and safe roots;
 - builder construction rejects invalid listener text, non-loopback development declarations, empty/relative/filesystem-root/missing/non-directory/symlinked roots, uncompiled requested capabilities, and unavailable optional clients through typed non-sensitive errors;
+- builder completion rejects every filesystem or Android-volume mutation authority paired with unauthenticated localhost policy, preserving the static-bearer prerequisite for live mutation;
 - explicit unauthenticated development access independently requires request-time `ConnectInfo<SocketAddr>` proving an actual loopback peer, so declaration text, `Host`, `Origin`, and forwarding headers cannot create authority;
 - the package binary uses the same builder as embedders, while raw/legacy constructors and the command-enablement setter remain inaccessible downstream;
 - integration and compile probes cover the one public path and prove unauthorized POST, GET, DELETE, discovery, reads, sessions, grants, and mutations cannot cross authentication.
