@@ -516,7 +516,7 @@ def issue_fixture_grant(purpose: str) -> str:
         target = safe_path(os.environ.get("MCP__CAPABILITY__WRITE_FILE_TARGET", ""))
         content, content_identity = read_private_write_content()
         disposition = os.environ.get("MCP__CAPABILITY__WRITE_FILE_DISPOSITION", "")
-        payload_size = 64
+        payload_size = 65
     else:
         raise SystemExit(2)
     if not session_id or target is None or target == SAFE_ROOT or not target.parent.is_dir():
@@ -552,14 +552,17 @@ def issue_fixture_grant(purpose: str) -> str:
                 raise SystemExit(2)
     issued = int(time.time())
     grant_id = os.urandom(16)
+    timestamps = struct.pack(">QQ", issued, issued + 60)
     if purpose == "write_file":
         binding = write_grant_binding(
             grant_id, session_id, target, content, disposition
         )
+        payload = grant_id + bytes([2]) + binding + timestamps
     else:
         binding = grant_binding(purpose, session_id, target, content, disposition)
-    payload = grant_id + binding + struct.pack(">QQ", issued, issued + 60)
-    payload += bytes(payload_size - len(payload))
+        payload = grant_id + binding + timestamps
+        payload += bytes(payload_size - len(payload))
+        payload = payload[:64] + bytes([1]) + payload[65:]
     if len(payload) != payload_size:
         raise SystemExit(2)
     signed = f"v1.{CAPABILITY_KEY_ID}.{payload.hex()}"
@@ -591,7 +594,7 @@ def consume_fixture_grant(
         key = bytes.fromhex(CAPABILITY_KEY_HEX)
     except ValueError:
         return "capability_grant_malformed"
-    expected_payload_size = 130 if purpose == "create_directory" else 64
+    expected_payload_size = 130 if purpose == "create_directory" else 65
     if len(payload) != expected_payload_size or len(signature) != 32 or len(key) != 32:
         return "capability_grant_malformed"
     signed = f"{version}.{key_id}.{payload_hex}".encode()
@@ -599,8 +602,18 @@ def consume_fixture_grant(
     if not hmac.compare_digest(signature, expected):
         return "capability_grant_signature_invalid"
     grant_id = payload[:16]
-    binding = payload[16:48]
-    issued, expires = struct.unpack(">QQ", payload[48:64])
+    if purpose == "write_file":
+        capability = payload[16]
+        binding = payload[17:49]
+        issued, expires = struct.unpack(">QQ", payload[49:65])
+        expected_capability = 2
+    else:
+        capability = payload[64]
+        binding = payload[16:48]
+        issued, expires = struct.unpack(">QQ", payload[48:64])
+        expected_capability = 1
+    if capability != expected_capability:
+        return "capability_grant_binding_mismatch"
     current = int(time.time())
     try:
         expected_binding = (
