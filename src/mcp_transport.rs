@@ -1554,8 +1554,8 @@ pub(crate) fn binary_server_router_with_capability_authorities_and_options(
 /// request-resource protections.
 ///
 /// Public embeddings cannot enable the process-execution lane. Command
-/// diagnostics are initialized only by this package's crate-owned binary
-/// startup through crate-private constructors.
+/// diagnostics are initialized only by this package's crate-owned server startup,
+/// which prevents a downstream binary from substituting its own `current_exe`.
 #[rustfmt::skip]
 pub fn protected_router(
     protection: McpRouterProtection,
