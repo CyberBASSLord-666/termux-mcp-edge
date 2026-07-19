@@ -4013,9 +4013,10 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.path == requested_file.to_string_lossy()));
-        assert!(!listed.entries.iter().any(|entry| {
-            entry.path == root.join("replacement-only.txt").to_string_lossy()
-        }));
+        assert!(!listed
+            .entries
+            .iter()
+            .any(|entry| { entry.path == root.join("replacement-only.txt").to_string_lossy() }));
 
         let found = tools
             .find_paths(
@@ -4108,11 +4109,7 @@ mod tests {
         let copy_session = uuid::Uuid::new_v4().to_string();
         let write_session = uuid::Uuid::new_v4().to_string();
         let create_grant = create_authority
-            .issue_at(
-                &create_session,
-                &create_target,
-                unix_timestamp_seconds(),
-            )
+            .issue_at(&create_session, &create_target, unix_timestamp_seconds())
             .unwrap();
         let copy_grant = copy_authority.issue(&copy_session, &copy_target).unwrap();
         let write_grant = write_authority
