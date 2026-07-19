@@ -6,11 +6,11 @@ This runbook governs changes to the implemented `run_command_profile` registry. 
 
 | Identifier | Executable | Argv | Side effects |
 |---|---|---|---|
-| `server_version` | Current server | `--version` | None |
-| `server_help` | Current server | `--help` | None |
-| `execution_boundary` | Current server | `--self-check-command-boundary` | None |
+| `server_version` | Server-owned running image | `--version` | None |
+| `server_help` | Server-owned running image | `--help` | None |
+| `execution_boundary` | Server-owned running image | `--self-check-command-boundary` | None |
 
-These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits.
+These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Public embedding routers are command-disabled, while the package binary must consume an opaque primary-package authority that safe dependency builds cannot construct or acquire.
 
 ## Review record
 
@@ -27,7 +27,7 @@ A profile is eligible only when all answers are yes:
 5. Does the profile run in an already-anchored configured safe root?
 6. Is the inherited environment completely empty?
 7. Is stdin always null?
-8. Are timeout and independent stdout/stderr ceilings finite and conservative?
+8. Are timeout and independent stdout/stderr ceilings finite, conservative, and no greater than the immutable 5-second, 16 KiB stdout, and 4 KiB stderr supervisor maxima?
 9. Does any nonzero exit, timeout, overflow, invalid UTF-8, or cleanup failure suppress all output?
 10. Is the result useful without credentials, host paths, device identifiers, broad process state, or private file contents?
 11. Does cancellation retain cleanup ownership until the direct child is reaped?
@@ -55,11 +55,11 @@ Such work belongs in a separate threat-modeled capability gate. It must not be d
 
 Profile identifiers must be short stable ASCII-style names no longer than 64 bytes. They must not contain path syntax, whitespace, NUL, shell tokens, or command text. The public schema remains a one-property closed object whose enum is derived from the canonical registry.
 
-Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
+Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must also prove that downstream dependency code cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, forge `ServerCommandAuthority`, or acquire primary-package authority. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
 
 ## Executable and argv review
 
-The production client resolves only `std::env::current_exe()`. A proposal to launch any other executable is outside this gate.
+At initialization, the production client resolves `std::env::current_exe()` and requires an exact `termux-mcp-server` basename, a regular file, and executable mode. Any mismatch makes the effective command posture unavailable before spawn. The client then discards that reopenable installation path and launches only `/proc/self/exe`, binding execution to the already-running inode across later rename or replacement. A proposal to launch any other executable, or to weaken either check, is outside this gate.
 
 Argv must be a complete immutable slice. Reject shell metacharacters, command substitution, redirection, pipes, globs, path expansion, configuration-file arguments, dynamic verbosity, and any option that can load or execute external content. Tests must assert the exact argv observed by a fixture executable.
 
@@ -77,7 +77,7 @@ The native `execution_boundary` profile must continue to prove both properties w
 
 ## Bounds and cleanup review
 
-Every profile owns explicit timeout, stdout bytes, and stderr bytes. Four milliseconds is the implementation minimum because a real nonzero cleanup reserve is mandatory; production profiles use five seconds.
+Every profile owns explicit timeout, stdout bytes, and stderr bytes. Four milliseconds is the implementation minimum because a real nonzero cleanup reserve is mandatory; production profiles use five seconds. Independently, the supervisor rejects any timeout above 5 seconds, stdout limit above 16 KiB, or stderr limit above 4 KiB before spawning. Pipe buffers grow through checked reservation only for bytes actually read, never from the selected ceiling; allocation failure must return a stable wait failure and must never panic or attempt an attacker-selected capacity.
 
 The shared supervisor must preserve:
 
@@ -119,6 +119,8 @@ The exact PR head must also pass:
 - Security checks;
 - six Android artifact builds;
 - native ARM64 official-Termux execution of `termux_command_emulated_gate.sh`;
-- evidence validation against `command-emulated-evidence-schema-v1.json`.
+- evidence validation against `command-emulated-evidence-schema-v2.json`;
+- dependency-mode API compile failures, primary-authority non-acquisition, and runtime pre-spawn rejection for wrong executable identity, forged/raw input shapes, and every hard-limit maximum-plus-one case;
+- post-initialization path-replacement evidence proving `/proc/self/exe` continues to execute the already-running image.
 
 Do not substitute a long idle observation for these deterministic boundary tests. Physical observation, when release governance requires it for changed runtime inputs, is a separate release-qualification decision and does not replace command-policy evidence.
