@@ -27,7 +27,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/discovery/copy/hash, and dry-run-by-default mutation. Directory and file-write mutation are independently default-disabled and exact-request-grant gated. Their counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target/content digests, dispositions, timestamps, replay state, response IDs, staging names, or file identities. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Path-discovery counters retain neither starting/matched path, filename, query, kind, request ID, identity, nor raw error. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Whole-file, binary-range, and UTF-8-range read audit counters retain neither path, filename, offset, requested/returned size, raw/base64/text content, file size/identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
+Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/discovery/copy/hash, and dry-run-by-default mutation. Directory and file-write mutations are independently default-disabled and request-grant gated. Their counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target/content digests, create/replace disposition bindings, filesystem identities, timestamps, artifact names/counts/bytes, or replay state. A shared `capability_*` reason remains unambiguous when read with its `by_tool` bucket; the counter model never emits a grant fingerprint to correlate attempts. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Path-discovery counters retain neither starting/matched path, filename, query, kind, request ID, identity, nor raw error. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Whole-file, binary-range, and UTF-8-range read audit counters retain neither path, filename, offset, requested/returned size, raw/base64/text content, file size/identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -121,7 +121,7 @@ Audit counters must not store or serialize:
 - command arguments
 - environment variable names or values
 - hostnames, usernames, Android identifiers, or private device metadata
-- secrets, bearer values, passwords, API keys, capability keys/grants, principal fingerprints, sessions, JTIs, target digests, grant timestamps, or replay state
+- secrets, bearer values, passwords, API keys, capability keys/grants, principal fingerprints, sessions, JTIs, target/content digests, create/replace disposition bindings, replacement/staging identities, artifact names/counts/bytes, grant timestamps, or replay state
 - arbitrary caller-supplied strings
 
 The `AuditCounters` implementation deliberately ignores event metadata so bounded metadata used in local policy tests cannot accidentally become a runtime telemetry payload.
@@ -165,6 +165,12 @@ Current runtime/status/filesystem examples include:
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
 - `create_directory_mutation_disabled`
+- `write_file_mutation_disabled`
+- `filesystem_write_target_changed`
+- `filesystem_write_target_not_found`
+- `filesystem_write_target_type_unsupported`
+- `write_quarantine_capacity_exceeded`
+- `filesystem_write_failed`
 - `capability_grant_missing`
 - `capability_grant_malformed`
 - `capability_grant_version_unknown`
@@ -187,7 +193,8 @@ Current runtime/status/filesystem examples include:
 - `invalid_list_depth`
 - `path_outside_safe_root`
 - `read_byte_limit_exceeded`
-- `write_byte_limit_exceeded`
+- `write_size_limit_exceeded`
+- `response_size_limit_exceeded`
 - `filesystem_operation_failed`
 - `battery_status_read`
 - `battery_feature_not_compiled`
@@ -258,6 +265,14 @@ Capability-token evaluation examples include:
 
 New reason codes should be short, snake_case, and tied to a policy decision rather than a caller value.
 
+### `write_file` counter ordering
+
+The resolved mode is `dry_run` unless the closed schema explicitly supplies `dry_run:false`. A disabled live write records one denied `write_file`/`filesystem_write`/`mutating` decision with `write_file_mutation_disabled` before path access. Response-preflight, payload, safe-root, target-state, recovery-quarantine, and grant failures each record one stable denial and never consume or identify a grant unless exact authorization reached atomic consumption. Shared grant reasons (`capability_grant_missing`, binding, expiry, replay, clock, capacity, or state failures) are recorded only under the `write_file` tool bucket.
+
+An allowed dry run is recorded only after bounded validation succeeds. An allowed mutating write is recorded only after the exact staged inode has been published and verified, required target-parent/quarantine synchronization has succeeded, and replacement recovery retention has been confirmed where applicable. Create retains no artifact; successful replace preserves the displaced prior inode/content and reports `recoveryArtifactRetained:true`. A post-consumption transaction failure remains a denial even though the JTI is no longer reusable, including a post-commit failure that leaves the authorized new target and displaced object quarantined. Request timeout or disconnect does not create a separate identity-bearing audit event; the cancellation-independent worker finishes with the same aggregate allowed/denied contract.
+
+Release-validator and Termux device-smoke evidence must assert the disabled/enabled write posture, grant and replay reason buckets, authorized create/replace allowed counts, recovery-retention result, quarantine-capacity denial, failure counts, and absence of paths, content, digests, identities, grants, sessions, JTIs, or artifact names from serialized `runtime_status` and evidence reports.
+
 ## Expansion rules
 
 Future audit expansion must remain staged and explicit:
@@ -271,6 +286,6 @@ Future audit expansion must remain staged and explicit:
 
 ## Relationship to higher-risk surfaces
 
-Audit counters are not an authorization mechanism. They provide visibility into decisions made by staged gates. Directory creation, file-write mutation, and exact-stream volume control are separately implemented behind independent explicit opt-ins and purpose-built request grants; the shared key never makes one grant valid for another capability. Broader Android control, arbitrary command execution, package/service/network mutation, and unrelated high-impact controls remain unavailable.
+Audit counters are not an authorization mechanism. They provide visibility into decisions made by staged gates. Exact-stream volume control is separately implemented behind explicit opt-in and request grants; broader Android control, arbitrary command execution, package/service/network mutation, and unrelated high-impact controls remain unavailable.
 
 Originally added for #135; updated by #142.

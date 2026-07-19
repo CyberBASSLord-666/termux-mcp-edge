@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/scripts/termux_emulated_gate.sh"
+VALIDATOR="$ROOT/scripts/termux_release_validate.sh"
 BATTERY_GATE="$ROOT/scripts/termux_battery_emulated_gate.sh"
 VOLUME_GATE="$ROOT/scripts/termux_volume_emulated_gate.sh"
 VOLUME_CONTROL_GATE="$ROOT/scripts/termux_volume_control_emulated_gate.sh"
@@ -45,12 +46,18 @@ for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$CO
 done
 grep -Fq 'write-key-isolation' "$VOLUME_CONTROL_GATE" \
   || fail_test 'shared volume capability key is not isolated from write_file'
-grep -Fq 'request_scoped_single_use_write_grant_enforced' "$GATE" \
-  || fail_test 'canonical emulation gate omits write_file grant evidence'
-grep -Fq 'exact_write_file_byte_limit_verified' "$GATE" \
-  || fail_test 'canonical emulation gate omits exact write_file limit evidence'
-grep -Fq 'bounded_write_file_response_preflight_verified' "$GATE" \
-  || fail_test 'canonical emulation gate omits write_file response-preflight evidence'
+for code in \
+  expanded_body_posture_verified \
+  safe_root_file_create_replace_verified \
+  request_scoped_single_use_write_grant_enforced \
+  exact_write_file_byte_limit_verified \
+  bounded_write_file_response_preflight_verified
+do
+  grep -Fq "$code" "$GATE" \
+    || fail_test "canonical emulation gate omits required validator evidence: $code"
+  grep -Fq "$code" "$VALIDATOR" \
+    || fail_test "release validator cannot emit canonical emulation evidence: $code"
+done
 
 if bash "$GATE" >"$ROOT/.termux-emulated-test.stdout" 2>"$ROOT/.termux-emulated-test.stderr"; then
   fail_test 'gate without required arguments unexpectedly succeeded'
@@ -345,7 +352,6 @@ grep -Fq 'volume_control_posture_verified' "$GATE" || fail_test 'canonical runti
 grep -Fq 'androidVolumeControlArtifact' "$GATE" || fail_test 'canonical evidence omits the volume control artifact'
 grep -Fq '.error.code == -32600' "$VOLUME_CONTROL_GATE" || fail_test 'volume control grant context does not assert the MCP invalid-request envelope'
 grep -Fq 'A request-scoped capability grant is accepted only for an exact grant-authorized tool call.' "$VOLUME_CONTROL_GATE" || fail_test 'volume control grant context does not assert the stable transport detail'
-grep -Fq '"${payload_hex:128:2}" == 03' "$VOLUME_CONTROL_GATE" || fail_test 'volume control issuer capability code is not pinned to 03'
 
 chmod_line="$(grep -nF "chmod 700 \"\$output_root\"" "$ANDROID_WORKFLOW" | cut -d: -f1)"
 chown_line="$(grep -nF "sudo chown 1000:1000 \"\$output_root\"" "$ANDROID_WORKFLOW" | cut -d: -f1)"

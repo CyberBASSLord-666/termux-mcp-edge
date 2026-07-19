@@ -7,6 +7,12 @@ Explicit directory creation is protected by two independent controls in addition
 
 `dry_run` omitted or set to `true` remains a validation-only operation and does not require or consume a grant. `dry_run:false` is insufficient by itself. There is no network tool for issuing grants, and grant material is never accepted in tool arguments, URLs, JSON-RPC bodies, responses, logs, or audit labels.
 
+The same boundary applies to Rust embeddings. The public
+`FileSystemTools::create_directory` entry point is preview-only; explicitly
+requesting mutation returns the stable authorization-required error without a
+filesystem change. Preparation and authorized execution are crate-private and
+reachable only by the request-grant-aware transport path.
+
 ## Runtime configuration
 
 The mutation posture requires an `mcp-runtime` build, static bearer authentication, and all three settings below:
@@ -74,12 +80,17 @@ The fixed-shape `v1.<kid>.<payload>.<mac>` grant uses HMAC-SHA-256. The authenti
 - a random 128-bit JTI;
 - an HMAC-SHA-256 principal binding keyed by the independent capability secret, so a disclosed grant is not an offline bearer-token verifier;
 - the canonical MCP session UUID;
-- the `filesystem.create-directory` capability identifier;
+- the globally allocated directory-creation capability code `1`;
 - the selected safe root's device and inode identity;
 - a domain-separated, length-prefixed SHA-256 digest of normalized root-relative target components;
 - the mutating posture;
 - issuance and expiry seconds;
 - the signed version and key identifier.
+
+All request-grant codes come from one internal registry: directory creation is
+`1`, Android volume is `2`, file write is `3`, and file copy reserves `4` for a
+future independently gated design. The codes are wire commitments, are
+pairwise unique by invariant test, and are not caller-selectable.
 
 The normal lifetime is 60 seconds. The validator rejects zero or greater-than-120-second lifetimes, issuance more than 5 seconds in the future, expiry at the current second, an unknown version or key, and any signature or binding mismatch. One process retains at most 4,096 unexpired consumed JTIs. A full replay set fails closed; expired entries are pruned before a new valid grant is recorded.
 
@@ -89,13 +100,15 @@ For mutation, the runtime performs this order:
 
 1. authenticate the HTTP request;
 2. validate Host/Origin, media types, body limits, JSON-RPC, protocol version, and active session;
-3. accept a directory grant only as exactly one bounded ASCII capability header on `tools/call` → `create_directory`; the shared header name may carry a distinct write or volume grant only in that capability's exact tool context;
+3. accept exactly one bounded ASCII capability header only for `tools/call` → `create_directory`;
 4. validate the closed tool schema and preflight the complete 16 KiB response;
-5. resolve safe-root confinement, open and hold the exact parent descriptor, prove the final target is absent, and compute the target binding;
-6. verify and atomically consume the JTI under the replay lock;
-7. immediately attempt the first filesystem mutation using the held descriptor.
+5. acquire the one shared non-queueing filesystem-mutation worker permit or return private HTTP 503 / JSON-RPC `-32007` without consuming the grant;
+6. inside that permit-owned blocking worker, resolve safe-root confinement, open and hold the exact parent descriptor, prove the final target is absent, and compute the target binding;
+7. atomically resolve request cancellation against worker commit ownership. A cancellation winner stops here without consuming the JTI or changing the filesystem;
+8. if the worker owns commit, verify and atomically consume the JTI under the replay lock;
+9. immediately attempt the first filesystem mutation using the held descriptor and complete independently of later request cancellation.
 
-A target mismatch, malformed grant, or wrong request context does not consume a valid grant. A dry run does not consume it. Once step 6 succeeds, the grant remains consumed even if directory staging, verification, sync, publication, response serialization, or cleanup later fails. Concurrent replay permits at most one mutation attempt.
+A target mismatch, malformed grant, wrong request context, worker-capacity denial, dry run, or cancellation that wins before commit does not consume a valid grant. Once step 8 succeeds, the grant remains consumed even if directory staging, verification, sync, publication, response serialization, timeout, disconnect, or cleanup later fails. Concurrent replay permits at most one mutation attempt.
 
 ## Stable denials
 
@@ -124,4 +137,4 @@ Audit counters retain only the stable reason, tool, gate, dry-run/mutating mode,
 
 Only one key identifier is active in a process. Rotate by replacing both capability key settings atomically and restarting the service; all grants signed under the old key then fail as unknown-key grants. Changing the static bearer token also changes the principal binding. A restart clears the in-memory replay set, but pre-restart grants still expire within their short lifetime; operators that require immediate invalidation should rotate the key during restart.
 
-The grant is deliberately narrower than a general capability-token framework. It authorizes only one already-confined, absent directory target and does not authorize copy, write, delete, rename, permissions, recursive creation, shell, service, package, process, network, or Android control. `write_file` uses a distinct capability code and content/disposition-bound contract in [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md); sharing the HMAC key and header name cannot cross-authorize it.
+The grant is deliberately narrower than a general capability-token framework. It authorizes only one already-confined, absent directory target and does not authorize copy, write, delete, rename, permissions, recursive creation, shell, service, package, process, network, or Android control.

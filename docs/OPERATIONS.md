@@ -15,7 +15,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Two-MiB request-body ceiling by default.
 - Versioned Termux release directories with atomic `current` and `previous` links.
 - Fixed `mcp_runtime` runit service only.
-- Dedicated safe-root defaults, default-disabled directory mutation, and request-scoped authorization for each directory creation attempt.
+- Dedicated safe-root defaults plus independent default-disabled directory and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
 ## Android hardening
 
@@ -131,6 +131,41 @@ Do not enable shell tracing, echo token variables, or include credential-bearing
 
 Each process holds at most 64 sessions and expires them after 30 idle minutes. Missing required post-initialize protocol/session headers return HTTP 400; expired, terminated, malformed, or unknown sessions return HTTP 404; capacity exhaustion returns HTTP 503. A client should DELETE a finished session and initialize a new session after HTTP 404 or a server restart. Session IDs do not replace the bearer token. SSE is disabled by default. If enabled, only finite request-response streams enter replay state, bounded to 8 streams and 256 KiB per session; terminate unused sessions promptly so their replay budget is released immediately.
 
+## Enabling and issuing one `write_file` mutation
+
+Leave live writing disabled unless it is operationally required. Its private `runtime.env` posture is independent from directory creation and Android volume control:
+
+```dotenv
+MCP__FILE__WRITE_MUTATION_ENABLED=true
+MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
+MCP__CAPABILITY__KEY_ID=primary-1
+MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
+```
+
+The gate defaults to `false`. Enabling it on a binary without `mcp-runtime`, without static-token authentication, or without the complete valid key pair fails startup. Partial or malformed capability-key configuration also fails closed even when this specific mutation gate is off. After changing the private mode-`0600` environment file, restart the service and confirm `runtime_status.fileWriteMutationEnabled`, grant-required/header/TTL metadata, the 1 MiB file ceiling, and the 16 KiB response ceiling.
+
+Issue each grant locally with the exact deployed binary after initializing the target MCP session. Put the exact intended UTF-8 bytes in an absolute private stable no-follow regular file:
+
+```bash
+umask 077
+WRITE_GRANT_FILE="$(mktemp "$HOME/.termux-mcp-write-grant.XXXXXX")"
+WRITE_CONTENT_FILE="$(mktemp "$HOME/.termux-mcp-write-content.XXXXXX")"
+chmod 600 "$WRITE_GRANT_FILE" "$WRITE_CONTENT_FILE"
+# Populate WRITE_CONTENT_FILE with exact intended bytes without shell tracing.
+
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
+MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+MCP__CAPABILITY__WRITE_FILE_TARGET="$SAFE_ROOT_WRITE_TARGET" \
+MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$WRITE_CONTENT_FILE" \
+MCP__CAPABILITY__WRITE_FILE_DISPOSITION=create \
+  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  --issue-write-file-grant >"$WRITE_GRANT_FILE"
+```
+
+Choose `create` only while the target is absent; choose `replace` only for the exact existing regular file. Send the single grant line only as `MCP-Capability-Grant` on the matching `write_file` `tools/call` with explicit `dry_run:false` and byte-for-byte identical JSON content. A grant does not authorize another principal, session, root, normalized path, content, disposition, or replacement inode. Preview does not consume it; live validation consumes it atomically immediately before publication work, and every later failure retains consumption. Remove both private files after the attempt and never copy the token, grant, content, path, digests, session, or filesystem identities into logs, tickets, screenshots, or release evidence.
+
+The transport accepts exactly one bounded ASCII grant header only on an active-session `tools/call` for a grant-aware tool. Authentication, Host/Origin and method/media/header checks, lifecycle, exact tool context, closed schema, gate, complete-response preflight, safe-root/target classification, and grant binding all precede the first state change. Full transaction and rotation details are in [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
+
 ## Request limits
 
 The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65535`. Port `0`, malformed numbers, and present non-Unicode security/network configuration values fail before the listener starts. Only absent variables use defaults.
@@ -173,7 +208,7 @@ Authenticated discovery currently exposes:
 13. `read_file` — bounded safe-rooted UTF-8 reads.
 14. `read_text_range` — one code-point-safe UTF-8 byte range up to 256 KiB from a no-follow regular file up to 64 MiB, with explicit continuation and EOF metadata and no path or host metadata.
 15. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
-16. `write_file` — safe-rooted preview by default; one exact-content mode-`0600` create or replace only after its independent gate and content/disposition-bound single-use grant authorize it.
+16. `write_file` — safe-rooted, 1 MiB UTF-8 preview by default; live mode-`0600` create/replace is independently disabled and exact-request-grant gated, with a content/path-free 16 KiB result that reports `recoveryArtifactRetained`.
 
 An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the seventeenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
 
@@ -188,7 +223,7 @@ The runtime does not expose Android platform control beyond exact request-author
 Filesystem responses have explicit mobile-oriented ceilings:
 
 - `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
-- `write_file` validates one absent or regular-file target by default. Explicit `dry_run:false` succeeds only when `MCP__FILE__WRITE_MUTATION_ENABLED=true` and one unexpired grant matches principal, session, root, normalized target, exact content SHA-256, create-or-replace disposition, and mutating posture. The actual-ID response is capped at 16 KiB before consumption; consumption immediately precedes exclusive staging creation and survives later failure. Content is capped at 1 MiB, publication is fixed mode `0600`, create never replaces, replacement exchanges and verifies both identities, and cleanup preserves foreign objects; see [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md).
+- `write_file` validates at most 1 MiB of UTF-8 and classifies an absent target as `create` or an existing no-follow regular file as `replace`. Explicit `dry_run:false` succeeds only when `MCP__FILE__WRITE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, root, normalized target, exact content, disposition, and exact old identity for replace. It creates a mode-`0600` randomized staging entry in the target parent's reserved private quarantine. Create publishes with atomic `NOREPLACE` and retains no artifact. Replace accepts only a single-link regular target of at most 1 MiB, performs one irreversible `EXCHANGE`, verifies the exact staged inode at the target, and preserves the displaced prior inode/content as recovery material. The complete 16 KiB result exposes no path, content, or artifact name and includes `recoveryArtifactRetained`; see [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 - `copy_file` validates one regular source and absent destination by default and mutates only with explicit `dry_run:false`. It copies at most 1 MiB from the exact held source descriptor, publishes fixed mode `0600` atomically without replacement, verifies identities and sizes, syncs file and parent descriptors, returns no content, and caps the complete response at 16 KiB; see [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
 - `find_paths` accepts one case-sensitive literal basename query of at most 256 UTF-8 bytes, traverses no-follow descriptors to depth 5, examines at most 8,192 entries, returns at most 512 lexicographically ordered file/directory matches, and caps the complete response at 262,144 bytes; see [`SAFE_ROOT_PATH_DISCOVERY.md`](SAFE_ROOT_PATH_DISCOVERY.md).
 - `hash_file` streams at most 16 MiB from one exact held no-follow regular-file descriptor through SHA-256, rejects growth past the limit, returns only lowercase digest and byte count, and caps the complete response at 16 KiB before the file read; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
@@ -212,7 +247,13 @@ The default filesystem root is:
 
 Keep configured roots limited to dedicated project directories. Empty lists, relative roots, filesystem root `/`, traversal, and symlink escapes are rejected. Broad shared Android storage is not a default.
 
-The runtime opens the safe root and walks each descendant with descriptor-relative no-follow operations. Symlinks are not a supported aliasing mechanism inside a safe root. File writes retain safe-root, parent, staging, and replacement descriptors; verify type/device/inode/mode/size/content around publication; sync the file before atomic create/no-replace or replace/exchange; and sync the parent at publication and cleanup boundaries. Any failure before the documented parent sync is a failed durability confirmation even if a new name was briefly visible.
+The runtime opens the safe root and walks each descendant with descriptor-relative no-follow operations. Symlinks are not a supported aliasing mechanism inside a safe root. File writes use the target parent's fixed `.termux-mcp-write-quarantine`; this mode-`0700` namespace is hidden from and rejected by every MCP filesystem operation. Randomized staging entries start at mode `0600`, are synchronized and verified before publication, and create never replaces. Replace uses one irreversible exchange and preserves the displaced prior inode/content and metadata under its randomized artifact name. It does not unlink, truncate, chmod, or swap that object back after capture. An error after the exchange may leave the authorized new inode at the public target with the displaced object quarantined; the call is still denied and the grant remains consumed.
+
+The quarantine is limited to 32 regular artifacts and 32 MiB per target parent. Its advisory lock is nonblocking and coordinates cooperating runtime writers only; the cap is not a global disk bound, and another process under the same Unix UID can cause contention or denial of service. Capacity, mode, entry-shape, or lock failures deny the write without disclosing private names or counts.
+
+### Write recovery-artifact maintenance
+
+Never remove recovery artifacts while the service or another same-UID writer is active. Quiesce clients, stop the service and other same-UID writers, inspect the specific target parent's quarantine locally, and manually preserve or remove only selected `.termux-mcp-write-artifact-*` entries. Avoid recursive deletion and broad globs. Restart the service, then confirm runit state, health, and readiness before accepting writes again. The artifacts contain prior file content and rely on the mode-`0700` directory and Unix ownership for confidentiality; copy required recovery material to independent protected storage before deletion.
 
 ## Deployment status and recovery
 
@@ -236,7 +277,7 @@ Do not manually repoint release links outside the project releases directory. Pr
 6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.
 8. Confirm deployment status, runit state, health, readiness, and authenticated discovery.
-9. Validate representative allowed and denied MCP calls.
+9. Validate representative allowed and denied MCP calls, including the independent disabled/enabled file-write gate, exact-binary grant issuance, authorized create/replace, mismatch/replay denials, fixed mode/limits, no-replace creation, irreversible exchange, bounded retained recovery artifacts, reserved-namespace isolation, and private audit/result surfaces.
 10. Exercise rollback before declaring production readiness.
 11. Preserve the prior known-good release through sustained battery, thermal, and process-restriction validation.
 

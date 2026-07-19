@@ -14,6 +14,7 @@ pub const MAX_CAPABILITY_GRANT_ID_BYTES: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityClass {
+    FilesystemMutation,
     AndroidPlatformControl,
     PackageManagement,
     ProjectServiceMutation,
@@ -291,6 +292,29 @@ mod tests {
             NOW + 60,
         )
         .with_confirmation_satisfied(true);
+        let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
+        assert_eq!(evaluation.decision, CapabilityDecision::Allowed);
+        assert_eq!(
+            evaluation.reason_code,
+            CapabilityReasonCode::CapabilityGrantAllowed
+        );
+    }
+
+    #[test]
+    fn filesystem_mutation_is_an_explicit_capability_class() {
+        let requirement = requirement(
+            CapabilityClass::FilesystemMutation,
+            "filesystem:write-file",
+            true,
+        );
+        let grant = grant(
+            "grant-write-file-001",
+            CapabilityClass::FilesystemMutation,
+            "filesystem:write-file",
+            NOW + 60,
+        )
+        .with_confirmation_satisfied(true);
+
         let evaluation = evaluate_capability_grant(&requirement, Some(&grant), NOW);
         assert_eq!(evaluation.decision, CapabilityDecision::Allowed);
         assert_eq!(

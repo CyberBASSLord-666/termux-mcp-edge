@@ -4,11 +4,9 @@ mod support;
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{
-    empty_test_file_tools, initialize_session, post_json_to_session, response_json, test_router,
-};
+use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
 use termux_mcp_server::{
-    error::AppError,
+    error::{AppError, INVALID_TEXT_RANGE_PUBLIC_MESSAGE},
     tools::{
         FileSystemTools, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_FILE_BYTES,
         MAX_TEXT_RANGE_RESPONSE_BYTES, MIN_TEXT_RANGE_BYTES,
@@ -203,7 +201,8 @@ async fn exact_content_and_sparse_file_limits_are_enforced() {
         .unwrap()
         .set_len((MAX_TEXT_RANGE_FILE_BYTES + 1) as u64)
         .unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let exact = tools
         .read_text_range(
@@ -280,7 +279,8 @@ async fn text_range_rejects_missing_outside_symlinked_and_unsupported_targets() 
     let _listener = UnixListener::bind(&socket).unwrap();
     let linked_parent = root.path().join("linked-parent");
     symlink(outside.path(), &linked_parent).unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     assert!(matches!(
         tools
@@ -386,13 +386,13 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        if index >= 3 {
-            let payload = response_json(response).await;
-            assert_eq!(
-                payload["error"]["data"],
-                "Requested text range is not valid"
-            );
-        }
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["error"]["data"], INVALID_TEXT_RANGE_PUBLIC_MESSAGE);
     }
 
     let invalid = post_json_to_session(
@@ -455,6 +455,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
 
     std::fs::remove_file(&path).unwrap();
     let oversized_id = "x".repeat(MAX_TEXT_RANGE_BYTES);
+    let expected_id = json!(oversized_id.clone());
     for payload in [
         json!({
             "jsonrpc": "2.0",
@@ -471,13 +472,12 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
     ] {
         let response = post_json_to_session(router.clone(), &session_id, payload).await;
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let payload: Value = serde_json::from_slice(
-            &to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES + 1)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
+        let body = to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES + 1)
+            .await
+            .unwrap();
+        assert!(body.len() <= MAX_TEXT_RANGE_RESPONSE_BYTES);
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["id"], expected_id);
         assert_eq!(payload["error"]["code"], -32001);
     }
 

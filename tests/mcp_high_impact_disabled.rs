@@ -5,7 +5,12 @@ mod support;
 use axum::http::StatusCode;
 use serde_json::json;
 use support::{post_json_with_empty_root, response_json};
-use termux_mcp_server::mcp_transport::MAX_MCP_JSON_RPC_ID_BYTES;
+use termux_mcp_server::{
+    mcp_transport::MAX_MCP_JSON_RPC_ID_BYTES,
+    tools::MAX_WRITE_FILE_RESPONSE_BYTES,
+    write_file_grant::{WRITE_FILE_GRANT_HEADER, WRITE_FILE_GRANT_TTL_SECONDS},
+    write_policy::DEFAULT_MAX_WRITE_BYTES,
+};
 
 const EXPECTED_STAGED_TOOLS: [&str; 16] = [
     "runtime_status",
@@ -96,6 +101,23 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert_eq!(structured["androidVolumeControlEnabled"], false);
     assert_eq!(structured["androidVolumeControlMode"], "disabled");
     assert_eq!(structured["androidVolumeGrantRequired"], false);
+    assert_eq!(structured["fileWrites"], true);
+    assert_eq!(structured["fileWriteMutationEnabled"], false);
+    assert_eq!(structured["fileWriteGrantRequired"], false);
+    assert_eq!(
+        structured["fileWriteMode"],
+        "dry_run_only_mutation_disabled"
+    );
+    assert_eq!(structured["fileWriteGrantHeader"], WRITE_FILE_GRANT_HEADER);
+    assert_eq!(
+        structured["fileWriteGrantTtlSeconds"],
+        WRITE_FILE_GRANT_TTL_SECONDS
+    );
+    assert_eq!(structured["fileWriteMaxBytes"], DEFAULT_MAX_WRITE_BYTES);
+    assert_eq!(
+        structured["fileWriteMaxResponseBytes"],
+        MAX_WRITE_FILE_RESPONSE_BYTES
+    );
     assert_eq!(structured["androidDeviceControl"], false);
     assert_eq!(structured["commandExecution"], false);
     assert_eq!(structured["highImpactTools"], false);
@@ -117,6 +139,7 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert!(text.contains("android_battery_status=disabled"));
     assert!(text.contains("android_volume_status=disabled"));
     assert!(text.contains("android_volume_control=disabled"));
+    assert!(text.contains("write_file_mutation=dry_run_only_mutation_disabled"));
     assert!(text.contains("command_execution=disabled"));
 }
 

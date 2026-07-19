@@ -38,7 +38,7 @@ mod mcp_session;
 pub mod mcp_transport;
 pub mod platform_info;
 #[cfg(feature = "mcp-runtime")]
-mod request_grant;
+mod request_grant_capability;
 pub mod request_limits;
 pub mod service_status;
 pub mod tools;

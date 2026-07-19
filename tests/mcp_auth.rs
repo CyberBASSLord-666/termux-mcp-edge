@@ -1,18 +1,24 @@
 #![cfg(feature = "mcp-runtime")]
 
+use std::net::SocketAddr;
+
 use axum::{
     body::{to_bytes, Body},
+    extract::ConnectInfo,
     http::{header, Request, StatusCode},
-    middleware,
     response::Response,
     Router,
 };
 use serde_json::{json, Value};
 use termux_mcp_server::{
-    auth::{require_mcp_auth, McpAuthPolicy},
+    auth::McpAuthPolicy,
     mcp_transport::{
-        self, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
-        MCP_SESSION_ID_HEADER,
+        self, McpRouterProtection, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
+        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+    },
+    request_limits::{
+        McpRequestLimits, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS,
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
@@ -20,7 +26,20 @@ use termux_mcp_server::{
 use tower::ServiceExt;
 
 fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Router {
-    mcp_transport::router(
+    let protection = McpRouterProtection::new(
+        "127.0.0.1",
+        policy,
+        McpRequestLimits::from_seconds(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    mcp_transport::protected_router(
+        protection,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
@@ -28,12 +47,12 @@ fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Route
         false,
         false,
     )
-    .route_layer(middleware::from_fn_with_state(policy, require_mcp_auth))
 }
 
 async fn post_tools_list(policy: McpAuthPolicy, authorization: Option<&str>) -> Response {
     let root = tempfile::tempdir().unwrap();
-    let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let app = protected_router(policy, file_tools);
 
     let initialize = authenticated_request(
@@ -104,7 +123,11 @@ fn authenticated_request(
             .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
             .header(MCP_SESSION_ID_HEADER, session_id);
     }
-    request.body(Body::from(body.to_string())).unwrap()
+    let mut request = request.body(Body::from(body.to_string())).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
+    request
 }
 
 async fn response_json(response: Response) -> Value {
@@ -154,9 +177,89 @@ async fn explicit_loopback_development_policy_reaches_discovery_without_header()
 }
 
 #[tokio::test]
+async fn public_local_development_router_fails_closed_without_connect_info() {
+    let root = tempfile::tempdir().unwrap();
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
+    let app = protected_router(McpAuthPolicy::unauthenticated_localhost_only(), file_tools);
+    let mut request = authenticated_request(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "missing-connect-info",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "auth-tests", "version": "1.0.0"}
+            }
+        }),
+        None,
+        None,
+    );
+    request.extensions_mut().remove::<ConnectInfo<SocketAddr>>();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let payload = response_json(response).await;
+    assert_eq!(payload["error"], "localhost_peer_required");
+    assert!(payload.get("result").is_none());
+}
+
+#[tokio::test]
+async fn public_local_development_router_rejects_non_loopback_connect_info() {
+    let root = tempfile::tempdir().unwrap();
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
+    let app = protected_router(McpAuthPolicy::unauthenticated_localhost_only(), file_tools);
+    let mut request = authenticated_request(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "remote-connect-info",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "auth-tests", "version": "1.0.0"}
+            }
+        }),
+        None,
+        None,
+    );
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([192, 0, 2, 10], 40_001))));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let payload = response_json(response).await;
+    assert_eq!(payload["error"], "localhost_peer_required");
+    assert!(!payload.to_string().contains("192.0.2.10"));
+}
+
+#[test]
+fn unauthenticated_policy_rejects_non_loopback_listener_declarations() {
+    for listener_host in ["0.0.0.0", "::", "192.0.2.10", "example.com"] {
+        let error = McpRouterProtection::new(
+            listener_host,
+            McpAuthPolicy::unauthenticated_localhost_only(),
+            McpRequestLimits::from_seconds(
+                DEFAULT_MAX_CONCURRENT_REQUESTS,
+                DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                DEFAULT_MAX_BODY_BYTES,
+            )
+            .unwrap(),
+        )
+        .expect_err("unauthenticated public routers must declare a loopback listener");
+
+        assert!(error.to_string().contains("loopback listener host"));
+    }
+}
+
+#[tokio::test]
 async fn authentication_rejects_before_transport_validation_or_body_dispatch() {
     let root = tempfile::tempdir().unwrap();
-    let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let app = protected_router(
         McpAuthPolicy::static_bearer("expected-token").unwrap(),
         file_tools,

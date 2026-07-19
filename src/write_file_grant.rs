@@ -2,70 +2,88 @@
 //!
 //! Grants are short-lived HMAC-SHA-256 capabilities bound to one authenticated
 //! static principal, one MCP session, one anchored safe-root identity, one
-//! normalized root-relative target, the exact UTF-8 content digest, the
-//! create-versus-replace publication posture, and the mutating posture. The
-//! runtime never serializes grant material and atomically consumes a valid
-//! grant immediately before the first filesystem mutation attempt.
+//! normalized root-relative target, the exact content, the create-or-replace
+//! disposition, the complete preflight identity of a replaced file, and the
+//! mutating posture. The serialized payload contains only a random grant ID, a
+//! keyed opaque operation binding, and issuance timestamps. It therefore does
+//! not disclose stable principal, session, filesystem, path, or content
+//! fingerprints. Grant material is never logged or exposed by runtime
+//! responses, and a valid grant is atomically consumed before the first
+//! filesystem mutation attempt.
 
 use std::{
     collections::BTreeMap,
     fmt,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use hmac::{Hmac, KeyInit, Mac};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::request_grant::{
-    RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
-};
+use crate::request_grant_capability::RequestGrantCapability;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const WRITE_FILE_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
+pub const WRITE_FILE_GRANT_HEADER: &str = "mcp-capability-grant";
 pub const WRITE_FILE_GRANT_VERSION: &str = "v1";
 pub const WRITE_FILE_GRANT_TTL_SECONDS: u64 = 60;
 pub const MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS: u64 = 120;
 pub const MAX_WRITE_FILE_GRANT_FUTURE_SKEW_SECONDS: u64 = 5;
-pub const MAX_WRITE_FILE_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
+pub const MAX_WRITE_FILE_GRANT_HEADER_BYTES: usize = 512;
 pub const MAX_WRITE_FILE_GRANT_KEY_ID_BYTES: usize = 32;
 pub const WRITE_FILE_GRANT_KEY_BYTES: usize = 32;
 pub const WRITE_FILE_GRANT_KEY_HEX_BYTES: usize = WRITE_FILE_GRANT_KEY_BYTES * 2;
 pub const MAX_CONSUMED_WRITE_FILE_GRANTS: usize = 4_096;
 
 const MUTATING_POSTURE: u8 = 1;
-const CREATE_PUBLICATION: u8 = 1;
-const REPLACE_PUBLICATION: u8 = 2;
 const GRANT_ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 const SESSION_BYTES: usize = 16;
-const PAYLOAD_BYTES: usize =
-    GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES + 1 + 8 + 8 + DIGEST_BYTES + 1 + 8 + 8;
+const BINDING_BYTES: usize = 32;
+const PAYLOAD_BYTES: usize = GRANT_ID_BYTES + BINDING_BYTES + 8 + 8;
 const PAYLOAD_HEX_BYTES: usize = PAYLOAD_BYTES * 2;
 const MAC_BYTES: usize = 32;
 const MAC_HEX_BYTES: usize = MAC_BYTES * 2;
 const TARGET_DIGEST_DOMAIN: &[u8] = b"termux-mcp:write-file-target:v1\0";
-const PRINCIPAL_BINDING_DOMAIN: &[u8] = b"termux-mcp:static-principal:v1\0";
+const PRINCIPAL_BINDING_DOMAIN: &[u8] = b"termux-mcp:write-file-principal:v1\0";
+const OPERATION_BINDING_DOMAIN: &[u8] = b"termux-mcp:write-file-operation-binding:v1\0";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriteFilePublication {
+/// Whether one exact `write_file` mutation creates an absent target or
+/// atomically replaces an existing regular file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteFileDisposition {
     Create,
     Replace,
 }
 
-impl WriteFilePublication {
-    const fn encoded(self) -> u8 {
-        match self {
-            Self::Create => CREATE_PUBLICATION,
-            Self::Replace => REPLACE_PUBLICATION,
-        }
-    }
-
+impl WriteFileDisposition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Create => "create",
             Self::Replace => "replace",
+        }
+    }
+
+    const fn grant_code(self) -> u8 {
+        match self {
+            Self::Create => 1,
+            Self::Replace => 2,
+        }
+    }
+}
+
+impl std::str::FromStr for WriteFileDisposition {
+    type Err = WriteFileGrantError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "create" => Ok(Self::Create),
+            "replace" => Ok(Self::Replace),
+            _ => Err(WriteFileGrantError::TargetInvalid),
         }
     }
 }
@@ -74,7 +92,48 @@ impl WriteFilePublication {
 pub struct WriteFileGrantTarget {
     root_device: u64,
     root_inode: u64,
-    operation_digest: [u8; DIGEST_BYTES],
+    target_digest: [u8; DIGEST_BYTES],
+    content_digest: [u8; DIGEST_BYTES],
+    disposition: WriteFileDisposition,
+    existing_identity: Option<WriteFileExistingIdentity>,
+}
+
+/// Descriptor-derived identity bound to a replacement authorization.
+///
+/// The high-resolution change time and size make inode reuse and same-inode
+/// content changes fail closed. Live replacement additionally requires the
+/// link count to remain exactly one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WriteFileExistingIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) size: u64,
+    pub(crate) ctime_seconds: i64,
+    pub(crate) ctime_nanoseconds: i64,
+    pub(crate) link_count: u64,
+}
+
+impl WriteFileExistingIdentity {
+    pub(crate) fn new(
+        device: u64,
+        inode: u64,
+        size: u64,
+        ctime_seconds: i64,
+        ctime_nanoseconds: i64,
+        link_count: u64,
+    ) -> Result<Self, WriteFileGrantError> {
+        if link_count != 1 || !(0..1_000_000_000).contains(&ctime_nanoseconds) {
+            return Err(WriteFileGrantError::TargetInvalid);
+        }
+        Ok(Self {
+            device,
+            inode,
+            size,
+            ctime_seconds,
+            ctime_nanoseconds,
+            link_count,
+        })
+    }
 }
 
 impl WriteFileGrantTarget {
@@ -82,17 +141,24 @@ impl WriteFileGrantTarget {
         root_device: u64,
         root_inode: u64,
         components: impl IntoIterator<Item = &'a [u8]>,
-        content_digest: [u8; DIGEST_BYTES],
-        publication: WriteFilePublication,
+        content_bytes: &[u8],
+        disposition: WriteFileDisposition,
+        existing_identity: Option<WriteFileExistingIdentity>,
     ) -> Result<Self, WriteFileGrantError> {
-        let mut digest = Sha256::new();
-        digest.update(TARGET_DIGEST_DOMAIN);
+        if !matches!(
+            (disposition, existing_identity),
+            (WriteFileDisposition::Create, None) | (WriteFileDisposition::Replace, Some(_))
+        ) {
+            return Err(WriteFileGrantError::TargetInvalid);
+        }
+        let mut target_digest = Sha256::new();
+        target_digest.update(TARGET_DIGEST_DOMAIN);
         let mut component_count = 0_u32;
         for component in components {
             let length =
                 u32::try_from(component.len()).map_err(|_| WriteFileGrantError::TargetInvalid)?;
-            digest.update(length.to_be_bytes());
-            digest.update(component);
+            target_digest.update(length.to_be_bytes());
+            target_digest.update(component);
             component_count = component_count
                 .checked_add(1)
                 .ok_or(WriteFileGrantError::TargetInvalid)?;
@@ -100,14 +166,31 @@ impl WriteFileGrantTarget {
         if component_count == 0 {
             return Err(WriteFileGrantError::TargetInvalid);
         }
-        digest.update(component_count.to_be_bytes());
-        digest.update(content_digest);
-        digest.update([publication.encoded(), MUTATING_POSTURE]);
+        target_digest.update(component_count.to_be_bytes());
+
         Ok(Self {
             root_device,
             root_inode,
-            operation_digest: digest.finalize().into(),
+            target_digest: target_digest.finalize().into(),
+            content_digest: Sha256::digest(content_bytes).into(),
+            disposition,
+            existing_identity,
         })
+    }
+
+    #[doc(hidden)]
+    pub fn ensure_distinct_source_identity(
+        &self,
+        device: u64,
+        inode: u64,
+    ) -> Result<(), WriteFileGrantError> {
+        if self
+            .existing_identity
+            .is_some_and(|identity| identity.device == device && identity.inode == inode)
+        {
+            return Err(WriteFileGrantError::TargetInvalid);
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -115,15 +198,17 @@ impl WriteFileGrantTarget {
         root_device: u64,
         root_inode: u64,
         components: &[&[u8]],
-        content: &[u8],
-        publication: WriteFilePublication,
+        content_bytes: &[u8],
+        disposition: WriteFileDisposition,
+        existing_identity: Option<WriteFileExistingIdentity>,
     ) -> Self {
         Self::from_normalized_components(
             root_device,
             root_inode,
             components.iter().copied(),
-            content_sha256(content),
-            publication,
+            content_bytes,
+            disposition,
+            existing_identity,
         )
         .expect("test target must be valid")
     }
@@ -136,14 +221,6 @@ impl fmt::Debug for WriteFileGrantTarget {
             .field("binding", &"<redacted>")
             .finish()
     }
-}
-
-pub fn content_sha256(content: &[u8]) -> [u8; DIGEST_BYTES] {
-    Sha256::digest(content).into()
-}
-
-pub fn parse_content_sha256_hex(value: &str) -> Result<[u8; DIGEST_BYTES], WriteFileGrantError> {
-    decode_hex_array::<DIGEST_BYTES>(value).ok_or(WriteFileGrantError::TargetInvalid)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,13 +291,7 @@ struct ReplayState {
 
 struct ParsedGrant {
     grant_id: [u8; GRANT_ID_BYTES],
-    principal_digest: [u8; DIGEST_BYTES],
-    session_id: [u8; SESSION_BYTES],
-    capability: u8,
-    root_device: u64,
-    root_inode: u64,
-    operation_digest: [u8; DIGEST_BYTES],
-    posture: u8,
+    operation_binding: [u8; BINDING_BYTES],
     issued_unix_seconds: u64,
     expires_unix_seconds: u64,
 }
@@ -255,6 +326,9 @@ impl WriteFileGrantAuthority {
         }
         let key = decode_hex_array::<WRITE_FILE_GRANT_KEY_BYTES>(key_hex)
             .ok_or(WriteFileGrantError::ConfigurationInvalid)?;
+        // Derive the principal binding under the independent capability key.
+        // A disclosed grant therefore cannot be used as an offline verifier
+        // for guesses of a weak transport bearer token.
         let mut principal =
             HmacSha256::new_from_slice(&key).expect("fixed-size HMAC key is always valid");
         principal.update(PRINCIPAL_BINDING_DOMAIN);
@@ -270,7 +344,24 @@ impl WriteFileGrantAuthority {
         })
     }
 
-    pub fn issue_at(
+    pub fn issue(
+        &self,
+        session_id: &str,
+        target: &WriteFileGrantTarget,
+    ) -> Result<String, WriteFileGrantError> {
+        self.issue_at(session_id, target, current_unix_seconds()?)
+    }
+
+    pub fn consume(
+        &self,
+        token: Option<&str>,
+        session_id: &str,
+        target: &WriteFileGrantTarget,
+    ) -> Result<(), WriteFileGrantError> {
+        self.consume_at(token, session_id, target, current_unix_seconds()?)
+    }
+
+    pub(crate) fn issue_at(
         &self,
         session_id: &str,
         target: &WriteFileGrantTarget,
@@ -280,22 +371,21 @@ impl WriteFileGrantAuthority {
         let expires_unix_seconds = now_unix_seconds
             .checked_add(WRITE_FILE_GRANT_TTL_SECONDS)
             .ok_or(WriteFileGrantError::LifetimeExceeded)?;
+        let grant_id = *Uuid::new_v4().as_bytes();
         let grant = ParsedGrant {
-            grant_id: *Uuid::new_v4().as_bytes(),
-            principal_digest: self.principal_digest,
-            session_id,
-            capability: RequestGrantCapability::WriteFile.code(),
-            root_device: target.root_device,
-            root_inode: target.root_inode,
-            operation_digest: target.operation_digest,
-            posture: MUTATING_POSTURE,
+            grant_id,
+            operation_binding: self
+                .operation_binding_mac(&grant_id, &session_id, target)
+                .finalize()
+                .into_bytes()
+                .into(),
             issued_unix_seconds: now_unix_seconds,
             expires_unix_seconds,
         };
         Ok(self.encode_and_sign(&grant))
     }
 
-    pub fn consume_at(
+    pub(crate) fn consume_at(
         &self,
         token: Option<&str>,
         session_id: &str,
@@ -305,17 +395,9 @@ impl WriteFileGrantAuthority {
         let token = token.ok_or(WriteFileGrantError::Missing)?;
         let expected_session = parse_canonical_session(session_id)?;
         let grant = self.parse_and_verify(token)?;
-
-        if grant.principal_digest != self.principal_digest
-            || grant.session_id != expected_session
-            || grant.capability != RequestGrantCapability::WriteFile.code()
-            || grant.root_device != target.root_device
-            || grant.root_inode != target.root_inode
-            || grant.operation_digest != target.operation_digest
-            || grant.posture != MUTATING_POSTURE
-        {
-            return Err(WriteFileGrantError::BindingMismatch);
-        }
+        self.operation_binding_mac(&grant.grant_id, &expected_session, target)
+            .verify_slice(&grant.operation_binding)
+            .map_err(|_| WriteFileGrantError::BindingMismatch)?;
 
         let mut replay = self
             .replay
@@ -361,13 +443,53 @@ impl WriteFileGrantAuthority {
     }
 
     fn encode_and_sign(&self, grant: &ParsedGrant) -> String {
-        let payload = encode_payload(grant);
-        let payload_hex = encode_hex(&payload);
+        let payload_hex = encode_hex(&encode_payload(grant));
         let signed = format!("{WRITE_FILE_GRANT_VERSION}.{}.{}", self.key_id, payload_hex);
         let mut mac = HmacSha256::new_from_slice(self.key.as_ref())
             .expect("fixed-size HMAC key is always valid");
         mac.update(signed.as_bytes());
         format!("{signed}.{}", encode_hex(&mac.finalize().into_bytes()))
+    }
+
+    fn operation_binding_mac(
+        &self,
+        grant_id: &[u8; GRANT_ID_BYTES],
+        session_id: &[u8; SESSION_BYTES],
+        target: &WriteFileGrantTarget,
+    ) -> HmacSha256 {
+        let mut binding = HmacSha256::new_from_slice(self.key.as_ref())
+            .expect("fixed-size HMAC key is always valid");
+        binding.update(OPERATION_BINDING_DOMAIN);
+        binding.update(grant_id);
+        binding.update(&self.principal_digest);
+        binding.update(session_id);
+        binding.update(&[
+            RequestGrantCapability::WriteFile.wire_code(),
+            MUTATING_POSTURE,
+        ]);
+        binding.update(&target.root_device.to_be_bytes());
+        binding.update(&target.root_inode.to_be_bytes());
+        binding.update(&target.target_digest);
+        binding.update(&target.content_digest);
+        binding.update(&[target.disposition.grant_code()]);
+        match target.existing_identity {
+            None => {
+                binding.update(&[0]);
+                binding.update(&[0; 56]);
+            }
+            Some(identity) => {
+                binding.update(&[1]);
+                binding.update(&identity.device.to_be_bytes());
+                binding.update(&identity.inode.to_be_bytes());
+                binding.update(&identity.size.to_be_bytes());
+                binding.update(&identity.ctime_seconds.to_be_bytes());
+                binding.update(&identity.ctime_nanoseconds.to_be_bytes());
+                binding.update(&identity.link_count.to_be_bytes());
+                // Keep the absent/present identity encodings fixed-width.
+                binding.update(&[0; 8]);
+            }
+        }
+        binding
     }
 
     fn parse_and_verify(&self, token: &str) -> Result<ParsedGrant, WriteFileGrantError> {
@@ -421,6 +543,13 @@ impl fmt::Debug for WriteFileGrantAuthority {
     }
 }
 
+fn current_unix_seconds() -> Result<u64, WriteFileGrantError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| WriteFileGrantError::ClockRollback)
+}
+
 fn valid_key_id(key_id: &str) -> bool {
     !key_id.is_empty()
         && key_id.len() <= MAX_WRITE_FILE_GRANT_KEY_ID_BYTES
@@ -441,13 +570,7 @@ fn encode_payload(grant: &ParsedGrant) -> [u8; PAYLOAD_BYTES] {
     let mut payload = [0_u8; PAYLOAD_BYTES];
     let mut offset = 0;
     put(&mut payload, &mut offset, &grant.grant_id);
-    put(&mut payload, &mut offset, &grant.principal_digest);
-    put(&mut payload, &mut offset, &grant.session_id);
-    put(&mut payload, &mut offset, &[grant.capability]);
-    put(&mut payload, &mut offset, &grant.root_device.to_be_bytes());
-    put(&mut payload, &mut offset, &grant.root_inode.to_be_bytes());
-    put(&mut payload, &mut offset, &grant.operation_digest);
-    put(&mut payload, &mut offset, &[grant.posture]);
+    put(&mut payload, &mut offset, &grant.operation_binding);
     put(
         &mut payload,
         &mut offset,
@@ -465,26 +588,12 @@ fn encode_payload(grant: &ParsedGrant) -> [u8; PAYLOAD_BYTES] {
 fn decode_payload(payload: &[u8; PAYLOAD_BYTES]) -> Option<ParsedGrant> {
     let mut offset = 0;
     let grant_id = take_array(payload, &mut offset)?;
-    let principal_digest = take_array(payload, &mut offset)?;
-    let session_id = take_array(payload, &mut offset)?;
-    let capability = *payload.get(offset)?;
-    offset += 1;
-    let root_device = u64::from_be_bytes(take_array(payload, &mut offset)?);
-    let root_inode = u64::from_be_bytes(take_array(payload, &mut offset)?);
-    let operation_digest = take_array(payload, &mut offset)?;
-    let posture = *payload.get(offset)?;
-    offset += 1;
+    let operation_binding = take_array(payload, &mut offset)?;
     let issued_unix_seconds = u64::from_be_bytes(take_array(payload, &mut offset)?);
     let expires_unix_seconds = u64::from_be_bytes(take_array(payload, &mut offset)?);
     (offset == PAYLOAD_BYTES).then_some(ParsedGrant {
         grant_id,
-        principal_digest,
-        session_id,
-        capability,
-        root_device,
-        root_inode,
-        operation_digest,
-        posture,
+        operation_binding,
         issued_unix_seconds,
         expires_unix_seconds,
     })
@@ -546,12 +655,26 @@ mod tests {
     const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
     const NOW: u64 = 1_725_000_000;
 
+    const BINDING_OFFSET: usize = GRANT_ID_BYTES;
+    const ISSUED_OFFSET: usize = GRANT_ID_BYTES + BINDING_BYTES;
+
     fn authority() -> WriteFileGrantAuthority {
         WriteFileGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap()
     }
 
-    fn target(publication: WriteFilePublication) -> WriteFileGrantTarget {
-        WriteFileGrantTarget::test(41, 73, &[b"projects", b"file.txt"], b"content", publication)
+    fn identity() -> WriteFileExistingIdentity {
+        WriteFileExistingIdentity::new(101, 202, 303, 1_700_000_000, 404_505_606, 1).unwrap()
+    }
+
+    fn target() -> WriteFileGrantTarget {
+        WriteFileGrantTarget::test(
+            41,
+            73,
+            &[b"projects", b"settings.json"],
+            br#"{"enabled":true}"#,
+            WriteFileDisposition::Replace,
+            Some(identity()),
+        )
     }
 
     fn resign_payload(
@@ -574,7 +697,119 @@ mod tests {
     }
 
     #[test]
-    fn principal_binding_is_keyed_and_does_not_expose_a_bearer_token_verifier() {
+    fn dispositions_have_exact_stable_names_codes_and_parsing() {
+        assert_eq!(WriteFileDisposition::Create.as_str(), "create");
+        assert_eq!(WriteFileDisposition::Replace.as_str(), "replace");
+        assert_eq!(WriteFileDisposition::Create.grant_code(), 1);
+        assert_eq!(WriteFileDisposition::Replace.grant_code(), 2);
+        assert_eq!(
+            "create".parse::<WriteFileDisposition>().unwrap(),
+            WriteFileDisposition::Create
+        );
+        assert_eq!(
+            "replace".parse::<WriteFileDisposition>().unwrap(),
+            WriteFileDisposition::Replace
+        );
+        for invalid in ["", "Create", "overwrite", "replace "] {
+            assert_eq!(
+                invalid.parse::<WriteFileDisposition>().unwrap_err(),
+                WriteFileGrantError::TargetInvalid
+            );
+        }
+    }
+
+    #[test]
+    fn public_issue_and_consume_use_one_short_lived_single_use_grant() {
+        let authority = authority();
+        let token = authority.issue(SESSION, &target()).unwrap();
+        assert!(token.len() <= MAX_WRITE_FILE_GRANT_HEADER_BYTES);
+        assert_eq!(token.split('.').count(), 4);
+        authority.consume(Some(&token), SESSION, &target()).unwrap();
+        assert_eq!(
+            authority
+                .consume(Some(&token), SESSION, &target())
+                .unwrap_err(),
+            WriteFileGrantError::Replayed
+        );
+    }
+
+    #[test]
+    fn normalized_target_binds_path_content_disposition_and_existing_identity() {
+        let baseline = target();
+        assert_ne!(
+            baseline,
+            WriteFileGrantTarget::test(
+                41,
+                73,
+                &[b"projects-settings", b"json"],
+                br#"{"enabled":true}"#,
+                WriteFileDisposition::Replace,
+                Some(identity()),
+            )
+        );
+        assert_ne!(
+            baseline,
+            WriteFileGrantTarget::test(
+                41,
+                73,
+                &[b"projects", b"settings.json"],
+                br#"{"enabled":false}"#,
+                WriteFileDisposition::Replace,
+                Some(identity()),
+            )
+        );
+        assert_ne!(
+            baseline,
+            WriteFileGrantTarget::test(
+                41,
+                73,
+                &[b"projects", b"settings.json"],
+                br#"{"enabled":true}"#,
+                WriteFileDisposition::Create,
+                None,
+            )
+        );
+        assert_eq!(
+            WriteFileGrantTarget::from_normalized_components(
+                41,
+                73,
+                std::iter::empty::<&[u8]>(),
+                b"content",
+                WriteFileDisposition::Create,
+                None,
+            )
+            .unwrap_err(),
+            WriteFileGrantError::TargetInvalid
+        );
+        for (disposition, existing_identity) in [
+            (WriteFileDisposition::Create, Some(identity())),
+            (WriteFileDisposition::Replace, None),
+        ] {
+            assert_eq!(
+                WriteFileGrantTarget::from_normalized_components(
+                    41,
+                    73,
+                    [b"settings.json".as_slice()],
+                    b"content",
+                    disposition,
+                    existing_identity,
+                )
+                .unwrap_err(),
+                WriteFileGrantError::TargetInvalid
+            );
+        }
+        assert_eq!(
+            WriteFileExistingIdentity::new(1, 2, 3, 4, 1_000_000_000, 1).unwrap_err(),
+            WriteFileGrantError::TargetInvalid
+        );
+        assert_eq!(
+            WriteFileExistingIdentity::new(1, 2, 3, 4, 5, 2).unwrap_err(),
+            WriteFileGrantError::TargetInvalid
+        );
+    }
+
+    #[test]
+    fn principal_binding_is_keyed_and_not_an_offline_bearer_verifier() {
         let authority = authority();
         let mut unkeyed = Sha256::new();
         unkeyed.update(PRINCIPAL_BINDING_DOMAIN);
@@ -589,60 +824,110 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_authority_configuration() {
-        let invalid_configurations = [
-            WriteFileGrantAuthority::from_hex_key("", KEY, PRINCIPAL),
-            WriteFileGrantAuthority::from_hex_key("PRIMARY", KEY, PRINCIPAL),
-            WriteFileGrantAuthority::from_hex_key("primary.1", KEY, PRINCIPAL),
-            WriteFileGrantAuthority::from_hex_key(
-                "a".repeat(MAX_WRITE_FILE_GRANT_KEY_ID_BYTES + 1),
-                KEY,
-                PRINCIPAL,
-            ),
-            WriteFileGrantAuthority::from_hex_key("primary-1", &"0".repeat(63), PRINCIPAL),
-            WriteFileGrantAuthority::from_hex_key("primary-1", &"G".repeat(64), PRINCIPAL),
-            WriteFileGrantAuthority::from_hex_key("primary-1", KEY, ""),
-            WriteFileGrantAuthority::from_hex_key_with_capacity("primary-1", KEY, PRINCIPAL, 0),
-        ];
-        for invalid in invalid_configurations {
+    fn rejects_invalid_configuration_and_noncanonical_sessions() {
+        for key_id in ["", "Primary", "bad.id", &"x".repeat(33)] {
             assert_eq!(
-                invalid.unwrap_err(),
+                WriteFileGrantAuthority::from_hex_key(key_id, KEY, PRINCIPAL).unwrap_err(),
                 WriteFileGrantError::ConfigurationInvalid
+            );
+        }
+        for key in ["", &"0".repeat(63), &"A".repeat(64)] {
+            assert_eq!(
+                WriteFileGrantAuthority::from_hex_key("primary-1", key, PRINCIPAL).unwrap_err(),
+                WriteFileGrantError::ConfigurationInvalid
+            );
+        }
+        assert_eq!(
+            WriteFileGrantAuthority::from_hex_key("primary-1", KEY, "").unwrap_err(),
+            WriteFileGrantError::ConfigurationInvalid
+        );
+        for session in ["", "not-a-uuid", "0194F9F9-BBBB-7CCC-8DDD-EEEEEEEEEEEE"] {
+            assert_eq!(
+                authority().issue_at(session, &target(), NOW).unwrap_err(),
+                WriteFileGrantError::SessionInvalid
             );
         }
     }
 
     #[test]
-    fn issues_and_consumes_one_fixed_shape_grant() {
+    fn rejects_missing_malformed_unknown_and_invalid_signature_tokens() {
         let authority = authority();
-        let target = target(WriteFilePublication::Create);
-        let token = authority.issue_at(SESSION, &target, NOW).unwrap();
-        assert!(token.len() <= MAX_WRITE_FILE_GRANT_HEADER_BYTES);
-        assert_eq!(token.split('.').count(), 4);
-        authority
-            .consume_at(Some(&token), SESSION, &target, NOW)
-            .unwrap();
+        let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
             authority
-                .consume_at(Some(&token), SESSION, &target, NOW)
+                .consume_at(None, SESSION, &target(), NOW)
                 .unwrap_err(),
-            WriteFileGrantError::Replayed
+            WriteFileGrantError::Missing
+        );
+        for malformed in [
+            "",
+            "v1",
+            "v1.primary-1.bad.bad",
+            &"x".repeat(MAX_WRITE_FILE_GRANT_HEADER_BYTES + 1),
+        ] {
+            assert_eq!(
+                authority
+                    .consume_at(Some(malformed), SESSION, &target(), NOW)
+                    .unwrap_err(),
+                WriteFileGrantError::Malformed
+            );
+        }
+        let unknown_version = token.replacen("v1.", "v2.", 1);
+        assert_eq!(
+            authority
+                .consume_at(Some(&unknown_version), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::UnknownVersion
+        );
+        let unknown_key = token.replacen(".primary-1.", ".retired-1.", 1);
+        assert_eq!(
+            authority
+                .consume_at(Some(&unknown_key), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::UnknownKey
+        );
+        let mut invalid_signature = token.clone().into_bytes();
+        let last = invalid_signature.last_mut().unwrap();
+        *last = if *last == b'0' { b'1' } else { b'0' };
+        assert_eq!(
+            authority
+                .consume_at(
+                    Some(&String::from_utf8(invalid_signature).unwrap()),
+                    SESSION,
+                    &target(),
+                    NOW,
+                )
+                .unwrap_err(),
+            WriteFileGrantError::SignatureInvalid
+        );
+
+        let mut uppercase_payload = token;
+        let payload_start = uppercase_payload
+            .match_indices('.')
+            .nth(1)
+            .map(|(index, _)| index + 1)
+            .unwrap();
+        uppercase_payload.replace_range(payload_start..=payload_start, "A");
+        assert_eq!(
+            authority
+                .consume_at(Some(&uppercase_payload), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::Malformed
         );
     }
 
     #[test]
-    fn every_principal_session_root_target_content_and_publication_mismatch_is_private() {
+    fn rejects_every_principal_session_root_target_content_disposition_and_identity_mismatch() {
         let authority = authority();
-        let create_target = target(WriteFilePublication::Create);
-        let token = authority.issue_at(SESSION, &create_target, NOW).unwrap();
+        let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         let other_principal =
             WriteFileGrantAuthority::from_hex_key("primary-1", KEY, "other").unwrap();
         let mismatches = [
-            other_principal.consume_at(Some(&token), SESSION, &create_target, NOW),
+            other_principal.consume_at(Some(&token), SESSION, &target(), NOW),
             authority.consume_at(
                 Some(&token),
                 "0194f9f9-bbbb-7ccc-8ddd-ffffffffffff",
-                &create_target,
+                &target(),
                 NOW,
             ),
             authority.consume_at(
@@ -651,9 +936,10 @@ mod tests {
                 &WriteFileGrantTarget::test(
                     42,
                     73,
-                    &[b"projects", b"file.txt"],
-                    b"content",
-                    WriteFilePublication::Create,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(identity()),
                 ),
                 NOW,
             ),
@@ -663,9 +949,10 @@ mod tests {
                 &WriteFileGrantTarget::test(
                     41,
                     74,
-                    &[b"projects", b"file.txt"],
-                    b"content",
-                    WriteFilePublication::Create,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(identity()),
                 ),
                 NOW,
             ),
@@ -675,9 +962,10 @@ mod tests {
                 &WriteFileGrantTarget::test(
                     41,
                     73,
-                    &[b"projects", b"other.txt"],
-                    b"content",
-                    WriteFilePublication::Create,
+                    &[b"projects", b"other.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(identity()),
                 ),
                 NOW,
             ),
@@ -687,16 +975,88 @@ mod tests {
                 &WriteFileGrantTarget::test(
                     41,
                     73,
-                    &[b"projects", b"file.txt"],
-                    b"different",
-                    WriteFilePublication::Create,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":false}"#,
+                    WriteFileDisposition::Replace,
+                    Some(identity()),
                 ),
                 NOW,
             ),
             authority.consume_at(
                 Some(&token),
                 SESSION,
-                &target(WriteFilePublication::Replace),
+                &WriteFileGrantTarget::test(
+                    41,
+                    73,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Create,
+                    None,
+                ),
+                NOW,
+            ),
+            authority.consume_at(
+                Some(&token),
+                SESSION,
+                &WriteFileGrantTarget::test(
+                    41,
+                    73,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(WriteFileExistingIdentity {
+                        inode: 203,
+                        ..identity()
+                    }),
+                ),
+                NOW,
+            ),
+            authority.consume_at(
+                Some(&token),
+                SESSION,
+                &WriteFileGrantTarget::test(
+                    41,
+                    73,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(WriteFileExistingIdentity {
+                        size: 304,
+                        ..identity()
+                    }),
+                ),
+                NOW,
+            ),
+            authority.consume_at(
+                Some(&token),
+                SESSION,
+                &WriteFileGrantTarget::test(
+                    41,
+                    73,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(WriteFileExistingIdentity {
+                        ctime_seconds: 1_700_000_001,
+                        ..identity()
+                    }),
+                ),
+                NOW,
+            ),
+            authority.consume_at(
+                Some(&token),
+                SESSION,
+                &WriteFileGrantTarget::test(
+                    41,
+                    73,
+                    &[b"projects", b"settings.json"],
+                    br#"{"enabled":true}"#,
+                    WriteFileDisposition::Replace,
+                    Some(WriteFileExistingIdentity {
+                        ctime_nanoseconds: 404_505_607,
+                        ..identity()
+                    }),
+                ),
                 NOW,
             ),
         ];
@@ -706,122 +1066,119 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_malformed_unknown_and_invalid_signature_tokens() {
+    fn serialized_payload_is_fixed_size_opaque_unlinkable_and_binding_tamper_is_private() {
         let authority = authority();
-        let target = target(WriteFilePublication::Create);
-        let token = authority.issue_at(SESSION, &target, NOW).unwrap();
+        let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
+        let second = authority.issue_at(SESSION, &target(), NOW).unwrap();
+        let payload = decode_hex_array::<PAYLOAD_BYTES>(token.split('.').nth(2).unwrap()).unwrap();
+        let second_payload =
+            decode_hex_array::<PAYLOAD_BYTES>(second.split('.').nth(2).unwrap()).unwrap();
+
+        assert_eq!(PAYLOAD_BYTES, 64);
+        assert_eq!(token.split('.').nth(2).unwrap().len(), 128);
         assert_eq!(
-            authority
-                .consume_at(None, SESSION, &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::Missing
+            &payload[ISSUED_OFFSET..ISSUED_OFFSET + 8],
+            &NOW.to_be_bytes()
         );
-        for malformed in ["", "v1", "v1.primary-1.bad.bad", &"x".repeat(385)] {
-            assert_eq!(
-                authority
-                    .consume_at(Some(malformed), SESSION, &target, NOW)
-                    .unwrap_err(),
-                WriteFileGrantError::Malformed
-            );
+        assert_eq!(
+            &payload[PAYLOAD_BYTES - 8..],
+            &(NOW + WRITE_FILE_GRANT_TTL_SECONDS).to_be_bytes()
+        );
+        assert_ne!(
+            &payload[..GRANT_ID_BYTES],
+            &second_payload[..GRANT_ID_BYTES]
+        );
+        assert_ne!(
+            &payload[BINDING_OFFSET..ISSUED_OFFSET],
+            &second_payload[BINDING_OFFSET..ISSUED_OFFSET]
+        );
+
+        let parsed_session = parse_canonical_session(SESSION).unwrap();
+        for private_binding in [
+            authority.principal_digest.as_slice(),
+            parsed_session.as_slice(),
+            target().target_digest.as_slice(),
+            target().content_digest.as_slice(),
+        ] {
+            assert!(!payload[..ISSUED_OFFSET]
+                .windows(private_binding.len())
+                .any(|window| window == private_binding));
         }
-        let unknown_version = token.replacen("v1.", "v2.", 1);
-        assert_eq!(
-            authority
-                .consume_at(Some(&unknown_version), SESSION, &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::UnknownVersion
-        );
-        let unknown_key = token.replacen(".primary-1.", ".retired-1.", 1);
-        assert_eq!(
-            authority
-                .consume_at(Some(&unknown_key), SESSION, &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::UnknownKey
-        );
-
-        let mut invalid_signature = token.into_bytes();
-        let last = invalid_signature.last_mut().unwrap();
-        *last = if *last == b'0' { b'1' } else { b'0' };
-        let invalid_signature = String::from_utf8(invalid_signature).unwrap();
-        assert_eq!(
-            authority
-                .consume_at(Some(&invalid_signature), SESSION, &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::SignatureInvalid
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_and_noncanonical_sessions() {
-        let authority = authority();
-        let target = target(WriteFilePublication::Create);
-        for invalid_session in ["", "not-a-session", "0194F9F9-BBBB-7CCC-8DDD-EEEEEEEEEEEE"] {
-            assert_eq!(
-                authority
-                    .issue_at(invalid_session, &target, NOW)
-                    .unwrap_err(),
-                WriteFileGrantError::SessionInvalid
-            );
+        for raw_identity in [
+            41_u64.to_be_bytes(),
+            73_u64.to_be_bytes(),
+            identity().device.to_be_bytes(),
+            identity().inode.to_be_bytes(),
+            identity().size.to_be_bytes(),
+        ] {
+            assert!(!payload[..ISSUED_OFFSET]
+                .windows(raw_identity.len())
+                .any(|window| window == raw_identity));
         }
 
-        let token = authority.issue_at(SESSION, &target, NOW).unwrap();
-        assert_eq!(
-            authority
-                .consume_at(Some(&token), "not-a-session", &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::SessionInvalid
-        );
-    }
-
-    #[test]
-    fn rejects_expired_future_zero_or_excessive_lifetime_and_clock_rollback() {
-        let authority = authority();
-        let target = target(WriteFilePublication::Create);
-        let expired = authority.issue_at(SESSION, &target, NOW - 60).unwrap();
-        assert_eq!(
-            authority
-                .consume_at(Some(&expired), SESSION, &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::Expired
-        );
-        let future = authority.issue_at(SESSION, &target, NOW + 6).unwrap();
-        assert_eq!(
-            authority
-                .consume_at(Some(&future), SESSION, &target, NOW)
-                .unwrap_err(),
-            WriteFileGrantError::FutureIssued
-        );
-
-        let normal = authority.issue_at(SESSION, &target, NOW).unwrap();
-        let zero_lifetime = resign_payload(&authority, &normal, |payload| {
-            let expires_offset = PAYLOAD_BYTES - 8;
-            payload[expires_offset..].copy_from_slice(&NOW.to_be_bytes());
+        let tampered_binding = resign_payload(&authority, &token, |payload| {
+            payload[BINDING_OFFSET] ^= 1;
         });
         assert_eq!(
             authority
-                .consume_at(Some(&zero_lifetime), SESSION, &target, NOW)
+                .consume_at(Some(&tampered_binding), SESSION, &target(), NOW)
                 .unwrap_err(),
-            WriteFileGrantError::LifetimeExceeded
+            WriteFileGrantError::BindingMismatch
         );
-        let excessive_lifetime = resign_payload(&authority, &normal, |payload| {
+    }
+
+    #[test]
+    fn operation_binding_matches_independent_known_answer_vector() {
+        let authority = authority();
+        let session = parse_canonical_session(SESSION).unwrap();
+        let grant_id = [0x5a; GRANT_ID_BYTES];
+        let actual = authority
+            .operation_binding_mac(&grant_id, &session, &target())
+            .finalize()
+            .into_bytes();
+        assert_eq!(
+            encode_hex(&actual),
+            "472df5539b5fa228d483884ae509f9bf1c77b89335847c0cb0a6c47ceabe89a6"
+        );
+    }
+
+    #[test]
+    fn rejects_expired_future_excessive_lifetime_and_clock_rollback() {
+        let authority = authority();
+        let expired = authority.issue_at(SESSION, &target(), NOW - 60).unwrap();
+        assert_eq!(
+            authority
+                .consume_at(Some(&expired), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::Expired
+        );
+        let future = authority.issue_at(SESSION, &target(), NOW + 6).unwrap();
+        assert_eq!(
+            authority
+                .consume_at(Some(&future), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::FutureIssued
+        );
+        let normal = authority.issue_at(SESSION, &target(), NOW).unwrap();
+        let excessive = resign_payload(&authority, &normal, |payload| {
             let expires_offset = PAYLOAD_BYTES - 8;
             payload[expires_offset..]
                 .copy_from_slice(&(NOW + MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS + 1).to_be_bytes());
         });
         assert_eq!(
             authority
-                .consume_at(Some(&excessive_lifetime), SESSION, &target, NOW)
+                .consume_at(Some(&excessive), SESSION, &target(), NOW)
                 .unwrap_err(),
             WriteFileGrantError::LifetimeExceeded
         );
 
         authority
-            .consume_at(Some(&normal), SESSION, &target, NOW + 1)
+            .consume_at(Some(&normal), SESSION, &target(), NOW + 1)
             .unwrap();
-        let rollback = authority.issue_at(SESSION, &target, NOW).unwrap();
+        let rollback = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
             authority
-                .consume_at(Some(&rollback), SESSION, &target, NOW)
+                .consume_at(Some(&rollback), SESSION, &target(), NOW)
                 .unwrap_err(),
             WriteFileGrantError::ClockRollback
         );
@@ -830,18 +1187,16 @@ mod tests {
     #[test]
     fn concurrent_replay_allows_exactly_one_consumer() {
         let authority = Arc::new(authority());
-        let target = Arc::new(target(WriteFilePublication::Create));
-        let token = Arc::new(authority.issue_at(SESSION, &target, NOW).unwrap());
+        let token = Arc::new(authority.issue_at(SESSION, &target(), NOW).unwrap());
         let barrier = Arc::new(Barrier::new(9));
         let mut threads = Vec::new();
         for _ in 0..8 {
             let authority = Arc::clone(&authority);
-            let target = Arc::clone(&target);
             let token = Arc::clone(&token);
             let barrier = Arc::clone(&barrier);
             threads.push(thread::spawn(move || {
                 barrier.wait();
-                authority.consume_at(Some(&token), SESSION, &target, NOW)
+                authority.consume_at(Some(&token), SESSION, &target(), NOW)
             }));
         }
         barrier.wait();
@@ -860,62 +1215,86 @@ mod tests {
     }
 
     #[test]
+    fn clones_share_replay_state() {
+        let authority = authority();
+        let clone = authority.clone();
+        let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
+        clone
+            .consume_at(Some(&token), SESSION, &target(), NOW)
+            .unwrap();
+        assert_eq!(
+            authority
+                .consume_at(Some(&token), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::Replayed
+        );
+    }
+
+    #[test]
     fn replay_storage_is_bounded_and_expired_entries_are_pruned() {
         let authority =
             WriteFileGrantAuthority::from_hex_key_with_capacity("primary-1", KEY, PRINCIPAL, 1)
                 .unwrap();
-        let target = target(WriteFilePublication::Create);
-        let first = authority.issue_at(SESSION, &target, NOW).unwrap();
+        let first = authority.issue_at(SESSION, &target(), NOW).unwrap();
         authority
-            .consume_at(Some(&first), SESSION, &target, NOW)
+            .consume_at(Some(&first), SESSION, &target(), NOW)
             .unwrap();
-        let second = authority.issue_at(SESSION, &target, NOW + 1).unwrap();
+        let second = authority.issue_at(SESSION, &target(), NOW + 1).unwrap();
         assert_eq!(
             authority
-                .consume_at(Some(&second), SESSION, &target, NOW + 1)
+                .consume_at(Some(&second), SESSION, &target(), NOW + 1)
                 .unwrap_err(),
             WriteFileGrantError::ReplayCapacityExhausted
         );
         let after_expiry = authority
-            .issue_at(SESSION, &target, NOW + WRITE_FILE_GRANT_TTL_SECONDS)
+            .issue_at(SESSION, &target(), NOW + WRITE_FILE_GRANT_TTL_SECONDS)
             .unwrap();
         authority
             .consume_at(
                 Some(&after_expiry),
                 SESSION,
-                &target,
+                &target(),
                 NOW + WRITE_FILE_GRANT_TTL_SECONDS,
             )
             .unwrap();
     }
 
     #[test]
-    fn digest_parser_and_debug_output_are_strict_and_private() {
-        assert_eq!(
-            parse_content_sha256_hex(&encode_hex(&content_sha256(b"content"))).unwrap(),
-            content_sha256(b"content")
-        );
-        for invalid in ["", &"a".repeat(63), &"A".repeat(64), &"g".repeat(64)] {
-            assert_eq!(
-                parse_content_sha256_hex(invalid).unwrap_err(),
-                WriteFileGrantError::TargetInvalid
-            );
-        }
+    fn poisoned_replay_state_returns_one_private_error() {
         let authority = authority();
-        let target = target(WriteFilePublication::Replace);
-        let token = authority.issue_at(SESSION, &target, NOW).unwrap();
-        let debug = format!("{authority:?} {target:?}");
-        assert!(!debug.contains(KEY));
-        assert!(!debug.contains(PRINCIPAL));
-        assert!(!debug.contains(SESSION));
-        assert!(!debug.contains(&token));
-        assert!(!debug.contains(&encode_hex(&authority.principal_digest)));
-        assert!(!debug.contains(&encode_hex(&target.operation_digest)));
-        assert!(!debug.contains(&encode_hex(&content_sha256(b"content"))));
-        assert!(!debug.contains("41"));
-        assert!(!debug.contains("73"));
-        assert!(!debug.contains("content"));
-        assert!(!debug.contains("file.txt"));
-        assert!(debug.contains("<redacted>"));
+        let replay = Arc::clone(&authority.replay);
+        let _ = thread::spawn(move || {
+            let _guard = replay.lock().unwrap();
+            panic!("poison test replay lock");
+        })
+        .join();
+        let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
+        assert_eq!(
+            authority
+                .consume_at(Some(&token), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::StateUnavailable
+        );
+    }
+
+    #[test]
+    fn debug_output_redacts_key_principal_target_content_and_disposition_binding() {
+        let authority = authority();
+        let serialized = format!("{authority:?} {:?}", target());
+        for secret in [
+            KEY,
+            PRINCIPAL,
+            "41",
+            "73",
+            "101",
+            "202",
+            "projects",
+            "settings.json",
+            "enabled",
+            "replace",
+        ] {
+            assert!(!serialized.contains(secret));
+        }
+        assert!(serialized.contains("<redacted>"));
     }
 }

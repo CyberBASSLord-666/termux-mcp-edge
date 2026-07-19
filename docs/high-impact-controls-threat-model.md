@@ -8,7 +8,7 @@ This document does not enable general high-impact controls. One separately revie
 
 The live `create_directory` request grant is a narrower, purpose-built authorization layer for one already-confined filesystem mutation. It is not a general high-impact token and grants no package, service, Android, network, process, secret, deletion, permission, or shell authority. Its independent contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 
-The live Android volume grant is likewise purpose-built. It grants only one exact stream/level mutation in one authenticated session, uses a distinct signed capability code, expires after 60 seconds, and cannot authorize filesystem, shell, package, service, network, microphone, routing, playback, or other Android actions.
+The live Android volume grant is likewise purpose-built. It grants only one exact stream/level mutation in one authenticated session, uses a distinct signed capability code, expires after 60 seconds, and cannot authorize filesystem, shell, package, service, network, microphone, routing, playback, or other Android actions. The project-wide internal request-grant registry fixes directory at `1`, volume at `2`, write at `3`, and reserves copy at `4`; exhaustive cross-family tests prove each live grant is privately rejected by every other authority without consumption. Public directory-creation, file-write, and volume-control APIs expose preview only, while their prepared mutation values and execution paths remain crate-private to the grant-aware transport. The legacy public `copy_file` live path remains limited to trusted embeddings until that reserved copy family is implemented.
 
 ## High-impact action categories
 
@@ -166,7 +166,7 @@ Minimum reason codes:
 7. Add operator documentation and manual recovery notes.
 8. Only then expose MCP discovery/tool-call handling for that family.
 
-The exact-stream volume slice completed this sequence with a preview-first model, offline exact-binary grants, fixed execution, non-queueing concurrency, verification, automatic restoration, cancellation-independent recovery, and aggregate privacy-preserving counters. Narrow Class 2 directory and file-write mutations use separate purpose-built grants and do not activate the inert general high-impact framework. Aggregate counters are the intentionally bounded audit design for these slices; they retain stable decision/recovery labels and no per-request timestamps or targets.
+The exact-stream volume slice completed this sequence with a preview-first model, offline exact-binary grants, fixed execution, non-queueing concurrency, verification, automatic restoration, cancellation-independent recovery, and aggregate privacy-preserving counters. Aggregate counters are the intentionally bounded audit design for this slice; they retain stable decision/recovery labels and no per-request timestamps or targets.
 
 ## Required tests before any high-impact tool is enabled
 

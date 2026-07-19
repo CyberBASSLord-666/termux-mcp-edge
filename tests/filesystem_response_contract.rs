@@ -34,7 +34,8 @@ async fn list_directory_is_deterministic_and_byte_bounded() {
             .await
             .unwrap();
     }
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let path = root.path().to_string_lossy().to_string();
 
     let first = tools.list_directory(path.clone(), Some(1)).await.unwrap();
@@ -90,7 +91,8 @@ async fn read_file_accepts_exact_limit_and_rejects_the_next_byte() {
     tokio::fs::write(&oversized, vec![b'a'; MAX_READ_BYTES + 1])
         .await
         .unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let result = tools
         .read_file(exact.to_string_lossy().to_string())
@@ -117,7 +119,8 @@ async fn read_file_rejects_invalid_utf8_explicitly() {
     tokio::fs::write(&invalid, [0xff, 0xfe, 0xfd])
         .await
         .unwrap();
-    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
 
     let error = tools
         .read_file(invalid.to_string_lossy().to_string())
@@ -133,7 +136,10 @@ async fn transport_returns_file_content_once_with_a_bounded_summary() {
     let file = root.path().join("visible.txt");
     let marker = "unique-file-content-marker";
     tokio::fs::write(&file, marker).await.unwrap();
-    let router = test_router(FileSystemTools::new(vec![root.path().to_path_buf()]));
+    let router = test_router(
+        FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate"),
+    );
     let session_id = initialize_session(&router).await;
 
     let response = post_json_to_session(
@@ -173,7 +179,10 @@ async fn transport_rejects_json_expansion_beyond_read_response_budget() {
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("escaped.txt");
     tokio::fs::write(&file, vec![0_u8; 200_000]).await.unwrap();
-    let router = test_router(FileSystemTools::new(vec![root.path().to_path_buf()]));
+    let router = test_router(
+        FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate"),
+    );
     let session_id = initialize_session(&router).await;
 
     let response = post_json_to_session(

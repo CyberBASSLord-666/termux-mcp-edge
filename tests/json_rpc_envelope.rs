@@ -113,7 +113,8 @@ async fn initialized_and_unknown_notifications_return_accepted() {
 async fn notification_shaped_tool_call_does_not_dispatch_or_mutate() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("notification-write.txt");
-    let file_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
     let body = json!({
         "jsonrpc":"2.0",
         "method":"tools/call",

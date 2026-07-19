@@ -4,9 +4,7 @@
 //! wrapper. Callers select one value from the documented six-stream enum and
 //! one integer level. Execution always uses the fixed absolute `termux-volume`
 //! program, a cleared environment, `/` as the working directory, null stdin,
-//! bounded output, and the shared cancellation-safe process supervisor. The
-//! public client surface is preview-only; live preparation and execution stay
-//! crate-private behind the transport's request-grant boundary.
+//! bounded output, and the shared cancellation-safe process supervisor.
 
 use std::{ffi::OsString, path::PathBuf, sync::Arc, time::Duration};
 
@@ -138,6 +136,25 @@ impl AndroidVolumeControlError {
     }
 }
 
+/// Preview-only Android volume-control client for library consumers.
+///
+/// Live preparation and execution are intentionally crate-private so an
+/// embedding cannot bypass the request-grant authority enforced by the MCP
+/// transport.
+///
+/// ```compile_fail
+/// use termux_mcp_server::android_volume_control::{
+///     AndroidVolumeControlClient, AndroidVolumeStreamName,
+/// };
+///
+/// # async fn cannot_bypass_request_grants() {
+/// let client = AndroidVolumeControlClient::termux();
+/// let _prepared = client
+///     .prepare_mutation(AndroidVolumeStreamName::Music, 9)
+///     .await
+///     .unwrap();
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct AndroidVolumeControlClient {
     status: AndroidVolumeClient,

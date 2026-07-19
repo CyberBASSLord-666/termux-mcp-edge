@@ -14,15 +14,15 @@ Before the write-tool transport stage merged:
 
 ## Current baseline after the write-tool stage
 
-The current staged MCP runtime exposes `write_file` preview with safe-root enforcement, payload-size controls, and dry-run-by-default behavior. Omitted `dry_run` defaults to `true`. This historical note's earlier `dry_run:false` authorization model was superseded by issue #276: live mutation now also requires the independent default-disabled write gate and one request-scoped grant bound to principal, session, anchored root, normalized target, exact content SHA-256, create-or-replace disposition, and mutating posture. The normative contracts are [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md) and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
+The current staged MCP runtime exposes `write_file` with safe-root enforcement, payload-size controls, and dry-run-by-default behavior. Omitted `dry_run` defaults to `true`. Since the original transport stage, live mutation has been hardened as an independently default-disabled Class 2 capability: explicit `dry_run:false` is necessary but not sufficient, and every mutation also requires one short-lived grant bound to the authenticated principal, active session, anchored root, normalized target, exact UTF-8 content, create-or-replace disposition, and exact old identity for replacement. Create is atomic no-replace and retains no recovery artifact; replace performs one irreversible exchange and preserves the displaced prior object in a hidden bounded per-parent quarantine. The result reports `recoveryArtifactRetained`. The current normative contract is [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 
-At this historical stage, Android platform control, shell fallback, arbitrary command execution, high-impact tools, and broad runtime-surface expansion remained unavailable. Later focused gates added fixed read-only diagnostics and exact request-authorized volume control without changing this write-tool contract.
+At this historical stage, Android platform control, shell fallback, arbitrary command execution, high-impact tools, and broad runtime-surface expansion remained unavailable. Later focused gates added fixed read-only diagnostics, exact request-authorized volume control, and the additive write-mutation authorization contract described above.
 
 ## Required transport constraints for the first write-capable runtime PR
 
 The first transport PR that exposed `write_file` had to remain default-deny and dry-run-first:
 
-1. `tools/list` may advertise `write_file` only with an input schema that makes write intent and the current disabled/enabled gate posture explicit.
+1. `tools/list` may advertise `write_file` only with an input schema that makes write intent explicit.
 2. `dry_run` must default to `true` if omitted at the transport boundary.
 3. Mutating writes must require `dry_run: false` in the tool arguments.
 4. Safe-root validation must remain mandatory for every write request.

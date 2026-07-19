@@ -35,6 +35,12 @@ The control boundary is fixed:
 There is no shell, `PATH` lookup, caller-selected executable, argv extension,
 environment, stdin, cwd, timeout, output limit, or command fallback.
 
+The Rust library surface is preview-only as well: downstream callers can use
+`AndroidVolumeControlClient::preview`, but mutation preparation, the prepared
+mutation value, and live execution are crate-private. Only the request-grant
+aware transport can reach that path. Embedding the crate therefore does not
+provide a second, grant-free volume setter.
+
 ## Configuration
 
 Build the dedicated posture:
@@ -100,6 +106,12 @@ config mode, or print private inputs. The grant binds a keyed digest of the
 static principal, canonical session UUID, volume-control capability, exact
 stream, exact level, mutating posture, key ID, random identifier, issue time,
 and expiry.
+
+The signed family code is allocated by the single project-wide request-grant
+registry: directory creation is `1`, Android volume is `2`, file write is `3`,
+and file copy reserves `4` for any future separately reviewed grant gate. The
+registry is an internal wire-compatibility boundary; callers cannot select or
+override a family code.
 
 Send the private file's one line only in the matching request header:
 

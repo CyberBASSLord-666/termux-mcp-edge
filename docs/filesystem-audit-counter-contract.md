@@ -48,8 +48,8 @@ The runtime should count:
 - allowed bounded safe-rooted literal text searches
 - denied search requests, including invalid arguments/query/depth, safe-root rejection, response bounds, and internal failures
 - allowed `write_file` dry-run previews
-- allowed exact-grant-authorized `write_file` create and replace mutations
-- denied write requests, including invalid arguments, disabled mutation, stable grant authorization failures, safe-root/type/disposition rejection, byte/response limits, namespace changes, and internal failures
+- allowed explicit request-authorized `write_file` create and replace mutations only after exact publication, expected recovery-retention state, and durability confirmation
+- denied write requests, including invalid arguments, disabled mutation, response/payload bounds, safe-root rejection, unsupported or changed targets, every stable grant authorization failure, transaction/recovery failure, and internal failure
 
 The runtime should continue exposing aggregate counters only through the additive `runtime_status.structuredContent.auditCounters` snapshot.
 
@@ -81,7 +81,7 @@ Audit events and counters must not store:
 - host identifiers
 - user identifiers
 - service-specific private metadata
-- bearer or capability secrets, principal fingerprints, session identifiers, JTIs, target digests, grant timestamps, or replay-state contents
+- bearer or capability secrets, principal fingerprints, session identifiers, JTIs, target/content digests, create/replace disposition bindings, existing/staging/final filesystem identities, artifact names/counts/bytes, grant timestamps, or replay-state contents
 
 Counters may store only stable tool names and stable reason codes. Event metadata, when used by future sinks, must be limited to bounded numeric values such as byte limits or argument counts. The in-memory `AuditCounters` implementation intentionally ignores event metadata and records only aggregate totals by tool and reason code.
 
@@ -103,11 +103,13 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 | `read_text_range` | `read_only` | `read_only` | `filesystem_read` |
 | `search_text` | `read_only` | `read_only` | `filesystem_read` |
 | `write_file` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
-| `write_file` with grant-authorized mutation intent | `mutating` | `mutating` | `filesystem_write` |
+| `write_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
 
-A directory, copy, or file-write call is a dry-run preview unless `dry_run=false` resolves to mutation intent. Audit wiring must use the resolved mode, not merely the raw caller argument; the mutating mode does not assert that a gate or grant authorized the request.
+A directory or file mutation call is a dry-run preview unless `dry_run=false` resolves to an explicit mutation. Audit wiring must use the resolved mode, not merely the raw caller argument.
 
-For `create_directory` and `write_file`, mutating mode is only the requested posture. It does not imply authorization: each dedicated runtime gate and exact request grant is checked separately. A denied grant records the mutating mode and one stable `capability_*` reason only; successful grant consumption adds no secret or caller-derived label. Write counters also exclude content digest, create/replace disposition, staging name, file identity/mode/size, and cleanup/rollback target.
+For `create_directory`, mutating mode is only the requested posture. It does not imply authorization: the dedicated runtime gate and exact request grant are checked separately. A denied grant records the mutating mode and one stable `capability_*` reason only; successful grant consumption adds no secret or caller-derived label.
+
+The same rule applies independently to `write_file`. `MCP__FILE__WRITE_MUTATION_ENABLED` is default-disabled and unrelated to the directory gate. A mutating event does not imply that static authentication, content/disposition/old-identity binding, or the single-use grant succeeded. The event source records one stable `write_file_mutation_disabled`, `capability_*`, target-state, size/response, quarantine-capacity, or transaction reason; it never records which content, disposition, inode, target, session, JTI, or artifact produced that decision. `explicit_write_allowed` is emitted only after the exact staged mode-`0600` inode is verified at the final name, required parent/quarantine synchronization succeeds, and create has retained no artifact or replace has preserved the displaced object in the bounded recovery quarantine.
 
 ## Stable reason-code guidance
 
@@ -141,7 +143,13 @@ Recommended denied reason codes:
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
 - `create_directory_mutation_disabled`
-- stable `capability_*` authorization reasons defined by [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md)
+- `write_file_mutation_disabled`
+- stable `capability_*` authorization reasons defined independently by [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md)
+- `filesystem_write_target_changed`
+- `filesystem_write_target_not_found`
+- `filesystem_write_target_type_unsupported`
+- `write_quarantine_capacity_exceeded`
+- `filesystem_write_failed`
 - `filesystem_copy_source_not_found`
 - `filesystem_copy_parent_not_found`
 - `filesystem_copy_same_path`
@@ -169,14 +177,15 @@ Recommended denied reason codes:
 - `filesystem_find_failed`
 - `path_outside_safe_root`
 - `read_byte_limit_exceeded`
-- `write_byte_limit_exceeded`
+- `write_size_limit_exceeded`
+- `response_size_limit_exceeded`
 - `filesystem_operation_failed`
 
 The final runtime implementation may consolidate equivalent failures under fewer reason codes, but must keep codes stable, non-sensitive, and low-cardinality.
 
 ## Response-contract preservation
 
-Audit counter wiring must not change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, or `write_file`.
+Audit counter wiring must not independently change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, or `write_file`. The request-authorization change intentionally defines the current `write_file` success contract below; later audit work must preserve it.
 
 In particular, runtime wiring must preserve:
 
@@ -185,6 +194,8 @@ In particular, runtime wiring must preserve:
 - current JSON-RPC error codes for invalid params, payload-too-large, and internal errors
 - current safe-root rejection message
 - current default-dry-run directory and file mutation behavior
+
+The `write_file` result is content- and path-free and bounded to a 16 KiB complete JSON-RPC response. Its structured fields are only `dryRun`, `sizeBytes`, `disposition` (`create` or `replace`), `recoveryArtifactRetained` (true only for successful live replacement), `mode` (`0600`), `maxFileBytes` (1 MiB), and `maxResponseBytes` (16 KiB). Neither the result nor its audit counter may expose the requested path, UTF-8 content, content digest, old identity, artifact name, retained bytes/count, or other recovery detail.
 
 `runtime_status` may continue exposing the additive `auditCounters` snapshot already present in the staged runtime.
 
@@ -203,12 +214,13 @@ A focused runtime wiring PR should verify all of the following:
 9. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
 10. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
 11. `read_text_range` records allowed and denied read-only decisions without retaining its path, filename, offset, requested/returned size, text content, file size/identity, request ID, or raw error.
-12. `write_file` records an allowed dry-run filesystem event for successful previews without consuming a grant.
-13. `write_file` records an allowed mutating filesystem event only after one exact grant-authorized create or replace completes its durability and cleanup contract.
-14. `write_file` records exactly one denied filesystem event using the resolved dry-run or mutating mode for invalid arguments, disabled gate, grant failure, write/response byte limit, safe-root/type/disposition rejection, namespace change, and internal failure; it retains no grant, content, digest, path, response ID, target/staging identity, or raw error.
+12. `write_file` records an allowed dry-run filesystem event for a successful content/path-free preview, and a supplied matching grant remains unconsumed.
+13. `write_file` records an allowed mutating filesystem event only for a fully authorized exact create or replace after fixed mode, identity, recovery-retention, and durability checks complete.
+14. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, disabled mutation, response/write byte limits, safe-root/parent/type/identity rejection, every stable grant failure, quarantine capacity/shape/lock rejection, staging/publication/exchange/post-commit failure, and internal worker failure.
 15. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
 16. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
 17. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content/digests/base64/text data.
+18. Exact release-validator and native Termux device-smoke tests prove the write gate, grant reason buckets, recovery-retention result, and bounded quarantine denials without serializing keys, grants, principal/session/JTI bindings, paths, content, digests, filesystem identities, or artifact names.
 
 ## Security invariant
 
