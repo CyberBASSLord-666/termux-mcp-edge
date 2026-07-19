@@ -19,7 +19,7 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/*.yml"
   pull_request:
     branches: [ main ]
     paths:
@@ -38,7 +38,7 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/*.yml"
   workflow_dispatch:
 
 permissions:
