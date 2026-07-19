@@ -288,12 +288,9 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
     )
     .await;
     assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    let body = to_bytes(
-        oversized.into_body(),
-        MAX_BINARY_READ_RESPONSE_BYTES + 1,
-    )
-    .await
-    .unwrap();
+    let body = to_bytes(oversized.into_body(), MAX_BINARY_READ_RESPONSE_BYTES + 1)
+        .await
+        .unwrap();
     assert!(body.len() <= MAX_BINARY_READ_RESPONSE_BYTES);
     let payload: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(payload["id"], Value::Null);

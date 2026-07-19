@@ -1430,10 +1430,7 @@ fn scan_search_file(
     Ok(())
 }
 
-fn open_verified_regular_file(
-    anchored: &AnchoredPath,
-    max_bytes: usize,
-) -> Result<File, AppError> {
+fn open_verified_regular_file(anchored: &AnchoredPath, max_bytes: usize) -> Result<File, AppError> {
     let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
     let root_fd = open_root_directory(&anchored.root_path)?;
     let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
@@ -1471,9 +1468,7 @@ fn open_verified_regular_file(
     )
     .map_err(|error| match error {
         rustix::io::Errno::NOENT => AppError::PathNotFound,
-        rustix::io::Errno::LOOP => {
-            path_rejected(anchored.display_path.to_string_lossy().as_ref())
-        }
+        rustix::io::Errno::LOOP => path_rejected(anchored.display_path.to_string_lossy().as_ref()),
         _ => descriptor_error(error),
     })?;
     let opened_metadata = descriptor_fs::fstat(&file_fd).map_err(descriptor_error)?;
@@ -1519,8 +1514,7 @@ fn read_bounded_bytes(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, Ap
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut encoded = String::with_capacity(
         base64_encoded_len(bytes.len()).expect("bounded file length has a base64 length"),
     );
@@ -1974,7 +1968,10 @@ mod tests {
         let error = read_bounded_bytes(std::io::Cursor::new(vec![0x5a; 65]), 64).unwrap_err();
         assert!(matches!(
             error,
-            AppError::FileTooLarge { size: 65, max_size: 64 }
+            AppError::FileTooLarge {
+                size: 65,
+                max_size: 64
+            }
         ));
         assert_eq!(
             read_bounded_bytes(std::io::Cursor::new(vec![0xa5; 64]), 64).unwrap(),
