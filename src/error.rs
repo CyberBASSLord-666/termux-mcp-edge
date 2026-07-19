@@ -3,10 +3,8 @@
 use axum::http::StatusCode;
 use thiserror::Error;
 
-pub(crate) const INVALID_BINARY_RANGE_PUBLIC_MESSAGE: &str =
-    "Requested binary range is not valid";
-pub(crate) const INVALID_TEXT_RANGE_PUBLIC_MESSAGE: &str =
-    "Requested text range is not valid";
+pub(crate) const INVALID_BINARY_RANGE_PUBLIC_MESSAGE: &str = "Requested binary range is not valid";
+pub(crate) const INVALID_TEXT_RANGE_PUBLIC_MESSAGE: &str = "Requested text range is not valid";
 
 #[derive(Debug, Error)]
 pub enum AppError {

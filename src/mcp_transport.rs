@@ -50,9 +50,7 @@ use crate::{
         CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER,
         CREATE_DIRECTORY_GRANT_TTL_SECONDS, MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES,
     },
-    error::{
-        AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE, INVALID_TEXT_RANGE_PUBLIC_MESSAGE,
-    },
+    error::{AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE, INVALID_TEXT_RANGE_PUBLIC_MESSAGE},
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
     mcp_session::{
         McpSessionStore, SessionPhase, SessionStoreError, SseReplayError, SseReplayEvent,
