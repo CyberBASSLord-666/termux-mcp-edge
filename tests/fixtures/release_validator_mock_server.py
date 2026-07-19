@@ -94,6 +94,7 @@ if TOKEN is None or SAFE_ROOT_VALUE is None:
     raise SystemExit(2)
 SAFE_ROOT = pathlib.Path(SAFE_ROOT_VALUE).resolve()
 MAX_BODY = int(runtime_value("MCP__TRANSPORT__MAX_BODY_BYTES", "1024") or "1024")
+SSE_ENABLED = runtime_value("MCP__TRANSPORT__SSE_ENABLED", "false") == "true"
 SESSION_ID = "fixture-session-00000000"
 CAPABILITY_ENABLED = (
     runtime_value("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED", "false") == "true"
@@ -360,6 +361,7 @@ class Handler(BaseHTTPRequestHandler):
                     "max_concurrent_requests": 4,
                     "request_timeout_seconds": 30,
                     "max_body_bytes": MAX_BODY,
+                    "sse_enabled": SSE_ENABLED,
                 }
             self.send_json(200, ready)
             return
@@ -614,6 +616,18 @@ class Handler(BaseHTTPRequestHandler):
                         "commandExecution": False,
                         "androidPlatformTools": False,
                         "highImpactTools": False,
+                        "serverSentEvents": SSE_ENABLED,
+                        "serverSentEventsMode": (
+                            "finite_request_response_with_origin_stream_replay"
+                            if SSE_ENABLED
+                            else "disabled"
+                        ),
+                        "sseMaxStreamsPerSession": 8,
+                        "sseMaxEventsPerStream": 2,
+                        "sseMaxEventDataBytes": 131072,
+                        "sseMaxReplayBytesPerSession": 262144,
+                        "sseMaxLastEventIdBytes": 64,
+                        "sseRetryMilliseconds": 1000,
                         "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
                         "androidVolumeControlEnabled": False,
                         "androidVolumeGrantRequired": False,

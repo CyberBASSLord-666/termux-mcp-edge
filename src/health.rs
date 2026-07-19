@@ -18,6 +18,7 @@ pub struct McpRequestLimitReadiness {
     pub max_concurrent_requests: usize,
     pub request_timeout_seconds: u64,
     pub max_body_bytes: usize,
+    pub sse_enabled: bool,
 }
 
 pub fn build_readiness_response(
@@ -45,6 +46,7 @@ mod tests {
             max_concurrent_requests: 4,
             request_timeout_seconds: 30,
             max_body_bytes: 2 * 1024 * 1024,
+            sse_enabled: false,
         };
         let response = build_readiness_response(2, "static_token", Some(limits.clone()));
 

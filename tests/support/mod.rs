@@ -12,8 +12,8 @@ use tempfile::TempDir;
 use termux_mcp_server::{
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        router, router_with_create_directory_authority, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
-        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+        router, router_with_create_directory_authority, router_with_options, McpTransportOptions,
+        MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
@@ -45,6 +45,18 @@ pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
         false,
         false,
         false,
+    )
+}
+
+pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
+    router_with_options(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+        false,
+        false,
+        false,
+        McpTransportOptions::default().with_sse_enabled(true),
     )
 }
 

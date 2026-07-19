@@ -147,7 +147,7 @@ The `mcp-runtime` artifact must prove:
 - lexical out-of-root and in-root symlink-escape denial without path/content reflection;
 - unavailable shell/high-impact invocation;
 - authenticated HTTP 413 and unauthenticated-first HTTP 401 ordering;
-- documented non-SSE GET 405;
+- documented default JSON/GET-405 posture and default-disabled bounded SSE option;
 - explicit session deletion.
 
 The `android-volume-control` artifact must additionally prove:

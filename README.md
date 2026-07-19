@@ -6,20 +6,20 @@ The project is designed for developers, advanced Termux operators, and power use
 
 The optional `mcp-runtime` feature wires a stable MCP 2025-11-25 Streamable HTTP `/mcp` transport around the staged tool surface. In static-token mode, bearer authentication is enforced before resource-limit accounting, transport validation, JSON-RPC parsing, lifecycle handling, tool discovery, or tool invocation. Authenticated requests must pass mobile-conscious concurrency, timeout, body-size, exact `Host`, and browser `Origin` checks.
 
-The transport negotiates protocol version `2025-11-25`, issues bounded cryptographically random sessions, requires `notifications/initialized` before normal operations, enforces media and protocol headers, accepts one JSON-RPC request, notification, or response per POST, and supports explicit session termination. GET is implemented with the specification-permitted HTTP 405 response because this server does not initiate SSE streams or retain replay state.
+The transport negotiates protocol version `2025-11-25`, issues bounded cryptographically random sessions, requires `notifications/initialized` before normal operations, enforces media and protocol headers, accepts one JSON-RPC request, notification, or response per POST, and supports explicit session termination. JSON responses remain the default. An independent default-disabled runtime option adds finite SSE request responses and exact originating-stream replay without creating an unbounded connection or queue subsystem.
 
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
 - **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
-- **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 because optional SSE delivery is not offered.
+- **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 by default, while the explicit SSE posture accepts only cursor-bearing replay GETs.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in.
 - **Filesystem surface:** deterministic bounded directory listing, content-free literal basename discovery, single-object metadata, streaming SHA-256 hashing, canonical base64 whole-file and range reads, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, and file writes. Mutations are descriptor-relative, crash-durable, and dry-run by default. Directory creation is additionally default-disabled and requires a 60-second request-scoped single-use grant bound to the authenticated principal, active session, anchored root, and normalized target. File copy accepts one regular source up to 1 MiB, requires an absent destination with an existing parent, publishes fixed mode `0600` without replacement, and never returns content or preserves source metadata. Path discovery examines at most 8,192 entries through no-follow directory descriptors and returns at most 512 literal basename matches under a 262,144-byte response ceiling. Whole-file binary read accepts one no-follow regular file up to 1 MiB. Binary range read accepts a 256 KiB slice from one no-follow regular file up to 64 MiB. Both return canonical padded RFC 4648 base64 without path or host metadata. Hashing accepts one no-follow regular file up to 16 MiB and returns only its lowercase SHA-256 digest and byte count. Metadata, hashing, path discovery, and text search remain content-private under fixed response and traversal ceilings.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
-- **Session bounds:** 64 in-memory UUID sessions with a 30-minute idle expiry; client initialization metadata is validated but not retained.
+- **Session bounds:** 64 in-memory UUID sessions with a 30-minute idle expiry; client initialization metadata is validated but not retained. Opt-in SSE state is owned by the session and bounded to 8 streams, 2 events per stream, 128 KiB per event, 256 KiB retained per session, and 64-byte cursors.
 - **Default filesystem root:** `/data/data/com.termux/files/home/mcp-files`.
 - **Project service name:** `mcp_runtime`.
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
@@ -70,7 +70,7 @@ MCP-Protocol-Version: 2025-11-25
 MCP-Session-Id: <value returned by initialize>
 ```
 
-Send `notifications/initialized` before discovery or invocation. Accepted notifications and client responses return HTTP 202 with no body. A valid GET with `Accept: text/event-stream` returns HTTP 405 because server-initiated SSE and resumption are not offered. DELETE terminates the session with HTTP 204; expired, terminated, or unknown session IDs return HTTP 404. Session IDs scope lifecycle state but never replace bearer authentication.
+Send `notifications/initialized` before discovery or invocation. Accepted notifications and client responses return HTTP 202 with no body. With the default `MCP__TRANSPORT__SSE_ENABLED=false`, POST responses remain JSON and valid GET returns HTTP 405. Setting it to `true` allows bounded JSON-RPC responses up to 128 KiB to use a finite two-event SSE stream: an empty priming event with a one-second reconnect hint followed by the terminal JSON-RPC response. Larger responses stay JSON rather than entering replay memory. If a POST stream disconnects after an event, reconnect with GET plus its exact `Last-Event-ID`; the server replays only later events from that session and originating stream. Missing cursors still receive 405, malformed cursors receive 400, and unavailable, evicted, or cross-session cursors receive the same non-reflective 404. DELETE terminates the session and its replay state with HTTP 204; expired, terminated, or unknown session IDs return HTTP 404. Session IDs and cursors scope lifecycle state but never replace bearer authentication.
 
 Local unauthenticated development requires both:
 
@@ -97,6 +97,8 @@ export MCP__TRANSPORT__ALLOWED_ORIGINS='http://localhost:8000,http://127.0.0.1:8
 ```
 
 `MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only for reviewed non-browser clients that cannot send an `Origin` header.
+
+`MCP__TRANSPORT__SSE_ENABLED=true` is an operator opt-in for finite response delivery and bounded resumption. Eligible response payloads—including tool output—remain in process memory until stream eviction, session deletion, idle expiry, or restart. It does not enable server-initiated broadcast, long-lived queues, or cross-stream delivery. `/ready` and `runtime_status` report the active posture and fixed limits.
 
 ## MCP request resource limits
 
@@ -248,7 +250,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 
 - Rust 2021 single binary.
 - Axum HTTP runtime.
-- Minimal internal stable MCP 2025-11-25 Streamable HTTP transport; no external MCP framework dependency and no optional SSE/replay subsystem.
+- Minimal internal stable MCP 2025-11-25 Streamable HTTP transport with a default-disabled bounded SSE/replay posture and no external MCP framework dependency.
 - `termux-services` / runit supervision.
 - Localhost-first networking with explicit authenticated remote-access posture.
 - Staged capability gates for higher-risk developer and power-user functionality.

@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "network-programming"]
 
 [features]
 default = []
-mcp-runtime = ["dep:hmac", "dep:rustix", "dep:sha2"]
+mcp-runtime = ["dep:futures-util", "dep:hmac", "dep:rustix", "dep:sha2"]
 android-battery-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-control = ["android-volume-status"]
@@ -31,6 +31,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
+futures-util = { version = "0.3", default-features = false, optional = true }
 metrics = "0.24"
 hmac = { version = "0.13", optional = true }
 rustix = { version = "1", features = ["fs"], optional = true }

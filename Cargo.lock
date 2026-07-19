@@ -901,6 +901,7 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
+ "futures-util",
  "hmac",
  "metrics",
  "proptest",

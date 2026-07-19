@@ -128,6 +128,8 @@ pub struct TransportConfig {
     pub allowed_origins: Vec<String>,
     /// Explicit compatibility switch for non-browser clients that omit Origin.
     pub allow_missing_origin: bool,
+    /// Explicit default-disabled opt-in for finite SSE response delivery and replay.
+    pub sse_enabled: bool,
     /// Maximum number of authenticated MCP requests executing concurrently.
     pub max_concurrent_requests: usize,
     /// Maximum total duration for one authenticated MCP request.
@@ -285,6 +287,7 @@ impl AppConfig {
                     "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
                     false,
                 )?,
+                sse_enabled: env_bool(&read_variable, "MCP__TRANSPORT__SSE_ENABLED", false)?,
                 max_concurrent_requests: env_usize(
                     &read_variable,
                     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
@@ -707,6 +710,7 @@ mod tests {
             allowed_hosts: vec!["localhost:8000".to_owned()],
             allowed_origins: vec!["http://localhost:8000".to_owned()],
             allow_missing_origin: false,
+            sse_enabled: false,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -821,10 +825,23 @@ mod tests {
         assert!(!config.android.volume_control_enabled);
         assert!(!config.command.enabled);
         assert!(!config.file.create_directory_mutation_enabled);
+        assert!(!config.transport.sse_enabled);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
         );
+    }
+
+    #[test]
+    fn sse_transport_requires_explicit_boolean_opt_in() {
+        let enabled =
+            load_from_os_values([("MCP__TRANSPORT__SSE_ENABLED", OsString::from("true"))]).unwrap();
+        assert!(enabled.transport.sse_enabled);
+
+        let error =
+            load_from_os_values([("MCP__TRANSPORT__SSE_ENABLED", OsString::from("sometimes"))])
+                .expect_err("invalid SSE transport booleans must fail closed");
+        assert!(error.to_string().contains("MCP__TRANSPORT__SSE_ENABLED"));
     }
 
     #[test]
@@ -1123,6 +1140,7 @@ mod tests {
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
+            "MCP__TRANSPORT__SSE_ENABLED",
             "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
             "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS",
             "MCP__TRANSPORT__MAX_BODY_BYTES",

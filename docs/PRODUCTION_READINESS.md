@@ -8,14 +8,14 @@ This checklist defines the evidence required to merge, release, and operate the 
 | --- | --- | --- | --- | --- | --- | --- |
 | `GET /health` | Enabled, coarse | Enabled, coarse | Enabled, coarse | Enabled, coarse | Enabled, coarse | Enabled, coarse |
 | `GET /ready` | Enabled, coarse | Enabled with bounded-limit metadata | Same | Same | Same | Same |
-| `/mcp` stable transport | Not compiled | Authenticated and resource-bounded; GET returns 405 without SSE | Same | Same | Same | Same |
+| `/mcp` stable transport | Not compiled | Authenticated and resource-bounded; JSON/GET-405 default, bounded SSE opt-in | Same | Same | Same | Same |
 | Optional tool | None | None | `android_battery_status` | `android_volume_status` | `set_android_volume` | `run_command_profile` |
 | Exact-stream volume control | Disabled | Disabled | Disabled | Disabled | Preview-first; live use exact-grant authorized | Disabled |
 | Broader Android/shell/arbitrary-command/service control | Disabled | Disabled | Disabled | Disabled | Disabled | Disabled |
 
 All postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
 
-The `mcp-runtime` build negotiates protocol version `2025-11-25`, validates initialize metadata, issues cryptographically random bounded sessions, gates normal operations on `notifications/initialized`, enforces POST media negotiation and the subsequent-request protocol/session headers, accepts compliant client notifications and responses with HTTP 202, and supports DELETE termination. The stable specification permits GET to return HTTP 405 when server-initiated SSE is not offered; this runtime therefore has no SSE, replay buffer, or resumability state.
+The `mcp-runtime` build negotiates protocol version `2025-11-25`, validates initialize metadata, issues cryptographically random bounded sessions, gates normal operations on `notifications/initialized`, enforces POST media negotiation and the subsequent-request protocol/session headers, accepts compliant client notifications and responses with HTTP 202, and supports DELETE termination. Its default JSON posture uses the specification-permitted GET 405. The separate SSE runtime opt-in provides only finite primed responses and bounded exact-stream replay; long-lived server queues and broadcast remain absent.
 
 ## Remediated Production Lanes
 
@@ -105,7 +105,7 @@ A change to the stable transport or staged tool registry must prove:
 - initialization negotiates `2025-11-25`, creates no session for invalid params, and gates normal operations until `notifications/initialized`;
 - POST content and accepted response media types, `MCP-Protocol-Version`, and `MCP-Session-Id` are enforced without ambiguous duplicate headers;
 - sessions remain random, bounded, expiring, isolated, explicitly terminable, and subordinate to request authentication;
-- notifications and client responses receive HTTP 202 with no body, batches remain rejected, and GET returns the documented 405 without creating SSE/replay state;
+- notifications and client responses receive HTTP 202 with no body, batches remain rejected, the default GET returns 405 without replay state, and the opt-in SSE posture proves finite priming, exact same-stream resumption, cross-session denial, deterministic eviction, JSON fallback, and lifecycle cleanup;
 - notification-shaped tool calls cannot dispatch or mutate state;
 - unauthenticated callers cannot discover or invoke tools;
 - discovery lists exactly fifteen baseline tools, plus only those battery, volume-status, volume-control, and fixed-command tools whose independent gates are active (sixteen with one through nineteen with all four);
@@ -115,7 +115,7 @@ A change to the stable transport or staged tool registry must prove:
 - errors and audit counters retain only stable non-sensitive data;
 - arbitrary command execution, broader Android control, shell fallback, and unrelated high-impact tools remain absent; fixed diagnostics and exact-stream volume control appear only in their explicit postures.
 
-Stable transport regression evidence is defined in [`MCP_RESTORATION_VALIDATION.md`](MCP_RESTORATION_VALIDATION.md). Future SSE, replay, or protocol-version changes require a new focused transport gate rather than an implicit compatibility expansion.
+Stable transport regression evidence, including the independently gated SSE posture, is defined in [`MCP_RESTORATION_VALIDATION.md`](MCP_RESTORATION_VALIDATION.md). Future long-lived server-request streaming or protocol-version changes require a new focused transport gate rather than an implicit compatibility expansion.
 
 ## High-Impact Capability Gate
 

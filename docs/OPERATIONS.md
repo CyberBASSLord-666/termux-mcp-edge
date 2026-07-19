@@ -8,7 +8,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 
 - Rust single binary.
 - `GET /health` and `GET /ready` operational endpoints.
-- Optional authenticated stable MCP 2025-11-25 `POST`, `GET`, and `DELETE /mcp` handling; GET returns 405 because SSE is not offered.
+- Optional authenticated stable MCP 2025-11-25 `POST`, `GET`, and `DELETE /mcp` handling; GET returns 405 by default, with finite cursor replay available only through explicit SSE opt-in.
 - Authentication before concurrency, timeout, body-size, Host, Origin, parsing, discovery, and dispatch.
 - Four concurrent authenticated MCP requests by default.
 - Thirty-second request timeout by default.
@@ -129,7 +129,7 @@ unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS
 
 Do not enable shell tracing, echo token variables, or include credential-bearing commands in screenshots or issue text.
 
-Each process holds at most 64 sessions and expires them after 30 idle minutes. Missing required post-initialize protocol/session headers return HTTP 400; expired, terminated, malformed, or unknown sessions return HTTP 404; capacity exhaustion returns HTTP 503. A client should DELETE a finished session and initialize a new session after HTTP 404 or a server restart. Session IDs do not replace the bearer token.
+Each process holds at most 64 sessions and expires them after 30 idle minutes. Missing required post-initialize protocol/session headers return HTTP 400; expired, terminated, malformed, or unknown sessions return HTTP 404; capacity exhaustion returns HTTP 503. A client should DELETE a finished session and initialize a new session after HTTP 404 or a server restart. Session IDs do not replace the bearer token. SSE is disabled by default. If enabled, only finite request-response streams enter replay state, bounded to 8 streams and 256 KiB per session; terminate unused sessions promptly so their replay budget is released immediately.
 
 ## Request limits
 
@@ -140,8 +140,11 @@ The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65
 | `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS` | `4` | `1–64` |
 | `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS` | `30` | `1–300` |
 | `MCP__TRANSPORT__MAX_BODY_BYTES` | `2097152` | `1024–8388608` |
+| `MCP__TRANSPORT__SSE_ENABLED` | `false` | `true` or `false` |
 
 Values outside these ranges fail startup. Increasing concurrency and body size together increases possible peak memory use; evaluate them together on the target device.
+
+When SSE is enabled, JSON-RPC responses up to 128 KiB are retained for exact cursor resumption. Larger bounded responses remain JSON. Missing `Last-Event-ID` receives 405; malformed values receive 400; unavailable values receive 404. A reconnect must reuse the original session, bearer authentication, protocol version, Host, and Origin headers.
 
 Failure semantics:
 

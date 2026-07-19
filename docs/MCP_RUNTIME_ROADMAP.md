@@ -10,7 +10,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 `main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and fifteen baseline tools: deterministic runtime/platform/Android/project-service metadata, preview-first and independently grant-gated single-directory creation, dry-run-first bounded binary file copy, content-free literal basename discovery, streaming bounded SHA-256 file hashing, safe-rooted listing, descriptor-relative single-object metadata, bounded canonical base64 whole-file and range reads, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
 
-The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
+The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. The default posture returns HTTP 405 for GET. A separate runtime opt-in adds finite primed SSE request responses and exact `Last-Event-ID` resumption with fixed session, stream, event, byte, and cursor bounds; it does not add broadcast or an unbounded server-message queue.
 
 The staged runtime also includes in-memory non-sensitive audit counters for current tool decisions. Separate `android-battery-status` and `android-volume-status` compile features plus disabled-by-default runtime flags expose bounded read-only Termux:API telemetry. A separate `android-volume-control` posture now exposes only preview-first exact-stream mutation with static authentication, an exact single-use request grant, fixed execution, verification, and restoration. A separate `command-execution` feature and runtime flag expose only three fixed read-only diagnostics of the exact server binary. General high-impact capability-token primitives remain inert policy scaffolding. Broader Android control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, package management, network mutation, and unrelated high-impact actions remain unavailable until their own power-user capability gates land.
 
@@ -106,16 +106,16 @@ Required gates:
 
 Implement the stable MCP 2025-11-25 lifecycle and Streamable HTTP contract without expanding tool authority in the same change.
 
-Status: complete for the non-SSE Streamable HTTP posture. Optional server-initiated SSE, replay, and resumability remain unimplemented and must use a separate gate if later required.
+Status: complete for the default JSON posture and the independently gated bounded SSE response/resumption posture. Long-lived server-initiated requests and notification streams remain unavailable.
 
 Required gates:
 
 - Initialization is the first client/server interaction and negotiated state gates normal operation.
-- The single MCP endpoint implements required POST and GET behavior, including explicit JSON/SSE media negotiation and the specification-permitted GET 405 response when SSE is unavailable.
+- The single MCP endpoint implements required POST and GET behavior, including explicit JSON/SSE media negotiation, the specification-permitted GET 405 default, and exact cursor-bearing GET resumption when SSE is enabled.
 - Requests after initialization enforce the `MCP-Protocol-Version` header contract.
 - Notification HTTP behavior and JSON-RPC no-response semantics conform to the stable transport.
 - Session support uses cryptographically random UUIDs, bounded capacity, idle expiry, independent lifecycle state, and explicit DELETE termination.
-- Cancellation notifications, timeout cleanup, shutdown/reset, 404 reinitialization, and multiple-client isolation are covered; there is no cross-request operation registry or SSE resumption state.
+- Cancellation notifications, timeout cleanup, shutdown/reset, 404 reinitialization, and multiple-client isolation are covered; SSE replay is session-owned, originating-stream-only, oldest-first evicted, and removed on termination or expiry.
 - Existing authentication, Host/Origin, resource, tool-authorization, and audit boundaries remain intact.
 - Compatibility claims and operator validation cite the exact implemented protocol revision.
 

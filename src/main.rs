@@ -101,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
         max_concurrent_requests = config.transport.max_concurrent_requests,
         request_timeout_seconds = config.transport.request_timeout_seconds,
         max_body_bytes = config.transport.max_body_bytes,
+        sse_enabled = config.transport.sse_enabled,
         "MCP request limits configured"
     );
 
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         max_concurrent_requests: config.transport.max_concurrent_requests,
         request_timeout_seconds: config.transport.request_timeout_seconds,
         max_body_bytes: config.transport.max_body_bytes,
+        sse_enabled: config.transport.sse_enabled,
     });
 
     #[cfg(not(feature = "mcp-runtime"))]
@@ -149,36 +151,44 @@ async fn main() -> anyhow::Result<()> {
             config.transport.allowed_origins.clone(),
             config.transport.allow_missing_origin,
         )?;
+        let transport_options = termux_mcp_server::mcp_transport::McpTransportOptions::default()
+            .with_sse_enabled(config.transport.sse_enabled);
         #[cfg(not(feature = "android-volume-control"))]
         let mcp_app = match create_directory_authority {
             Some(authority) => {
-                termux_mcp_server::mcp_transport::router_with_create_directory_authority(
+                termux_mcp_server::mcp_transport::router_with_create_directory_authority_and_options(
                     transport_security,
                     file_tools,
                     config.android.battery_status_enabled,
                     config.android.volume_status_enabled,
                     config.command.enabled,
                     authority,
+                    transport_options,
                 )
             }
-            None => termux_mcp_server::mcp_transport::router(
+            None => termux_mcp_server::mcp_transport::router_with_options(
                 transport_security,
                 file_tools,
                 config.android.battery_status_enabled,
                 config.android.volume_status_enabled,
                 config.command.enabled,
+                transport_options,
             ),
         };
         #[cfg(feature = "android-volume-control")]
-        let mcp_app = termux_mcp_server::mcp_transport::router_with_capability_authorities(
-            transport_security,
-            file_tools,
-            config.android.battery_status_enabled,
-            config.android.volume_status_enabled,
-            config.command.enabled,
-            create_directory_authority,
-            android_volume_control_authority,
-        );
+        let mcp_app =
+            termux_mcp_server::mcp_transport::router_with_capability_authorities_and_options(
+                transport_security,
+                file_tools,
+                config.android.battery_status_enabled,
+                config.android.volume_status_enabled,
+                config.command.enabled,
+                termux_mcp_server::mcp_transport::McpCapabilityAuthorities::new(
+                    create_directory_authority,
+                    android_volume_control_authority,
+                ),
+                transport_options,
+            );
         let mcp_app = mcp_app
             .layer(DefaultBodyLimit::max(config.transport.max_body_bytes))
             .route_layer(middleware::from_fn_with_state(
