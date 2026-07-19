@@ -5,7 +5,7 @@
 //! normalized root-relative target, the exact content, the create-or-replace
 //! disposition, the complete preflight identity of a replaced file, and the
 //! mutating posture. The serialized payload contains only a random grant ID, a
-//! keyed opaque operation binding, and issuance timestamps. It therefore does
+//! signed capability byte, keyed opaque operation binding, and issuance timestamps. It therefore does
 //! not disclose stable principal, session, filesystem, path, or content
 //! fingerprints. Grant material is never logged or exposed by runtime
 //! responses, and a valid grant is atomically consumed before the first
@@ -43,7 +43,7 @@ const GRANT_ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 const SESSION_BYTES: usize = 16;
 const BINDING_BYTES: usize = 32;
-const PAYLOAD_BYTES: usize = GRANT_ID_BYTES + BINDING_BYTES + 8 + 8;
+const PAYLOAD_BYTES: usize = GRANT_ID_BYTES + 1 + BINDING_BYTES + 8 + 8;
 const PAYLOAD_HEX_BYTES: usize = PAYLOAD_BYTES * 2;
 const MAC_BYTES: usize = 32;
 const MAC_HEX_BYTES: usize = MAC_BYTES * 2;
@@ -291,6 +291,7 @@ struct ReplayState {
 
 struct ParsedGrant {
     grant_id: [u8; GRANT_ID_BYTES],
+    capability: u8,
     operation_binding: [u8; BINDING_BYTES],
     issued_unix_seconds: u64,
     expires_unix_seconds: u64,
@@ -374,6 +375,7 @@ impl WriteFileGrantAuthority {
         let grant_id = *Uuid::new_v4().as_bytes();
         let grant = ParsedGrant {
             grant_id,
+            capability: RequestGrantCapability::WriteFile.wire_code(),
             operation_binding: self
                 .operation_binding_mac(&grant_id, &session_id, target)
                 .finalize()
@@ -395,6 +397,9 @@ impl WriteFileGrantAuthority {
         let token = token.ok_or(WriteFileGrantError::Missing)?;
         let expected_session = parse_canonical_session(session_id)?;
         let grant = self.parse_and_verify(token)?;
+        if grant.capability != RequestGrantCapability::WriteFile.wire_code() {
+            return Err(WriteFileGrantError::BindingMismatch);
+        }
         self.operation_binding_mac(&grant.grant_id, &expected_session, target)
             .verify_slice(&grant.operation_binding)
             .map_err(|_| WriteFileGrantError::BindingMismatch)?;
@@ -570,6 +575,7 @@ fn encode_payload(grant: &ParsedGrant) -> [u8; PAYLOAD_BYTES] {
     let mut payload = [0_u8; PAYLOAD_BYTES];
     let mut offset = 0;
     put(&mut payload, &mut offset, &grant.grant_id);
+    put(&mut payload, &mut offset, &[grant.capability]);
     put(&mut payload, &mut offset, &grant.operation_binding);
     put(
         &mut payload,
@@ -588,11 +594,14 @@ fn encode_payload(grant: &ParsedGrant) -> [u8; PAYLOAD_BYTES] {
 fn decode_payload(payload: &[u8; PAYLOAD_BYTES]) -> Option<ParsedGrant> {
     let mut offset = 0;
     let grant_id = take_array(payload, &mut offset)?;
+    let capability = *payload.get(offset)?;
+    offset += 1;
     let operation_binding = take_array(payload, &mut offset)?;
     let issued_unix_seconds = u64::from_be_bytes(take_array(payload, &mut offset)?);
     let expires_unix_seconds = u64::from_be_bytes(take_array(payload, &mut offset)?);
     (offset == PAYLOAD_BYTES).then_some(ParsedGrant {
         grant_id,
+        capability,
         operation_binding,
         issued_unix_seconds,
         expires_unix_seconds,
@@ -655,8 +664,9 @@ mod tests {
     const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
     const NOW: u64 = 1_725_000_000;
 
-    const BINDING_OFFSET: usize = GRANT_ID_BYTES;
-    const ISSUED_OFFSET: usize = GRANT_ID_BYTES + BINDING_BYTES;
+    const CAPABILITY_OFFSET: usize = GRANT_ID_BYTES;
+    const BINDING_OFFSET: usize = CAPABILITY_OFFSET + 1;
+    const ISSUED_OFFSET: usize = BINDING_OFFSET + BINDING_BYTES;
 
     fn authority() -> WriteFileGrantAuthority {
         WriteFileGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap()
@@ -724,6 +734,12 @@ mod tests {
         let token = authority.issue(SESSION, &target()).unwrap();
         assert!(token.len() <= MAX_WRITE_FILE_GRANT_HEADER_BYTES);
         assert_eq!(token.split('.').count(), 4);
+        let payload_hex = token.split('.').nth(2).unwrap();
+        let payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex).unwrap();
+        assert_eq!(
+            payload[CAPABILITY_OFFSET],
+            RequestGrantCapability::WriteFile.wire_code()
+        );
         authority.consume(Some(&token), SESSION, &target()).unwrap();
         assert_eq!(
             authority
@@ -1138,7 +1154,7 @@ mod tests {
             .into_bytes();
         assert_eq!(
             encode_hex(&actual),
-            "472df5539b5fa228d483884ae509f9bf1c77b89335847c0cb0a6c47ceabe89a6"
+            "5a4bafd8b63d8c88c8a836362196ddd7136a7bdd6c6d24e46df3c9c5f2c32165"
         );
     }
 
