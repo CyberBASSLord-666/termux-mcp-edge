@@ -69,7 +69,7 @@ jobs:
           persist-credentials: false
       - name: Cache cargo-audit binary
         id: cargo-audit-cache
-        uses: actions/cache@638ed79f9dc94c1de1baef91bcab5edaa19451f4
+        uses: actions/cache@3edfce9056124e459a23f683a21433670d47daca
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-rustsec-eee63cf3c3916a9b8305678dfb91206acd9e67eb-debug
