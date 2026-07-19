@@ -5,7 +5,7 @@
 //! are all project-owned. No caller-controlled command string reaches process
 //! construction.
 
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use crate::audit::{AuditDecision, AuditEvent, AuditMode};
 
@@ -37,7 +37,7 @@ pub const MAX_COMMAND_PROFILE_ID_BYTES: usize = 64;
 ///
 /// Program identity is resolved from the running executable, not from PATH or
 /// request data. All profiles are read-only and have no placeholders.
-pub const COMMAND_PROFILES: &[CommandProfile] = &[
+pub(crate) const COMMAND_PROFILES: &[CommandProfile] = &[
     CommandProfile {
         id: "server_version",
         ordinal: 1,
@@ -64,21 +64,55 @@ pub const COMMAND_PROFILES: &[CommandProfile] = &[
     },
 ];
 
+/// Opaque policy-owned command profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CommandProfile {
-    pub id: &'static str,
-    pub ordinal: u64,
-    pub argv: &'static [&'static str],
-    pub timeout: Duration,
-    pub max_stdout_bytes: usize,
-    pub max_stderr_bytes: usize,
+pub(crate) struct CommandProfile {
+    id: &'static str,
+    ordinal: u64,
+    argv: &'static [&'static str],
+    timeout: Duration,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "command-execution")]
+impl CommandProfile {
+    pub(crate) const fn id(&self) -> &'static str {
+        self.id
+    }
+
+    pub(crate) const fn argv(&self) -> &'static [&'static str] {
+        self.argv
+    }
+
+    pub(crate) const fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    pub(crate) const fn max_stdout_bytes(&self) -> usize {
+        self.max_stdout_bytes
+    }
+
+    pub(crate) const fn max_stderr_bytes(&self) -> usize {
+        self.max_stderr_bytes
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CommandPolicyDecision {
     pub allowed: bool,
     pub reason_code: &'static str,
-    pub profile: Option<&'static CommandProfile>,
+    pub(crate) profile: Option<&'static CommandProfile>,
+}
+
+impl fmt::Debug for CommandPolicyDecision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommandPolicyDecision")
+            .field("allowed", &self.allowed)
+            .field("reason_code", &self.reason_code)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -146,7 +180,25 @@ impl CommandExecutionPolicy {
     }
 }
 
-pub fn command_profile(profile_id: &str) -> Option<&'static CommandProfile> {
+#[cfg(all(test, feature = "command-execution"))]
+pub(crate) fn test_command_profile(
+    argv: &'static [&'static str],
+    timeout: Duration,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+) -> &'static CommandProfile {
+    Box::leak(Box::new(CommandProfile {
+        id: "test_profile",
+        ordinal: u64::MAX,
+        argv,
+        timeout,
+        max_stdout_bytes,
+        max_stderr_bytes,
+    }))
+}
+
+#[cfg(test)]
+pub(crate) fn command_profile(profile_id: &str) -> Option<&'static CommandProfile> {
     COMMAND_PROFILES
         .iter()
         .find(|profile| profile.id == profile_id)
@@ -265,6 +317,23 @@ mod tests {
             ["--version"]
         );
         assert_eq!(command_profile("missing"), None);
+    }
+
+    #[test]
+    fn public_decision_debug_never_exposes_the_resolved_profile() {
+        let decision = CommandExecutionPolicy::new().evaluate("server_version", true, true);
+        let debug = format!("{decision:?}");
+        assert!(debug.contains("allowed: true"));
+        assert!(debug.contains(COMMAND_PROFILE_ALLOWED_REASON));
+        for private in [
+            "server_version",
+            "--version",
+            "timeout",
+            "max_stdout",
+            "ordinal",
+        ] {
+            assert!(!debug.contains(private), "debug leaked {private}");
+        }
     }
 
     #[test]
