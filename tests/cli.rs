@@ -14,6 +14,11 @@ fn isolated_binary() -> Command {
     command
 }
 
+fn assert_signed_capability_byte(payload_hex: &str, byte_offset: usize, expected: &str) {
+    let hex_offset = byte_offset.checked_mul(2).unwrap();
+    assert_eq!(&payload_hex[hex_offset..hex_offset + 2], expected);
+}
+
 #[test]
 fn version_is_exact_and_does_not_require_runtime_configuration() {
     let output = binary().arg("--version").output().unwrap();
@@ -163,6 +168,7 @@ fn exact_volume_cli_issuer_outputs_one_private_target_bound_grant() {
     assert_eq!(segments[0], "v1");
     assert_eq!(segments[1], "volume-cli-1");
     assert_eq!(segments[2].len(), 182);
+    assert_signed_capability_byte(segments[2], 64, "03");
     assert_eq!(segments[3].len(), 64);
     assert!(segments[2..].iter().all(|segment| segment
         .bytes()
@@ -313,6 +319,7 @@ fn exact_cli_issuer_outputs_one_private_target_bound_grant() {
     assert_eq!(segments[0], "v1");
     assert_eq!(segments[1], "cli-test-1");
     assert_eq!(segments[2].len(), 260);
+    assert_signed_capability_byte(segments[2], 64, "01");
     assert_eq!(segments[3].len(), 64);
     assert!(segments[2..].iter().all(|segment| segment
         .bytes()
@@ -387,7 +394,8 @@ fn exact_write_cli_issuer_outputs_one_private_content_and_target_bound_grant() {
     assert_eq!(segments.len(), 4);
     assert_eq!(segments[0], "v1");
     assert_eq!(segments[1], "write-cli-test-1");
-    assert_eq!(segments[2].len(), 128);
+    assert_eq!(segments[2].len(), 130);
+    assert_signed_capability_byte(segments[2], 16, "02");
     assert_eq!(segments[3].len(), 64);
     assert!(segments[2..].iter().all(|segment| segment
         .bytes()
