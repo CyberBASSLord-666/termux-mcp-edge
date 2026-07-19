@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 44440)
-Total output lines: 4965
-
 use std::{
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -1547,7 +1544,1653 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             }));
     }
 
-    if state.android_volume_…14440 tokens truncated…"Validated one bounded safe-rooted file copy without mutation."
+    if state.android_volume_status_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": ANDROID_VOLUME_STATUS_TOOL,
+                "description": "Return normalized read-only Android audio-stream volume levels through the explicitly enabled Termux:API gate.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
+    if state.android_volume_control_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": SET_ANDROID_VOLUME_TOOL,
+                "description": "Preview one exact Android audio-stream level, or apply it with fresh bounds validation and one principal/session/stream/level-bound single-use MCP-Capability-Grant.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "stream": {
+                            "type": "string",
+                            "enum": ["alarm", "call", "music", "notification", "ring", "system"],
+                            "description": "Exact documented Termux:API audio stream.",
+                        },
+                        "level": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Exact target level; a fresh status read enforces the live stream maximum.",
+                        },
+                        "dry_run": {
+                            "type": "boolean",
+                            "description": "Defaults to true. Explicit false additionally requires one exact request-scoped grant.",
+                        },
+                    },
+                    "required": ["stream", "level"],
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
+    if state.command_execution_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": RUN_COMMAND_PROFILE_TOOL,
+                "description": "Run one reviewed read-only diagnostic profile with fixed executable identity, argv, safe-root working directory, empty environment, null stdin, and bounded output.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "profile": {
+                            "type": "string",
+                            "enum": command_profile_ids().collect::<Vec<_>>(),
+                            "description": "Reviewed project-owned diagnostic profile identifier.",
+                        },
+                    },
+                    "required": ["profile"],
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+#[rustfmt::skip]
+async fn handle_tool_call(
+    id: Option<Value>,
+    params: Option<Value>,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
+) -> Response {
+    let params = match params {
+        Some(params) => params,
+        None => return invalid_params(id, TOOL_CALL_PARAMS_INVALID),
+    };
+
+    let call = match serde_json::from_value::<ToolCallParams>(params) {
+        Ok(call) => call,
+        Err(_error) => return invalid_params(id, TOOL_CALL_PARAMS_INVALID),
+    };
+
+    if capability_grant.is_some()
+        && !matches!(
+            call.name.as_str(),
+            CREATE_DIRECTORY_TOOL | SET_ANDROID_VOLUME_TOOL
+        )
+    {
+        return capability_context_not_allowed(id);
+    }
+
+    match call.name.as_str() {
+        RUNTIME_STATUS_TOOL => handle_runtime_status_call(id, call.arguments, state),
+        PLATFORM_INFO_TOOL => handle_no_argument_tool_call(
+            id,
+            call.arguments,
+            &state.audit_counters,
+            state.command_execution_enabled,
+            NoArgumentToolContract {
+                tool_name: PLATFORM_INFO_TOOL,
+                gate_name: PLATFORM_INFO_GATE,
+                allowed_reason: PLATFORM_INFO_ALLOWED,
+                denied_reason: PLATFORM_INFO_ARGUMENTS_DENIED,
+                response_builder: platform_info_response,
+            },
+        ),
+        ANDROID_STATUS_TOOL => handle_no_argument_tool_call(
+            id,
+            call.arguments,
+            &state.audit_counters,
+            state.command_execution_enabled,
+            NoArgumentToolContract {
+                tool_name: ANDROID_STATUS_TOOL,
+                gate_name: ANDROID_STATUS_GATE,
+                allowed_reason: ANDROID_STATUS_ALLOWED,
+                denied_reason: ANDROID_STATUS_ARGUMENTS_DENIED,
+                response_builder: android_status_response,
+            },
+        ),
+        ANDROID_BATTERY_STATUS_TOOL => {
+            handle_android_battery_status_call(id, call.arguments, state).await
+        }
+        ANDROID_VOLUME_STATUS_TOOL => {
+            handle_android_volume_status_call(id, call.arguments, state).await
+        }
+        SET_ANDROID_VOLUME_TOOL => {
+            handle_set_android_volume_call(
+                id,
+                call.arguments.into_value(),
+                state,
+                session_id,
+                capability_grant,
+            )
+            .await
+        }
+        PROJECT_SERVICE_STATUS_TOOL => {
+            project_service_status_response(
+                id,
+                call.arguments.into_value(),
+                &state.audit_counters,
+            )
+        }
+        CREATE_DIRECTORY_TOOL => {
+            handle_create_directory_call(
+                id,
+                call.arguments.into_value(),
+                state,
+                session_id,
+                capability_grant,
+            )
+            .await
+        }
+        COPY_FILE_TOOL => {
+            handle_copy_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        HASH_FILE_TOOL => {
+            handle_hash_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        LIST_DIRECTORY_TOOL => {
+            handle_list_directory_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        PATH_METADATA_TOOL => {
+            handle_path_metadata_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        READ_FILE_TOOL => {
+            handle_read_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        SEARCH_TEXT_TOOL => {
+            handle_search_text_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        WRITE_FILE_TOOL => {
+            handle_write_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        RUN_COMMAND_PROFILE_TOOL => {
+            handle_run_command_profile_call(
+                id,
+                call.arguments.into_value(),
+                state,
+            )
+            .await
+        }
+        _ => method_not_available(id, "The requested tool is not available in this runtime posture."),
+    }
+}
+
+fn handle_runtime_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            RUNTIME_STATUS_TOOL,
+            RUNTIME_STATUS_GATE,
+            RUNTIME_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    record_read_only_allowed(
+        &state.audit_counters,
+        RUNTIME_STATUS_TOOL,
+        RUNTIME_STATUS_GATE,
+        RUNTIME_STATUS_ALLOWED,
+    );
+    runtime_status_response(
+        id,
+        &state.audit_counters,
+        state.create_directory_authority.is_some(),
+        state.android_battery_status_enabled,
+        state.android_volume_status_enabled,
+        state.android_volume_control_enabled,
+        state.command_execution_enabled,
+    )
+}
+
+async fn handle_android_battery_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_BATTERY_STATUS_TOOL,
+            ANDROID_BATTERY_STATUS_GATE,
+            ANDROID_BATTERY_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    #[cfg(not(feature = "android-battery-status"))]
+    {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_BATTERY_STATUS_TOOL,
+            ANDROID_BATTERY_STATUS_GATE,
+            ANDROID_BATTERY_STATUS_FEATURE_DISABLED,
+        );
+        tool_error_result(
+            id,
+            ANDROID_BATTERY_STATUS_TOOL,
+            "android_battery_status_unavailable",
+            ANDROID_BATTERY_STATUS_FEATURE_DISABLED,
+        )
+    }
+
+    #[cfg(feature = "android-battery-status")]
+    {
+        if !state.android_battery_status_enabled {
+            record_read_only_denied(
+                &state.audit_counters,
+                ANDROID_BATTERY_STATUS_TOOL,
+                ANDROID_BATTERY_STATUS_GATE,
+                ANDROID_BATTERY_STATUS_RUNTIME_DISABLED,
+            );
+            return tool_error_result(
+                id,
+                ANDROID_BATTERY_STATUS_TOOL,
+                "android_battery_status_unavailable",
+                ANDROID_BATTERY_STATUS_RUNTIME_DISABLED,
+            );
+        }
+
+        match state.android_battery_client.collect().await {
+            Ok(status) => {
+                record_read_only_allowed(
+                    &state.audit_counters,
+                    ANDROID_BATTERY_STATUS_TOOL,
+                    ANDROID_BATTERY_STATUS_GATE,
+                    ANDROID_BATTERY_STATUS_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "android_battery_status: bounded read-only Termux:API telemetry collected."
+                        .to_owned(),
+                    json!(status),
+                )
+            }
+            Err(error) => {
+                let reason_code = error.reason_code();
+                record_read_only_denied(
+                    &state.audit_counters,
+                    ANDROID_BATTERY_STATUS_TOOL,
+                    ANDROID_BATTERY_STATUS_GATE,
+                    reason_code,
+                );
+                tool_error_result(
+                    id,
+                    ANDROID_BATTERY_STATUS_TOOL,
+                    "android_battery_status_unavailable",
+                    reason_code,
+                )
+            }
+        }
+    }
+}
+
+async fn handle_android_volume_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_VOLUME_STATUS_TOOL,
+            ANDROID_VOLUME_STATUS_GATE,
+            ANDROID_VOLUME_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    #[cfg(not(feature = "android-volume-status"))]
+    {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_VOLUME_STATUS_TOOL,
+            ANDROID_VOLUME_STATUS_GATE,
+            ANDROID_VOLUME_STATUS_FEATURE_DISABLED,
+        );
+        tool_error_result(
+            id,
+            ANDROID_VOLUME_STATUS_TOOL,
+            "android_volume_status_unavailable",
+            ANDROID_VOLUME_STATUS_FEATURE_DISABLED,
+        )
+    }
+
+    #[cfg(feature = "android-volume-status")]
+    {
+        if !state.android_volume_status_enabled {
+            record_read_only_denied(
+                &state.audit_counters,
+                ANDROID_VOLUME_STATUS_TOOL,
+                ANDROID_VOLUME_STATUS_GATE,
+                ANDROID_VOLUME_STATUS_RUNTIME_DISABLED,
+            );
+            return tool_error_result(
+                id,
+                ANDROID_VOLUME_STATUS_TOOL,
+                "android_volume_status_unavailable",
+                ANDROID_VOLUME_STATUS_RUNTIME_DISABLED,
+            );
+        }
+
+        match state.android_volume_client.collect().await {
+            Ok(status) => {
+                record_read_only_allowed(
+                    &state.audit_counters,
+                    ANDROID_VOLUME_STATUS_TOOL,
+                    ANDROID_VOLUME_STATUS_GATE,
+                    ANDROID_VOLUME_STATUS_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "android_volume_status: bounded read-only Termux:API telemetry collected."
+                        .to_owned(),
+                    json!(status),
+                )
+            }
+            Err(error) => {
+                let reason_code = error.reason_code();
+                record_read_only_denied(
+                    &state.audit_counters,
+                    ANDROID_VOLUME_STATUS_TOOL,
+                    ANDROID_VOLUME_STATUS_GATE,
+                    reason_code,
+                );
+                tool_error_result(
+                    id,
+                    ANDROID_VOLUME_STATUS_TOOL,
+                    "android_volume_status_unavailable",
+                    reason_code,
+                )
+            }
+        }
+    }
+}
+
+async fn handle_set_android_volume_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
+) -> Response {
+    let args = match arguments
+        .and_then(|arguments| serde_json::from_value::<SetAndroidVolumeArguments>(arguments).ok())
+    {
+        Some(args) => args,
+        None => {
+            record_volume_control_decision(
+                &state.audit_counters,
+                AuditMode::DryRun,
+                AuditDecision::Denied,
+                ANDROID_VOLUME_CONTROL_INVALID_ARGUMENTS,
+            );
+            return invalid_params(
+                id,
+                "set_android_volume requires exact stream, level, and optional dry_run arguments.",
+            );
+        }
+    };
+    let dry_run = args.dry_run.unwrap_or(true);
+    let mode = if dry_run {
+        AuditMode::DryRun
+    } else {
+        AuditMode::Mutating
+    };
+
+    #[cfg(not(feature = "android-volume-control"))]
+    {
+        let _ = (args, session_id, capability_grant);
+        record_volume_control_decision(
+            &state.audit_counters,
+            mode,
+            AuditDecision::Denied,
+            ANDROID_VOLUME_CONTROL_FEATURE_DISABLED,
+        );
+        tool_error_result(
+            id,
+            SET_ANDROID_VOLUME_TOOL,
+            "android_volume_control_unavailable",
+            ANDROID_VOLUME_CONTROL_FEATURE_DISABLED,
+        )
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    {
+        if !state.android_volume_control_enabled {
+            record_volume_control_decision(
+                &state.audit_counters,
+                mode,
+                AuditDecision::Denied,
+                ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED,
+            );
+            return tool_error_result(
+                id,
+                SET_ANDROID_VOLUME_TOOL,
+                "android_volume_control_unavailable",
+                ANDROID_VOLUME_CONTROL_RUNTIME_DISABLED,
+            );
+        }
+
+        let stream = match args.stream.parse::<AndroidVolumeStreamName>() {
+            Ok(stream) => stream,
+            Err(error) => {
+                record_volume_control_decision(
+                    &state.audit_counters,
+                    mode,
+                    AuditDecision::Denied,
+                    error.reason_code(),
+                );
+                return invalid_params(id, "set_android_volume stream is not allowlisted.");
+            }
+        };
+
+        if dry_run {
+            return match state
+                .android_volume_control_client
+                .preview(stream, args.level)
+                .await
+            {
+                Ok(result) => {
+                    record_volume_control_decision(
+                        &state.audit_counters,
+                        mode,
+                        AuditDecision::Allowed,
+                        ANDROID_VOLUME_CONTROL_PREVIEW_ALLOWED,
+                    );
+                    ok_result(
+                        id,
+                        "set_android_volume: validated one exact stream and level without mutation."
+                            .to_owned(),
+                        json!(result),
+                    )
+                }
+                Err(error) => volume_control_error_response(id, state, mode, error),
+            };
+        }
+
+        let prepared = match state
+            .android_volume_control_client
+            .prepare_mutation(stream, args.level)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return volume_control_error_response(id, state, mode, error),
+        };
+        let target = match AndroidVolumeGrantTarget::new(stream, args.level) {
+            Ok(target) => target,
+            Err(error) => {
+                record_volume_control_decision(
+                    &state.audit_counters,
+                    mode,
+                    AuditDecision::Denied,
+                    error.reason_code(),
+                );
+                return capability_authorization_denied(id, error.reason_code());
+            }
+        };
+        let authority = state
+            .android_volume_control_authority
+            .as_ref()
+            .expect("enabled Android volume control owns an authority");
+        if let Err(error) =
+            authority.consume_at(capability_grant, session_id, target, current_unix_seconds())
+        {
+            record_volume_control_decision(
+                &state.audit_counters,
+                mode,
+                AuditDecision::Denied,
+                error.reason_code(),
+            );
+            return capability_authorization_denied(id, error.reason_code());
+        }
+
+        // The prepared operation owns the one mutation permit and is detached
+        // from request cancellation. If the HTTP future is dropped after grant
+        // consumption, the fixed command, verification, and rollback sequence
+        // still runs to completion under its own strict process deadlines.
+        let worker = tokio::spawn(prepared.execute());
+        match worker.await {
+            Ok(Ok(result)) => {
+                record_volume_control_decision(
+                    &state.audit_counters,
+                    mode,
+                    AuditDecision::Allowed,
+                    ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "set_android_volume: exact stream mutation completed and was verified."
+                        .to_owned(),
+                    json!(result),
+                )
+            }
+            Ok(Err(error)) => volume_control_error_response(id, state, mode, error),
+            Err(_error) => volume_control_error_response(
+                id,
+                state,
+                mode,
+                AndroidVolumeControlError::WorkerFailed,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "android-volume-control")]
+fn volume_control_error_response(
+    id: Option<Value>,
+    state: &McpTransportState,
+    mode: AuditMode,
+    error: AndroidVolumeControlError,
+) -> Response {
+    let reason_code = error.reason_code();
+    record_volume_control_decision(
+        &state.audit_counters,
+        mode,
+        AuditDecision::Denied,
+        reason_code,
+    );
+    tool_error_result(
+        id,
+        SET_ANDROID_VOLUME_TOOL,
+        "android_volume_control_failed",
+        reason_code,
+    )
+}
+
+async fn handle_run_command_profile_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    state: &McpTransportState,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_read_only_denied(
+                &state.audit_counters,
+                RUN_COMMAND_PROFILE_TOOL,
+                COMMAND_EXECUTION_GATE,
+                COMMAND_MISSING_ARGUMENTS_REASON,
+            );
+            return invalid_params(id, "run_command_profile requires a profile argument.");
+        }
+    };
+    let args = match serde_json::from_value::<RunCommandProfileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_read_only_denied(
+                &state.audit_counters,
+                RUN_COMMAND_PROFILE_TOOL,
+                COMMAND_EXECUTION_GATE,
+                COMMAND_INVALID_ARGUMENTS_REASON,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    #[cfg(not(feature = "command-execution"))]
+    {
+        let _ = args;
+        record_read_only_denied(
+            &state.audit_counters,
+            RUN_COMMAND_PROFILE_TOOL,
+            COMMAND_EXECUTION_GATE,
+            COMMAND_FEATURE_DISABLED_REASON,
+        );
+        tool_error_result(
+            id,
+            RUN_COMMAND_PROFILE_TOOL,
+            COMMAND_EXECUTION_ERROR,
+            COMMAND_FEATURE_DISABLED_REASON,
+        )
+    }
+
+    #[cfg(feature = "command-execution")]
+    {
+        let policy = CommandExecutionPolicy::new();
+        let decision = policy.evaluate(
+            &args.profile,
+            state.command_execution_enabled,
+            !state.file_tools.safe_roots().is_empty(),
+        );
+        if !decision.allowed {
+            record_command_policy_decision(&state.audit_counters, &decision);
+            return if decision.reason_code == COMMAND_PROFILE_NOT_ALLOWLISTED_REASON {
+                invalid_params(id, TOOL_ARGUMENTS_INVALID)
+            } else {
+                tool_error_result(
+                    id,
+                    RUN_COMMAND_PROFILE_TOOL,
+                    COMMAND_EXECUTION_ERROR,
+                    decision.reason_code,
+                )
+            };
+        }
+
+        let profile = decision
+            .profile
+            .expect("allowed command policy decisions own a fixed profile");
+        match state.command_execution_client.execute(profile).await {
+            Ok(result) => {
+                record_command_policy_decision(&state.audit_counters, &decision);
+                ok_result(
+                    id,
+                    format!(
+                        "run_command_profile: fixed read-only profile {} completed within all bounds.",
+                        profile.id,
+                    ),
+                    json!(result),
+                )
+            }
+            Err(error) => {
+                let failure = CommandPolicyDecision {
+                    allowed: false,
+                    reason_code: command_execution_error_reason(error),
+                    profile: Some(profile),
+                };
+                record_command_policy_decision(&state.audit_counters, &failure);
+                tool_error_result(
+                    id,
+                    RUN_COMMAND_PROFILE_TOOL,
+                    COMMAND_EXECUTION_ERROR,
+                    failure.reason_code,
+                )
+            }
+        }
+    }
+}
+
+#[cfg(feature = "command-execution")]
+fn command_execution_error_reason(error: CommandExecutionError) -> &'static str {
+    match error {
+        CommandExecutionError::ProgramUnavailable => COMMAND_PROGRAM_UNAVAILABLE_REASON,
+        CommandExecutionError::SpawnFailed => COMMAND_SPAWN_FAILED_REASON,
+        CommandExecutionError::WaitFailed => COMMAND_WAIT_FAILED_REASON,
+        CommandExecutionError::TimedOut => COMMAND_TIMEOUT_REASON,
+        CommandExecutionError::StdoutLimitExceeded => COMMAND_STDOUT_LIMIT_REASON,
+        CommandExecutionError::StderrLimitExceeded => COMMAND_STDERR_LIMIT_REASON,
+        CommandExecutionError::ProgramFailed => COMMAND_PROGRAM_FAILED_REASON,
+        CommandExecutionError::InvalidUtf8 => COMMAND_OUTPUT_INVALID_UTF8_REASON,
+        CommandExecutionError::ConcurrencyLimitExceeded => COMMAND_CONCURRENCY_LIMIT_REASON,
+    }
+}
+
+#[cfg(feature = "command-execution")]
+fn record_command_policy_decision(
+    counters: &SharedAuditCounters,
+    decision: &CommandPolicyDecision,
+) {
+    let event = CommandExecutionPolicy::new().audit_decision(current_unix_seconds(), decision);
+    record_audit_event(counters, &event);
+}
+
+fn handle_no_argument_tool_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    audit_counters: &SharedAuditCounters,
+    command_execution_enabled: bool,
+    contract: NoArgumentToolContract,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            audit_counters,
+            contract.tool_name,
+            contract.gate_name,
+            contract.denied_reason,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    record_read_only_allowed(
+        audit_counters,
+        contract.tool_name,
+        contract.gate_name,
+        contract.allowed_reason,
+    );
+    (contract.response_builder)(id, audit_counters, command_execution_enabled)
+}
+
+fn available_tools(
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    android_volume_control_enabled: bool,
+    command_execution_enabled: bool,
+) -> Vec<&'static str> {
+    let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
+    if android_battery_status_enabled {
+        tools.push(ANDROID_BATTERY_STATUS_TOOL);
+    }
+    if android_volume_status_enabled {
+        tools.push(ANDROID_VOLUME_STATUS_TOOL);
+    }
+    if android_volume_control_enabled {
+        tools.push(SET_ANDROID_VOLUME_TOOL);
+    }
+    if command_execution_enabled {
+        tools.push(RUN_COMMAND_PROFILE_TOOL);
+    }
+    tools
+}
+
+#[rustfmt::skip]
+fn runtime_status_response(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    create_directory_mutation_enabled: bool,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    android_volume_control_enabled: bool,
+    command_execution_enabled: bool,
+) -> Response {
+    let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
+    let available_tools = available_tools(
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        android_volume_control_enabled,
+        command_execution_enabled,
+    );
+    let battery_mode = if android_battery_status_enabled {
+        "read_only_battery_telemetry"
+    } else {
+        "disabled"
+    };
+    let volume_mode = if android_volume_status_enabled {
+        "read_only_volume_telemetry"
+    } else {
+        "disabled"
+    };
+    let volume_control_mode = if android_volume_control_enabled {
+        "preview_or_request_scoped_single_use_grant"
+    } else {
+        "disabled"
+    };
+    let android_platform_mode = match (
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        android_volume_control_enabled,
+    ) {
+        (true, true, true) => {
+            "read_only_battery_and_volume_telemetry_plus_bounded_volume_control"
+        }
+        (true, false, true) => "read_only_battery_telemetry_plus_bounded_volume_control",
+        (false, true, true) => "read_only_volume_telemetry_plus_bounded_volume_control",
+        (false, false, true) => "bounded_request_authorized_volume_control",
+        (true, true, false) => "read_only_battery_and_volume_telemetry",
+        (true, false, false) => "read_only_battery_telemetry",
+        (false, true, false) => "read_only_volume_telemetry",
+        (false, false, false) => "disabled",
+    };
+    let command_execution_mode = if command_execution_enabled {
+        "fixed_read_only_server_diagnostics"
+    } else {
+        "disabled"
+    };
+    let create_directory_mode = if create_directory_mutation_enabled {
+        "dry_run_or_request_scoped_single_use_grant"
+    } else {
+        "dry_run_only_mutation_disabled"
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": format!(
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-hash-file-list-metadata-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            android_platform_mode,
+                            battery_mode,
+                            volume_mode,
+                            volume_control_mode,
+                            create_directory_mode,
+                            if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
+                            command_execution_mode,
+                        ),
+                    },
+                ],
+                "structuredContent": {
+                    "server": "termux-mcp-edge",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "transport": "streamable_http_2025_11_25",
+                    "sessionManagement": "bounded_uuid_idle_expiry",
+                    "serverSentEvents": false,
+                    "availableTools": available_tools,
+                    "platformInfo": true,
+                    "platformInfoMode": "read_only_non_sensitive_metadata",
+                    "androidStatus": true,
+                    "androidStatusMode": "read_only_allowlisted_status_no_api_or_control",
+                    "projectServiceStatus": true,
+                    "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
+                    "filesystemTools": true,
+                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_file_search_text_and_default_dry_run_write_file",
+                    "fileHashing": true,
+                    "fileHashAlgorithm": "sha256",
+                    "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
+                    "createDirectoryMutationEnabled": create_directory_mutation_enabled,
+                    "createDirectoryMutationMode": create_directory_mode,
+                    "createDirectoryGrantRequired": create_directory_mutation_enabled,
+                    "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+                    "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
+                    "fileWrites": true,
+                    "fileWriteMode": "dry_run_by_default_explicit_false_required",
+                    "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled,
+                    "androidPlatformToolMode": android_platform_mode,
+                    "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
+                    "androidBatteryStatusEnabled": android_battery_status_enabled,
+                    "androidVolumeStatusCompiled": cfg!(feature = "android-volume-status"),
+                    "androidVolumeStatusEnabled": android_volume_status_enabled,
+                    "androidVolumeControlCompiled": cfg!(feature = "android-volume-control"),
+                    "androidVolumeControlEnabled": android_volume_control_enabled,
+                    "androidVolumeControlMode": volume_control_mode,
+                    "androidVolumeGrantRequired": android_volume_control_enabled,
+                    "androidVolumeGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+                    "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
+                    "androidDeviceControl": android_volume_control_enabled,
+                    "commandExecutionCompiled": cfg!(feature = "command-execution"),
+                    "commandExecution": command_execution_enabled,
+                    "commandExecutionMode": command_execution_mode,
+                    "arbitraryCommandExecution": false,
+                    "highImpactTools": android_volume_control_enabled,
+                    "auditCounters": audit_counters_snapshot,
+                },
+                "isError": false
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
+fn platform_info_response(
+    id: Option<Value>,
+    _audit_counters: &SharedAuditCounters,
+    _command_execution_enabled: bool,
+) -> Response {
+    let info = collect_platform_info();
+    ok_result(
+        id,
+        format!(
+            "platform_info: os={}, arch={}, family={}, parallelism={}, version={}",
+            info.os, info.arch, info.family, info.available_parallelism, info.package_version
+        ),
+        json!(info),
+    )
+}
+
+#[rustfmt::skip]
+fn android_status_response(
+    id: Option<Value>,
+    _audit_counters: &SharedAuditCounters,
+    command_execution_enabled: bool,
+) -> Response {
+    let status = collect_android_status(command_execution_enabled);
+    ok_result(
+        id,
+        format!(
+            "android_status: mode={}, target_os={}, target_arch={}, android_api_access={}, android_control_enabled={}, shell_fallback_enabled={}, command_execution_enabled={}, high_impact_controls_enabled={}",
+            status.status_mode,
+            status.target_os,
+            status.target_arch,
+            status.android_api_access,
+            status.android_control_enabled,
+            status.shell_fallback_enabled,
+            status.command_execution_enabled,
+            status.high_impact_controls_enabled,
+        ),
+        json!(status),
+    )
+}
+
+#[rustfmt::skip]
+fn project_service_status_response(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_read_only_denied(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_MISSING_ARGUMENTS,
+            );
+            return invalid_params(
+                id,
+                "project_service_status requires a service_name argument.",
+            );
+        }
+    };
+
+    let args = match serde_json::from_value::<ProjectServiceStatusArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_read_only_denied(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match collect_project_service_status(&args.service_name) {
+        Ok(status) => {
+            record_read_only_allowed(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_ALLOWED,
+            );
+            ok_result(
+                id,
+                format!(
+                    "project_service_status: service_name={}, ownership={}, mode={}, lifecycle_state={}, health={}",
+                    status.service_name,
+                    status.ownership,
+                    status.status_mode,
+                    status.lifecycle_state,
+                    status.health,
+                ),
+                json!(status),
+            )
+        }
+        Err(ProjectServiceStatusError::UnsupportedService { .. }) => {
+            record_read_only_denied(
+                audit_counters,
+                PROJECT_SERVICE_STATUS_TOOL,
+                PROJECT_SERVICE_STATUS_GATE,
+                PROJECT_SERVICE_STATUS_UNSUPPORTED,
+            );
+            invalid_params(id, TOOL_ARGUMENTS_INVALID)
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_list_directory_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "list_directory requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<ListDirectoryArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    if let Some(max_depth) = args.max_depth {
+        if !(MIN_LIST_DIRECTORY_DEPTH..=MAX_LIST_DIRECTORY_DEPTH).contains(&max_depth) {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_DEPTH,
+            );
+            return invalid_params(
+                id,
+                &format!(
+                    "list_directory.max_depth must be between {MIN_LIST_DIRECTORY_DEPTH} and {MAX_LIST_DIRECTORY_DEPTH}."
+                ),
+            );
+        }
+    }
+
+    match file_tools.list_directory(args.path, args.max_depth).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = if result.truncated {
+                format!(
+                    "Listed {} safe-rooted filesystem entries; the bounded result was truncated.",
+                    result.entries.len()
+                )
+            } else {
+                format!("Listed {} safe-rooted filesystem entries.", result.entries.len())
+            };
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_LIST_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    LIST_DIRECTORY_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Directory listing exceeds the staged response byte limit.",
+                    MAX_LIST_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_LIST_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                LIST_DIRECTORY_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_FAILED,
+            );
+            internal_error(id, "Filesystem operation failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_path_metadata_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "path_metadata requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<PathMetadataArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools.path_metadata(args.path).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let Some(response) = bounded_ok_result(
+                id,
+                "Read bounded metadata for one safe-rooted filesystem object.".to_owned(),
+                json!(result),
+                MAX_PATH_METADATA_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    PATH_METADATA_TOOL,
+                    FILESYSTEM_METADATA_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Filesystem metadata exceeds the staged response byte limit.",
+                    MAX_PATH_METADATA_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_NOT_FOUND,
+            );
+            invalid_params(id, "Filesystem object does not exist.")
+        }
+        Err(AppError::UnsupportedPathType) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_UNSUPPORTED,
+            );
+            invalid_params(id, "Filesystem object type is not supported.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                PATH_METADATA_TOOL,
+                FILESYSTEM_METADATA_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_METADATA_FAILED,
+            );
+            internal_error(id, "Filesystem metadata lookup failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_read_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "read_file requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<ReadFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools.read_file(args.path).await {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = format!(
+                "Read {} UTF-8 bytes from a safe-rooted file.",
+                result.size
+            );
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_READ_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    READ_FILE_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "File content exceeds the staged read_file response byte limit.",
+                    MAX_READ_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_TOO_LARGE,
+            );
+            payload_too_large(
+                id,
+                "File content exceeds the staged read_file byte limit.",
+            )
+        }
+        Err(AppError::InvalidFileEncoding) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_ENCODING_INVALID,
+            );
+            invalid_params(id, "File content must be valid UTF-8.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_READ_FAILED,
+            );
+            internal_error(id, "Filesystem read failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_create_directory_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
+) -> Response {
+    let file_tools = &state.file_tools;
+    let audit_counters = &state.audit_counters;
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "create_directory requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<CreateDirectoryArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    let dry_run = args.dry_run.unwrap_or(true);
+    let mode = filesystem_write_mode(dry_run);
+    if !dry_run && state.create_directory_authority.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_CREATE_MUTATION_DISABLED,
+        );
+        return capability_authorization_denied(id, FILESYSTEM_CREATE_MUTATION_DISABLED);
+    }
+    let success_text = if dry_run {
+        "Validated one safe-rooted directory creation without mutation."
+    } else {
+        "Created one safe-rooted directory with fixed mode 0700."
+    };
+    if file_tools
+        .create_directory_response_preview(&args.path, dry_run)
+        .ok()
+        .is_some_and(|preview| {
+            bounded_ok_result(
+                id.clone(),
+                success_text.to_owned(),
+                json!(preview),
+                MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+            )
+            .is_none()
+        })
+    {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "Directory creation response exceeds the staged response byte limit.",
+            MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+        );
+    }
+    let operation = if dry_run {
+        file_tools.create_directory(args.path, Some(true)).await
+    } else {
+        let prepared: PreparedCreateDirectoryMutation = match file_tools
+            .prepare_create_directory_mutation(args.path)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return create_directory_filesystem_error(id, audit_counters, mode, error),
+        };
+        let authority = state
+            .create_directory_authority
+            .clone()
+            .expect("enabled create_directory mutation owns an authority");
+        let session_id = session_id.to_owned();
+        let capability_grant = capability_grant.map(str::to_owned);
+        match tokio::task::spawn_blocking(move || {
+            prepared.execute_authorized(|target| {
+                authority.consume_at(
+                    capability_grant.as_deref(),
+                    &session_id,
+                    target,
+                    current_unix_seconds(),
+                )
+            })
+        })
+        .await
+        {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(AuthorizedCreateDirectoryError::Authorization(error))) => {
+                record_filesystem_denied(
+                    audit_counters,
+                    CREATE_DIRECTORY_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    error.reason_code(),
+                );
+                return capability_authorization_denied(id, error.reason_code());
+            }
+            Ok(Err(AuthorizedCreateDirectoryError::Filesystem(error))) => Err(error),
+            Err(_error) => Err(AppError::Io(std::io::Error::other(
+                "create directory worker failed",
+            ))),
+        }
+    };
+
+    match operation {
+        Ok(result) => {
+            let error_id = id.clone();
+            let Some(response) = bounded_ok_result(
+                id,
+                success_text.to_owned(),
+                json!(result),
+                MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    CREATE_DIRECTORY_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Directory creation response exceeds the staged response byte limit.",
+                    MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                if dry_run {
+                    FILESYSTEM_DRY_RUN_ALLOWED
+                } else {
+                    FILESYSTEM_CREATE_ALLOWED
+                },
+            );
+            response
+        }
+        Err(error) => create_directory_filesystem_error(id, audit_counters, mode, error),
+    }
+}
+
+#[rustfmt::skip]
+fn create_directory_filesystem_error(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    mode: AuditMode,
+    error: AppError,
+) -> Response {
+    match error {
+        AppError::PathTraversal { .. } => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        AppError::PathNotFound => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_PARENT_NOT_FOUND,
+            );
+            invalid_params(id, "Filesystem parent directory does not exist.")
+        }
+        AppError::PathAlreadyExists => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_EXISTS,
+            );
+            invalid_params(id, "Filesystem destination already exists.")
+        }
+        _error => {
+            record_filesystem_denied(
+                audit_counters,
+                CREATE_DIRECTORY_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_CREATE_FAILED,
+            );
+            internal_error(id, "Filesystem directory creation failed.")
+        }
+    }
+}
+
+#[rustfmt::skip]
+async fn handle_copy_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(
+                id,
+                "copy_file requires source_path and destination_path arguments.",
+            );
+        }
+    };
+
+    let args = match serde_json::from_value::<CopyFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    let dry_run = args.dry_run.unwrap_or(true);
+    let mode = filesystem_write_mode(dry_run);
+    let success_text = if dry_run {
+        "Validated one bounded safe-rooted file copy without mutation."
     } else {
         "Copied one bounded safe-rooted file with fixed mode 0600."
     };
