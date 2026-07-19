@@ -445,10 +445,7 @@ async fn range_read_arguments_response_preflight_and_audits_are_bounded_and_priv
         counters["by_reason_code"]["filesystem_binary_range_invalid"]["denied"],
         4
     );
-    assert_eq!(
-        counters["by_reason_code"]["invalid_arguments"]["denied"],
-        4
-    );
+    assert_eq!(counters["by_reason_code"]["invalid_arguments"]["denied"], 4);
     assert_eq!(
         counters["by_reason_code"]["response_size_limit_exceeded"]["denied"],
         2
