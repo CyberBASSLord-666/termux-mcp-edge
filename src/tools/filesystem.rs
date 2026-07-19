@@ -6978,6 +6978,291 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trash_quarantine_capacity_is_derived_from_disk_before_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for index in 0..MAX_TRASH_FILE_QUARANTINE_ARTIFACTS {
+            std::fs::write(
+                quarantine.join(format!(
+                    "{TRASH_FILE_ARTIFACT_PREFIX}00000000-0000-0000-0000-{index:012x}"
+                )),
+                format!("preserved-trash-{index}"),
+            )
+            .unwrap();
+        }
+        let target = root.path().join("still-present.bin");
+        std::fs::write(&target, "target-content").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let prepared = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedTrashFileError::Filesystem(
+                AppError::TrashQuarantineCapacityExceeded
+            ))
+        ));
+        assert!(!authorization_called.get());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "target-content");
+        assert_eq!(
+            std::fs::read_dir(&quarantine).unwrap().count(),
+            MAX_TRASH_FILE_QUARANTINE_ARTIFACTS
+        );
+    }
+
+    #[tokio::test]
+    async fn trash_quarantine_lock_contention_is_fail_fast_and_pre_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let held_quarantine = descriptor_fs::openat(
+            &root_fd,
+            TRASH_FILE_QUARANTINE_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        descriptor_fs::flock(&held_quarantine, FlockOperation::LockExclusive).unwrap();
+        let target = root.path().join("still-present.bin");
+        std::fs::write(&target, "target-content").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let prepared = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+        let started = Instant::now();
+
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedTrashFileError::Filesystem(
+                AppError::TrashQuarantineBusy
+            ))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!authorization_called.get());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "target-content");
+        assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn trash_quarantine_preserves_every_foreign_or_malformed_entry() {
+        for (index, kind) in ["unknown", "directory", "symlink", "hardlink"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
+            std::fs::create_dir(&quarantine).unwrap();
+            std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let entry = if kind == "unknown" {
+                quarantine.join("unrecognized-entry")
+            } else {
+                quarantine.join(format!(
+                    "{TRASH_FILE_ARTIFACT_PREFIX}00000000-0000-0000-0000-{:012x}",
+                    index + 1
+                ))
+            };
+            match kind {
+                "unknown" => std::fs::write(&entry, "foreign-content").unwrap(),
+                "directory" => std::fs::create_dir(&entry).unwrap(),
+                "symlink" => symlink("missing-target", &entry).unwrap(),
+                "hardlink" => {
+                    std::fs::write(&entry, "retained-private-content").unwrap();
+                    std::fs::hard_link(&entry, outside.path().join("artifact-alias")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let root_fd = open_root_directory(root.path()).unwrap();
+
+            assert!(matches!(
+                preflight_trash_quarantine_capacity(&root_fd, 1),
+                Err(AppError::TrashQuarantineCapacityExceeded)
+            ));
+            assert!(std::fs::symlink_metadata(&entry).is_ok());
+            assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 1);
+            if kind == "hardlink" {
+                let alias = outside.path().join("artifact-alias");
+                assert_eq!(std::fs::read_to_string(&entry).unwrap(), "retained-private-content");
+                assert_eq!(std::fs::read_to_string(&alias).unwrap(), "retained-private-content");
+                assert_eq!(std::fs::metadata(&entry).unwrap().nlink(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn trash_quarantine_accepts_only_canonical_lowercase_uuid_artifact_names() {
+        assert!(is_canonical_trash_artifact_name(
+            b".termux-mcp-trash-artifact-12345678-1234-1234-1234-123456789abc"
+        ));
+        for invalid in [
+            b"unrecognized-entry".as_slice(),
+            b".termux-mcp-trash-artifact-not-a-uuid".as_slice(),
+            b".termux-mcp-trash-artifact-12345678123412341234123456789abc".as_slice(),
+            b".termux-mcp-trash-artifact-12345678-1234-1234-1234-123456789ABC".as_slice(),
+            b".termux-mcp-trash-artifact-\xff".as_slice(),
+        ] {
+            assert!(!is_canonical_trash_artifact_name(invalid));
+        }
+    }
+
+    #[tokio::test]
+    async fn trash_quarantine_is_unreachable_through_every_filesystem_surface() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
+        let artifact = quarantine.join(format!(
+            "{TRASH_FILE_ARTIFACT_PREFIX}33333333-3333-3333-3333-333333333333"
+        ));
+        let visible = root.path().join("visible.txt");
+        let absent = root.path().join("absent.txt");
+        let quarantined_absent = quarantine.join("absent.txt");
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(&artifact, "trash-quarantine-secret").unwrap();
+        std::fs::write(&visible, "public").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let artifact_path = artifact.to_string_lossy().to_string();
+        let quarantined_absent_path = quarantined_absent.to_string_lossy().to_string();
+
+        assert_rejected(tools.sanitize(quarantine.to_string_lossy().as_ref()));
+        assert_rejected(tools.sanitize(&artifact_path));
+        assert!(matches!(
+            tools.read_file(artifact_path.clone()).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.read_binary_file(artifact_path.clone()).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.read_binary_range(artifact_path.clone(), 0, 1).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.read_text_range(artifact_path.clone(), 0, MIN_TEXT_RANGE_BYTES).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.hash_file(artifact_path.clone()).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.path_metadata(artifact_path.clone()).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.trash_file(artifact_path.clone(), None).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.copy_file(
+                artifact_path.clone(),
+                absent.to_string_lossy().to_string(),
+                None,
+            ).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.copy_file(
+                visible.to_string_lossy().to_string(),
+                quarantined_absent_path.clone(),
+                None,
+            ).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.write_file(artifact_path.clone(), "replacement".to_owned(), None).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.create_directory(quarantined_absent_path.clone(), None).await,
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.trash_file_grant_target(&artifact_path),
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.copy_file_grant_target(
+                &artifact_path,
+                absent.to_string_lossy().as_ref(),
+            ),
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.copy_file_grant_target(
+                visible.to_string_lossy().as_ref(),
+                &quarantined_absent_path,
+            ),
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.write_file_grant_target(
+                &artifact_path,
+                b"replacement",
+                WriteFileDisposition::Replace,
+            ),
+            Err(AppError::PathTraversal { .. })
+        ));
+        assert!(matches!(
+            tools.create_directory_grant_target(&quarantined_absent_path),
+            Err(AppError::PathTraversal { .. })
+        ));
+
+        let listed = tools
+            .list_directory(root.path().to_string_lossy().to_string(), Some(5))
+            .await
+            .unwrap();
+        assert_eq!(listed.entries.len(), 1);
+        assert_eq!(listed.entries[0].path, visible.to_string_lossy());
+        let found = tools
+            .find_paths(
+                root.path().to_string_lossy().to_string(),
+                "termux".to_owned(),
+                FindPathFilter::Any,
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(found.matches.is_empty());
+        assert_eq!(found.entries_examined, 1);
+        let searched = tools
+            .search_text(
+                root.path().to_string_lossy().to_string(),
+                "trash-quarantine-secret".to_owned(),
+                Some(5),
+            )
+            .await
+            .unwrap();
+        assert!(searched.matches.is_empty());
+        assert_eq!(searched.entries_examined, 1);
+        assert_eq!(searched.files_scanned, 1);
+        assert_eq!(searched.bytes_scanned, "public".len());
+        assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "trash-quarantine-secret");
+    }
+
+    #[tokio::test]
     async fn copy_file_accepts_exact_limit_and_rejects_one_byte_over() {
         let root = tempfile::tempdir().unwrap();
         let exact = root.path().join("exact.bin");

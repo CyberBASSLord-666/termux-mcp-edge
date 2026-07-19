@@ -137,6 +137,35 @@ fn main() {
 "#,
             "binary_server_router_with_capability_authorities_and_options",
         ),
+        (
+            "forged trash grant target",
+            r#"
+use termux_mcp_server::trash_file_grant::TrashFileGrantTarget;
+
+fn main() {
+    let _ = TrashFileGrantTarget {
+        root_device: 1,
+        root_inode: 2,
+        target_digest: [0; 32],
+        content_digest: [0; 32],
+        identity: unreachable!(),
+    };
+}
+"#,
+            "root_device",
+        ),
+        (
+            "crate-private trash transaction types",
+            r#"
+use termux_mcp_server::tools::{AuthorizedTrashFileError, PreparedTrashFileMutation};
+
+fn main() {
+    let _ = std::mem::size_of::<PreparedTrashFileMutation>();
+    let _ = std::mem::size_of::<AuthorizedTrashFileError>();
+}
+"#,
+            "PreparedTrashFileMutation",
+        ),
     ];
 
     for (name, source, expected_symbol) in rejected {

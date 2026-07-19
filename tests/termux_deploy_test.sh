@@ -31,6 +31,7 @@ MCP__TRANSPORT__ALLOWED_HOSTS=localhost:8000,127.0.0.1:8000
 MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
 MCP__FILE__COPY_FILE_MUTATION_ENABLED=true
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true
 MCP__FILE__WRITE_MUTATION_ENABLED=true
 MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
 MCP__CAPABILITY__KEY_ID=deployment-test-1
@@ -198,11 +199,13 @@ sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=/' "$TERMUX_MCP_C
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=test-static-token/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 runtime_config_size="$(stat -c '%s' "$TERMUX_MCP_CONFIG_ROOT/runtime.env")"; printf '\0' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run; truncate -s "$runtime_config_size" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=true$/MCP__FILE__COPY_FILE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=invalid$/MCP__FILE__COPY_FILE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=invalid$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__FILE__WRITE_MUTATION_ENABLED=true$/MCP__FILE__WRITE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__WRITE_MUTATION_ENABLED=invalid$/MCP__FILE__WRITE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=invalid$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 
 sed -i \
   -e 's/^MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true$/MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false/' \
+  -e 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false/' \
   -e 's/^MCP__FILE__WRITE_MUTATION_ENABLED=true$/MCP__FILE__WRITE_MUTATION_ENABLED=false/' \
   -e 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=true$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=false/' \
   "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
@@ -218,9 +221,27 @@ bash "$SCRIPT" rollback --dry-run >/dev/null
 sed -i '/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=false$/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 bash "$SCRIPT" rollback --dry-run >/dev/null
 printf '%s\n' 'MCP__FILE__COPY_FILE_MUTATION_ENABLED=false' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+if output="$(bash "$SCRIPT" rollback --dry-run 2>&1)"; then fail_test "trash_file gate without capability keys unexpectedly succeeded"; fi
+grep -Fq 'trash_file mutation requires capability key configuration' <<<"$output" || fail_test "trash_file key dependency failure was not explicit"
+printf '%s\n' \
+  'MCP__CAPABILITY__KEY_ID=deployment-test-1' \
+  'MCP__CAPABILITY__HMAC_KEY_HEX=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+  >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i '/^MCP__AUTH__STATIC_TOKEN=/d' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+if output="$(bash "$SCRIPT" rollback --dry-run 2>&1)"; then fail_test "trash_file gate without static authentication unexpectedly succeeded"; fi
+grep -Fq 'trash_file mutation requires static-token authentication' <<<"$output" || fail_test "trash_file static-auth dependency failure was not explicit"
+sed -i '1iMCP__AUTH__STATIC_TOKEN=test-static-token' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i \
+  -e 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false/' \
+  -e '/^MCP__CAPABILITY__KEY_ID=/d' \
+  -e '/^MCP__CAPABILITY__HMAC_KEY_HEX=/d' \
+  "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+  bash "$SCRIPT" rollback --dry-run >/dev/null
 sed -i \
   -e 's/^MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false$/MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true/' \
   -e 's/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=false$/MCP__FILE__COPY_FILE_MUTATION_ENABLED=true/' \
+  -e 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true/' \
   -e 's/^MCP__FILE__WRITE_MUTATION_ENABLED=false$/MCP__FILE__WRITE_MUTATION_ENABLED=true/' \
   -e 's/^MCP__ANDROID__VOLUME_CONTROL_ENABLED=false$/MCP__ANDROID__VOLUME_CONTROL_ENABLED=true/' \
   "$TERMUX_MCP_CONFIG_ROOT/runtime.env"

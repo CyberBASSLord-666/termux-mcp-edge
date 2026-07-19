@@ -718,6 +718,100 @@ mod tests {
     }
 
     #[test]
+    fn lifetime_key_version_clock_and_capacity_fail_closed_without_cross_namespace_state() {
+        let lifetime_authority = authority("trash-lifetime-shape");
+        let binding = target();
+        let valid = lifetime_authority.issue_at(SESSION, &binding, NOW).unwrap();
+        let mut excessive_lifetime = lifetime_authority.parse_and_verify(&valid).unwrap();
+        excessive_lifetime.expires_unix_seconds = excessive_lifetime
+            .issued_unix_seconds
+            .checked_add(MAX_TRASH_FILE_GRANT_LIFETIME_SECONDS + 1)
+            .unwrap();
+        let excessive_lifetime = lifetime_authority.encode_and_sign(&excessive_lifetime);
+        assert_eq!(
+            lifetime_authority.consume_at(
+                Some(&excessive_lifetime),
+                SESSION,
+                &binding,
+                NOW + 1,
+            ),
+            Err(TrashFileGrantError::LifetimeExceeded)
+        );
+
+        let unknown_version = valid.replacen("v1.", "v2.", 1);
+        assert_eq!(
+            lifetime_authority.consume_at(Some(&unknown_version), SESSION, &binding, NOW + 1),
+            Err(TrashFileGrantError::UnknownVersion)
+        );
+        let unknown_key = valid.replacen(".trash-primary-1.", ".trash-secondary-1.", 1);
+        assert_eq!(
+            lifetime_authority.consume_at(Some(&unknown_key), SESSION, &binding, NOW + 1),
+            Err(TrashFileGrantError::UnknownKey)
+        );
+
+        let rollback_authority = authority("trash-clock-rollback");
+        let first = rollback_authority.issue_at(SESSION, &binding, NOW).unwrap();
+        let second = rollback_authority.issue_at(SESSION, &binding, NOW).unwrap();
+        rollback_authority
+            .consume_at(Some(&first), SESSION, &binding, NOW + 2)
+            .unwrap();
+        assert_eq!(
+            rollback_authority.consume_at(Some(&second), SESSION, &binding, NOW + 1),
+            Err(TrashFileGrantError::ClockRollback)
+        );
+
+        let limited = TrashFileGrantAuthority::from_hex_key_with_capacity(
+            "trash-capacity-1",
+            KEY,
+            "trash-capacity-principal",
+            1,
+        )
+        .unwrap();
+        let first = limited.issue_at(SESSION, &binding, NOW).unwrap();
+        let second = limited.issue_at(SESSION, &binding, NOW).unwrap();
+        limited
+            .consume_at(Some(&first), SESSION, &binding, NOW + 1)
+            .unwrap();
+        assert_eq!(
+            limited.consume_at(Some(&second), SESSION, &binding, NOW + 1),
+            Err(TrashFileGrantError::ReplayCapacityExhausted)
+        );
+    }
+
+    #[test]
+    fn concurrent_replay_has_exactly_one_atomic_consumer() {
+        let authority = Arc::new(authority("trash-concurrent-replay"));
+        let binding = Arc::new(target());
+        let token = Arc::new(authority.issue_at(SESSION, &binding, NOW).unwrap());
+        let barrier = Arc::new(std::sync::Barrier::new(9));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let authority = Arc::clone(&authority);
+            let binding = Arc::clone(&binding);
+            let token = Arc::clone(&token);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                authority.consume_at(Some(&token), SESSION, &binding, NOW + 1)
+            }));
+        }
+        barrier.wait();
+
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| **result == Err(TrashFileGrantError::Replayed))
+                .count(),
+            7
+        );
+    }
+
+    #[test]
     fn configuration_target_and_diagnostics_are_private() {
         for invalid in [
             TrashFileGrantAuthority::from_hex_key("", KEY, PRINCIPAL),
