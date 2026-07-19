@@ -475,6 +475,25 @@ mod tests {
         AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap()
     }
 
+    fn resign_payload(
+        authority: &AndroidVolumeGrantAuthority,
+        token: &str,
+        mutate: impl FnOnce(&mut [u8; PAYLOAD_BYTES]),
+    ) -> String {
+        let mut segments = token.split('.');
+        let version = segments.next().unwrap();
+        let key_id = segments.next().unwrap();
+        let payload_hex = segments.next().unwrap();
+        let _signature = segments.next().unwrap();
+        let mut payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex).unwrap();
+        mutate(&mut payload);
+        let payload_hex = encode_hex(&payload);
+        let signed = format!("{version}.{key_id}.{payload_hex}");
+        let mut mac = HmacSha256::new_from_slice(authority.key.as_ref()).unwrap();
+        mac.update(signed.as_bytes());
+        format!("{signed}.{}", encode_hex(&mac.finalize().into_bytes()))
+    }
+
     #[test]
     fn one_grant_is_exactly_bound_and_single_use() {
         let authority = authority();
@@ -489,6 +508,33 @@ mod tests {
                 .unwrap_err(),
             AndroidVolumeGrantError::Replayed
         );
+    }
+
+    #[test]
+    fn rejects_legacy_volume_code_two_without_consuming_the_grant() {
+        const CAPABILITY_OFFSET: usize = GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES;
+
+        let authority = authority();
+        let token = authority.issue_at(SESSION, target(), NOW).unwrap();
+        let payload_hex = token.split('.').nth(2).unwrap();
+        let payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex).unwrap();
+        assert_eq!(
+            payload[CAPABILITY_OFFSET],
+            RequestGrantCapability::AndroidVolume.wire_code()
+        );
+
+        let legacy = resign_payload(&authority, &token, |payload| {
+            payload[CAPABILITY_OFFSET] = 2;
+        });
+        assert_eq!(
+            authority
+                .consume_at(Some(&legacy), SESSION, target(), NOW)
+                .unwrap_err(),
+            AndroidVolumeGrantError::BindingMismatch
+        );
+        authority
+            .consume_at(Some(&token), SESSION, target(), NOW)
+            .unwrap();
     }
 
     #[test]
