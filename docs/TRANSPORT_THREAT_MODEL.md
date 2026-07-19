@@ -165,12 +165,13 @@ Command execution, Android control, service/package/network mutation, broad stor
 
 Current controls:
 
-- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics of the exact server executable;
-- its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input;
-- empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced;
+- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; it additionally requires an opaque authority obtainable by the Cargo primary package but not by dependency builds, and all public embedding routers are command-disabled;
+- initialization requires an executable regular `current_exe` with exact basename `termux-mcp-server`; later execution uses `/proc/self/exe` so installation-path replacement cannot redirect a profile to another inode;
+- its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input, while crate-private profiles, resolved handles, and raw execution types prevent a downstream Rust embedding from forging or inspecting those values;
+- empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced; independent 5-second/16-KiB/4-KiB supervisor maxima reject oversize configuration before spawn, and capacity grows fallibly only from bytes actually read;
 - arbitrary commands, shells, broader Android/service/package/network mutation, broad inspection, credentials, and unrelated high-impact capabilities are absent from discovery and dispatch;
 - the narrow `create_directory`, `write_file`, and exact-stream volume request-grant modules are live only for their distinct bound mutations; the separate general capability-token policy module remains inert;
-- public directory-creation, file-write, and Android-volume library APIs expose preview only. Their live preparation and execution are crate-private, preventing an embedding from routing around those transport authorities. The legacy public `copy_file` live path is a separately tracked trusted-embedding limitation until the reserved copy-grant family is implemented;
+- public directory-creation, file-write, and Android-volume library APIs expose preview only. Their live preparation and execution are crate-private, preventing an embedding from routing around those transport authorities. Command execution is absent from public embedding routers, and the dependency-mode authority probe prevents safe acquisition of the primary-server handle. The legacy public `copy_file` live path is a separately tracked trusted-embedding limitation until the reserved copy-grant family is implemented;
 - read-only Android and service metadata use fixed allowlists and expose no control path.
 
 Required controls for expansion:
@@ -219,3 +220,4 @@ Every affected change must identify the exact head SHA and provide the applicabl
 7. operator documentation that describes only implemented behavior.
 
 For a file-write change, evidence additionally includes the independent disabled/enabled discovery truth table, exact-binary issuer, all grant bindings and replay failures, exact-limit/content-free response checks including `recoveryArtifactRetained`, create `NOREPLACE` without retention, irreversible replace `EXCHANGE` with preserved recovery material, quarantine namespace/capacity/lock failures, post-commit fault states, and deterministic release-validator plus native Termux device-smoke coverage against the exact artifact.
+
