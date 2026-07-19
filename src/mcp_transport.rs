@@ -4,7 +4,7 @@ use std::{
 };
 
 use axum::{
-    body::Bytes,
+    body::{to_bytes, Body, Bytes},
     extract::State,
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 #[cfg(feature = "android-battery-status")]
 use crate::android_battery::AndroidBatteryClient;
@@ -46,7 +47,11 @@ use crate::{
     },
     error::AppError,
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
-    mcp_session::{McpSessionStore, SessionPhase, SessionStoreError},
+    mcp_session::{
+        McpSessionStore, SessionPhase, SessionStoreError, SseReplayError, SseReplayEvent,
+        MAX_MCP_SSE_EVENT_DATA_BYTES, MAX_MCP_SSE_EVENTS_PER_STREAM,
+        MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION, MAX_MCP_SSE_STREAMS_PER_SESSION,
+    },
     platform_info::collect_platform_info,
     service_status::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
@@ -78,7 +83,9 @@ use crate::{
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
 pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+pub const MCP_LAST_EVENT_ID_HEADER: &str = "last-event-id";
 pub const MCP_POST_ACCEPT: &str = "application/json, text/event-stream";
+pub const MAX_MCP_LAST_EVENT_ID_BYTES: usize = 64;
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
@@ -230,12 +237,25 @@ const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised
 
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct McpTransportOptions {
+    sse_enabled: bool,
+}
+
+impl McpTransportOptions {
+    pub const fn with_sse_enabled(mut self, enabled: bool) -> Self {
+        self.sse_enabled = enabled;
+        self
+    }
+}
+
 #[derive(Clone)]
 struct McpTransportState {
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
     audit_counters: SharedAuditCounters,
     sessions: McpSessionStore,
+    sse_enabled: bool,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
@@ -277,6 +297,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            sse_enabled: false,
             android_battery_status_enabled: android_battery_status_enabled
                 && cfg!(feature = "android-battery-status"),
             android_volume_status_enabled: android_volume_status_enabled
@@ -296,6 +317,11 @@ impl McpTransportState {
             #[cfg(feature = "command-execution")]
             command_execution_client,
         }
+    }
+
+    fn with_options(mut self, options: McpTransportOptions) -> Self {
+        self.sse_enabled = options.sse_enabled;
+        self
     }
 
     #[cfg(feature = "android-volume-control")]
@@ -330,6 +356,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            sse_enabled: false,
             android_battery_status_enabled,
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
@@ -369,6 +396,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            sse_enabled: false,
             android_battery_status_enabled: false,
             android_volume_status_enabled,
             android_volume_control_enabled: false,
@@ -398,6 +426,7 @@ impl McpTransportState {
             file_tools,
             audit_counters: Arc::new(Mutex::new(AuditCounters::default())),
             sessions: McpSessionStore::new(),
+            sse_enabled: false,
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
@@ -616,6 +645,28 @@ pub fn router(
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
 ) -> Router {
+    router_with_options(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        McpTransportOptions::default(),
+    )
+}
+
+/// Build the MCP transport with explicit additive transport options. SSE is
+/// default-disabled and cannot be enabled accidentally through the legacy
+/// constructors.
+#[rustfmt::skip]
+pub fn router_with_options(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    options: McpTransportOptions,
+) -> Router {
     router_from_state(McpTransportState::new(
         security_policy,
         file_tools,
@@ -623,7 +674,7 @@ pub fn router(
         android_volume_status_enabled,
         command_execution_enabled,
         None,
-    ))
+    ).with_options(options))
 }
 
 /// Build the MCP transport with the dedicated `create_directory` mutation gate
@@ -637,6 +688,29 @@ pub fn router_with_create_directory_authority(
     command_execution_enabled: bool,
     create_directory_authority: CreateDirectoryGrantAuthority,
 ) -> Router {
+    router_with_create_directory_authority_and_options(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        create_directory_authority,
+        McpTransportOptions::default(),
+    )
+}
+
+/// Build the request-authorized directory transport with explicit additive
+/// transport options.
+#[rustfmt::skip]
+pub fn router_with_create_directory_authority_and_options(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: CreateDirectoryGrantAuthority,
+    options: McpTransportOptions,
+) -> Router {
     router_from_state(McpTransportState::new(
         security_policy,
         file_tools,
@@ -644,7 +718,7 @@ pub fn router_with_create_directory_authority(
         android_volume_status_enabled,
         command_execution_enabled,
         Some(create_directory_authority),
-    ))
+    ).with_options(options))
 }
 
 /// Build the MCP transport with independently optional filesystem and Android
@@ -662,6 +736,32 @@ pub fn router_with_capability_authorities(
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
 ) -> Router {
+    router_with_capability_authorities_and_options(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        create_directory_authority,
+        android_volume_control_authority,
+        McpTransportOptions::default(),
+    )
+}
+
+/// Build the independently authorized mutation transport with explicit
+/// additive transport options.
+#[cfg(feature = "android-volume-control")]
+#[rustfmt::skip]
+pub fn router_with_capability_authorities_and_options(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
+    options: McpTransportOptions,
+) -> Router {
     router_from_state(
         McpTransportState::new(
             security_policy,
@@ -671,7 +771,8 @@ pub fn router_with_capability_authorities(
             command_execution_enabled,
             create_directory_authority,
         )
-        .with_android_volume_control_authority(android_volume_control_authority),
+        .with_android_volume_control_authority(android_volume_control_authority)
+        .with_options(options),
     )
 }
 
@@ -790,7 +891,16 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
                     "Initialize requests must not include MCP-Session-Id.",
                 );
             }
-            return initialize_response(Some(id.clone()), params.clone(), state);
+            let response = initialize_response(Some(id.clone()), params.clone(), state);
+            let Some(session_id) = response
+                .headers()
+                .get(MCP_SESSION_ID_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+            else {
+                return response;
+            };
+            return maybe_sse_response(state, &session_id, response).await;
         }
     }
 
@@ -805,13 +915,14 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
                 return capability_context_not_allowed(Some(id));
             }
             if method == "ping" {
-                return ping_response(Some(id));
+                let response = ping_response(Some(id));
+                return maybe_sse_response(state, &session_id, response).await;
             }
             if phase != SessionPhase::Active {
                 return server_not_initialized(Some(id));
             }
 
-            match method.as_str() {
+            let response = match method.as_str() {
                 "tools/list" => tools_list_response(Some(id), state),
                 "tools/call" => {
                     handle_tool_call(
@@ -827,7 +938,8 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
                     Some(id),
                     "Only ping, tools/list, and tools/call are available after initialization.",
                 ),
-            }
+            };
+            maybe_sse_response(state, &session_id, response).await
         }
         IncomingJsonRpcMessage::Notification { method, params: _ } => {
             if capability_grant.is_some() {
@@ -856,6 +968,124 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
     }
 }
 
+async fn maybe_sse_response(
+    state: &McpTransportState,
+    session_id: &str,
+    response: Response,
+) -> Response {
+    if !state.sse_enabled
+        || response.status() != StatusCode::OK
+        || !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(APPLICATION_JSON))
+            })
+    {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let body = match to_bytes(body, MAX_BINARY_RANGE_RESPONSE_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            return transport_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sse_response_unavailable",
+                "The JSON-RPC response could not be bounded for SSE delivery.",
+            );
+        }
+    };
+    let value = match serde_json::from_slice::<Value>(&body) {
+        Ok(value) => value,
+        Err(_) => return Response::from_parts(parts, Body::from(body)),
+    };
+    let data = serde_json::to_vec(&value).expect("a parsed JSON value must serialize");
+    if data.len() > MAX_MCP_SSE_EVENT_DATA_BYTES {
+        return Response::from_parts(parts, Body::from(body));
+    }
+
+    let events = match state.sessions.record_sse_response(session_id, data) {
+        Ok(events) => events,
+        Err(SseReplayError::EventDataTooLarge) => {
+            return Response::from_parts(parts, Body::from(body));
+        }
+        Err(error) => return sse_replay_error_response(error),
+    };
+    let body = encode_sse_events(&events);
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(body))
+}
+
+fn encode_sse_events(events: &[SseReplayEvent]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for event in events {
+        event.append_wire_bytes(&mut body);
+    }
+    body
+}
+
+fn sse_events_response(events: &[SseReplayEvent]) -> Response {
+    let mut response = Response::new(Body::from(encode_sse_events(events)));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    response
+}
+
+fn valid_last_event_id(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > MAX_MCP_LAST_EVENT_ID_BYTES
+        || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        return false;
+    }
+    let Some((stream_id, sequence)) = value.rsplit_once(':') else {
+        return false;
+    };
+    if sequence.is_empty()
+        || (sequence.len() > 1 && sequence.starts_with('0'))
+        || sequence.parse::<u64>().is_err()
+    {
+        return false;
+    }
+    Uuid::parse_str(stream_id).is_ok_and(|parsed| parsed.to_string() == stream_id)
+}
+
+fn sse_replay_error_response(error: SseReplayError) -> Response {
+    match error {
+        SseReplayError::SessionNotFound => transport_error(
+            StatusCode::NOT_FOUND,
+            "session_not_found",
+            "The MCP session does not exist or has expired.",
+        ),
+        SseReplayError::CursorNotFound => transport_error(
+            StatusCode::NOT_FOUND,
+            "sse_cursor_not_found",
+            "The SSE replay cursor is unavailable for this session.",
+        ),
+        SseReplayError::EventDataTooLarge => transport_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "sse_replay_unavailable",
+            "The SSE replay response exceeds its bounded retention posture.",
+        ),
+        SseReplayError::Poisoned => transport_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "session_state_unavailable",
+            "MCP session state is unavailable.",
+        ),
+    }
+}
+
 fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
     if !accepts_media_type(headers, TEXT_EVENT_STREAM) {
         return transport_error(
@@ -865,7 +1095,7 @@ fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
         );
     }
 
-    let (_, phase) = match validate_session_request(headers, &state.sessions) {
+    let (session_id, phase) = match validate_session_request(headers, &state.sessions) {
         Ok(session) => session,
         Err(error) => return session_request_error_response(error),
     };
@@ -873,11 +1103,36 @@ fn handle_mcp_get(state: &McpTransportState, headers: &HeaderMap) -> Response {
         return server_not_initialized(None);
     }
 
-    let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
-    response
-        .headers_mut()
-        .insert(header::ALLOW, HeaderValue::from_static("POST, DELETE"));
-    response
+    if !state.sse_enabled {
+        let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("POST, DELETE"));
+        return response;
+    }
+
+    let last_event_id = match single_header_value(headers, MCP_LAST_EVENT_ID_HEADER) {
+        Ok(Some(value)) if valid_last_event_id(value) => value,
+        Ok(None) => {
+            let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+            response
+                .headers_mut()
+                .insert(header::ALLOW, HeaderValue::from_static("POST, DELETE"));
+            return response;
+        }
+        Ok(Some(_)) | Err(()) => {
+            return transport_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_last_event_id",
+                "Last-Event-ID must contain exactly one bounded server-issued event ID.",
+            );
+        }
+    };
+
+    match state.sessions.replay_sse_after(&session_id, last_event_id) {
+        Ok(events) => sse_events_response(&events),
+        Err(error) => sse_replay_error_response(error),
+    }
 }
 
 fn handle_mcp_delete(state: &McpTransportState, headers: &HeaderMap) -> Response {
@@ -1968,6 +2223,7 @@ fn handle_runtime_status_call(
         state.android_volume_status_enabled,
         state.android_volume_control_enabled,
         state.command_execution_enabled,
+        state.sse_enabled,
     )
 }
 
@@ -2509,6 +2765,7 @@ fn runtime_status_response(
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
     command_execution_enabled: bool,
+    sse_enabled: bool,
 ) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
     let available_tools = available_tools(
@@ -2558,6 +2815,11 @@ fn runtime_status_response(
     } else {
         "dry_run_only_mutation_disabled"
     };
+    let transport_mode = if sse_enabled {
+        "streamable-http-2025-11-25-session-scoped-bounded-sse-replay"
+    } else {
+        "streamable-http-2025-11-25-session-scoped-no-sse"
+    };
 
     (
         StatusCode::OK,
@@ -2569,7 +2831,8 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            transport_mode,
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -2585,7 +2848,13 @@ fn runtime_status_response(
                     "version": env!("CARGO_PKG_VERSION"),
                     "transport": "streamable_http_2025_11_25",
                     "sessionManagement": "bounded_uuid_idle_expiry",
-                    "serverSentEvents": false,
+                    "serverSentEvents": sse_enabled,
+                    "serverSentEventsMode": if sse_enabled { "finite_request_response_with_origin_stream_replay" } else { "disabled" },
+                    "sseMaxStreamsPerSession": MAX_MCP_SSE_STREAMS_PER_SESSION,
+                    "sseMaxEventsPerStream": MAX_MCP_SSE_EVENTS_PER_STREAM,
+                    "sseMaxEventDataBytes": MAX_MCP_SSE_EVENT_DATA_BYTES,
+                    "sseMaxReplayBytesPerSession": MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION,
+                    "sseMaxLastEventIdBytes": MAX_MCP_LAST_EVENT_ID_BYTES,
                     "availableTools": available_tools,
                     "platformInfo": true,
                     "platformInfoMode": "read_only_non_sensitive_metadata",
@@ -4879,6 +5148,7 @@ mod tests {
             state.android_volume_status_enabled,
             state.android_volume_control_enabled,
             state.command_execution_enabled,
+            state.sse_enabled,
         );
         let runtime: Value = serde_json::from_slice(
             &to_bytes(runtime.into_body(), 64 * 1024).await.unwrap(),
