@@ -771,8 +771,19 @@ valid_capability_grant() {
   payload="${remainder%%.*}"
   signature="${remainder#*.}"
   [[ "$signature" != *.* ]] || return 1
-  (((${#payload} == 128 || ${#payload} == 260) && ${#signature} == 64)) || return 1
+  (((${#payload} == 130 || ${#payload} == 260) && ${#signature} == 64)) || return 1
   [[ "$payload$signature" != *[!0-9a-f]* ]]
+}
+
+capability_grant_has_signed_byte() {
+  local grant="$1" byte_offset="$2" expected="$3" prefix remainder payload hex_offset
+  valid_capability_grant "$grant" || return 1
+  prefix="v1.${CAPABILITY_KEY_ID}."
+  remainder="${grant#"$prefix"}"
+  payload="${remainder%%.*}"
+  hex_offset=$((byte_offset * 2))
+  ((${#payload} >= hex_offset + 2)) || return 1
+  [[ "${payload:hex_offset:2}" == "$expected" ]]
 }
 
 stage_session_headers() {
@@ -809,6 +820,7 @@ issue_create_directory_grant() {
   local grant
   grant="$(<"$CAPABILITY_GRANT_FILE")"
   valid_capability_grant "$grant" || fail capability_grant_output_invalid
+  capability_grant_has_signed_byte "$grant" 64 01 || fail create_directory_capability_byte_invalid
   unset grant
 }
 
@@ -829,6 +841,7 @@ issue_write_file_grant() {
   [[ "$(wc -l <"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null)" == 1 ]] || fail write_capability_grant_output_invalid
   grant="$(<"$WRITE_CAPABILITY_GRANT_FILE")"
   valid_capability_grant "$grant" || fail write_capability_grant_output_invalid
+  capability_grant_has_signed_byte "$grant" 16 02 || fail write_capability_byte_invalid
   unset grant
 }
 
