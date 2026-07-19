@@ -46,6 +46,8 @@ for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$CO
 done
 grep -Fq 'write-key-isolation' "$VOLUME_CONTROL_GATE" \
   || fail_test 'shared volume capability key is not isolated from write_file'
+grep -Fq '"${payload:128:2}" == 03' "$VOLUME_CONTROL_GATE" \
+  || fail_test 'volume-control native gate does not pin signed capability byte 3'
 for code in \
   expanded_body_posture_verified \
   safe_root_file_create_replace_verified \
