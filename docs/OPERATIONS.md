@@ -9,13 +9,21 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Rust single binary.
 - `GET /health` and `GET /ready` operational endpoints.
 - Optional authenticated stable MCP 2025-11-25 `POST`, `GET`, and `DELETE /mcp` handling; GET returns 405 by default, with finite cursor replay available only through explicit SSE opt-in.
-- Authentication before concurrency, timeout, body-size, Host, Origin, parsing, discovery, and dispatch.
+- Exact MCP order: authentication; early `Content-Length`, fail-fast concurrency, and total timeout enforcement; streaming body limiting and extraction; exact `Host`/`Origin`; method/media/protocol/session/grant validation; then JSON-RPC lifecycle, discovery, tools, and authorized mutations.
 - Four concurrent authenticated MCP requests by default.
 - Thirty-second request timeout by default.
 - Two-MiB request-body ceiling by default.
 - Versioned Termux release directories with atomic `current` and `previous` links.
 - Fixed `mcp_runtime` runit service only.
 - Dedicated safe-root defaults plus independent default-disabled directory, file-copy, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
+
+## Secure router construction and serving
+
+The package binary and every downstream embedding use the one public [`McpRouterBuilder`](EMBEDDING.md). It requires sealed authentication, request-limit, transport-security, and filesystem-root policies. `new` validates the listener declaration and lifetime-pins every root; `build` initializes every requested optional client and installs the fixed layer order above. Raw state and legacy router constructors are not production API.
+
+Complete builder construction before opening the TCP listener. Invalid listener text, a non-loopback declaration paired with unauthenticated development mode, empty/relative/filesystem-root/missing/non-directory/symlinked roots, an uncompiled requested capability, or an unavailable optional client returns a typed non-sensitive `McpRouterBuildError` instead of panicking or silently disabling the request.
+
+Serve the returned router with `into_make_service_with_connect_info::<SocketAddr>()`. Static-token mode authenticates independently of peer metadata; explicit unauthenticated localhost mode requires both a loopback listener declaration and request-time `ConnectInfo` proving the actual TCP peer is IPv4 or IPv6 loopback. Missing metadata and non-loopback peers fail closed before request limits or body handling. Keep the builder declaration, actual listener bind, and `TransportSecurityPolicy` host/port consistent.
 
 ## Android hardening
 
@@ -243,7 +251,7 @@ An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 
 An `android-volume-control` binary with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and the capability key pair exposes `set_android_volume`. It defaults to fresh validated preview. Explicit mutation requires one exact request grant and performs fixed execution, verification, and restoration on failure; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. Command-capable construction is binary-crate-private; public library routers hard-code disabled. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. The package binary uses the same public builder as embeddings, but alone can call its crate-private command-enablement setter; downstream crates are structurally command-disabled. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
 
 The runtime does not expose Android platform control beyond exact request-authorized volume, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or unrelated high-impact controls.
 
