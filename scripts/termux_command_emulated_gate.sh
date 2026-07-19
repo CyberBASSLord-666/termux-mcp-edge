@@ -48,7 +48,7 @@ Run an exact command-execution artifact natively in the pinned official ARM64
 Termux environment. This validates the compile/runtime truth table, fixed
 profile registry, closed schema, cleared environment, null stdin, safe-rooted
 descriptor-pinned working directory, bounded structured output, wrong-name
-pre-listener rejection, loaded-inode replacement isolation, stable errors, and
+pre-service rejection, loaded-inode replacement isolation, stable errors, and
 audit counters.
 It does not run a long observation window or enable arbitrary commands.
 EOF
@@ -478,10 +478,9 @@ stop_server
 rm -f -- "$SAFE_ROOT"
 mv "$PINNED_SAFE_ROOT" "$SAFE_ROOT"
 
-log 'validating wrong executable name is rejected before listener startup'
+log 'validating wrong executable name is rejected before serving'
 RENAMED_ARTIFACT="$WORK_ROOT/renamed-command-server"
 install -m 700 "$ARTIFACT" "$RENAMED_ARTIFACT"
-set +e
 MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
 MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
 MCP__COMMAND__ENABLED=true \
@@ -497,24 +496,40 @@ MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
 MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
 MCP__FILE__WRITE_MUTATION_ENABLED=false \
 RUST_LOG=termux_mcp_server=info \
-  timeout -k 2 5 "$RENAMED_ARTIFACT" >"$SERVER_LOG" 2>&1
+  timeout -k 2 5 "$RENAMED_ARTIFACT" >"$SERVER_LOG" 2>&1 &
+SERVER_PID=$!
+wrong_name_reachable=false
+for attempt in $(seq 1 100); do
+  if curl_local --silent --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+    wrong_name_reachable=true
+    break
+  fi
+  kill -0 "$SERVER_PID" >/dev/null 2>&1 || break
+  sleep 0.05
+done
+if [[ "$wrong_name_reachable" == true ]]; then
+  kill "$SERVER_PID" >/dev/null 2>&1 || true
+  wait "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=''
+  fail wrong_name_service_reachable
+fi
+set +e
+wait "$SERVER_PID"
 wrong_name_rc=$?
 set -e
+SERVER_PID=''
 ((wrong_name_rc != 0 && wrong_name_rc != 124 && wrong_name_rc != 137)) \
   || fail wrong_name_startup_exit_invalid
-grep -F 'requested MCP optional client is unavailable: command_execution' "$SERVER_LOG" >/dev/null \
-  || fail wrong_name_startup_error_invalid
+grep -F 'the command execution client could not be initialized' "$SERVER_LOG" >/dev/null \
+  || fail wrong_name_construction_error_invalid
 if grep -F "$MCP_TOKEN" "$SERVER_LOG" >/dev/null; then
-  fail wrong_name_startup_error_leaked_token
+  fail wrong_name_construction_error_leaked_token
 fi
 if grep -F "$RENAMED_ARTIFACT" "$SERVER_LOG" >/dev/null || grep -F "$SAFE_ROOT" "$SERVER_LOG" >/dev/null; then
-  fail wrong_name_startup_error_leaked_path
+  fail wrong_name_construction_error_leaked_path
 fi
 if grep -F 'Listening on http://' "$SERVER_LOG" >/dev/null; then
-  fail wrong_name_listener_started
-fi
-if curl_local --silent --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-  fail wrong_name_listener_reachable
+  fail wrong_name_service_announced
 fi
 
 log 'validating disabled fixed-profile command posture'
@@ -616,7 +631,7 @@ jq -n \
       disabledDiscovery: true,
       fixedCurrentExecutable: true,
       wrongExecutableNameFailsClosed: true,
-      wrongExecutableNameRejectedBeforeListener: true,
+      wrongExecutableNameRejectedBeforeServing: true,
       runningInodePinned: true,
       workingDirectoryDescriptorPinned: true,
       fixedArgvProfiles: true,
