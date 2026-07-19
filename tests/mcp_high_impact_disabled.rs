@@ -5,6 +5,7 @@ mod support;
 use axum::http::StatusCode;
 use serde_json::json;
 use support::{post_json_with_empty_root, response_json};
+use termux_mcp_server::mcp_transport::MAX_MCP_JSON_RPC_ID_BYTES;
 
 const EXPECTED_STAGED_TOOLS: [&str; 16] = [
     "runtime_status",
@@ -106,6 +107,10 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert_eq!(structured["sseMaxReplayBytesPerSession"], 256 * 1024);
     assert_eq!(structured["sseMaxLastEventIdBytes"], 64);
     assert_eq!(structured["sseRetryMilliseconds"], 1_000);
+    assert_eq!(
+        structured["jsonRpcIdMaxBytes"],
+        MAX_MCP_JSON_RPC_ID_BYTES
+    );
 
     let text = payload["result"]["content"][0]["text"]
         .as_str()

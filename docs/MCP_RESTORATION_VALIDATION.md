@@ -98,6 +98,7 @@ The implemented MCP 2025-11-25 postures must continue to prove:
 - ping before activation, request timeout/cancellation-safe cleanup, process-shutdown state reset, HTTP 404 reinitialization behavior, and multiple-client isolation;
 - GET with `Accept: text/event-stream` returning HTTP 405 in the default posture without creating replay state;
 - opt-in finite SSE responses contain an empty primer plus one terminal response, use globally unique stream-derived event IDs, and fall back to JSON above the 128 KiB event ceiling, including a worst-case escaped text-range envelope above the binary-read ceiling;
+- every HTTP 200 JSON-RPC response family is preflighted under the aggregate collector ceiling, with canonical serialized request IDs capped at 1 MiB before dispatch and before initialization can allocate session state;
 - cursor-bearing GET replays only later events from the exact session and originating stream; malformed/duplicate/oversized cursors, unknown/cross-session cursors, oldest-first eviction, terminal cursors, termination, and expiry are covered;
 - replay remains bounded to 8 streams, 2 events per stream, and 256 KiB per session, with no broadcast or long-lived server queue;
 - rejection of batch arrays, consistent with the selected stable schema's single-message transport body.
