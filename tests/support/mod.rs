@@ -18,10 +18,7 @@ use termux_mcp_server::{
     copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        protected_router, protected_router_with_copy_file_authority,
-        protected_router_with_create_directory_authority,
-        protected_router_with_filesystem_authorities, protected_router_with_options,
-        McpRouterProtection, McpTransportOptions, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
+        McpRouterBuilder, McpTransportOptions, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
         MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
     },
     request_limits::{
@@ -38,18 +35,28 @@ pub(super) const TEST_CAPABILITY_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 pub(super) const TEST_STATIC_PRINCIPAL: &str = "test-static-principal";
 
-fn test_router_protection() -> McpRouterProtection {
-    McpRouterProtection::new(
+fn default_test_request_limits() -> McpRequestLimits {
+    McpRequestLimits::from_seconds(
+        DEFAULT_MAX_CONCURRENT_REQUESTS,
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        DEFAULT_MAX_BODY_BYTES,
+    )
+    .expect("default test request limits must be valid")
+}
+
+fn test_router_builder(
+    file_tools: &FileSystemTools,
+    request_limits: McpRequestLimits,
+) -> McpRouterBuilder {
+    McpRouterBuilder::new(
         "127.0.0.1",
         McpAuthPolicy::unauthenticated_localhost_only(),
-        McpRequestLimits::from_seconds(
-            DEFAULT_MAX_CONCURRENT_REQUESTS,
-            DEFAULT_REQUEST_TIMEOUT_SECONDS,
-            DEFAULT_MAX_BODY_BYTES,
-        )
-        .expect("default test request limits must be valid"),
+        request_limits,
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools.safe_roots().to_vec(),
     )
-    .expect("unauthenticated test routers declare an exact loopback listener")
+    .expect("test MCP router builder configuration must be valid")
 }
 
 async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Response {
@@ -79,26 +86,18 @@ pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
 }
 
 pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
-    with_loopback_test_peer(protected_router(
-        test_router_protection(),
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-    ))
+    let router = test_router_builder(&file_tools, default_test_request_limits())
+        .build()
+        .expect("test MCP router must build");
+    with_loopback_test_peer(router)
 }
 
 pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
-    with_loopback_test_peer(protected_router_with_options(
-        test_router_protection(),
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-        McpTransportOptions::default().with_sse_enabled(true),
-    ))
+    let router = test_router_builder(&file_tools, default_test_request_limits())
+        .with_transport_options(McpTransportOptions::default().with_sse_enabled(true))
+        .build()
+        .expect("test SSE MCP router must build");
+    with_loopback_test_peer(router)
 }
 
 pub(super) fn create_directory_authorized_test_router(
@@ -110,16 +109,11 @@ pub(super) fn create_directory_authorized_test_router(
         TEST_STATIC_PRINCIPAL,
     )
     .unwrap();
-    let router = with_loopback_test_peer(protected_router_with_create_directory_authority(
-        test_router_protection(),
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-        authority.clone(),
-    ));
-    (router, authority)
+    let router = test_router_builder(&file_tools, default_test_request_limits())
+        .with_create_directory_authority(authority.clone())
+        .build()
+        .expect("test create-authorized MCP router must build");
+    (with_loopback_test_peer(router), authority)
 }
 
 pub(super) fn write_file_authorized_test_router(
@@ -131,24 +125,14 @@ pub(super) fn write_file_authorized_test_router(
         TEST_STATIC_PRINCIPAL,
     )
     .unwrap();
-    let protection = McpRouterProtection::new(
-        "127.0.0.1",
-        McpAuthPolicy::unauthenticated_localhost_only(),
+    let limits =
         McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
-            .expect("write authorization tests require bounded parallel replay attempts"),
-    )
-    .expect("unauthenticated test routers declare an exact loopback listener");
-    let router = with_loopback_test_peer(protected_router_with_filesystem_authorities(
-        protection,
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-        None,
-        Some(authority.clone()),
-    ));
-    (router, authority)
+            .expect("write authorization tests require bounded parallel replay attempts");
+    let router = test_router_builder(&file_tools, limits)
+        .with_write_file_authority(authority.clone())
+        .build()
+        .expect("test write-authorized MCP router must build");
+    (with_loopback_test_peer(router), authority)
 }
 
 pub(super) fn copy_file_authorized_test_router(
@@ -160,23 +144,14 @@ pub(super) fn copy_file_authorized_test_router(
         TEST_STATIC_PRINCIPAL,
     )
     .unwrap();
-    let protection = McpRouterProtection::new(
-        "127.0.0.1",
-        McpAuthPolicy::unauthenticated_localhost_only(),
+    let limits =
         McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
-            .expect("copy authorization tests require bounded parallel replay attempts"),
-    )
-    .expect("unauthenticated test routers declare an exact loopback listener");
-    let router = with_loopback_test_peer(protected_router_with_copy_file_authority(
-        protection,
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-        authority.clone(),
-    ));
-    (router, authority)
+            .expect("copy authorization tests require bounded parallel replay attempts");
+    let router = test_router_builder(&file_tools, limits)
+        .with_copy_file_authority(authority.clone())
+        .build()
+        .expect("test copy-authorized MCP router must build");
+    (with_loopback_test_peer(router), authority)
 }
 
 pub(super) fn issue_create_directory_grant(
@@ -224,14 +199,10 @@ pub(super) fn issue_copy_file_grant(
 
 #[cfg(feature = "command-execution")]
 pub(super) fn public_command_embedding_test_router(file_tools: FileSystemTools) -> Router {
-    with_loopback_test_peer(protected_router(
-        test_router_protection(),
-        TransportSecurityPolicy::localhost(8000, false)
-            .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
-    ))
+    let router = test_router_builder(&file_tools, default_test_request_limits())
+        .build()
+        .expect("public command-feature embedding router must build");
+    with_loopback_test_peer(router)
 }
 
 pub(super) async fn post_raw(body: impl Into<Body>) -> Response {
