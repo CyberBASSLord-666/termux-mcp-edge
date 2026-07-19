@@ -36,11 +36,17 @@ pub enum SafeRootConfigurationError {
     #[error("filesystem safe roots must be absolute paths")]
     RelativePath,
 
+    #[error("filesystem safe roots must not contain parent-directory components")]
+    ParentDirectory,
+
     #[error("filesystem root must not be configured as a safe root")]
     FilesystemRoot,
 
     #[error("filesystem safe roots must not include a reserved runtime namespace")]
     ReservedNamespace,
+
+    #[error("configured filesystem safe roots must not traverse symbolic links")]
+    Symlink,
 
     #[error("a configured filesystem safe root cannot be resolved")]
     Unresolved,
@@ -49,14 +55,14 @@ pub enum SafeRootConfigurationError {
     NotDirectory,
 }
 
-fn canonical_safe_roots(
+fn normalize_safe_root_paths(
     safe_roots: Vec<PathBuf>,
 ) -> Result<Vec<PathBuf>, SafeRootConfigurationError> {
     if safe_roots.is_empty() {
         return Err(SafeRootConfigurationError::EmptyConfiguration);
     }
 
-    let mut canonical_roots = Vec::with_capacity(safe_roots.len());
+    let mut normalized_roots = Vec::with_capacity(safe_roots.len());
     for root in safe_roots {
         if root.as_os_str().is_empty() {
             return Err(SafeRootConfigurationError::EmptyPath);
@@ -64,34 +70,61 @@ fn canonical_safe_roots(
         if !root.is_absolute() {
             return Err(SafeRootConfigurationError::RelativePath);
         }
-        if root == Path::new("/") {
-            return Err(SafeRootConfigurationError::FilesystemRoot);
-        }
         if contains_write_quarantine_component(&root) {
             return Err(SafeRootConfigurationError::ReservedNamespace);
         }
 
-        let canonical = root
-            .canonicalize()
-            .map_err(|_| SafeRootConfigurationError::Unresolved)?;
-        if canonical == Path::new("/") {
+        let mut normalized = PathBuf::from("/");
+        for component in root.components() {
+            match component {
+                Component::RootDir | Component::CurDir => {}
+                Component::Normal(name) => normalized.push(name),
+                Component::ParentDir => {
+                    return Err(SafeRootConfigurationError::ParentDirectory);
+                }
+                Component::Prefix(_) => {
+                    return Err(SafeRootConfigurationError::RelativePath);
+                }
+            }
+        }
+
+        if normalized == Path::new("/") {
             return Err(SafeRootConfigurationError::FilesystemRoot);
         }
-        if contains_write_quarantine_component(&canonical) {
+        if contains_write_quarantine_component(&normalized) {
             return Err(SafeRootConfigurationError::ReservedNamespace);
         }
-
-        let metadata =
-            std::fs::metadata(&canonical).map_err(|_| SafeRootConfigurationError::Unresolved)?;
-        if !metadata.is_dir() {
-            return Err(SafeRootConfigurationError::NotDirectory);
-        }
-        canonical_roots.push(canonical);
+        normalized_roots.push(normalized);
     }
 
-    canonical_roots.sort_unstable();
-    canonical_roots.dedup();
-    Ok(canonical_roots)
+    normalized_roots.sort_unstable();
+    normalized_roots.dedup();
+    Ok(normalized_roots)
+}
+
+#[cfg(not(feature = "mcp-runtime"))]
+fn validated_safe_root_paths(
+    safe_roots: Vec<PathBuf>,
+) -> Result<Vec<PathBuf>, SafeRootConfigurationError> {
+    let normalized_roots = normalize_safe_root_paths(safe_roots)?;
+    for root in &normalized_roots {
+        let mut current = PathBuf::from("/");
+        for component in root.components() {
+            let Component::Normal(name) = component else {
+                continue;
+            };
+            current.push(name);
+            let metadata = std::fs::symlink_metadata(&current)
+                .map_err(|_| SafeRootConfigurationError::Unresolved)?;
+            if metadata.file_type().is_symlink() {
+                return Err(SafeRootConfigurationError::Symlink);
+            }
+            if !metadata.is_dir() {
+                return Err(SafeRootConfigurationError::NotDirectory);
+            }
+        }
+    }
+    Ok(normalized_roots)
 }
 
 fn contains_write_quarantine_component(path: &Path) -> bool {
@@ -139,10 +172,10 @@ pub struct FileSystemTools {
 
 #[cfg(not(feature = "mcp-runtime"))]
 impl FileSystemTools {
-    /// Validate, canonicalize, and deterministically deduplicate safe roots.
+    /// Validate, normalize, and deterministically deduplicate safe roots.
     pub fn try_new(safe_roots: Vec<PathBuf>) -> Result<Self, SafeRootConfigurationError> {
         Ok(Self {
-            safe_roots: canonical_safe_roots(safe_roots)?,
+            safe_roots: validated_safe_root_paths(safe_roots)?,
         })
     }
 
@@ -179,6 +212,9 @@ mod tests {
 
         let relative = construction_error(vec![PathBuf::from("relative/root")]);
         assert_eq!(relative, SafeRootConfigurationError::RelativePath);
+
+        let parent = construction_error(vec![PathBuf::from("/tmp/../private-root")]);
+        assert_eq!(parent, SafeRootConfigurationError::ParentDirectory);
     }
 
     #[test]
@@ -255,12 +291,12 @@ mod tests {
     }
 
     #[test]
-    fn safe_roots_are_canonical_deduplicated_and_sorted() {
+    fn safe_roots_are_normalized_deduplicated_and_sorted() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let mut expected = vec![
-            first.path().canonicalize().unwrap(),
-            second.path().canonicalize().unwrap(),
+            first.path().to_path_buf(),
+            second.path().to_path_buf(),
         ];
         expected.sort_unstable();
 
@@ -276,7 +312,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn safe_roots_deduplicate_symlink_aliases() {
+    fn safe_roots_reject_symlink_aliases_without_disclosing_them() {
         use std::os::unix::fs::symlink;
 
         let parent = tempfile::tempdir().unwrap();
@@ -284,8 +320,10 @@ mod tests {
         let alias = parent.path().join("root-alias");
         symlink(root.path(), &alias).unwrap();
 
-        let tools = FileSystemTools::try_new(vec![alias, root.path().to_path_buf()]).unwrap();
-        assert_eq!(tools.safe_roots(), &[root.path().canonicalize().unwrap()]);
+        let error = construction_error(vec![alias.clone(), root.path().to_path_buf()]);
+        assert_eq!(error, SafeRootConfigurationError::Symlink);
+        assert!(!error.to_string().contains(alias.to_string_lossy().as_ref()));
+        assert!(!format!("{error:?}").contains(alias.to_string_lossy().as_ref()));
     }
 
     #[cfg(unix)]
@@ -300,7 +338,7 @@ mod tests {
         symlink(&quarantine, &alias).unwrap();
 
         let error = construction_error(vec![alias]);
-        assert_eq!(error, SafeRootConfigurationError::ReservedNamespace);
+        assert_eq!(error, SafeRootConfigurationError::Symlink);
     }
 
     #[cfg(unix)]
@@ -313,6 +351,27 @@ mod tests {
         symlink("/", &alias).unwrap();
 
         let error = construction_error(vec![alias]);
-        assert_eq!(error, SafeRootConfigurationError::FilesystemRoot);
+        assert_eq!(error, SafeRootConfigurationError::Symlink);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_roots_reject_symlinked_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let actual = tempfile::tempdir().unwrap();
+        let child = actual.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let alias = parent.path().join("ancestor-alias");
+        symlink(actual.path(), &alias).unwrap();
+        let configured = alias.join("child");
+
+        let error = construction_error(vec![configured.clone()]);
+        assert_eq!(error, SafeRootConfigurationError::Symlink);
+        assert!(!error
+            .to_string()
+            .contains(configured.to_string_lossy().as_ref()));
+        assert!(!format!("{error:?}").contains(configured.to_string_lossy().as_ref()));
     }
 }
