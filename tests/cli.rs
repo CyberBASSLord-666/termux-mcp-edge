@@ -14,6 +14,7 @@ fn isolated_binary() -> Command {
     command
 }
 
+#[cfg(any(feature = "mcp-runtime", feature = "android-volume-control"))]
 fn assert_signed_capability_byte(payload_hex: &str, byte_offset: usize, expected: &str) {
     let hex_offset = byte_offset.checked_mul(2).unwrap();
     assert_eq!(&payload_hex[hex_offset..hex_offset + 2], expected);
