@@ -2,20 +2,22 @@
 
 ## Scope
 
-Termux MCP Edge implements one deliberately narrow process-execution surface for read-only diagnostics of the exact running server binary. It is not a shell, a generic command runner, a program launcher, or a path/argument templating system.
+Termux MCP Edge implements one deliberately narrow process-execution surface for read-only diagnostics of the server-owned, already-running executable image. It is not a shell, a generic command runner, a program launcher, or a path/argument templating system.
 
 The public tool is `run_command_profile`. A caller can select only one reviewed profile identifier. The executable, complete argv vector, working directory, environment, stdin policy, timeout, output ceilings, and concurrency limit are owned by the server and cannot be overridden in an MCP request.
 
+The Rust execution machinery is closed to the crate: command profiles, resolved handles, profile lookup, the raw execution client, and raw execution request/result types are not public API. Public consumers receive only stable profile identifiers and redacted policy/status metadata. Public embedding routers cannot enable the command lane at all. The package binary must consume an opaque `ServerCommandAuthority`; safe dependency builds cannot construct it, and its primary-package acquisition returns no value when Cargo compiles this crate as a dependency.
+
 Arbitrary command execution, shell evaluation, interpreters, caller-selected programs, caller-selected arguments, Android control, package or service mutation, network mutation, and other high-impact actions remain unavailable.
 
-## Two independent gates
+## Independent gates and server-owned authority
 
-Both gates are required:
+Both operator gates are required:
 
 1. Build the separate posture with `--features command-execution`.
 2. Set `MCP__COMMAND__ENABLED=true` at runtime.
 
-The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENABLED=true` during startup. A command-capable build with the runtime flag absent or false hides `run_command_profile` from discovery and denies direct calls with `command_runtime_disabled` without spawning a process.
+The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENABLED=true` during startup. A command-capable build with the runtime flag absent or false hides `run_command_profile` from discovery and denies direct calls with `command_runtime_disabled` without spawning a process. Even with both opt-ins, the effective posture requires the primary package's opaque server authority and successful executable validation; dependency embeddings remain command-disabled.
 
 Example:
 
@@ -34,7 +36,7 @@ Authentication, session lifecycle, Host/Origin policy, request concurrency, requ
 | `server_help` | `--help` | 5 s | 16 KiB | 1 KiB | Static CLI help |
 | `execution_boundary` | `--self-check-command-boundary` | 5 s | 1 KiB | 1 KiB | Prove the child has empty environment, null stdin, and a non-root safe working directory |
 
-Every profile invokes `std::env::current_exe()`. No lookup through `PATH` occurs. The registry has no placeholders and no profile accepts caller data beyond its exact identifier.
+At transport initialization, `std::env::current_exe()` must resolve to an executable regular file whose basename is exactly `termux-mcp-server`; otherwise the effective command posture is disabled and no process can spawn. The retained execution path is not that reopenable installation pathname. Every profile launches `/proc/self/exe`, which Linux and Android bind to the already-running executable inode, so a later rename or replacement cannot redirect execution. No lookup through `PATH` occurs. The registry has no placeholders and no profile accepts caller data beyond its exact identifier.
 
 `execution_boundary` is an internal CLI self-check used by native validation. It returns only `termux-mcp-command-boundary ok` and fails with one generic message if any boundary property is absent. It does not reflect the working directory, environment, or stdin target.
 
@@ -72,6 +74,8 @@ The shared bounded process supervisor provides all of these properties:
 - completely cleared inherited environment;
 - null stdin;
 - separately piped and independently bounded stdout and stderr;
+- immutable supervisor ceilings of 5 seconds, 16 KiB stdout, and 4 KiB stderr, independent of narrower profile limits and rejected before spawn if exceeded;
+- output capacity grows with checked reservation only for bytes actually read—never from a selected ceiling—so allocation failure becomes a stable wait failure instead of a panic;
 - no shell invocation or interpolation;
 - isolated process group;
 - hard operation deadline with a reserved nonzero cleanup window;
@@ -156,6 +160,9 @@ Counters never retain the requested profile text, argv, program path, working di
 Unit and integration coverage proves:
 
 - the registry is unique, fixed, and bounded;
+- dependency consumers cannot import or construct profiles, resolved handles, raw execution types, or the opaque primary-server authority, and public embedding routers remain command-disabled;
+- a mismatched, non-regular, or non-executable current path disables the command posture before spawn, while `/proc/self/exe` defeats post-initialization path replacement;
+- hard supervisor maxima reject an oversized timeout or stream limit before spawn, and checked buffer reservation cannot panic on an attacker-selected capacity;
 - raw and injection-shaped identifiers are denied;
 - all override fields fail before spawn;
 - disabled discovery and direct-call behavior are fail-closed;
@@ -164,7 +171,7 @@ Unit and integration coverage proves:
 - successful and denied decisions produce only non-sensitive counters;
 - fixed mode is distinguished from arbitrary execution in runtime metadata.
 
-The Android workflow builds a fifth exact-source artifact named `termux-mcp-server-aarch64-linux-android-command-execution`. In the digest-pinned official ARM64 Termux container, `scripts/termux_command_emulated_gate.sh` validates both the default artifact's compile-time rejection and the command artifact's enabled/disabled truth table, exact schema, three profiles, execution boundary, override rejection, and audit counters. Its sanitized report conforms to `docs/command-emulated-evidence-schema-v1.json`.
+The Android workflow builds a dedicated exact-source artifact named `termux-mcp-server-aarch64-linux-android-command-execution`. In the digest-pinned official ARM64 Termux container, `scripts/termux_command_emulated_gate.sh` validates both the default artifact's compile-time rejection and the command artifact's enabled/disabled truth table, exact schema, three profiles, execution boundary, override rejection, and audit counters. Its sanitized report conforms to `docs/command-emulated-evidence-schema-v2.json`.
 
 This native gate is deterministic and does not require a long observation window. It is development evidence, not by itself a physical-device release qualification.
 
