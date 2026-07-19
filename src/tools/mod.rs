@@ -127,6 +127,9 @@ pub(crate) use filesystem::{
     AuthorizedCreateDirectoryError, AuthorizedWriteFileError, PreparedCreateDirectoryMutation,
 };
 
+#[cfg(all(feature = "mcp-runtime", test))]
+pub(crate) use filesystem::acquire_filesystem_publication_lock_for_test;
+
 #[cfg(not(feature = "mcp-runtime"))]
 #[derive(Clone)]
 pub struct FileSystemTools {
