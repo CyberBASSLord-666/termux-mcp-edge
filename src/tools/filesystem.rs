@@ -241,6 +241,18 @@ impl PreparedCreateDirectoryMutation {
         self.result
     }
 
+    pub(crate) fn revalidate_destination_absent(&self) -> Result<(), AppError> {
+        match descriptor_fs::statat(
+            &self.parent_fd,
+            &self.directory_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Ok(_) => Err(AppError::PathAlreadyExists),
+            Err(error) => Err(descriptor_error(error)),
+        }
+    }
+
     pub(crate) fn execute_authorized(
         self,
         authorize: impl FnOnce(&CreateDirectoryGrantTarget) -> Result<(), CreateDirectoryGrantError>,
@@ -327,6 +339,50 @@ impl PreparedWriteFileMutation {
         histogram!("mcp.fs.write.latency_seconds").record(self.started.elapsed().as_secs_f64());
         counter!("mcp.fs.write.dry_runs_total").increment(1);
         self.result
+    }
+
+    pub(crate) fn revalidate_target_posture(&self) -> Result<(), AppError> {
+        match self.disposition {
+            WriteFileDisposition::Create => match descriptor_fs::statat(
+                &self.parent_fd,
+                &self.file_name,
+                AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Err(rustix::io::Errno::NOENT) => Ok(()),
+                Ok(_) => Err(AppError::PathAlreadyExists),
+                Err(error) => Err(descriptor_error(error)),
+            },
+            WriteFileDisposition::Replace => {
+                let expected_identity =
+                    self.existing_identity.ok_or(AppError::WriteTargetChanged)?;
+                let existing_target_fd = self
+                    .existing_target_fd
+                    .as_ref()
+                    .ok_or(AppError::WriteTargetChanged)?;
+                let held_target =
+                    descriptor_fs::fstat(existing_target_fd).map_err(descriptor_error)?;
+                if !write_file_existing_identity_matches(&held_target, expected_identity) {
+                    return Err(AppError::WriteTargetChanged);
+                }
+                let current_target = descriptor_fs::statat(
+                    &self.parent_fd,
+                    &self.file_name,
+                    AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map_err(|error| {
+                    if error == rustix::io::Errno::NOENT {
+                        AppError::WriteTargetChanged
+                    } else {
+                        descriptor_error(error)
+                    }
+                })?;
+                if write_file_existing_identity_matches(&current_target, expected_identity) {
+                    Ok(())
+                } else {
+                    Err(AppError::WriteTargetChanged)
+                }
+            }
+        }
     }
 
     pub(crate) fn execute_authorized(
