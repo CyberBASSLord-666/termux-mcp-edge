@@ -520,7 +520,7 @@ jobs:
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
             --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
@@ -531,6 +531,8 @@ jobs:
               and .validation.runtimeDefaultDisabled == true
               and .validation.disabledDiscovery == true
               and .validation.fixedCurrentExecutable == true
+              and .validation.wrongExecutableNameRejected == true
+              and .validation.runningInodePinned == true
               and .validation.fixedArgvProfiles == true
               and .validation.closedInputSchema == true
               and .validation.overrideFieldsRejected == true
