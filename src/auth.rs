@@ -152,10 +152,7 @@ pub(crate) struct McpAuthBoundary {
 }
 
 impl McpAuthBoundary {
-    pub(crate) const fn new(
-        policy: McpAuthPolicy,
-        expected_listener_address: SocketAddr,
-    ) -> Self {
+    pub(crate) const fn new(policy: McpAuthPolicy, expected_listener_address: SocketAddr) -> Self {
         Self {
             policy,
             expected_listener_address,
@@ -547,10 +544,8 @@ mod tests {
     #[test]
     fn authentication_debug_output_redacts_tokens_and_socket_addresses() {
         let policy = McpAuthPolicy::static_bearer("secret-value").unwrap();
-        let boundary = McpAuthBoundary::new(
-            policy.clone(),
-            SocketAddr::from(([127, 0, 0, 1], 54_321)),
-        );
+        let boundary =
+            McpAuthBoundary::new(policy.clone(), SocketAddr::from(([127, 0, 0, 1], 54_321)));
         let connection = McpConnectionInfo {
             peer_address: SocketAddr::from(([127, 0, 0, 1], 45_678)),
             local_address: Some(SocketAddr::from(([127, 0, 0, 1], 54_321))),
