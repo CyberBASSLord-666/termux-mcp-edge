@@ -6,18 +6,17 @@
 //! serializes grant material and atomically consumes a valid grant before the
 //! first filesystem mutation attempt.
 
-use std::{
-    collections::BTreeMap,
-    fmt,
-    sync::{Arc, Mutex},
-};
+use std::{fmt, sync::Arc};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::request_grant_capability::{
-    RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+use crate::{
+    grant_replay::{shared_replay_state, SharedReplayError, SharedReplayState},
+    request_grant_capability::{
+        RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+    },
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -153,14 +152,7 @@ pub struct CreateDirectoryGrantAuthority {
     key_id: Arc<str>,
     key: Arc<[u8; CREATE_DIRECTORY_GRANT_KEY_BYTES]>,
     principal_digest: [u8; DIGEST_BYTES],
-    replay: Arc<Mutex<ReplayState>>,
-    replay_capacity: usize,
-}
-
-#[derive(Default)]
-struct ReplayState {
-    consumed: BTreeMap<[u8; GRANT_ID_BYTES], u64>,
-    last_observed_unix_seconds: Option<u64>,
+    replay: SharedReplayState,
 }
 
 struct ParsedGrant {
@@ -215,13 +207,20 @@ impl CreateDirectoryGrantAuthority {
         principal.update(PRINCIPAL_BINDING_DOMAIN);
         principal.update(static_principal_secret.as_bytes());
         let principal_digest = principal.finalize().into_bytes().into();
+        let replay = shared_replay_state(
+            RequestGrantCapability::CreateDirectory,
+            &key_id,
+            &key,
+            &principal_digest,
+            replay_capacity,
+        )
+        .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
 
         Ok(Self {
             key_id: Arc::from(key_id),
             key: Arc::new(key),
             principal_digest,
-            replay: Arc::new(Mutex::new(ReplayState::default())),
-            replay_capacity,
+            replay,
         })
     }
 
@@ -272,47 +271,16 @@ impl CreateDirectoryGrantAuthority {
             return Err(CreateDirectoryGrantError::BindingMismatch);
         }
 
-        let mut replay = self
-            .replay
-            .lock()
-            .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
-        if replay
-            .last_observed_unix_seconds
-            .is_some_and(|last| now_unix_seconds < last)
-        {
-            return Err(CreateDirectoryGrantError::ClockRollback);
-        }
-        replay.last_observed_unix_seconds = Some(now_unix_seconds);
-
-        let lifetime = grant
-            .expires_unix_seconds
-            .checked_sub(grant.issued_unix_seconds)
-            .ok_or(CreateDirectoryGrantError::LifetimeExceeded)?;
-        if lifetime == 0 || lifetime > MAX_CREATE_DIRECTORY_GRANT_LIFETIME_SECONDS {
-            return Err(CreateDirectoryGrantError::LifetimeExceeded);
-        }
-        if grant.issued_unix_seconds
-            > now_unix_seconds.saturating_add(MAX_CREATE_DIRECTORY_GRANT_FUTURE_SKEW_SECONDS)
-        {
-            return Err(CreateDirectoryGrantError::FutureIssued);
-        }
-        if now_unix_seconds >= grant.expires_unix_seconds {
-            return Err(CreateDirectoryGrantError::Expired);
-        }
-
-        replay
-            .consumed
-            .retain(|_, expiry| *expiry > now_unix_seconds);
-        if replay.consumed.contains_key(&grant.grant_id) {
-            return Err(CreateDirectoryGrantError::Replayed);
-        }
-        if replay.consumed.len() >= self.replay_capacity {
-            return Err(CreateDirectoryGrantError::ReplayCapacityExhausted);
-        }
-        replay
-            .consumed
-            .insert(grant.grant_id, grant.expires_unix_seconds);
-        Ok(())
+        self.replay
+            .consume(
+                grant.grant_id,
+                grant.issued_unix_seconds,
+                grant.expires_unix_seconds,
+                now_unix_seconds,
+                MAX_CREATE_DIRECTORY_GRANT_LIFETIME_SECONDS,
+                MAX_CREATE_DIRECTORY_GRANT_FUTURE_SKEW_SECONDS,
+            )
+            .map_err(map_replay_error)
     }
 
     fn encode_and_sign(&self, grant: &ParsedGrant) -> String {
@@ -385,8 +353,20 @@ impl fmt::Debug for CreateDirectoryGrantAuthority {
             .field("key_id", &self.key_id)
             .field("key", &"<redacted>")
             .field("principal", &"<redacted>")
-            .field("replay_capacity", &self.replay_capacity)
+            .field("replay", &"<process-global>")
             .finish()
+    }
+}
+
+const fn map_replay_error(error: SharedReplayError) -> CreateDirectoryGrantError {
+    match error {
+        SharedReplayError::Expired => CreateDirectoryGrantError::Expired,
+        SharedReplayError::FutureIssued => CreateDirectoryGrantError::FutureIssued,
+        SharedReplayError::LifetimeExceeded => CreateDirectoryGrantError::LifetimeExceeded,
+        SharedReplayError::Replayed => CreateDirectoryGrantError::Replayed,
+        SharedReplayError::ClockRollback => CreateDirectoryGrantError::ClockRollback,
+        SharedReplayError::CapacityExhausted => CreateDirectoryGrantError::ReplayCapacityExhausted,
+        SharedReplayError::StateUnavailable => CreateDirectoryGrantError::StateUnavailable,
     }
 }
 
@@ -518,8 +498,8 @@ mod tests {
     const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
     const NOW: u64 = 1_725_000_000;
 
-    fn authority() -> CreateDirectoryGrantAuthority {
-        CreateDirectoryGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap()
+    fn test_authority(test_principal: &str) -> CreateDirectoryGrantAuthority {
+        CreateDirectoryGrantAuthority::from_hex_key("primary-1", KEY, test_principal).unwrap()
     }
 
     fn target() -> CreateDirectoryGrantTarget {
@@ -547,7 +527,7 @@ mod tests {
 
     #[test]
     fn issues_and_consumes_one_fixed_shape_grant() {
-        let authority = authority();
+        let authority = test_authority("create-single-use");
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert!(token.len() <= MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES);
         assert_eq!(token.split('.').count(), 4);
@@ -564,7 +544,7 @@ mod tests {
 
     #[test]
     fn principal_binding_is_keyed_and_does_not_expose_a_bearer_token_verifier() {
-        let authority = authority();
+        let authority = test_authority(PRINCIPAL);
         let mut unkeyed = Sha256::new();
         unkeyed.update(PRINCIPAL_BINDING_DOMAIN);
         unkeyed.update(PRINCIPAL.as_bytes());
@@ -579,7 +559,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_malformed_unknown_and_invalid_signature_tokens() {
-        let authority = authority();
+        let authority = test_authority("create-malformed");
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
             authority
@@ -623,7 +603,7 @@ mod tests {
 
     #[test]
     fn rejects_every_mismatched_binding_without_detail() {
-        let authority = authority();
+        let authority = test_authority("create-binding");
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         let other_principal =
             CreateDirectoryGrantAuthority::from_hex_key("primary-1", KEY, "other").unwrap();
@@ -664,7 +644,7 @@ mod tests {
 
     #[test]
     fn rejects_expired_future_excessive_lifetime_and_clock_rollback() {
-        let authority = authority();
+        let authority = test_authority("create-temporal");
         let expired = authority.issue_at(SESSION, &target(), NOW - 60).unwrap();
         assert_eq!(
             authority
@@ -696,9 +676,10 @@ mod tests {
         authority
             .consume_at(Some(&normal), SESSION, &target(), NOW + 1)
             .unwrap();
+        let reconstructed = test_authority("create-temporal");
         let rollback = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
-            authority
+            reconstructed
                 .consume_at(Some(&rollback), SESSION, &target(), NOW)
                 .unwrap_err(),
             CreateDirectoryGrantError::ClockRollback
@@ -706,8 +687,50 @@ mod tests {
     }
 
     #[test]
+    fn independently_constructed_authorities_reject_sequential_replay() {
+        let issuer = test_authority("create-shared-sequential");
+        let consumer = test_authority("create-shared-sequential");
+        let token = issuer.issue_at(SESSION, &target(), NOW).unwrap();
+        consumer
+            .consume_at(Some(&token), SESSION, &target(), NOW)
+            .unwrap();
+        assert_eq!(
+            issuer
+                .consume_at(Some(&token), SESSION, &target(), NOW)
+                .unwrap_err(),
+            CreateDirectoryGrantError::Replayed
+        );
+    }
+
+    #[test]
+    fn independent_concurrent_authorities_allow_exactly_one_consumer() {
+        let first = test_authority("create-shared-concurrent");
+        let second = test_authority("create-shared-concurrent");
+        let token = Arc::new(first.issue_at(SESSION, &target(), NOW).unwrap());
+        let barrier = Arc::new(Barrier::new(3));
+        let threads = [first, second].map(|authority| {
+            let token = Arc::clone(&token);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                authority.consume_at(Some(&token), SESSION, &target(), NOW)
+            })
+        });
+        barrier.wait();
+        let results = threads.map(|thread| thread.join().unwrap());
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(CreateDirectoryGrantError::Replayed)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn concurrent_replay_allows_exactly_one_consumer() {
-        let authority = Arc::new(authority());
+        let authority = Arc::new(test_authority("create-concurrent-clones"));
         let token = Arc::new(authority.issue_at(SESSION, &target(), NOW).unwrap());
         let barrier = Arc::new(Barrier::new(9));
         let mut threads = Vec::new();
@@ -740,7 +763,14 @@ mod tests {
         let authority = CreateDirectoryGrantAuthority::from_hex_key_with_capacity(
             "primary-1",
             KEY,
-            PRINCIPAL,
+            "create-capacity",
+            1,
+        )
+        .unwrap();
+        let equivalent = CreateDirectoryGrantAuthority::from_hex_key_with_capacity(
+            "primary-1",
+            KEY,
+            "create-capacity",
             1,
         )
         .unwrap();
@@ -748,17 +778,17 @@ mod tests {
         authority
             .consume_at(Some(&first), SESSION, &target(), NOW)
             .unwrap();
-        let second = authority.issue_at(SESSION, &target(), NOW + 1).unwrap();
+        let second = equivalent.issue_at(SESSION, &target(), NOW + 1).unwrap();
         assert_eq!(
-            authority
+            equivalent
                 .consume_at(Some(&second), SESSION, &target(), NOW + 1)
                 .unwrap_err(),
             CreateDirectoryGrantError::ReplayCapacityExhausted
         );
-        let after_expiry = authority
+        let after_expiry = equivalent
             .issue_at(SESSION, &target(), NOW + CREATE_DIRECTORY_GRANT_TTL_SECONDS)
             .unwrap();
-        authority
+        equivalent
             .consume_at(
                 Some(&after_expiry),
                 SESSION,
@@ -769,8 +799,37 @@ mod tests {
     }
 
     #[test]
+    fn different_keys_and_principals_keep_clock_and_replay_state_isolated() {
+        let baseline = test_authority("create-isolation-baseline");
+        let baseline_token = baseline.issue_at(SESSION, &target(), NOW).unwrap();
+        baseline
+            .consume_at(Some(&baseline_token), SESSION, &target(), NOW + 1)
+            .unwrap();
+
+        let other_principal = test_authority("create-isolation-other");
+        let other_principal_token = other_principal.issue_at(SESSION, &target(), NOW).unwrap();
+        other_principal
+            .consume_at(Some(&other_principal_token), SESSION, &target(), NOW)
+            .unwrap();
+
+        let other_key = "11".repeat(CREATE_DIRECTORY_GRANT_KEY_BYTES);
+        let other_key_authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "primary-1",
+            &other_key,
+            "create-isolation-baseline",
+        )
+        .unwrap();
+        let other_key_token = other_key_authority
+            .issue_at(SESSION, &target(), NOW)
+            .unwrap();
+        other_key_authority
+            .consume_at(Some(&other_key_token), SESSION, &target(), NOW)
+            .unwrap();
+    }
+
+    #[test]
     fn debug_output_redacts_key_principal_and_target_binding() {
-        let authority = authority();
+        let authority = test_authority(PRINCIPAL);
         let serialized = format!("{authority:?} {:?}", target());
         assert!(!serialized.contains(KEY));
         assert!(!serialized.contains(PRINCIPAL));

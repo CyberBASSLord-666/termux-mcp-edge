@@ -30,6 +30,8 @@ pub mod config;
 #[cfg(feature = "mcp-runtime")]
 pub mod create_directory_grant;
 pub mod error;
+#[cfg(feature = "mcp-runtime")]
+mod grant_replay;
 pub mod health;
 pub mod json_rpc;
 #[cfg(feature = "mcp-runtime")]
