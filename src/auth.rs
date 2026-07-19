@@ -8,9 +8,13 @@
 //! loopback boundary. This module never logs or serializes configured bearer-token
 //! values or rejected socket addresses.
 
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{fmt, sync::Arc};
+
+#[cfg(feature = "mcp-runtime")]
+use std::net::SocketAddr;
 
 use anyhow::{anyhow, bail};
+#[cfg(feature = "mcp-runtime")]
 use axum::{
     extract::{
         connect_info::{ConnectInfo, Connected},
@@ -22,6 +26,7 @@ use axum::{
     serve::IncomingStream,
     Json,
 };
+#[cfg(feature = "mcp-runtime")]
 use serde_json::json;
 
 use crate::config::{AuthConfig, AuthPosture};
@@ -49,12 +54,14 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 4_096;
 ///     local_address: Some(peer_address),
 /// };
 /// ```
+#[cfg(feature = "mcp-runtime")]
 #[derive(Clone)]
 pub struct McpConnectionInfo {
     peer_address: SocketAddr,
     local_address: Option<SocketAddr>,
 }
 
+#[cfg(feature = "mcp-runtime")]
 impl Connected<IncomingStream<'_, tokio::net::TcpListener>> for McpConnectionInfo {
     fn connect_info(stream: IncomingStream<'_, tokio::net::TcpListener>) -> Self {
         Self {
@@ -64,6 +71,7 @@ impl Connected<IncomingStream<'_, tokio::net::TcpListener>> for McpConnectionInf
     }
 }
 
+#[cfg(feature = "mcp-runtime")]
 impl fmt::Debug for McpConnectionInfo {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -134,7 +142,7 @@ impl McpAuthPolicy {
 impl fmt::Debug for McpAuthPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            McpAuthPolicyKind::StaticBearer { .. } => formatter
+            McpAuthPolicyKind::StaticBearer { token: _token } => formatter
                 .debug_struct("McpAuthPolicy::StaticBearer")
                 .field("token", &"<redacted>")
                 .finish(),
@@ -145,12 +153,14 @@ impl fmt::Debug for McpAuthPolicy {
     }
 }
 
+#[cfg(feature = "mcp-runtime")]
 #[derive(Clone)]
 pub(crate) struct McpAuthBoundary {
     policy: McpAuthPolicy,
     expected_listener_address: SocketAddr,
 }
 
+#[cfg(feature = "mcp-runtime")]
 impl McpAuthBoundary {
     pub(crate) const fn new(policy: McpAuthPolicy, expected_listener_address: SocketAddr) -> Self {
         Self {
@@ -160,6 +170,7 @@ impl McpAuthBoundary {
     }
 }
 
+#[cfg(feature = "mcp-runtime")]
 impl fmt::Debug for McpAuthBoundary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -176,6 +187,7 @@ impl fmt::Debug for McpAuthBoundary {
 /// request carrying opaque Axum connection metadata produced from the actual
 /// accepted TCP stream. The peer must be loopback and the stream's local address
 /// must exactly equal the listener validated by `McpRouterBuilder`.
+#[cfg(feature = "mcp-runtime")]
 pub(crate) async fn require_mcp_auth(
     State(boundary): State<McpAuthBoundary>,
     request: Request,
@@ -224,6 +236,7 @@ pub(crate) fn validate_bearer_token(token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "mcp-runtime")]
 fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let value = values.next()?;
@@ -249,6 +262,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
 /// Every accepted input is at most `MAX_BEARER_TOKEN_BYTES`, so iterating the
 /// full bound prevents the comparison loop count from revealing either token
 /// length. Length equality is folded into the accumulated difference.
+#[cfg(feature = "mcp-runtime")]
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = left.len() ^ right.len();
 
@@ -261,6 +275,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
+#[cfg(feature = "mcp-runtime")]
 fn unauthorized_response() -> Response {
     let mut response = (
         StatusCode::UNAUTHORIZED,
@@ -280,6 +295,7 @@ fn unauthorized_response() -> Response {
     response
 }
 
+#[cfg(feature = "mcp-runtime")]
 fn localhost_peer_required_response() -> Response {
     let mut response = (
         StatusCode::FORBIDDEN,
@@ -296,7 +312,7 @@ fn localhost_peer_required_response() -> Response {
     response
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mcp-runtime"))]
 mod tests {
     use std::net::SocketAddr;
 
