@@ -2772,6 +2772,10 @@ fn write_file_identity_and_contract_match(
         && u64::try_from(metadata.st_size).ok() == Some(expected_size as u64)
 }
 
+fn normalized_link_count<T: Into<u64>>(link_count: T) -> u64 {
+    link_count.into()
+}
+
 fn write_file_existing_identity(
     metadata: &descriptor_fs::Stat,
 ) -> Result<WriteFileExistingIdentity, AppError> {
@@ -2784,7 +2788,7 @@ fn write_file_existing_identity(
         u64::try_from(metadata.st_size).map_err(|_| AppError::WriteTargetChanged)?,
         metadata.st_ctime,
         i64::try_from(metadata.st_ctime_nsec).map_err(|_| AppError::WriteTargetChanged)?,
-        u64::from(metadata.st_nlink),
+        normalized_link_count(metadata.st_nlink),
     )
     .map_err(|_| AppError::WriteTargetChanged)
 }
@@ -2804,7 +2808,7 @@ fn write_file_existing_object_matches(
         && metadata.st_dev == expected.device
         && metadata.st_ino == expected.inode
         && u64::try_from(metadata.st_size).ok() == Some(expected.size)
-        && u64::from(metadata.st_nlink) == expected.link_count
+        && normalized_link_count(metadata.st_nlink) == expected.link_count
 }
 
 fn prepare_create_directory(
