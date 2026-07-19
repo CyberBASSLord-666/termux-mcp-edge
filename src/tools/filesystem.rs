@@ -2784,7 +2784,7 @@ fn write_file_existing_identity(
         u64::try_from(metadata.st_size).map_err(|_| AppError::WriteTargetChanged)?,
         metadata.st_ctime,
         i64::try_from(metadata.st_ctime_nsec).map_err(|_| AppError::WriteTargetChanged)?,
-        metadata.st_nlink,
+        u64::from(metadata.st_nlink),
     )
     .map_err(|_| AppError::WriteTargetChanged)
 }
@@ -2804,7 +2804,7 @@ fn write_file_existing_object_matches(
         && metadata.st_dev == expected.device
         && metadata.st_ino == expected.inode
         && u64::try_from(metadata.st_size).ok() == Some(expected.size)
-        && metadata.st_nlink == expected.link_count
+        && u64::from(metadata.st_nlink) == expected.link_count
 }
 
 fn prepare_create_directory(
