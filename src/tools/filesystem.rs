@@ -747,7 +747,7 @@ impl FileSystemTools {
             let file_fd = descriptor_fs::openat(
                 &parent_fd,
                 &file_name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                 Mode::empty(),
             )
             .map_err(|error| {
