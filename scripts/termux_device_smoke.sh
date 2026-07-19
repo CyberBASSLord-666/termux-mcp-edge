@@ -522,7 +522,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
   assert_json "${label}_create_directory_grant_discovery" "$body" '.result.tools | map(select(.name == "create_directory"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant"))'
   assert_json "${label}_copy_file_grant_discovery" "$body" '.result.tools | map(select(.name == "copy_file"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.inputSchema.additionalProperties == false) and ($tool.description | contains("MCP-Capability-Grant")) and ($tool.description | contains("source-identity/content/destination-bound"))'
   assert_json "${label}_write_file_grant_discovery" "$body" '.result.tools | map(select(.name == "write_file"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.inputSchema.additionalProperties == false) and ($tool.description | contains("MCP-Capability-Grant")) and ($tool.description | contains("target/content/disposition-bound"))'
@@ -1114,7 +1114,7 @@ volume_control_disabled_smoke() {
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_tools_http "$status" 200
-  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
+  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
   assert_json volume_control_disabled_copy_discovery "$body" '.result.tools | map(select(.name == "copy_file"))[0] as $tool | $tool.inputSchema.properties.dry_run.const == true and ($tool.description | contains("copy mutation gate is disabled"))'
   assert_json volume_control_disabled_write_discovery "$body" '.result.tools | map(select(.name == "write_file"))[0] as $tool | $tool.inputSchema.properties.dry_run.const == true and ($tool.description | contains("mutation gate is disabled"))'
 

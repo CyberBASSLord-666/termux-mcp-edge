@@ -13,13 +13,14 @@ use termux_mcp_server::{
     write_policy::DEFAULT_MAX_WRITE_BYTES,
 };
 
-const EXPECTED_STAGED_TOOLS: [&str; 16] = [
+const EXPECTED_STAGED_TOOLS: [&str; 17] = [
     "runtime_status",
     "platform_info",
     "android_status",
     "project_service_status",
     "create_directory",
     "copy_file",
+    "trash_file",
     "find_paths",
     "hash_file",
     "list_directory",

@@ -461,6 +461,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "project_service_status",
         "create_directory",
         "copy_file",
+        "trash_file",
         "find_paths",
         "hash_file",
         "list_directory",

@@ -71,7 +71,7 @@ done
 
 for protocol_marker in \
   '"notifications/initialized"' \
-  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
   'create_directory_missing_grant_http' \

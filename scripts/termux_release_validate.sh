@@ -1134,7 +1134,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -2180,7 +2180,7 @@ run_volume_control_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
   jq -e '
     .result.tools
     | map(select(.name == "write_file"))[0] as $tool
