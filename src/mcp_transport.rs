@@ -280,6 +280,29 @@ impl McpTransportOptions {
     }
 }
 
+/// Independently optional authorities for filesystem mutation capabilities.
+///
+/// The bundle keeps additive transport options below the positional-argument
+/// limit and makes future filesystem mutation authorities an explicit API
+/// extension instead of another constructor parameter.
+#[derive(Default)]
+pub struct McpFilesystemAuthorities {
+    create_directory: Option<CreateDirectoryGrantAuthority>,
+    write_file: Option<WriteFileGrantAuthority>,
+}
+
+impl McpFilesystemAuthorities {
+    pub fn new(
+        create_directory: Option<CreateDirectoryGrantAuthority>,
+        write_file: Option<WriteFileGrantAuthority>,
+    ) -> Self {
+        Self {
+            create_directory,
+            write_file,
+        }
+    }
+}
+
 /// Independently optional authorities for high-impact MCP capabilities.
 ///
 /// Grouping these authorities keeps transport construction explicit while
@@ -295,14 +318,21 @@ pub struct McpCapabilityAuthorities {
 impl McpCapabilityAuthorities {
     pub fn new(
         create_directory: Option<CreateDirectoryGrantAuthority>,
-        write_file: Option<WriteFileGrantAuthority>,
         android_volume_control: Option<AndroidVolumeGrantAuthority>,
     ) -> Self {
         Self {
             create_directory,
-            write_file,
+            write_file: None,
             android_volume_control,
         }
+    }
+
+    pub fn with_write_file_authority(
+        mut self,
+        write_file: Option<WriteFileGrantAuthority>,
+    ) -> Self {
+        self.write_file = write_file;
+        self
     }
 }
 
@@ -815,8 +845,7 @@ pub fn router_with_filesystem_authorities(
         android_battery_status_enabled,
         android_volume_status_enabled,
         command_execution_enabled,
-        create_directory_authority,
-        write_file_authority,
+        McpFilesystemAuthorities::new(create_directory_authority, write_file_authority),
         McpTransportOptions::default(),
     )
 }
@@ -828,10 +857,13 @@ pub fn router_with_filesystem_authorities_and_options(
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    write_file_authority: Option<WriteFileGrantAuthority>,
+    authorities: McpFilesystemAuthorities,
     options: McpTransportOptions,
 ) -> Router {
+    let McpFilesystemAuthorities {
+        create_directory,
+        write_file,
+    } = authorities;
     router_from_state(
         McpTransportState::new(
             security_policy,
@@ -839,9 +871,9 @@ pub fn router_with_filesystem_authorities_and_options(
             android_battery_status_enabled,
             android_volume_status_enabled,
             command_execution_enabled,
-            create_directory_authority,
+            create_directory,
         )
-        .with_write_file_authority(write_file_authority)
+        .with_write_file_authority(write_file)
         .with_options(options),
     )
 }
@@ -879,7 +911,6 @@ pub fn router_with_capability_authorities(
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    write_file_authority: Option<WriteFileGrantAuthority>,
     android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
 ) -> Router {
     router_with_capability_authorities_and_options(
@@ -890,9 +921,31 @@ pub fn router_with_capability_authorities(
         command_execution_enabled,
         McpCapabilityAuthorities::new(
             create_directory_authority,
-            write_file_authority,
             android_volume_control_authority,
         ),
+        McpTransportOptions::default(),
+    )
+}
+
+/// Build the independently authorized mutation transport from one typed
+/// capability bundle using default transport options.
+#[cfg(feature = "android-volume-control")]
+#[rustfmt::skip]
+pub fn router_with_capability_authority_bundle(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    authorities: McpCapabilityAuthorities,
+) -> Router {
+    router_with_capability_authorities_and_options(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        authorities,
         McpTransportOptions::default(),
     )
 }

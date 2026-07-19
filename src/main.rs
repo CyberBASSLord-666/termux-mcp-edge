@@ -169,8 +169,10 @@ async fn main() -> anyhow::Result<()> {
                 config.android.battery_status_enabled,
                 config.android.volume_status_enabled,
                 config.command.enabled,
-                create_directory_authority,
-                write_file_authority,
+                termux_mcp_server::mcp_transport::McpFilesystemAuthorities::new(
+                    create_directory_authority,
+                    write_file_authority,
+                ),
                 transport_options,
             );
         #[cfg(feature = "android-volume-control")]
@@ -183,9 +185,9 @@ async fn main() -> anyhow::Result<()> {
                 config.command.enabled,
                 termux_mcp_server::mcp_transport::McpCapabilityAuthorities::new(
                     create_directory_authority,
-                    write_file_authority,
                     android_volume_control_authority,
-                ),
+                )
+                .with_write_file_authority(write_file_authority),
                 transport_options,
             );
         let mcp_app = mcp_app
