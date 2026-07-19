@@ -14,6 +14,7 @@ import stat
 import struct
 import sys
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -95,14 +96,20 @@ if TOKEN is None or SAFE_ROOT_VALUE is None:
 SAFE_ROOT = pathlib.Path(SAFE_ROOT_VALUE).resolve()
 MAX_BODY = int(runtime_value("MCP__TRANSPORT__MAX_BODY_BYTES", "1024") or "1024")
 SSE_ENABLED = runtime_value("MCP__TRANSPORT__SSE_ENABLED", "false") == "true"
-SESSION_ID = "fixture-session-00000000"
-CAPABILITY_ENABLED = (
+SESSION_ID = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee"
+CREATE_DIRECTORY_CAPABILITY_ENABLED = (
     runtime_value("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED", "false") == "true"
+)
+WRITE_FILE_CAPABILITY_ENABLED = (
+    runtime_value("MCP__FILE__WRITE_MUTATION_ENABLED", "false") == "true"
 )
 CAPABILITY_KEY_ID = runtime_value("MCP__CAPABILITY__KEY_ID", "") or ""
 CAPABILITY_KEY_HEX = runtime_value("MCP__CAPABILITY__HMAC_KEY_HEX", "") or ""
 CAPABILITY_HEADER = "MCP-Capability-Grant"
-CONSUMED_GRANTS: set[bytes] = set()
+CONSUMED_CREATE_DIRECTORY_GRANTS: set[bytes] = set()
+CONSUMED_WRITE_FILE_GRANTS: set[bytes] = set()
+MAX_WRITE_FILE_BYTES = 1_048_576
+MAX_WRITE_FILE_RESPONSE_BYTES = 16_384
 TOOLS = [
     "runtime_status",
     "platform_info",
@@ -196,15 +203,77 @@ def grant_binding(session_id: str, target: pathlib.Path) -> bytes:
     return digest.digest()
 
 
-def issue_fixture_grant() -> str:
-    if not CAPABILITY_ENABLED:
-        raise SystemExit(2)
+def capability_key() -> bytes:
     try:
         key = bytes.fromhex(CAPABILITY_KEY_HEX)
     except ValueError as error:
         raise SystemExit(2) from error
     if len(key) != 32 or not CAPABILITY_KEY_ID:
         raise SystemExit(2)
+    return key
+
+
+def canonical_session_bytes(session_id: str) -> bytes:
+    try:
+        parsed = uuid.UUID(session_id)
+    except (ValueError, AttributeError) as error:
+        raise SystemExit(2) from error
+    if str(parsed) != session_id:
+        raise SystemExit(2)
+    return parsed.bytes
+
+
+def classify_write_target(target: pathlib.Path | None) -> str | None:
+    if target is None or target == SAFE_ROOT or not target.parent.is_dir():
+        return None
+    if target.exists():
+        try:
+            metadata = target.stat(follow_symlinks=False)
+        except OSError:
+            return None
+        return "replace" if stat.S_ISREG(metadata.st_mode) else None
+    return "create"
+
+
+def write_operation_digest(
+    target: pathlib.Path, content_digest: bytes, publication: str
+) -> bytes:
+    digest = hashlib.sha256()
+    digest.update(b"termux-mcp:write-file-target:v1\0")
+    component_count = 0
+    for component in target.relative_to(SAFE_ROOT).parts:
+        encoded = os.fsencode(component)
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+        component_count += 1
+    if component_count == 0:
+        raise SystemExit(2)
+    digest.update(struct.pack(">I", component_count))
+    digest.update(content_digest)
+    digest.update(bytes((1 if publication == "create" else 2, 1)))
+    return digest.digest()
+
+
+def principal_digest(key: bytes) -> bytes:
+    return hmac.new(
+        key,
+        b"termux-mcp:static-principal:v1\0" + TOKEN.encode(),
+        hashlib.sha256,
+    ).digest()
+
+
+def signed_grant(payload: bytes, key: bytes) -> str:
+    if len(payload) != 130:
+        raise SystemExit(2)
+    signed = f"v1.{CAPABILITY_KEY_ID}.{payload.hex()}"
+    signature = hmac.new(key, signed.encode(), hashlib.sha256).hexdigest()
+    return f"{signed}.{signature}"
+
+
+def issue_create_directory_fixture_grant() -> str:
+    if not CREATE_DIRECTORY_CAPABILITY_ENABLED:
+        raise SystemExit(2)
+    key = capability_key()
     session_id = os.environ.get("MCP__CAPABILITY__SESSION_ID", "")
     target = safe_path(os.environ.get("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", ""))
     if not session_id or target is None or target.exists() or not target.parent.is_dir():
@@ -216,11 +285,38 @@ def issue_fixture_grant() -> str:
         + struct.pack(">QQ", issued, issued + 60)
         + bytes(66)
     )
-    if len(payload) != 130:
+    return signed_grant(payload, key)
+
+
+def issue_write_file_fixture_grant() -> str:
+    if not WRITE_FILE_CAPABILITY_ENABLED:
         raise SystemExit(2)
-    signed = f"v1.{CAPABILITY_KEY_ID}.{payload.hex()}"
-    signature = hmac.new(key, signed.encode(), hashlib.sha256).hexdigest()
-    return f"{signed}.{signature}"
+    key = capability_key()
+    session_id = os.environ.get("MCP__CAPABILITY__SESSION_ID", "")
+    session = canonical_session_bytes(session_id)
+    target = safe_path(os.environ.get("MCP__CAPABILITY__WRITE_FILE_TARGET", ""))
+    publication = classify_write_target(target)
+    raw_content_digest = os.environ.get(
+        "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256", ""
+    )
+    if re.fullmatch(r"[0-9a-f]{64}", raw_content_digest) is None:
+        raise SystemExit(2)
+    content_digest = bytes.fromhex(raw_content_digest)
+    if target is None or publication is None:
+        raise SystemExit(2)
+    root_metadata = SAFE_ROOT.stat()
+    issued = int(time.time())
+    payload = (
+        os.urandom(16)
+        + principal_digest(key)
+        + session
+        + bytes((2,))
+        + struct.pack(">QQ", root_metadata.st_dev, root_metadata.st_ino)
+        + write_operation_digest(target, content_digest, publication)
+        + bytes((1,))
+        + struct.pack(">QQ", issued, issued + 60)
+    )
+    return signed_grant(payload, key)
 
 
 def consume_fixture_grant(
@@ -260,9 +356,78 @@ def consume_fixture_grant(
         return "capability_grant_lifetime_exceeded"
     if current >= expires:
         return "capability_grant_expired"
-    if grant_id in CONSUMED_GRANTS:
+    if grant_id in CONSUMED_CREATE_DIRECTORY_GRANTS:
         return "capability_grant_replayed"
-    CONSUMED_GRANTS.add(grant_id)
+    CONSUMED_CREATE_DIRECTORY_GRANTS.add(grant_id)
+    return None
+
+
+def consume_write_file_fixture_grant(
+    raw: str | None,
+    session_id: str,
+    target: pathlib.Path,
+    content_digest: bytes,
+    publication: str,
+) -> str | None:
+    if raw is None:
+        return "capability_grant_missing"
+    parts = raw.split(".")
+    if len(parts) != 4:
+        return "capability_grant_malformed"
+    version, key_id, payload_hex, signature_hex = parts
+    if version != "v1":
+        return "capability_grant_version_unknown"
+    if key_id != CAPABILITY_KEY_ID:
+        return "capability_grant_key_unknown"
+    try:
+        payload = bytes.fromhex(payload_hex)
+        signature = bytes.fromhex(signature_hex)
+        key = bytes.fromhex(CAPABILITY_KEY_HEX)
+        session = uuid.UUID(session_id)
+    except (ValueError, AttributeError):
+        return "capability_grant_malformed"
+    if (
+        len(payload) != 130
+        or len(signature) != 32
+        or len(key) != 32
+        or str(session) != session_id
+    ):
+        return "capability_grant_malformed"
+    signed = f"{version}.{key_id}.{payload_hex}".encode()
+    expected_signature = hmac.new(key, signed, hashlib.sha256).digest()
+    if not hmac.compare_digest(signature, expected_signature):
+        return "capability_grant_signature_invalid"
+
+    grant_id = payload[0:16]
+    grant_principal = payload[16:48]
+    grant_session = payload[48:64]
+    capability = payload[64]
+    root_device, root_inode = struct.unpack(">QQ", payload[65:81])
+    operation_digest = payload[81:113]
+    posture = payload[113]
+    issued, expires = struct.unpack(">QQ", payload[114:130])
+    root_metadata = SAFE_ROOT.stat()
+    expected_operation = write_operation_digest(target, content_digest, publication)
+    if (
+        grant_principal != principal_digest(key)
+        or grant_session != session.bytes
+        or capability != 2
+        or root_device != root_metadata.st_dev
+        or root_inode != root_metadata.st_ino
+        or operation_digest != expected_operation
+        or posture != 1
+    ):
+        return "capability_grant_binding_mismatch"
+    current = int(time.time())
+    if issued > current + 5:
+        return "capability_grant_future_issued"
+    if expires <= issued or expires - issued > 120:
+        return "capability_grant_lifetime_exceeded"
+    if current >= expires:
+        return "capability_grant_expired"
+    if grant_id in CONSUMED_WRITE_FILE_GRANTS:
+        return "capability_grant_replayed"
+    CONSUMED_WRITE_FILE_GRANTS.add(grant_id)
     return None
 
 
@@ -490,6 +655,29 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "write_file":
+                    dry_run_schema: dict[str, Any] = {"type": "boolean"}
+                    if not WRITE_FILE_CAPABILITY_ENABLED:
+                        dry_run_schema["const"] = True
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": (
+                                "Fixture write_file requires MCP-Capability-Grant "
+                                "for explicit mutation."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "dry_run": dry_run_schema,
+                                },
+                                "required": ["path", "content"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 elif name == "find_paths":
                     tools.append(
                         {
@@ -622,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
         params = request.get("params") or {}
         name = params.get("name")
         arguments = params.get("arguments") or {}
-        if grant is not None and name != "create_directory":
+        if grant is not None and name not in {"create_directory", "write_file"}:
             self.send_json(
                 400,
                 rpc_error(
@@ -682,15 +870,27 @@ class Handler(BaseHTTPRequestHandler):
                         "fileHashing": True,
                         "fileHashAlgorithm": "sha256",
                         "fileHashMaxBytes": 16777216,
-                        "createDirectoryMutationEnabled": CAPABILITY_ENABLED,
-                        "createDirectoryGrantRequired": CAPABILITY_ENABLED,
+                        "createDirectoryMutationEnabled": CREATE_DIRECTORY_CAPABILITY_ENABLED,
+                        "createDirectoryGrantRequired": CREATE_DIRECTORY_CAPABILITY_ENABLED,
                         "createDirectoryGrantHeader": "mcp-capability-grant",
                         "createDirectoryGrantTtlSeconds": 60,
                         "createDirectoryMutationMode": (
                             "dry_run_or_request_scoped_single_use_grant"
-                            if CAPABILITY_ENABLED
+                            if CREATE_DIRECTORY_CAPABILITY_ENABLED
                             else "dry_run_only_mutation_disabled"
                         ),
+                        "fileWrites": True,
+                        "fileWriteMode": (
+                            "dry_run_or_request_scoped_single_use_grant"
+                            if WRITE_FILE_CAPABILITY_ENABLED
+                            else "dry_run_only_mutation_disabled"
+                        ),
+                        "fileWriteMutationEnabled": WRITE_FILE_CAPABILITY_ENABLED,
+                        "fileWriteGrantRequired": WRITE_FILE_CAPABILITY_ENABLED,
+                        "fileWriteGrantHeader": "mcp-capability-grant",
+                        "fileWriteGrantTtlSeconds": 60,
+                        "fileWriteMaxBytes": MAX_WRITE_FILE_BYTES,
+                        "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
                     },
                 ),
             )
@@ -786,7 +986,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             if not dry_run:
-                if not CAPABILITY_ENABLED:
+                if not CREATE_DIRECTORY_CAPABILITY_ENABLED:
                     self.send_json(
                         403,
                         capability_error(identifier, "create_directory_mutation_disabled"),
@@ -1467,29 +1667,111 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if name == "write_file":
-            target = safe_path(str(arguments.get("path", "")))
-            if target is None:
+            raw_path = arguments.get("path")
+            content = arguments.get("content")
+            dry_run = arguments.get("dry_run", True)
+            if (
+                not isinstance(raw_path, str)
+                or not isinstance(content, str)
+                or not isinstance(dry_run, bool)
+            ):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Tool arguments are invalid."),
+                )
+                return
+            if not dry_run and not WRITE_FILE_CAPABILITY_ENABLED:
+                self.send_json(
+                    403,
+                    capability_error(identifier, "write_file_mutation_disabled"),
+                )
+                return
+
+            content_bytes = content.encode()
+            message = "DRY-RUN" if dry_run else f"Wrote {len(content_bytes)} bytes"
+            response = result(
+                identifier,
+                {
+                    "dryRun": dry_run,
+                    "bytes": len(content_bytes),
+                    "message": message,
+                },
+            )
+            response["result"]["content"][0]["text"] = message
+            if len(payload_bytes(response)) > MAX_WRITE_FILE_RESPONSE_BYTES:
+                error = rpc_error(
+                    identifier,
+                    -32001,
+                    "Payload too large",
+                    "File-write response exceeds the staged response byte limit.",
+                )
+                if len(payload_bytes(error)) > MAX_WRITE_FILE_RESPONSE_BYTES:
+                    error = rpc_error(
+                        None,
+                        -32001,
+                        "Payload too large",
+                        "File-write response exceeds the staged response byte limit.",
+                    )
+                self.send_json(413, error)
+                return
+
+            target = safe_path(raw_path)
+            publication = classify_write_target(target)
+            if target is None or publication is None:
                 self.send_json(
                     400,
                     rpc_error(identifier, -32602, "Invalid params", "Safe-root rejection."),
                 )
                 return
-            content = str(arguments.get("content", ""))
-            dry_run = arguments.get("dry_run", True)
-            if not dry_run:
-                target.write_text(content)
-                target.chmod(0o600)
-            self.send_json(
-                200,
-                result(
-                    identifier,
-                    {
-                        "dryRun": dry_run,
-                        "bytes": len(content.encode()),
-                        "message": "fixture-write",
-                    },
-                ),
+            if len(content_bytes) > MAX_WRITE_FILE_BYTES:
+                self.send_json(
+                    413,
+                    rpc_error(
+                        identifier,
+                        -32001,
+                        "Payload too large",
+                        "File content exceeds the staged write_file byte limit.",
+                    ),
+                )
+                return
+            if dry_run:
+                self.send_json(200, response)
+                return
+
+            denial = consume_write_file_fixture_grant(
+                grant,
+                SESSION_ID,
+                target,
+                hashlib.sha256(content_bytes).digest(),
+                publication,
             )
+            if denial is not None:
+                self.send_json(403, capability_error(identifier, denial))
+                return
+
+            flags = os.O_WRONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+            if publication == "create":
+                flags |= os.O_CREAT | os.O_EXCL
+            else:
+                flags |= os.O_TRUNC
+            try:
+                descriptor = os.open(target, flags, 0o600)
+                try:
+                    os.fchmod(descriptor, 0o600)
+                    view = memoryview(content_bytes)
+                    while view:
+                        written = os.write(descriptor, view)
+                        view = view[written:]
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except OSError:
+                self.send_json(
+                    500,
+                    rpc_error(identifier, -32603, "Internal error", "Filesystem write failed."),
+                )
+                return
+            self.send_json(200, response)
             return
 
         self.send_json(
@@ -1498,8 +1780,12 @@ class Handler(BaseHTTPRequestHandler):
         )
 
 
-if POSTURE == "issue":
-    print(issue_fixture_grant())
+if POSTURE in {"issue", "issue-create-directory"}:
+    print(issue_create_directory_fixture_grant())
+    raise SystemExit(0)
+
+if POSTURE == "issue-write-file":
+    print(issue_write_file_fixture_grant())
     raise SystemExit(0)
 
 if POSTURE not in {"default", "mcp", "volume-control"}:

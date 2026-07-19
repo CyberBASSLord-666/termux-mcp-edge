@@ -27,6 +27,7 @@ use termux_mcp_server::{
     create_directory_grant::CreateDirectoryGrantAuthority,
     request_limits::{enforce_mcp_request_limits, McpRequestLimits},
     transport_security::TransportSecurityPolicy,
+    write_file_grant::{parse_content_sha256_hex, WriteFileGrantAuthority},
 };
 use termux_mcp_server::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
@@ -37,12 +38,16 @@ use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n  termux-mcp-server --issue-android-volume-grant\n";
+const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n  termux-mcp-server --issue-write-file-grant\n  termux-mcp-server --issue-android-volume-grant\n";
 
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_SESSION_ENV: &str = "MCP__CAPABILITY__SESSION_ID";
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DIRECTORY_TARGET";
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_WRITE_FILE_TARGET_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_TARGET";
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_WRITE_FILE_CONTENT_SHA256_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256";
 #[cfg(feature = "android-volume-control")]
 const CAPABILITY_VOLUME_STREAM_ENV: &str = "MCP__CAPABILITY__VOLUME_STREAM";
 #[cfg(feature = "android-volume-control")]
@@ -123,6 +128,9 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp-runtime")]
     let create_directory_authority = configured_create_directory_authority(&config)?;
 
+    #[cfg(feature = "mcp-runtime")]
+    let write_file_authority = configured_write_file_authority(&config)?;
+
     #[cfg(feature = "android-volume-control")]
     let android_volume_control_authority = configured_android_volume_control_authority(&config)?;
 
@@ -154,27 +162,19 @@ async fn main() -> anyhow::Result<()> {
         let transport_options = termux_mcp_server::mcp_transport::McpTransportOptions::default()
             .with_sse_enabled(config.transport.sse_enabled);
         #[cfg(not(feature = "android-volume-control"))]
-        let mcp_app = match create_directory_authority {
-            Some(authority) => {
-                termux_mcp_server::mcp_transport::router_with_create_directory_authority_and_options(
-                    transport_security,
-                    file_tools,
-                    config.android.battery_status_enabled,
-                    config.android.volume_status_enabled,
-                    config.command.enabled,
-                    authority,
-                    transport_options,
-                )
-            }
-            None => termux_mcp_server::mcp_transport::router_with_options(
+        let mcp_app =
+            termux_mcp_server::mcp_transport::router_with_filesystem_authorities_and_options(
                 transport_security,
                 file_tools,
                 config.android.battery_status_enabled,
                 config.android.volume_status_enabled,
                 config.command.enabled,
+                termux_mcp_server::mcp_transport::McpFilesystemAuthorities::new(
+                    create_directory_authority,
+                    write_file_authority,
+                ),
                 transport_options,
-            ),
-        };
+            );
         #[cfg(feature = "android-volume-control")]
         let mcp_app =
             termux_mcp_server::mcp_transport::router_with_capability_authorities_and_options(
@@ -186,7 +186,8 @@ async fn main() -> anyhow::Result<()> {
                 termux_mcp_server::mcp_transport::McpCapabilityAuthorities::new(
                     create_directory_authority,
                     android_volume_control_authority,
-                ),
+                )
+                .with_write_file_authority(write_file_authority),
                 transport_options,
             );
         let mcp_app = mcp_app
@@ -279,6 +280,19 @@ fn handle_cli() -> anyhow::Result<bool> {
                 )
             }
         }
+        (Some(argument), None) if argument == OsStr::new("--issue-write-file-grant") => {
+            #[cfg(feature = "mcp-runtime")]
+            {
+                issue_write_file_grant()?;
+                Ok(true)
+            }
+            #[cfg(not(feature = "mcp-runtime"))]
+            {
+                anyhow::bail!(
+                    "write_file grant issuance requires a binary built with the mcp-runtime feature"
+                )
+            }
+        }
         (Some(argument), None) if argument == OsStr::new("--issue-android-volume-grant") => {
             #[cfg(feature = "android-volume-control")]
             {
@@ -315,6 +329,30 @@ fn configured_create_directory_authority(
     CreateDirectoryGrantAuthority::from_hex_key(key_id, key, principal)
         .map(Some)
         .map_err(|_| anyhow::anyhow!("create_directory capability configuration is invalid"))
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn configured_write_file_authority(
+    config: &AppConfig,
+) -> anyhow::Result<Option<WriteFileGrantAuthority>> {
+    if !config.file.write_mutation_enabled {
+        return Ok(None);
+    }
+    let key_id = config
+        .capability
+        .key_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("write_file capability configuration is incomplete"))?;
+    let key = config
+        .capability
+        .hmac_key_hex()
+        .ok_or_else(|| anyhow::anyhow!("write_file capability configuration is incomplete"))?;
+    let principal = config.auth.static_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("write_file capability requires static-token authentication")
+    })?;
+    WriteFileGrantAuthority::from_hex_key(key_id, key, principal)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("write_file capability configuration is invalid"))
 }
 
 #[cfg(feature = "android-volume-control")]
@@ -363,6 +401,37 @@ fn issue_create_directory_grant() -> anyhow::Result<()> {
     let grant = authority
         .issue_at(&session_id, &target, now_unix_seconds)
         .map_err(|_| anyhow::anyhow!("create_directory grant issuance failed"))?;
+    println!("{grant}");
+    Ok(())
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn issue_write_file_grant() -> anyhow::Result<()> {
+    let config = load_offline_issuer_config()?;
+    if !config.file.write_mutation_enabled {
+        anyhow::bail!("write_file mutation gate is disabled");
+    }
+    let _ = validate_runtime_auth_posture(&config)?;
+    let authority = configured_write_file_authority(&config)?
+        .ok_or_else(|| anyhow::anyhow!("write_file mutation gate is disabled"))?;
+    let session_id = required_grant_environment(CAPABILITY_SESSION_ENV)?;
+    let target_path = required_grant_environment(CAPABILITY_WRITE_FILE_TARGET_ENV)?;
+    let content_digest = parse_content_sha256_hex(&required_grant_environment(
+        CAPABILITY_WRITE_FILE_CONTENT_SHA256_ENV,
+    )?)
+    .map_err(|_| anyhow::anyhow!("write_file grant content digest validation failed"))?;
+    let safe_roots = anchor_safe_roots(config.file.safe_roots)?;
+    let file_tools = FileSystemTools::new(safe_roots);
+    let target = file_tools
+        .write_file_grant_target(&target_path, content_digest)
+        .map_err(|_| anyhow::anyhow!("write_file grant target validation failed"))?;
+    let now_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
+        .as_secs();
+    let grant = authority
+        .issue_at(&session_id, &target, now_unix_seconds)
+        .map_err(|_| anyhow::anyhow!("write_file grant issuance failed"))?;
     println!("{grant}");
     Ok(())
 }

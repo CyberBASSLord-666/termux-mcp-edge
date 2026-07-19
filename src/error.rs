@@ -50,6 +50,9 @@ pub enum AppError {
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
+    #[error("File mutation requires request-scoped authorization")]
+    WriteMutationAuthorizationRequired,
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -123,6 +126,10 @@ impl AppError {
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
             ),
+            AppError::WriteMutationAuthorizationRequired => (
+                StatusCode::FORBIDDEN,
+                "File mutation requires request authorization",
+            ),
             AppError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
         }
     }
@@ -191,6 +198,13 @@ mod tests {
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
+            )
+        );
+        assert_eq!(
+            AppError::WriteMutationAuthorizationRequired.public_response(),
+            (
+                StatusCode::FORBIDDEN,
+                "File mutation requires request authorization",
             )
         );
         assert_eq!(

@@ -231,6 +231,7 @@ start_server() {
   MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
   MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+  MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
@@ -323,6 +324,7 @@ jq -e '
         required:["profile"],
         additionalProperties:false
       }
+  and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail enabled_tool_discovery_invalid
 
 post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
@@ -333,8 +335,16 @@ jq -e '
   and .result.structuredContent.commandExecutionMode == "fixed_read_only_server_diagnostics"
   and .result.structuredContent.arbitraryCommandExecution == false
   and .result.structuredContent.androidDeviceControl == false
+  and .result.structuredContent.fileWriteMutationEnabled == false
+  and .result.structuredContent.fileWriteGrantRequired == false
+  and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
   and .result.structuredContent.highImpactTools == false
 ' "$BODY_FILE" >/dev/null || fail runtime_status_gate_invalid
+
+post_mcp "$(jq -cn --arg path "$SAFE_ROOT/command-write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 403 ]] || fail write_file_disabled_http_invalid
+jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail write_file_disabled_contract_invalid
+[[ ! -e "$SAFE_ROOT/command-write-disabled.txt" && ! -L "$SAFE_ROOT/command-write-disabled.txt" ]] || fail write_file_disabled_mutated
 
 post_mcp '{"jsonrpc":"2.0","id":"android","method":"tools/call","params":{"name":"android_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail android_status_http_invalid
@@ -446,6 +456,7 @@ jq -e '
     "search_text",
     "write_file"
   ]
+  and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail disabled_tool_discovery_invalid
 
 post_mcp '{"jsonrpc":"2.0","id":"runtime-disabled","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
@@ -454,6 +465,8 @@ jq -e '
   and .result.structuredContent.commandExecution == false
   and .result.structuredContent.commandExecutionMode == "disabled"
   and .result.structuredContent.arbitraryCommandExecution == false
+  and .result.structuredContent.fileWriteMutationEnabled == false
+  and .result.structuredContent.fileWriteGrantRequired == false
 ' "$BODY_FILE" >/dev/null || fail disabled_runtime_status_invalid
 
 post_mcp '{"jsonrpc":"2.0","id":"command-disabled","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}' "$SESSION_ID"

@@ -35,6 +35,23 @@ grep -Fq '"read_text_range","search_text"' "$GATE" \
 grep -Fq '"read_text_range","search_text"' "$VOLUME_CONTROL_GATE" \
   || fail_test 'volume-control native gate UTF-8 range allowlist parity missing'
 
+for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$COMMAND_GATE"; do
+  grep -Fq 'fileWriteMutationEnabled == false' "$script" \
+    || fail_test "default-disabled write status missing for $(basename "$script")"
+  grep -Fq 'write_file_mutation_disabled' "$script" \
+    || fail_test "live write denial missing for $(basename "$script")"
+  grep -Fq 'inputSchema.properties.dry_run.const' "$script" \
+    || fail_test "write discovery const missing for $(basename "$script")"
+done
+grep -Fq 'write-key-isolation' "$VOLUME_CONTROL_GATE" \
+  || fail_test 'shared volume capability key is not isolated from write_file'
+grep -Fq 'request_scoped_single_use_write_grant_enforced' "$GATE" \
+  || fail_test 'canonical emulation gate omits write_file grant evidence'
+grep -Fq 'exact_write_file_byte_limit_verified' "$GATE" \
+  || fail_test 'canonical emulation gate omits exact write_file limit evidence'
+grep -Fq 'bounded_write_file_response_preflight_verified' "$GATE" \
+  || fail_test 'canonical emulation gate omits write_file response-preflight evidence'
+
 if bash "$GATE" >"$ROOT/.termux-emulated-test.stdout" 2>"$ROOT/.termux-emulated-test.stderr"; then
   fail_test 'gate without required arguments unexpectedly succeeded'
 fi
@@ -304,6 +321,11 @@ grep -Fq 'docs/android-volume-control-emulated-evidence-schema-v*.json' "$CI_WOR
 grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'command evidence schema does not trigger CI'
 [[ "$(grep -Fc -- '- ".github/workflows/*"' "$CI_WORKFLOW")" == 2 ]] || fail_test 'workflow changes do not trigger CI for both push and pull requests'
 [[ "$(grep -Fc -- '- ".github/workflows/*"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'workflow changes do not trigger Security for both push and pull requests'
+[[ "$(grep -Fc -- '- "src/**"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'runtime source changes do not trigger Security for both push and pull requests'
+[[ "$(grep -Fc -- '- "tests/**"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'test changes do not trigger Security for both push and pull requests'
+[[ "$(grep -Fc -- '- "scripts/termux_release_validate.sh"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'release validator changes do not trigger Security for both push and pull requests'
+[[ "$(grep -Fc -- '- "scripts/termux_device_smoke.sh"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'device smoke changes do not trigger Security for both push and pull requests'
+[[ "$(grep -Fc -- '- "scripts/termux_deploy.sh"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'deployment changes do not trigger Security for both push and pull requests'
 grep -Fq 'scripts/termux_volume_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'volume native gate does not trigger Security'
 grep -Fq 'docs/android-volume-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" || fail_test 'volume evidence schema does not trigger Security'
 grep -Fq 'scripts/termux_volume_control_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'volume control native gate does not trigger Security'

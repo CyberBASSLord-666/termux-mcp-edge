@@ -4,7 +4,7 @@
 
 The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its current limited tool surface.
 
-The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, the fixed server-diagnostic `run_command_profile`, or preview-first request-authorized `set_android_volume`. Directory preview is baseline, but directory mutation is independently default-disabled and requires one request-scoped grant. Android controls beyond exact-stream volume, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and unrelated high-impact tools remain out of scope for the live runtime.
+The baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`. Separately built and runtime-enabled postures may add bounded read-only `android_battery_status`, `android_volume_status`, the fixed server-diagnostic `run_command_profile`, or preview-first request-authorized `set_android_volume`. Directory and file-write preview are baseline, but each mutation is independently default-disabled and requires its own request-scoped grant; write authorization additionally binds exact content and create-or-replace disposition. Android controls beyond exact-stream volume, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and unrelated high-impact tools remain out of scope for the live runtime.
 
 The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling.
 
@@ -139,7 +139,7 @@ curl -sS \
   http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 16'
 ```
 
-Confirm a normal `mcp-runtime` build returns exactly the sixteen baseline tools. An optional build still returns sixteen unless its corresponding runtime flag is true; then its one additional tool is seventeenth. An all-feature validation build returns twenty only when battery, volume-status, volume-control, and command runtime flags are all true. With `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false`, prove `create_directory` discovery constrains `dry_run` to `true` and explicit mutation is denied. With the gate, static authentication, and paired capability key enabled, exercise preview and explicit mode through an exact-binary locally issued grant. Prove missing/wrong-context/wrong-binding grants fail, dry run does not consume, one exact target succeeds at mode `0700`, and replay is denied. For volume control, prove disabled discovery, closed schema, preview non-consumption, every exact binding and replay denial, fresh maximum enforcement, fixed two-argument execution, non-queueing concurrency, verified success, and rollback confirmed/unconfirmed without private reflection. Exercise `copy_file` with binary content in preview and explicit mode, prove fixed mode `0600`, exact bytes, absent-destination/no-replace behavior, one-byte-over rejection, content-private responses, and pre-mutation full-response bounding. Exercise `find_paths` with literal queries, every kind filter, default/exact depth, deterministic ordering, empty results, 8,192-entry/512-match/262,144-byte ceilings, no-follow/invalid-UTF-8 skips, oversized-ID response preflight, and content/query-private audits. Exercise `hash_file` with binary and boundary fixtures, prove exact SHA-256/size output, pre-read full-response bounding, one-byte-over rejection, no-follow descriptor confinement, and digest/path/content-private audits. Exercise `read_binary_file` with arbitrary bytes, empty/exact-limit/one-byte-over fixtures, canonical padded base64, no-follow identity confinement, max-plus-one runtime enforcement, pre-read full-response bounding, and path/host-metadata-private results and audits. Exercise `read_binary_range` with arbitrary slices, exact range/file ceilings, EOF and offset-past-EOF, no-follow identity confinement, detected size-change rejection, pre-read full-response bounding, and path/host-metadata-private results and audits. Exercise `read_text_range` with multi-byte code-point pagination, boundary deferral, midpoint/invalid-encoding rejection, exact range/file ceilings, descriptor confinement, size-change rejection, worst-case JSON escaping, response preflight, and private results/audits. Exercise `path_metadata` and literal `search_text` under their documented content-free ceilings. Also verify the default GET 405 and, separately, the enabled bounded SSE response/resumption posture below.
+Confirm a normal `mcp-runtime` build returns exactly the sixteen baseline tools. An optional build still returns sixteen unless its corresponding runtime flag is true; then its one additional tool is seventeenth. An all-feature validation build returns twenty only when battery, volume-status, volume-control, and command runtime flags are all true. With the independent directory and write mutation gates false, prove both discovery schemas constrain `dry_run` to `true`, runtime status reports each disabled posture, and explicit mutation is denied. With each gate, static authentication, and paired capability key enabled, exercise preview and explicit mode through exact-binary locally issued grants. For directory creation, prove missing/wrong-context/wrong-binding grants fail, dry run does not consume, one exact target succeeds at mode `0700`, and replay is denied. For file writes, additionally prove the public `FileSystemTools::write_file` API is preview-only and rejects `Some(false)`; exact content and create/replace disposition binding; fixed mode `0600`; exact 1 MiB acceptance and plus-one rejection; actual-ID response preflight before staging/consumption followed by same-grant success; symlink/directory/FIFO/outside/missing-parent and namespace-race denials; serialized same-target preparation, cancellation commit-point behavior, post-consumption failure cleanup, non-destructive exchange rollback, and in-process foreign-object preservation. For volume control, prove disabled discovery, closed schema, preview non-consumption, every exact binding and replay denial, fresh maximum enforcement, fixed two-argument execution, non-queueing concurrency, verified success, and rollback confirmed/unconfirmed without private reflection. Exercise `copy_file` with binary content in preview and explicit mode, prove fixed mode `0600`, exact bytes, absent-destination/no-replace behavior, one-byte-over rejection, content-private responses, and pre-mutation full-response bounding. Exercise `find_paths` with literal queries, every kind filter, default/exact depth, deterministic ordering, empty results, 8,192-entry/512-match/262,144-byte ceilings, no-follow/invalid-UTF-8 skips, oversized-ID response preflight, and content/query-private audits. Exercise `hash_file` with binary and boundary fixtures, prove exact SHA-256/size output, pre-read full-response bounding, one-byte-over rejection, no-follow descriptor confinement, and digest/path/content-private audits. Exercise `read_binary_file` with arbitrary bytes, empty/exact-limit/one-byte-over fixtures, canonical padded base64, no-follow identity confinement, max-plus-one runtime enforcement, pre-read full-response bounding, and path/host-metadata-private results and audits. Exercise `read_binary_range` with arbitrary slices, exact range/file ceilings, EOF and offset-past-EOF, no-follow identity confinement, detected size-change rejection, pre-read full-response bounding, and path/host-metadata-private results and audits. Exercise `read_text_range` with multi-byte code-point pagination, boundary deferral, midpoint/invalid-encoding rejection, exact range/file ceilings, descriptor confinement, size-change rejection, worst-case JSON escaping, response preflight, and private results/audits. Exercise `path_metadata` and literal `search_text` under their documented content-free ceilings. Also verify the default GET 405 and, separately, the enabled bounded SSE response/resumption posture below.
 
 Use the exact candidate's offline issuer only after the session is initialized:
 
@@ -154,6 +154,21 @@ MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
 ```
 
 Send the single line from that private file only as `MCP-Capability-Grant` on the matching `tools/call` request, then remove the file. Do not put grant material in JSON, URLs, process arguments, logs, reports, screenshots, or tickets. The complete configuration, issuance, denial, rotation, and validation contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
+
+Issue file-write grants separately after computing the exact intended UTF-8 byte digest. The issuer infers create versus replace from the current target and does not accept caller-selected disposition:
+
+```bash
+WRITE_GRANT_FILE="$(mktemp)"
+chmod 600 "$WRITE_GRANT_FILE"
+MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+MCP__CAPABILITY__WRITE_FILE_TARGET="$ABSOLUTE_SAFE_ROOT_WRITE_TARGET" \
+MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256="$WRITE_CONTENT_SHA256" \
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
+  /absolute/path/to/termux-mcp-server \
+  --issue-write-file-grant >"$WRITE_GRANT_FILE"
+```
+
+Send it only on the exact `write_file` call. Preview must leave it unconsumed. A cancellation or stale-destination failure before the worker-owned commit point leaves it reusable; a live attempt that wins that point and consumes it makes it permanently single-use. Remove the private file after the attempt. For the exact 1 MiB boundary, generate JSON into a private request file and use curl `--data-binary @FILE`; never put 1 MiB content into an environment variable, command argument, or shell variable. See [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 
 Validate the project-owned service status tool with the current allowlisted service name:
 
@@ -240,7 +255,16 @@ Also prove malformed, duplicate, and over-64-byte cursors return 400; a valid un
 
 ### Write cancellation cleanup
 
-Explicit mutation continues to use a same-directory temporary file and atomic rename. The temporary path is protected by a drop cleanup guard. Unit coverage must prove an armed guard removes the temp file and a disarmed guard preserves a successfully committed file. After a forced timeout/cancellation test, no `.*.tmp` artifact should remain in the safe root.
+Authorized mutation uses an owned worker, held root/parent/replacement descriptors, an identity-bound same-directory staging guard, and one process-wide mutex across all in-process `FileSystemTools` instances. Coverage must prove:
+
+- the mutex is acquired before the first destination revalidation and retained through authorization, staging, publication, any rollback, cleanup, and final parent sync;
+- two distinct grants prepared against the same old target cannot authorize concurrently: the stale waiter fails revalidation before consumption, then succeeds with its still-reusable grant only after fresh preparation;
+- the pending/request-cancelled/worker-owned transition immediately precedes grant consumption: a cancellation winner consumes nothing, creates no staging object, and leaves the grant reusable; a worker winner remains responsible for the complete transaction after request drop;
+- every injected failure after consumption completes cleanup or rollback while the grant stays consumed;
+- failed replace verification exchanges the exact staged inode back non-destructively even when the displaced identity changed, restoring the late foreign object;
+- an armed guard removes only its exact captured regular-file identity, a disarmed guard preserves committed output, and injected foreign file, link, directory, or FIFO identities at a former staging name are preserved; the mutex excludes every other in-process server `write_file` transaction during cleanup.
+
+No in-process success or failure path may leave a `.termux-mcp-write-file-*.tmp` artifact. Do not simulate an independent cross-process writer and then claim the same absolute guarantee: Linux cannot condition name-based unlink on the inode observed immediately beforehand.
 
 Clear the temporary token variable and restore defaults after validation:
 
@@ -249,6 +273,9 @@ unset MCP_TEST_TOKEN
 unset MCP_SESSION_ID
 unset MCP__CAPABILITY__SESSION_ID
 unset MCP__CAPABILITY__CREATE_DIRECTORY_TARGET
+unset MCP__CAPABILITY__WRITE_FILE_TARGET
+unset MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256
+rm -f "${WRITE_GRANT_FILE:-}"
 rm -f "$MCP_RESPONSE_HEADERS"
 unset MCP_RESPONSE_HEADERS
 unset MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS
@@ -299,3 +326,5 @@ Do not mark the project as broadly MCP-runtime-ready until each enabled capabili
 ## Current Known Limitation
 
 The transport implements stable MCP 2025-11-25 JSON and independently gated bounded-SSE postures, while tool authority intentionally remains staged. It exposes selected low-risk tools, separately gated bounded battery/volume telemetry, fixed server diagnostics, and one separately authorized exact-stream volume control. It does not expose broader Android control, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, long-lived server queues, broadcast, or unrelated high-impact controls. Expanding those surfaces is separately threat-modeled product work.
+
+The `write_file` mutex and foreign-object cleanup guarantee are process-local. An independent OS process with write access to the same directory can race identity-check-then-`unlinkat`, because Linux has no conditional unlink-by-inode primitive. Release validation must confirm exclusive operational ownership of every configured mutation safe root and document any unavoidable external writer as an unsupported risk, not a covered race posture.

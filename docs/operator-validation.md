@@ -11,7 +11,7 @@ The expected posture is narrow and fail-closed:
 - In static-token mode, the complete `/mcp` route requires the configured bearer token before transport validation, JSON-RPC parsing, discovery, or invocation.
 - Explicit unauthenticated development mode is accepted only when startup validates a loopback bind.
 - `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file` are the baseline tools expected in authenticated discovery. `android_battery_status`, `android_volume_status`, `set_android_volume`, and `run_command_profile` are expected only when their respective compile-time and runtime gates are enabled.
-- `create_directory`, `copy_file`, and `write_file` remain dry-run by default. Directory mutation additionally requires its default-disabled runtime gate and one target-bound request grant; `dry_run:false` alone must fail. Copy and write retain their existing explicit posture and safe-root controls.
+- `create_directory`, `copy_file`, and `write_file` remain dry-run by default. Directory and file-write mutation have independent default-disabled runtime gates and exact request grants; `dry_run:false` alone must fail. A write grant additionally binds exact content and create-or-replace disposition. Copy retains its existing explicit posture and safe-root controls.
 - Filesystem creation, reads, listings, searches, and writes remain bounded to configured safe roots.
 - `project_service_status` remains limited to explicitly allowlisted project-owned logical services.
 - Android status remains read-only allowlisted metadata, not Android platform control.
@@ -95,6 +95,7 @@ Expected evidence:
 - Counters do not include raw paths, file contents, command output, command arguments, environment values, hostnames, usernames, Android identifiers, private device metadata, bearer values, raw capability tokens, or arbitrary caller-provided strings.
 - Restarting the process resets the in-memory counters.
 - `createDirectoryMutationEnabled`, `createDirectoryMutationMode`, `createDirectoryGrantRequired`, `createDirectoryGrantHeader`, and `createDirectoryGrantTtlSeconds` accurately report only the public posture and never key, token, target, session, or replay state.
+- `fileWrites`, `fileWriteMode`, `fileWriteMutationEnabled`, `fileWriteGrantRequired`, `fileWriteGrantHeader`, `fileWriteGrantTtlSeconds`, `fileWriteMaxBytes`, and `fileWriteMaxResponseBytes` report the exact public write posture and limits without private key, content, digest, target, principal, session, JTI, or replay state.
 - `androidVolumeControlCompiled`, `androidVolumeControlEnabled`, `androidVolumeControlMode`, `androidVolumeGrantRequired`, `androidVolumeGrantHeader`, and `androidVolumeGrantTtlSeconds` report the same bounded public truth without private grant state.
 
 Audit counters are evidence of gate decisions, not an authorization mechanism and not a retained activity log. The authoritative counter contract is maintained in [`runtime-audit-counters.md`](runtime-audit-counters.md).
@@ -118,8 +119,12 @@ Use a dedicated safe-root test directory. Validate all of the following with aut
 - Search skips symlinks, non-regular files, oversized files, and invalid UTF-8 without escaping the safe root or reflecting raw operating-system errors.
 - Reading or listing a path outside the configured safe root is denied with a stable outside-safe-root reason code.
 - Excessive read or write sizes are denied with stable byte-limit reason codes.
-- `write_file` with omitted `dry_run` or `dry_run:true` returns a preview and does not mutate the file.
-- `write_file` with `dry_run:false` mutates only a safe-rooted target and is still bounded by size and path validation.
+- `write_file` with omitted `dry_run` or `dry_run:true` returns a preview, creates no staging object, and never consumes a supplied matching grant.
+- With `MCP__FILE__WRITE_MUTATION_ENABLED=false`, discovery constrains `dry_run` to `true`, runtime status reports the disabled posture, and explicit mutation returns HTTP 403 without filesystem work. Enabling any other capability with the shared key must not enable it.
+- With the write gate, static authentication, and paired key enabled, use the exact candidate's `--issue-write-file-grant` flow. Prove missing, malformed, wrong-context, other-principal/session/root/target/content/disposition/posture, expired, future, lifetime, unknown-version/key, invalid-signature, clock-rollback, state-capacity, and replay denials without reflection.
+- Send one create grant on preview and then live mutation to prove preview non-consumption. Verify exact bytes, mode `0600`, no-replace behavior, and replay denial. Issue a distinct replace grant, verify atomic fixed-mode replacement, then prove create/replace mismatch both ways.
+- Prove exact 1 MiB acceptance and 1 MiB plus one rejection using request files rather than shell arguments. Use an oversized actual JSON-RPC ID to force 16 KiB success-response preflight, verify no staging/consumption, then reuse that same grant successfully with a bounded ID.
+- Prove missing parent, safe-root target, outside root, linked parent, final symlink, directory, FIFO, and other special-object rejection; target/parent/staging exchange resistance; captured type/device/inode/mode/size revalidation; cancellation and post-consumption failure cleanup; exact rollback; no operation-owned staging residue; and preservation of a foreign object at a former staging name. See [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md) and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 - Symlink escapes remain denied.
 
 Filesystem counter expectations are maintained in [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md).
@@ -250,7 +255,7 @@ Treat any of the following as a blocker for a staged runtime PR or release candi
 - The volume-status tool is discovered without both opt-ins, accepts any argument, reaches volume mutation, returns a non-canonical/partial stream set, exceeds its fixed bounds, or reflects unrecognized upstream data.
 - The volume-control tool is discovered without all gates, accepts a non-closed input, mutates without an exact single-use grant, queues conflicts, skips fresh bounds/verification/recovery, exposes caller process controls, or reflects private/provider material.
 - The command tool is discovered without both opt-ins, accepts any caller-controlled process field, invokes a non-current executable, inherits environment or stdin, escapes its safe-root cwd, exceeds its fixed bounds, reflects failed output, or enables arbitrary/high-impact execution.
-- Filesystem tools can escape configured safe roots; any mutation occurs without its explicit posture; or `create_directory` mutation occurs without the enabled gate and exact single-use request grant.
+- Filesystem tools can escape configured safe roots; any mutation occurs without its explicit posture; or directory/file-write mutation occurs without its independent enabled gate and exact single-use request grant.
 - Audit counters serialize raw caller values or high-cardinality private metadata.
 - General capability-token primitives become a live high-impact authorization surface without a separate focused gate.
 - Any executable authority beyond the fixed diagnostic profiles and exact-stream volume control, or any service/package/network/other high-impact action, appears without its own documented opt-in gate, tests, and audit contract.

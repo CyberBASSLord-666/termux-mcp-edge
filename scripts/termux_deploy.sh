@@ -231,7 +231,7 @@ validate_runtime_config() {
   local config_file="$CONFIG_ROOT/runtime.env"
   [[ -f "$config_file" && ! -L "$config_file" ]] || fail "runtime configuration must be a regular non-symlink file"
   local mode permissions line key value token_present=0 allow_local=0 server_host="127.0.0.1" server_port="8000"
-  local create_directory_mutation_enabled=0 android_volume_control_enabled=0
+  local create_directory_mutation_enabled=0 write_file_mutation_enabled=0 android_volume_control_enabled=0
   local capability_key_id_present=0 capability_key_present=0
   local -A seen_keys=()
   mode="$(stat -c '%a' "$config_file")"; permissions=$((8#$mode))
@@ -250,6 +250,7 @@ validate_runtime_config() {
       MCP__SERVER__HOST) server_host="$value" ;;
       MCP__SERVER__PORT) server_port="$value" ;;
       MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED) is_boolean "$value" || fail "create_directory mutation setting must be boolean"; is_true "$value" && create_directory_mutation_enabled=1 ;;
+      MCP__FILE__WRITE_MUTATION_ENABLED) is_boolean "$value" || fail "write_file mutation setting must be boolean"; is_true "$value" && write_file_mutation_enabled=1 ;;
       MCP__ANDROID__VOLUME_CONTROL_ENABLED) is_boolean "$value" || fail "Android volume control setting must be boolean"; is_true "$value" && android_volume_control_enabled=1 ;;
       MCP__CAPABILITY__KEY_ID) [[ "$value" =~ ^[a-z0-9_-]{1,32}$ ]] || fail "capability key identifier is invalid"; capability_key_id_present=1 ;;
       MCP__CAPABILITY__HMAC_KEY_HEX) [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "capability HMAC key is invalid"; capability_key_present=1 ;;
@@ -260,6 +261,10 @@ validate_runtime_config() {
   if ((create_directory_mutation_enabled == 1)); then
     ((token_present == 1)) || fail "create_directory mutation requires static-token authentication"
     ((capability_key_id_present == 1 && capability_key_present == 1)) || fail "create_directory mutation requires capability key configuration"
+  fi
+  if ((write_file_mutation_enabled == 1)); then
+    ((token_present == 1)) || fail "write_file mutation requires static-token authentication"
+    ((capability_key_id_present == 1 && capability_key_present == 1)) || fail "write_file mutation requires capability key configuration"
   fi
   if ((android_volume_control_enabled == 1)); then
     ((token_present == 1)) || fail "Android volume control requires static-token authentication"

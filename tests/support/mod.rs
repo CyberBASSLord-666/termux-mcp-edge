@@ -12,11 +12,13 @@ use tempfile::TempDir;
 use termux_mcp_server::{
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        router, router_with_create_directory_authority, router_with_options, McpTransportOptions,
-        MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+        router, router_with_create_directory_authority, router_with_options,
+        router_with_write_file_authority, McpTransportOptions, MCP_POST_ACCEPT,
+        MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
+    write_file_grant::{content_sha256, WriteFileGrantAuthority},
 };
 use tower::ServiceExt;
 
@@ -90,6 +92,44 @@ pub(super) fn issue_create_directory_grant(
     let target = file_tools
         .create_directory_grant_target(target_path)
         .expect("test grant target must be valid");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    authority.issue_at(session_id, &target, now).unwrap()
+}
+
+pub(super) fn write_file_authorized_test_router(
+    file_tools: FileSystemTools,
+) -> (Router, WriteFileGrantAuthority) {
+    let authority = WriteFileGrantAuthority::from_hex_key(
+        "test-key-1",
+        TEST_CAPABILITY_KEY,
+        TEST_STATIC_PRINCIPAL,
+    )
+    .unwrap();
+    let router = router_with_write_file_authority(
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+        false,
+        false,
+        false,
+        authority.clone(),
+    );
+    (router, authority)
+}
+
+pub(super) fn issue_write_file_grant(
+    authority: &WriteFileGrantAuthority,
+    file_tools: &FileSystemTools,
+    session_id: &str,
+    target_path: &str,
+    content: &str,
+) -> String {
+    let target = file_tools
+        .write_file_grant_target(target_path, content_sha256(content.as_bytes()))
+        .expect("test write grant target must be valid");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

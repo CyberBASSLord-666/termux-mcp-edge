@@ -41,4 +41,6 @@ pub mod request_limits;
 pub mod service_status;
 pub mod tools;
 pub mod transport_security;
+#[cfg(feature = "mcp-runtime")]
+pub mod write_file_grant;
 pub mod write_policy;

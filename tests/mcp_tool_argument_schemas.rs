@@ -319,8 +319,8 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             "write_file",
             json!({
                 "path": mutation_target.to_string_lossy(),
-                "content": "explicit mutation",
-                "dry_run": false
+                "content": "full dry-run preview",
+                "dry_run": true
             }),
         ),
     ];
@@ -339,10 +339,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
         tokio::fs::read_to_string(&copy_mutation).await.unwrap(),
         "safe content"
     );
-    assert_eq!(
-        tokio::fs::read_to_string(&mutation_target).await.unwrap(),
-        "explicit mutation"
-    );
+    assert!(!mutation_target.exists());
 }
 
 #[tokio::test]
@@ -695,7 +692,7 @@ async fn oversized_write_uses_the_write_specific_bounded_error_mapping() {
             Some(json!({
                 "path": target.to_string_lossy(),
                 "content": oversized,
-                "dry_run": false
+                "dry_run": true
             })),
         ),
     )
