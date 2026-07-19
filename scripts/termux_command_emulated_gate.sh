@@ -6,7 +6,7 @@ umask 077
 GATE_VERSION=2
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
 DEFAULT_PORT=18769
-EXPECTED_REQUEST_COUNT=34
+EXPECTED_REQUEST_COUNT=29
 
 ARTIFACT_DIR=''
 DEFAULT_ARTIFACT_DIR=''
@@ -48,7 +48,7 @@ Run an exact command-execution artifact natively in the pinned official ARM64
 Termux environment. This validates the compile/runtime truth table, fixed
 profile registry, closed schema, cleared environment, null stdin, safe-rooted
 descriptor-pinned working directory, bounded structured output, wrong-name
-fail-closed behavior, loaded-inode replacement isolation, stable errors, and
+pre-listener rejection, loaded-inode replacement isolation, stable errors, and
 audit counters.
 It does not run a long observation window or enable arbitrary commands.
 EOF
@@ -478,29 +478,44 @@ stop_server
 rm -f -- "$SAFE_ROOT"
 mv "$PINNED_SAFE_ROOT" "$SAFE_ROOT"
 
-log 'validating wrong executable name fails closed'
+log 'validating wrong executable name is rejected before listener startup'
 RENAMED_ARTIFACT="$WORK_ROOT/renamed-command-server"
 install -m 700 "$ARTIFACT" "$RENAMED_ARTIFACT"
-start_server true "$RENAMED_ARTIFACT"
-initialize_session
-post_mcp '{"jsonrpc":"2.0","id":"wrong-name-tools","method":"tools/list"}' "$SESSION_ID"
-[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_tools_http_invalid
-jq -e '[.result.tools[].name] | index("run_command_profile") == null' "$BODY_FILE" >/dev/null || fail wrong_name_tool_discovered
-post_mcp '{"jsonrpc":"2.0","id":"wrong-name-runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
-[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_runtime_http_invalid
-jq -e '
-  .result.structuredContent.commandExecutionCompiled == true
-  and .result.structuredContent.commandExecution == false
-  and .result.structuredContent.commandExecutionMode == "disabled"
-  and .result.structuredContent.arbitraryCommandExecution == false
-' "$BODY_FILE" >/dev/null || fail wrong_name_runtime_contract_invalid
-post_mcp '{"jsonrpc":"2.0","id":"wrong-name-direct","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}' "$SESSION_ID"
-[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_direct_http_invalid
-jq -e '
-  .result.isError == true
-  and .result.structuredContent.reasonCode == "command_runtime_disabled"
-' "$BODY_FILE" >/dev/null || fail wrong_name_direct_contract_invalid
-stop_server
+set +e
+MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
+MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
+MCP__COMMAND__ENABLED=true \
+MCP__SERVER__HOST=127.0.0.1 \
+MCP__SERVER__PORT="$PORT" \
+MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT" \
+MCP__TRANSPORT__ALLOWED_ORIGINS="http://localhost:$PORT,http://127.0.0.1:$PORT" \
+MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false \
+MCP__TRANSPORT__SSE_ENABLED=false \
+MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4 \
+MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
+MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
+MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+MCP__FILE__WRITE_MUTATION_ENABLED=false \
+RUST_LOG=termux_mcp_server=info \
+  timeout -k 2 5 "$RENAMED_ARTIFACT" >"$SERVER_LOG" 2>&1
+wrong_name_rc=$?
+set -e
+((wrong_name_rc != 0 && wrong_name_rc != 124 && wrong_name_rc != 137)) \
+  || fail wrong_name_startup_exit_invalid
+grep -F 'requested MCP optional client is unavailable: command_execution' "$SERVER_LOG" >/dev/null \
+  || fail wrong_name_startup_error_invalid
+if grep -F "$MCP_TOKEN" "$SERVER_LOG" >/dev/null; then
+  fail wrong_name_startup_error_leaked_token
+fi
+if grep -F "$RENAMED_ARTIFACT" "$SERVER_LOG" >/dev/null || grep -F "$SAFE_ROOT" "$SERVER_LOG" >/dev/null; then
+  fail wrong_name_startup_error_leaked_path
+fi
+if grep -F 'Listening on http://' "$SERVER_LOG" >/dev/null; then
+  fail wrong_name_listener_started
+fi
+if curl_local --silent --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+  fail wrong_name_listener_reachable
+fi
 
 log 'validating disabled fixed-profile command posture'
 start_server false
@@ -601,6 +616,7 @@ jq -n \
       disabledDiscovery: true,
       fixedCurrentExecutable: true,
       wrongExecutableNameFailsClosed: true,
+      wrongExecutableNameRejectedBeforeListener: true,
       runningInodePinned: true,
       workingDirectoryDescriptorPinned: true,
       fixedArgvProfiles: true,
