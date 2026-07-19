@@ -12,9 +12,8 @@
 //! filesystem mutation attempt.
 
 use std::{
-    collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -23,8 +22,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::request_grant_capability::{
-    RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+use crate::{
+    grant_replay::{shared_replay_state, SharedReplayError, SharedReplayState},
+    request_grant_capability::{
+        RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+    },
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -281,14 +283,7 @@ pub struct WriteFileGrantAuthority {
     key_id: Arc<str>,
     key: Arc<[u8; WRITE_FILE_GRANT_KEY_BYTES]>,
     principal_digest: [u8; DIGEST_BYTES],
-    replay: Arc<Mutex<ReplayState>>,
-    replay_capacity: usize,
-}
-
-#[derive(Default)]
-struct ReplayState {
-    consumed: BTreeMap<[u8; GRANT_ID_BYTES], u64>,
-    last_observed_unix_seconds: Option<u64>,
+    replay: SharedReplayState,
 }
 
 struct ParsedGrant {
@@ -337,13 +332,20 @@ impl WriteFileGrantAuthority {
         principal.update(PRINCIPAL_BINDING_DOMAIN);
         principal.update(static_principal_secret.as_bytes());
         let principal_digest = principal.finalize().into_bytes().into();
+        let replay = shared_replay_state(
+            RequestGrantCapability::WriteFile,
+            &key_id,
+            &key,
+            &principal_digest,
+            replay_capacity,
+        )
+        .map_err(|_| WriteFileGrantError::StateUnavailable)?;
 
         Ok(Self {
             key_id: Arc::from(key_id),
             key: Arc::new(key),
             principal_digest,
-            replay: Arc::new(Mutex::new(ReplayState::default())),
-            replay_capacity,
+            replay,
         })
     }
 
@@ -406,47 +408,16 @@ impl WriteFileGrantAuthority {
             .verify_slice(&grant.operation_binding)
             .map_err(|_| WriteFileGrantError::BindingMismatch)?;
 
-        let mut replay = self
-            .replay
-            .lock()
-            .map_err(|_| WriteFileGrantError::StateUnavailable)?;
-        if replay
-            .last_observed_unix_seconds
-            .is_some_and(|last| now_unix_seconds < last)
-        {
-            return Err(WriteFileGrantError::ClockRollback);
-        }
-        replay.last_observed_unix_seconds = Some(now_unix_seconds);
-
-        let lifetime = grant
-            .expires_unix_seconds
-            .checked_sub(grant.issued_unix_seconds)
-            .ok_or(WriteFileGrantError::LifetimeExceeded)?;
-        if lifetime == 0 || lifetime > MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS {
-            return Err(WriteFileGrantError::LifetimeExceeded);
-        }
-        if grant.issued_unix_seconds
-            > now_unix_seconds.saturating_add(MAX_WRITE_FILE_GRANT_FUTURE_SKEW_SECONDS)
-        {
-            return Err(WriteFileGrantError::FutureIssued);
-        }
-        if now_unix_seconds >= grant.expires_unix_seconds {
-            return Err(WriteFileGrantError::Expired);
-        }
-
-        replay
-            .consumed
-            .retain(|_, expiry| *expiry > now_unix_seconds);
-        if replay.consumed.contains_key(&grant.grant_id) {
-            return Err(WriteFileGrantError::Replayed);
-        }
-        if replay.consumed.len() >= self.replay_capacity {
-            return Err(WriteFileGrantError::ReplayCapacityExhausted);
-        }
-        replay
-            .consumed
-            .insert(grant.grant_id, grant.expires_unix_seconds);
-        Ok(())
+        self.replay
+            .consume(
+                grant.grant_id,
+                grant.issued_unix_seconds,
+                grant.expires_unix_seconds,
+                now_unix_seconds,
+                MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS,
+                MAX_WRITE_FILE_GRANT_FUTURE_SKEW_SECONDS,
+            )
+            .map_err(map_replay_error)
     }
 
     fn encode_and_sign(&self, grant: &ParsedGrant) -> String {
@@ -545,8 +516,20 @@ impl fmt::Debug for WriteFileGrantAuthority {
             .field("key_id", &self.key_id)
             .field("key", &"<redacted>")
             .field("principal", &"<redacted>")
-            .field("replay_capacity", &self.replay_capacity)
+            .field("replay", &"<process-global>")
             .finish()
+    }
+}
+
+const fn map_replay_error(error: SharedReplayError) -> WriteFileGrantError {
+    match error {
+        SharedReplayError::Expired => WriteFileGrantError::Expired,
+        SharedReplayError::FutureIssued => WriteFileGrantError::FutureIssued,
+        SharedReplayError::LifetimeExceeded => WriteFileGrantError::LifetimeExceeded,
+        SharedReplayError::Replayed => WriteFileGrantError::Replayed,
+        SharedReplayError::ClockRollback => WriteFileGrantError::ClockRollback,
+        SharedReplayError::CapacityExhausted => WriteFileGrantError::ReplayCapacityExhausted,
+        SharedReplayError::StateUnavailable => WriteFileGrantError::StateUnavailable,
     }
 }
 
@@ -670,8 +653,8 @@ mod tests {
     const BINDING_OFFSET: usize = CAPABILITY_OFFSET + 1;
     const ISSUED_OFFSET: usize = BINDING_OFFSET + BINDING_BYTES;
 
-    fn authority() -> WriteFileGrantAuthority {
-        WriteFileGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap()
+    fn test_authority(test_principal: &str) -> WriteFileGrantAuthority {
+        WriteFileGrantAuthority::from_hex_key("primary-1", KEY, test_principal).unwrap()
     }
 
     fn identity() -> WriteFileExistingIdentity {
@@ -732,7 +715,7 @@ mod tests {
 
     #[test]
     fn public_issue_and_consume_use_one_short_lived_single_use_grant() {
-        let authority = authority();
+        let authority = test_authority("write-public-single-use");
         let token = authority.issue(SESSION, &target()).unwrap();
         assert!(token.len() <= MAX_WRITE_FILE_GRANT_HEADER_BYTES);
         assert_eq!(token.split('.').count(), 4);
@@ -828,7 +811,7 @@ mod tests {
 
     #[test]
     fn principal_binding_is_keyed_and_not_an_offline_bearer_verifier() {
-        let authority = authority();
+        let authority = test_authority(PRINCIPAL);
         let mut unkeyed = Sha256::new();
         unkeyed.update(PRINCIPAL_BINDING_DOMAIN);
         unkeyed.update(PRINCIPAL.as_bytes());
@@ -859,9 +842,10 @@ mod tests {
             WriteFileGrantAuthority::from_hex_key("primary-1", KEY, "").unwrap_err(),
             WriteFileGrantError::ConfigurationInvalid
         );
+        let authority = test_authority("write-invalid-sessions");
         for session in ["", "not-a-uuid", "0194F9F9-BBBB-7CCC-8DDD-EEEEEEEEEEEE"] {
             assert_eq!(
-                authority().issue_at(session, &target(), NOW).unwrap_err(),
+                authority.issue_at(session, &target(), NOW).unwrap_err(),
                 WriteFileGrantError::SessionInvalid
             );
         }
@@ -869,7 +853,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_malformed_unknown_and_invalid_signature_tokens() {
-        let authority = authority();
+        let authority = test_authority("write-malformed");
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
             authority
@@ -936,7 +920,7 @@ mod tests {
 
     #[test]
     fn rejects_every_principal_session_root_target_content_disposition_and_identity_mismatch() {
-        let authority = authority();
+        let authority = test_authority("write-binding");
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         let other_principal =
             WriteFileGrantAuthority::from_hex_key("primary-1", KEY, "other").unwrap();
@@ -1085,7 +1069,7 @@ mod tests {
 
     #[test]
     fn serialized_payload_is_fixed_size_opaque_unlinkable_and_binding_tamper_is_private() {
-        let authority = authority();
+        let authority = test_authority("write-serialized-payload");
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         let second = authority.issue_at(SESSION, &target(), NOW).unwrap();
         let payload = decode_hex_array::<PAYLOAD_BYTES>(token.split('.').nth(2).unwrap()).unwrap();
@@ -1147,7 +1131,7 @@ mod tests {
 
     #[test]
     fn operation_binding_matches_independent_known_answer_vector() {
-        let authority = authority();
+        let authority = test_authority(PRINCIPAL);
         let session = parse_canonical_session(SESSION).unwrap();
         let grant_id = [0x5a; GRANT_ID_BYTES];
         let actual = authority
@@ -1162,7 +1146,7 @@ mod tests {
 
     #[test]
     fn rejects_expired_future_excessive_lifetime_and_clock_rollback() {
-        let authority = authority();
+        let authority = test_authority("write-temporal");
         let expired = authority.issue_at(SESSION, &target(), NOW - 60).unwrap();
         assert_eq!(
             authority
@@ -1193,9 +1177,10 @@ mod tests {
         authority
             .consume_at(Some(&normal), SESSION, &target(), NOW + 1)
             .unwrap();
+        let reconstructed = test_authority("write-temporal");
         let rollback = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
-            authority
+            reconstructed
                 .consume_at(Some(&rollback), SESSION, &target(), NOW)
                 .unwrap_err(),
             WriteFileGrantError::ClockRollback
@@ -1203,8 +1188,50 @@ mod tests {
     }
 
     #[test]
+    fn independently_constructed_authorities_reject_sequential_replay() {
+        let issuer = test_authority("write-shared-sequential");
+        let consumer = test_authority("write-shared-sequential");
+        let token = issuer.issue_at(SESSION, &target(), NOW).unwrap();
+        consumer
+            .consume_at(Some(&token), SESSION, &target(), NOW)
+            .unwrap();
+        assert_eq!(
+            issuer
+                .consume_at(Some(&token), SESSION, &target(), NOW)
+                .unwrap_err(),
+            WriteFileGrantError::Replayed
+        );
+    }
+
+    #[test]
+    fn independent_concurrent_authorities_allow_exactly_one_consumer() {
+        let first = test_authority("write-shared-concurrent");
+        let second = test_authority("write-shared-concurrent");
+        let token = Arc::new(first.issue_at(SESSION, &target(), NOW).unwrap());
+        let barrier = Arc::new(Barrier::new(3));
+        let threads = [first, second].map(|authority| {
+            let token = Arc::clone(&token);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                authority.consume_at(Some(&token), SESSION, &target(), NOW)
+            })
+        });
+        barrier.wait();
+        let results = threads.map(|thread| thread.join().unwrap());
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(WriteFileGrantError::Replayed)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn concurrent_replay_allows_exactly_one_consumer() {
-        let authority = Arc::new(authority());
+        let authority = Arc::new(test_authority("write-concurrent-clones"));
         let token = Arc::new(authority.issue_at(SESSION, &target(), NOW).unwrap());
         let barrier = Arc::new(Barrier::new(9));
         let mut threads = Vec::new();
@@ -1234,7 +1261,7 @@ mod tests {
 
     #[test]
     fn clones_share_replay_state() {
-        let authority = authority();
+        let authority = test_authority("write-clones");
         let clone = authority.clone();
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         clone
@@ -1250,24 +1277,35 @@ mod tests {
 
     #[test]
     fn replay_storage_is_bounded_and_expired_entries_are_pruned() {
-        let authority =
-            WriteFileGrantAuthority::from_hex_key_with_capacity("primary-1", KEY, PRINCIPAL, 1)
-                .unwrap();
+        let authority = WriteFileGrantAuthority::from_hex_key_with_capacity(
+            "primary-1",
+            KEY,
+            "write-capacity",
+            1,
+        )
+        .unwrap();
+        let equivalent = WriteFileGrantAuthority::from_hex_key_with_capacity(
+            "primary-1",
+            KEY,
+            "write-capacity",
+            1,
+        )
+        .unwrap();
         let first = authority.issue_at(SESSION, &target(), NOW).unwrap();
         authority
             .consume_at(Some(&first), SESSION, &target(), NOW)
             .unwrap();
-        let second = authority.issue_at(SESSION, &target(), NOW + 1).unwrap();
+        let second = equivalent.issue_at(SESSION, &target(), NOW + 1).unwrap();
         assert_eq!(
-            authority
+            equivalent
                 .consume_at(Some(&second), SESSION, &target(), NOW + 1)
                 .unwrap_err(),
             WriteFileGrantError::ReplayCapacityExhausted
         );
-        let after_expiry = authority
+        let after_expiry = equivalent
             .issue_at(SESSION, &target(), NOW + WRITE_FILE_GRANT_TTL_SECONDS)
             .unwrap();
-        authority
+        equivalent
             .consume_at(
                 Some(&after_expiry),
                 SESSION,
@@ -1278,14 +1316,38 @@ mod tests {
     }
 
     #[test]
+    fn different_keys_and_principals_keep_clock_and_replay_state_isolated() {
+        let baseline = test_authority("write-isolation-baseline");
+        let baseline_token = baseline.issue_at(SESSION, &target(), NOW).unwrap();
+        baseline
+            .consume_at(Some(&baseline_token), SESSION, &target(), NOW + 1)
+            .unwrap();
+
+        let other_principal = test_authority("write-isolation-other");
+        let other_principal_token = other_principal.issue_at(SESSION, &target(), NOW).unwrap();
+        other_principal
+            .consume_at(Some(&other_principal_token), SESSION, &target(), NOW)
+            .unwrap();
+
+        let other_key = "11".repeat(WRITE_FILE_GRANT_KEY_BYTES);
+        let other_key_authority = WriteFileGrantAuthority::from_hex_key(
+            "primary-1",
+            &other_key,
+            "write-isolation-baseline",
+        )
+        .unwrap();
+        let other_key_token = other_key_authority
+            .issue_at(SESSION, &target(), NOW)
+            .unwrap();
+        other_key_authority
+            .consume_at(Some(&other_key_token), SESSION, &target(), NOW)
+            .unwrap();
+    }
+
+    #[test]
     fn poisoned_replay_state_returns_one_private_error() {
-        let authority = authority();
-        let replay = Arc::clone(&authority.replay);
-        let _ = thread::spawn(move || {
-            let _guard = replay.lock().unwrap();
-            panic!("poison test replay lock");
-        })
-        .join();
+        let authority = test_authority("write-poisoned");
+        authority.replay.poison_for_test();
         let token = authority.issue_at(SESSION, &target(), NOW).unwrap();
         assert_eq!(
             authority
@@ -1297,7 +1359,7 @@ mod tests {
 
     #[test]
     fn debug_output_redacts_key_principal_target_content_and_disposition_binding() {
-        let authority = authority();
+        let authority = test_authority(PRINCIPAL);
         let serialized = format!("{authority:?} {:?}", target());
         for secret in [
             KEY,
