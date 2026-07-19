@@ -68,6 +68,7 @@ impl McpAuthPolicy {
         }
     }
 
+    #[cfg(feature = "mcp-runtime")]
     pub(crate) const fn is_unauthenticated_localhost_only(&self) -> bool {
         matches!(&self.kind, McpAuthPolicyKind::UnauthenticatedLocalhostOnly)
     }
