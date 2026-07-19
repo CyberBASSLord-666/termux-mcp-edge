@@ -310,11 +310,12 @@ valid_capability_grant() {
 }
 
 capability_grant_has_signed_byte() {
-  local grant="$1" byte_offset="$2" expected="$3" prefix remainder payload hex_offset
+  local grant="$1" expected_payload_hex_length="$2" byte_offset="$3" expected="$4" prefix remainder payload hex_offset
   valid_capability_grant "$grant" || return 1
   prefix="v1.${CAPABILITY_KEY_ID}."
   remainder="${grant#"$prefix"}"
   payload="${remainder%%.*}"
+  [[ "${#payload}" == "$expected_payload_hex_length" ]] || return 1
   hex_offset=$((byte_offset * 2))
   ((${#payload} >= hex_offset + 2)) || return 1
   [[ "${payload:hex_offset:2}" == "$expected" ]]
@@ -391,7 +392,7 @@ issue_create_directory_grant() {
   [[ "$(wc -l <"$CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid capability grant"
   grant="$(<"$CAPABILITY_GRANT_FILE")"
   valid_capability_grant "$grant" || fail "candidate emitted an invalid capability grant"
-  capability_grant_has_signed_byte "$grant" 64 01 || fail "candidate emitted an invalid create_directory capability byte"
+  capability_grant_has_signed_byte "$grant" 260 64 01 || fail "candidate emitted an invalid create_directory capability byte"
   unset grant
 }
 
@@ -412,7 +413,7 @@ issue_write_file_grant() {
   [[ "$(wc -l <"$WRITE_CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid write_file capability grant"
   grant="$(<"$WRITE_CAPABILITY_GRANT_FILE")"
   valid_capability_grant "$grant" || fail "candidate emitted an invalid write_file capability grant"
-  capability_grant_has_signed_byte "$grant" 16 02 || fail "candidate emitted an invalid write_file capability byte"
+  capability_grant_has_signed_byte "$grant" 130 16 02 || fail "candidate emitted an invalid write_file capability byte"
   unset grant
 }
 
