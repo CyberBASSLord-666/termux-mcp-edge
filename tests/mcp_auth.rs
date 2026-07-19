@@ -22,7 +22,7 @@ use termux_mcp_server::{
         McpRequestLimits, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS,
         DEFAULT_REQUEST_TIMEOUT_SECONDS,
     },
-    tools::{FileSystemTools, SafeRootConfigurationError},
+    tools::{FileSystemTools, SafeRootConfigurationError, MAX_SAFE_ROOTS},
     transport_security::TransportSecurityPolicy,
     write_file_grant::WriteFileGrantAuthority,
 };
@@ -260,6 +260,61 @@ fn unauthenticated_policy_rejects_non_loopback_listener_declarations() {
     }
 }
 
+
+#[test]
+fn public_builder_returns_typed_errors_for_invalid_listener_syntax() {
+    let root = tempfile::tempdir().unwrap();
+    let limits = || {
+        McpRequestLimits::from_seconds(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .unwrap()
+    };
+    let transport = || TransportSecurityPolicy::localhost(8000, false).unwrap();
+
+    for listener_host in [
+        "",
+        " localhost",
+        "localhost ",
+        "local host",
+        "https://localhost",
+        "localhost:8000",
+        "[::1]",
+        "bad_host",
+    ] {
+        let error = McpRouterBuilder::new(
+            listener_host,
+            McpAuthPolicy::static_bearer("invalid-listener-test-token").unwrap(),
+            limits(),
+            transport(),
+            vec![root.path().to_path_buf()],
+        )
+        .expect_err("invalid listener syntax unexpectedly built a public router");
+
+        assert_eq!(error, McpRouterBuildError::InvalidListenerHost);
+    }
+
+    for listener_host in [
+        "localhost",
+        "LOCALHOST",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+        "example.com.",
+    ] {
+        McpRouterBuilder::new(
+            listener_host,
+            McpAuthPolicy::static_bearer("valid-listener-test-token").unwrap(),
+            limits(),
+            transport(),
+            vec![root.path().to_path_buf()],
+        )
+        .expect("valid IP and DNS listener hosts must be accepted");
+    }
+}
+
 #[tokio::test]
 async fn authentication_rejects_before_transport_validation_or_body_dispatch() {
     let root = tempfile::tempdir().unwrap();
@@ -313,8 +368,16 @@ fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
     let regular_file = parent.path().join("regular-file");
     std::fs::write(&regular_file, b"not a directory").unwrap();
 
-    let cases = [
+    let mut cases = vec![
         (Vec::new(), SafeRootConfigurationError::EmptyConfiguration),
+        (
+            vec![parent.path().to_path_buf(); MAX_SAFE_ROOTS + 1],
+            SafeRootConfigurationError::TooManyRoots,
+        ),
+        (
+            vec![std::path::PathBuf::new()],
+            SafeRootConfigurationError::EmptyPath,
+        ),
         (
             vec![std::path::PathBuf::from("relative/root")],
             SafeRootConfigurationError::RelativePath,
@@ -323,9 +386,22 @@ fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
             vec![std::path::PathBuf::from("/")],
             SafeRootConfigurationError::FilesystemRoot,
         ),
+        (
+            vec![parent.path().join(".termux-mcp-write-quarantine")],
+            SafeRootConfigurationError::ReservedNamespace,
+        ),
         (vec![missing], SafeRootConfigurationError::Unresolved),
         (vec![regular_file], SafeRootConfigurationError::NotDirectory),
     ];
+
+    #[cfg(unix)]
+    {
+        let target = parent.path().join("symlink-target");
+        let linked = parent.path().join("symlink-root");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        cases.push((vec![linked], SafeRootConfigurationError::SymbolicLink));
+    }
 
     for (safe_roots, expected) in cases {
         assert_eq!(
@@ -489,6 +565,70 @@ async fn one_public_builder_authenticates_before_every_transport_surface() {
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+
+    // More unauthorized initialize attempts than the complete session capacity
+    // must not allocate state. A subsequent authenticated initialize must still
+    // succeed and issue a session.
+    for attempt in 0..=64 {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": format!("blocked-capacity-{attempt}"),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "builder-auth-test", "version": "1.0.0"}
+            }
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/mcp")
+                    .header(header::HOST, "localhost:8000")
+                    .header(header::ORIGIN, "http://localhost:8000")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ACCEPT, MCP_POST_ACCEPT)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let authenticated_initialize = app
+        .clone()
+        .oneshot(
+            Request::post("/mcp")
+                .header(header::AUTHORIZATION, "Bearer expected-token")
+                .header(header::HOST, "localhost:8000")
+                .header(header::ORIGIN, "http://localhost:8000")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, MCP_POST_ACCEPT)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": "authenticated-after-blocked-capacity",
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "clientInfo": {
+                                "name": "builder-auth-test",
+                                "version": "1.0.0"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authenticated_initialize.status(), StatusCode::OK);
+    assert!(authenticated_initialize
+        .headers()
+        .contains_key(MCP_SESSION_ID_HEADER));
 
     assert_eq!(std::fs::read(&existing).unwrap(), b"existing-content");
     assert!(!created.exists());
