@@ -89,6 +89,7 @@ Do not remove or replace the builder's route layers. If the router is nested int
 - `UnauthenticatedListenerRequiresLoopback` rejects development auth with a non-loopback declaration.
 - `SafeRoots(...)` reports bounded safe-root configuration failures without exposing path, descriptor, or inode details. An empty set, relative path, filesystem root, missing path, non-directory, symlinked component, or more than 64 input entries is rejected before a router or listener exists.
 - `CapabilityNotCompiled { capability }` rejects a requested optional runtime gate when its Cargo feature is absent.
+- `CapabilityRequiresStaticAuthentication { capability }` rejects every create/copy/write or Android-volume mutation authority paired with unauthenticated localhost policy.
 - `OptionalClientUnavailable { client }` rejects a requested provider or command client that cannot be initialized safely.
 
 Safe roots are normalized, opened component-by-component without following links, and retained as pinned directory descriptors for the router lifetime. Renaming or replacing a configured pathname cannot redirect a running embedding. Builder clones do not reopen roots because the builder is consumed by `build`.
@@ -112,7 +113,7 @@ let builder = builder.with_android_volume_control_authority(volume_authority);
 let router = builder.build()?;
 ```
 
-Transport options include the independently default-disabled bounded SSE response posture. Mutation-authority setters accept already validated authorities; possessing an authority does not bypass each capability's runtime gate, authentication posture, request-bound grant, dry-run, replay, identity, and safe-root checks.
+Transport options include the independently default-disabled bounded SSE response posture. Mutation-authority setters accept already validated authorities. `build` rejects every mutation authority unless the sealed policy is static bearer authentication; unauthenticated localhost mode can never activate create, copy, write, or Android-volume mutation. An authority also does not bypass each capability's runtime gate, request-bound grant, dry-run, replay, identity, and safe-root checks.
 
 The fixed-profile command diagnostic lane is intentionally unavailable to downstream crates. The package binary uses this same builder and a crate-private setter, so public embeddings cannot expand their authority into command execution even when the dependency is compiled with `command-execution`.
 
