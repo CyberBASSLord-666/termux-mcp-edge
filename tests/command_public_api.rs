@@ -103,6 +103,19 @@ fn main() {
             "profile",
         ),
         (
+            "binary-only command enablement switch",
+            r#"
+use termux_mcp_server::mcp_transport::McpRouterBuilder;
+
+fn attempt(builder: McpRouterBuilder) {
+    let _ = builder.with_command_execution_enabled(true);
+}
+
+fn main() {}
+"#,
+            "with_command_execution_enabled",
+        ),
+        (
             "binary-owned command router",
             r#"
 use termux_mcp_server::mcp_transport::binary_server_router_with_filesystem_authorities_and_options;
@@ -280,7 +293,12 @@ fn main() {
 use termux_mcp_server::mcp_transport::{
     binary_server_router_with_capability_authorities_and_options,
     binary_server_router_with_filesystem_authorities_and_options,
+    McpRouterBuilder,
 };
+
+fn attempt(builder: McpRouterBuilder) {
+    let _ = builder.with_command_execution_enabled(true);
+}
 
 fn main() {
     let _ = binary_server_router_with_filesystem_authorities_and_options;
@@ -312,6 +330,7 @@ fn main() {
         stderr.contains("consumer/src/main.rs")
             && stderr.contains("binary_server_router_with_filesystem_authorities_and_options")
             && stderr.contains("binary_server_router_with_capability_authorities_and_options")
+            && stderr.contains("with_command_execution_enabled")
             && (stderr.contains("private") || stderr.contains("unresolved import")),
         "selected-workspace probe failed for the wrong reason:\n{stderr}"
     );

@@ -11,6 +11,7 @@ use axum::{
 use serde_json::{json, Value};
 use support::{
     empty_test_file_tools, json_request, response_json, session_request, sse_test_router,
+    TEST_STATIC_PRINCIPAL,
 };
 use termux_mcp_server::mcp_transport::{
     MAX_MCP_JSON_RPC_ID_BYTES, MAX_MCP_LAST_EVENT_ID_BYTES, MCP_LAST_EVENT_ID_HEADER,
@@ -148,6 +149,10 @@ fn resume_request(session_id: &str, last_event_id: &str) -> Request<Body> {
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
         .header(header::ACCEPT, "text/event-stream")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, session_id)
         .header(MCP_LAST_EVENT_ID_HEADER, last_event_id)
@@ -245,6 +250,10 @@ async fn get_replays_only_events_after_the_exact_originating_cursor() {
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
         .header(header::ACCEPT, "text/event-stream")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, &session_id)
         .body(Body::empty())
@@ -563,6 +572,10 @@ async fn notifications_stay_empty_and_delete_removes_replay_state() {
     let delete = Request::delete("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, &session_id)
         .body(Body::empty())
