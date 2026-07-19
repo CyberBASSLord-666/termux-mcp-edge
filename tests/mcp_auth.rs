@@ -10,7 +10,6 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use termux_mcp_server::{
     auth::{McpAuthPolicy, McpConnectionInfo},
     copy_file_grant::CopyFileGrantAuthority,
@@ -27,6 +26,7 @@ use termux_mcp_server::{
     transport_security::TransportSecurityPolicy,
     write_file_grant::WriteFileGrantAuthority,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
 #[cfg(feature = "android-volume-control")]
@@ -145,10 +145,7 @@ async fn response_json(response: Response) -> Value {
     serde_json::from_slice(&body).unwrap()
 }
 
-async fn live_initialize_response(
-    listener: tokio::net::TcpListener,
-    app: Router,
-) -> String {
+async fn live_initialize_response(listener: tokio::net::TcpListener, app: Router) -> String {
     let listener_address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         axum::serve(
@@ -193,10 +190,7 @@ async fn live_initialize_response(
     String::from_utf8(response).unwrap()
 }
 
-fn unauthenticated_router(
-    listener: &tokio::net::TcpListener,
-    safe_root: PathBuf,
-) -> Router {
+fn unauthenticated_router(listener: &tokio::net::TcpListener, safe_root: PathBuf) -> Router {
     McpRouterBuilder::try_new(
         listener,
         McpAuthPolicy::unauthenticated_localhost_only(),
