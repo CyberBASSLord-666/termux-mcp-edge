@@ -6,18 +6,18 @@ Termux MCP Edge implements one deliberately narrow process-execution surface for
 
 The public tool is `run_command_profile`. A caller can select only one reviewed profile identifier. The executable, complete argv vector, working directory, environment, stdin policy, timeout, output ceilings, and concurrency limit are owned by the server and cannot be overridden in an MCP request.
 
-The Rust execution machinery is closed to the crate: command profiles, resolved handles, profile lookup, the raw execution client, and raw execution request/result types are not public API. Public consumers receive only stable profile identifiers and redacted policy/status metadata. Public embedding routers cannot enable the command lane at all. The package binary must consume an opaque `ServerCommandAuthority`; safe dependency builds cannot construct it, and its primary-package acquisition returns no value when Cargo compiles this crate as a dependency.
+The Rust execution machinery is closed to the crate: command profiles, resolved handles, profile lookup, the raw execution client, and raw execution request/result types are not public API. Public consumers receive only stable profile identifiers and redacted policy/status metadata. Public embedding routers cannot enable the command lane at all. Only the package binary's two crate-private protected-router builders accept command enablement; because the binary compiles this source module inside its own crate while dependency consumers see only the library crate's public API, downstream code cannot call either builder.
 
 Arbitrary command execution, shell evaluation, interpreters, caller-selected programs, caller-selected arguments, Android control, package or service mutation, network mutation, and other high-impact actions remain unavailable.
 
-## Independent gates and server-owned authority
+## Independent gates and binary-owned construction
 
 Both operator gates are required:
 
 1. Build the separate posture with `--features command-execution`.
 2. Set `MCP__COMMAND__ENABLED=true` at runtime.
 
-The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENABLED=true` during startup. A command-capable build with the runtime flag absent or false hides `run_command_profile` from discovery and denies direct calls with `command_runtime_disabled` without spawning a process. Even with both opt-ins, the effective posture requires the primary package's opaque server authority and successful executable validation; dependency embeddings remain command-disabled.
+The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENABLED=true` during startup. A command-capable build with the runtime flag absent or false hides `run_command_profile` from discovery and denies direct calls with `command_runtime_disabled` without spawning a process. Even with both opt-ins, the effective posture requires successful executable validation through the package binary's crate-private construction path; dependency embeddings remain command-disabled.
 
 Example:
 
@@ -160,7 +160,7 @@ Counters never retain the requested profile text, argv, program path, working di
 Unit and integration coverage proves:
 
 - the registry is unique, fixed, and bounded;
-- dependency consumers cannot import or construct profiles, resolved handles, raw execution types, or the opaque primary-server authority, and public embedding routers remain command-disabled;
+- dependency consumers cannot import or construct profiles, resolved handles, raw execution types, or either crate-private binary router builder, and public embedding routers remain command-disabled;
 - a mismatched, non-regular, or non-executable current path disables the command posture before spawn, while `/proc/self/exe` defeats post-initialization path replacement;
 - hard supervisor maxima reject an oversized timeout or stream limit before spawn, and checked buffer reservation cannot panic on an attacker-selected capacity;
 - raw and injection-shaped identifiers are denied;

@@ -25,7 +25,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
 - **Named tunnels:** explicit, non-overwriting Cloudflare Tunnel setup with strict hostname validation and hermetic failure-path tests.
 
-Android controls other than the separately compiled, request-authorized exact-stream volume tool remain unavailable, as do shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, and network mutation. The optional battery and volume-status tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the exact server binary and does not authorize a shell or caller-selected command surface.
+Android controls other than the separately compiled, request-authorized exact-stream volume tool remain unavailable, as do shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, and network mutation. The optional battery and volume-status tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the server-owned, already-running executable image and does not authorize a shell or caller-selected command surface.
 
 ## Security and authentication
 
@@ -190,7 +190,7 @@ cargo build --release --features command-execution
 export MCP__COMMAND__ENABLED=true
 ```
 
-The feature includes `mcp-runtime`. A default build rejects the runtime flag, while a command build with the flag unset hides `run_command_profile` and denies direct calls without spawning. Enabled callers may choose only `server_version`, `server_help`, or `execution_boundary`. Every profile runs the exact current executable with fixed argv, the first canonical safe root as cwd, empty environment, null stdin, a five-second deadline, independent output ceilings, a two-permit non-queueing concurrency limit, process-group cleanup, zero-exit enforcement, and UTF-8-only bounded output. Callers cannot supply a command, program, argv, path, environment, stdin, timeout, or limit.
+The feature includes `mcp-runtime`. A default build rejects the runtime flag, while a command build with the flag unset hides `run_command_profile` and denies direct calls without spawning. Only the package binary's crate-private transport builders may honor the runtime command flag; every public embedding router hardcodes command execution disabled, and dependency consumers cannot access those builders. Initialization accepts only an executable regular `current_exe` named exactly `termux-mcp-server`; profiles then launch `/proc/self/exe`, binding each spawn to the already-running inode even if the installation path is renamed or replaced. Enabled MCP callers may choose only `server_version`, `server_help`, or `execution_boundary`. Fixed argv, the first canonical safe root as cwd, empty environment, null stdin, a five-second deadline, 16 KiB stdout and 4 KiB stderr hard maxima, a two-permit non-queueing concurrency limit, process-group cleanup, zero-exit enforcement, and UTF-8-only bounded output remain mandatory. Crate-private profile and execution types prevent forged raw execution. Callers cannot supply a command, program, argv, path, environment, stdin, timeout, or limit.
 
 See [`docs/command-execution-gate.md`](docs/command-execution-gate.md) for the complete request, response, failure, audit, and native validation contract.
 

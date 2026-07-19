@@ -1,6 +1,6 @@
 # Command profile validation runbook
 
-This runbook governs changes to the implemented `run_command_profile` registry. The current registry is intentionally closed to three read-only diagnostics of the exact server binary. A proposed profile is denied unless every check below passes.
+This runbook governs changes to the implemented `run_command_profile` registry. The current registry is intentionally closed to three read-only diagnostics of the server-owned running image. A proposed profile is denied unless every check below passes.
 
 ## Current approved profiles
 
@@ -10,7 +10,7 @@ This runbook governs changes to the implemented `run_command_profile` registry. 
 | `server_help` | Server-owned running image | `--help` | None |
 | `execution_boundary` | Server-owned running image | `--self-check-command-boundary` | None |
 
-These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Public embedding routers are command-disabled, while the package binary must consume an opaque primary-package authority that safe dependency builds cannot construct or acquire.
+These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Public embedding routers are command-disabled, while only the package binary can invoke the two crate-private protected-router builders that accept command enablement.
 
 ## Review record
 
@@ -55,7 +55,7 @@ Such work belongs in a separate threat-modeled capability gate. It must not be d
 
 Profile identifiers must be short stable ASCII-style names no longer than 64 bytes. They must not contain path syntax, whitespace, NUL, shell tokens, or command text. The public schema remains a one-property closed object whose enum is derived from the canonical registry.
 
-Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must also prove that downstream dependency code cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, forge `ServerCommandAuthority`, or acquire primary-package authority. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
+Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must also prove that downstream dependency code cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, or call either crate-private binary protected-router builder. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
 
 ## Executable and argv review
 

@@ -166,9 +166,10 @@ Command execution, Android control, service/package/network mutation, broad stor
 
 Current controls:
 
-- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics of the exact server executable;
-- its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input;
-- empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced;
+- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; only the package binary's crate-private builders can enable it, while every public embedding router hardcodes the command lane disabled;
+- initialization requires an executable regular `current_exe` with exact basename `termux-mcp-server`; later execution uses `/proc/self/exe` so installation-path replacement cannot redirect a profile to another inode;
+- its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input, while crate-private profiles, resolved handles, and raw execution types prevent downstream Rust embeddings from forging or inspecting those values;
+- empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced; independent 5-second/16-KiB/4-KiB supervisor maxima reject oversize configuration before spawn, and capacity grows fallibly only from bytes actually read;
 - arbitrary commands, shells, broader Android/service/package/network mutation, broad inspection, credentials, and unrelated high-impact capabilities are absent from discovery and dispatch;
 - the narrow `create_directory`, `copy_file`, `write_file`, and exact-stream volume request-grant modules are live only for their distinct bound mutations; the separate general capability-token policy module remains inert;
 - public directory-creation, copy, file-write, and Android-volume library APIs expose preview only. Their live preparation and execution are crate-private, preventing an embedding from routing around runtime gates, session binding, response preflight, cancellation ownership, grant consumption, and terminal audit ownership. Public copy target inspection is non-mutating and exists only for exact-binary offline issuance;
