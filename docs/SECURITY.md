@@ -26,6 +26,7 @@ The optional runtime is not a broad host-control surface. After authentication, 
 - `hash_file`
 - `list_directory`
 - `path_metadata`
+- `read_binary_file`
 - `read_file`
 - `search_text`
 - `write_file`
@@ -86,6 +87,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 | `hash_file` | Disabled | One no-follow regular file up to 16 MiB, streaming SHA-256, digest-and-size-only response |
 | `list_directory` | Disabled | Bounded and safe-rooted |
 | `path_metadata` | Disabled | Bounded, content-free, descriptor-relative metadata |
+| `read_binary_file` | Disabled | One no-follow regular file up to 1 MiB, canonical padded base64, fixed complete-response ceiling, no path or host metadata |
 | `read_file` | Disabled | Bounded UTF-8 and safe-rooted |
 | `search_text` | Disabled | Bounded literal locations without content excerpts |
 | `write_file` | Disabled | Payload-bounded, safe-rooted, dry-run by default |
@@ -136,7 +138,7 @@ The default safe root is deliberately narrow:
 
 Broad shared-storage roots such as `/storage/emulated/0` and `/sdcard` are not defaults. Empty safe-root lists or entries, relative roots, and filesystem root `/` are rejected during configuration validation. Safe-root entries are not trimmed: whitespace is path data and a value that becomes relative because of leading whitespace fails closed.
 
-`create_directory`, `copy_file`, `hash_file`, `list_directory`, `path_metadata`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview; explicit `dry_run:false` selects mutation but the independent runtime gate and exact request grant still must authorize it. The runtime validates the absent descriptor-relative target before matching the grant, atomically consumes the grant immediately before `mkdirat`, publishes fixed mode `0700` without replacement, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent safe-rooted destination, defaults to preview, publishes mode `0600` without replacement, returns no content, and preflights its 16 KiB response. File hashing streams arbitrary bytes from one regular descriptor up to 16 MiB, returns only lowercase SHA-256 and bytes hashed, preflights its 16 KiB response before reading, and never records digest/path/content in audits. Directory listings are deterministic and response bounded. Metadata is content-free; reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked; successful parent sync defines the crash-durability boundary.
+`create_directory`, `copy_file`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_file`, `search_text`, and `write_file` are response or payload bounded. Directory creation defaults to preview; explicit `dry_run:false` selects mutation but the independent runtime gate and exact request grant still must authorize it. The runtime validates the absent descriptor-relative target before matching the grant, atomically consumes the grant immediately before `mkdirat`, publishes fixed mode `0700` without replacement, and caps the complete response at 16 KiB. File copy accepts arbitrary bytes from one regular source up to 1 MiB, requires an absent safe-rooted destination, defaults to preview, publishes mode `0600` without replacement, returns no content, and preflights its 16 KiB response. File hashing streams arbitrary bytes from one regular descriptor up to 16 MiB, returns only lowercase SHA-256 and bytes hashed, preflights its 16 KiB response before reading, and never records digest/path/content in audits. Binary read accepts arbitrary bytes from one regular descriptor up to 1 MiB, returns canonical padded base64 and fixed size/limit metadata, preflights its 1,507,328-byte response before file access, and never records path/content/file identity in audits. Directory listings are deterministic and response bounded. Metadata is content-free; text reads accept at most 1 MiB of valid UTF-8; search returns only bounded locations. `write_file` remains dry-run first and payload bounded. Mutation cleanup is descriptor-relative and identity-checked; successful parent sync defines the crash-durability boundary.
 
 Read-only metadata tools must not expose environment values, raw secrets, persistent device identifiers, global process inventories, unrelated service state, or command output.
 

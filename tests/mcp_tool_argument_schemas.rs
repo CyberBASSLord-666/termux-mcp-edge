@@ -118,6 +118,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
         ("hash_file", "hash_file requires a path argument."),
         ("list_directory", "list_directory requires a path argument."),
         ("path_metadata", "path_metadata requires a path argument."),
+        (
+            "read_binary_file",
+            "read_binary_file requires a path argument.",
+        ),
         ("read_file", "read_file requires a path argument."),
         (
             "search_text",
@@ -238,6 +242,11 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             json!({"path": source.to_string_lossy()}),
         ),
         (
+            "binary-read-minimal-and-full",
+            "read_binary_file",
+            json!({"path": source.to_string_lossy()}),
+        ),
+        (
             "read-minimal-and-full",
             "read_file",
             json!({"path": source.to_string_lossy()}),
@@ -333,6 +342,10 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
         (
+            "read_binary_file",
+            json!({"path": source.to_string_lossy(), "unexpected": true}),
+        ),
+        (
             "read_file",
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
@@ -385,6 +398,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "hash_file",
         "list_directory",
         "path_metadata",
+        "read_binary_file",
         "read_file",
         "search_text",
         "write_file",
@@ -445,6 +459,10 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
             json!({"path": root.path().to_string_lossy(), "max_depth": "5"}),
         ),
         ("path_metadata", json!({"path": [source.to_string_lossy()]})),
+        (
+            "read_binary_file",
+            json!({"path": [source.to_string_lossy()]}),
+        ),
         ("read_file", json!({"path": [source.to_string_lossy()]})),
         (
             "search_text",

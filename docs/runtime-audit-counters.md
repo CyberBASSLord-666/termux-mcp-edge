@@ -15,6 +15,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `hash_file`
 - `list_directory`
 - `path_metadata`
+- `read_binary_file`
 - `read_file`
 - `search_text`
 - `write_file`
@@ -23,7 +24,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/reads/search/copy/hash, and dry-run-by-default mutation. Directory mutation is additionally default-disabled and request-grant gated. Its counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target digests, timestamps, or replay state. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
+Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/copy/hash, and dry-run-by-default mutation. Directory mutation is additionally default-disabled and request-grant gated. Its counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target digests, timestamps, or replay state. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Binary-read audit counters retain neither path, filename, raw/base64 content, size, file identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -143,12 +144,17 @@ Current runtime/status/filesystem examples include:
 - `safe_root_directory_created`
 - `safe_root_file_copied`
 - `safe_root_file_hashed`
+- `safe_root_binary_read`
 - `filesystem_copy_source_not_found`
 - `filesystem_copy_parent_not_found`
 - `filesystem_copy_same_path`
 - `filesystem_copy_source_type_unsupported`
 - `filesystem_copy_source_too_large`
 - `filesystem_copy_failed`
+- `filesystem_binary_read_target_not_found`
+- `filesystem_binary_read_type_unsupported`
+- `filesystem_binary_read_size_limit_exceeded`
+- `filesystem_binary_read_failed`
 - `filesystem_parent_not_found`
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`

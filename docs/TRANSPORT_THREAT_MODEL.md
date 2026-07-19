@@ -14,7 +14,7 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - strict single-message JSON-RPC request, notification, and response classification;
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
-- the twelve-tool baseline allowlist, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
+- the thirteen-tool baseline allowlist, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.
@@ -94,7 +94,7 @@ Current controls:
 - bounded directory-creation responses, file reads, write payloads, directory depth, and entry count;
 - a separate two-permit non-queueing semaphore plus fixed deadlines and stream ceilings for command diagnostics.
 
-Deterministic filesystem response-byte budgets and single-content serialization landed through #206. One-directory creation has a 16 KiB full-response ceiling. One-file copy has a 1 MiB source ceiling, a pre-mutation 16 KiB full-response ceiling, a fixed-size content-free result, and no subprocess or caller-selected resource controls. Single-object metadata has a 16 KiB full-response ceiling and never reads content or returns host identifiers. Literal search adds fixed query, traversal, byte, match, and response ceilings and returns no content. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
+Deterministic filesystem response-byte budgets and single-content serialization landed through #206. One-directory creation has a 16 KiB full-response ceiling. One-file copy has a 1 MiB source ceiling, a pre-mutation 16 KiB full-response ceiling, a fixed-size content-free result, and no subprocess or caller-selected resource controls. Single-object metadata has a 16 KiB full-response ceiling and never reads content or returns host identifiers. Binary read has a 1 MiB raw ceiling, an exact 1,398,104-byte canonical base64 maximum, and a pre-access 1,507,328-byte complete-response ceiling that includes the actual JSON-RPC ID. Literal search adds fixed query, traversal, byte, match, and response ceilings and returns no content. Any future SSE/replay implementation must independently bound connections, queues, event IDs, replay buffers, and reconnect behavior before exposure.
 
 ### Filesystem escape and mutation
 
@@ -105,14 +105,14 @@ Current controls:
 - absolute dedicated safe roots with no filesystem-root default;
 - rejection of explicit parent traversal, NUL bytes, unsafe missing parents, and symlink components;
 - safe-root descriptor anchoring and component-by-component no-follow descendant resolution;
-- bounded deterministic UTF-8 reads and directory traversal;
+- bounded deterministic UTF-8 and canonical base64 reads plus directory traversal;
 - dry-run-by-default directory/file mutation and explicit `dry_run:false`;
 - a separately default-disabled directory-mutation gate plus one 60-second, single-use HMAC grant bound to the static principal, canonical session, exact root identity, normalized target, and mutating posture;
 - confinement and response preflight before grant matching, atomic JTI consumption immediately before the first mutation attempt, concurrent replay exclusion, and retained consumption after downstream failure;
 - one-directory creation with existing parents, fixed mode `0700`, unpredictable staging, atomic no-replace publication, descriptor sync, and identity-checked cleanup;
 - payload-bounded descriptor-relative mode-0600 temporary files, file sync, atomic rename, and parent-directory sync.
 
-The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, #247, #248, and #203. Any future filesystem expansion must preserve these descriptor, response, authorization, and deployment boundaries.
+The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, #247, #248, #261, #262, and #203. Any future filesystem expansion must preserve these descriptor, response, authorization, and deployment boundaries.
 
 ### Request-grant theft, replay, and confused deputy use
 

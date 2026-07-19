@@ -55,7 +55,7 @@ if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPOSITORY_URL="https://github.com/CyberBASSLord-666/termux-mcp-edge.git"
-HARNESS_VERSION="4"
+HARNESS_VERSION="5"
 HEAD_LABEL="${EXPECTED_HEAD:0:12}"
 SMOKE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_ROOT="$HOME/termux-mcp-device-smoke-$HEAD_LABEL-$SMOKE_ID"
@@ -353,7 +353,7 @@ issue_create_directory_grant() {
 
 protocol_smoke() {
   local label="$1"
-  local body headers status payload target outside oversized copy_source copy_target copy_bytes directory_target hash_digest
+  local body headers status payload target outside oversized copy_source copy_target copy_bytes directory_target hash_digest binary_read_target binary_read_expected
   headers="$LOG_DIR/$label-initialize.headers"
   body="$LOG_DIR/$label-response.json"
 
@@ -390,14 +390,15 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_file","search_text","write_file"]'
   assert_json "${label}_create_directory_grant_discovery" "$body" '.result.tools | map(select(.name == "create_directory"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant"))'
   assert_json "${label}_hash_file_schema" "$body" '.result.tools | map(select(.name == "hash_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
+  assert_json "${label}_read_binary_file_schema" "$body" '.result.tools | map(select(.name == "read_binary_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
 
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_runtime_status_http" "$status" 200
-  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
 
   payload="$(jq -cn --arg path "$SAFE_ROOT" '{"jsonrpc":"2.0","id":"list-directory","method":"tools/call","params":{"name":"list_directory","arguments":{"path":$path,"max_depth":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -440,6 +441,28 @@ protocol_smoke() {
     fail "hash_file response reflected file content or a path"
   fi
   log "PASS ${label}_hash_file=sha256"
+
+  binary_read_target="$SAFE_ROOT/binary-read.bin"
+  printf '\000\377\200\141\012\001\376' >"$binary_read_target" || fail "could not create the binary-read device-smoke fixture"
+  binary_read_expected="$(base64 <"$binary_read_target" | tr -d '\n')" || fail "could not encode the binary-read device-smoke fixture"
+  payload="$(jq -cn --arg path "$binary_read_target" '{"jsonrpc":"2.0","id":"read-binary-file","method":"tools/call","params":{"name":"read_binary_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_read_binary_file_http" "$status" 200
+  jq -e --arg data "$binary_read_expected" '
+    .result.structuredContent as $binary
+    | ($binary | keys) == ["data","encoding","maxFileBytes","maxResponseBytes","sizeBytes"]
+      and $binary.encoding == "base64"
+      and $binary.data == $data
+      and $binary.sizeBytes == 7
+      and $binary.maxFileBytes == 1048576
+      and $binary.maxResponseBytes == 1507328
+  ' "$body" >/dev/null || fail "${label}_read_binary_file_result JSON assertion failed"
+  (( $(wc -c <"$body") <= 1507328 )) || fail "read_binary_file response exceeded its full-response ceiling"
+  if grep -Eq 'binary-read\.bin|inode|device|uid|gid|mode|accessTime|termux-mcp-device-smoke-' "$body"; then
+    fail "read_binary_file response reflected a path or denied metadata"
+  fi
+  rm -f -- "$binary_read_target" || fail "could not remove the binary-read device-smoke fixture"
+  log "PASS ${label}_read_binary_file=base64"
 
   payload="$(jq -cn --arg path "$SAFE_ROOT" --arg query device-smoke-visible '{"jsonrpc":"2.0","id":"search-text","method":"tools/call","params":{"name":"search_text","arguments":{"path":$path,"query":$query,"max_depth":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -612,12 +635,12 @@ volume_control_disabled_smoke() {
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_tools_http "$status" 200
-  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"]'
+  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_file","search_text","write_file"]'
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_status_http "$status" 200
-  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
