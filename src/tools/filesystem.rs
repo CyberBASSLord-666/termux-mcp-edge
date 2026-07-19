@@ -4486,22 +4486,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_write_publications_share_one_process_wide_lock() {
+    async fn independently_granted_create_and_write_same_target_serialize_in_both_orders() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        fn assert_no_mutation_staging_artifacts(root: &Path) {
+            assert!(std::fs::read_dir(root).unwrap().all(|entry| {
+                let name = entry.unwrap().file_name();
+                let name = name.to_string_lossy();
+                !name.starts_with(".termux-mcp-create-directory-")
+                    && !name.starts_with(".termux-mcp-write-file-")
+            }));
+        }
+
         let root = tempfile::tempdir().unwrap();
         let create_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let write_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let directory = root.path().join("serialized-create");
-        let file = root.path().join("serialized-write.txt");
+        let target = root.path().join("serialized-create-write-target");
+        let create_authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let write_authority =
+            WriteFileGrantAuthority::from_hex_key("test-key-1", TEST_KEY, "test-static-principal")
+                .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = unix_timestamp_seconds();
+
+        // Create wins the first race. The independently granted write was
+        // prepared against the same absent final name and must fail stale
+        // posture revalidation without reaching its authorization callback.
+        let first_write_content = "write-after-create-posture-restored";
         let prepared_create = create_tools
-            .prepare_create_directory_mutation(directory.to_string_lossy().to_string())
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
             .await
             .unwrap();
         let prepared_write = write_tools
             .prepare_write_file_mutation(
-                file.to_string_lossy().to_string(),
-                "serialized-content".to_owned(),
+                target.to_string_lossy().to_string(),
+                first_write_content.to_owned(),
             )
             .await
+            .unwrap();
+        let create_token = create_authority
+            .issue_at(&session_id, &prepared_create.grant_target, now)
+            .unwrap();
+        let write_token = write_authority
+            .issue_at(&session_id, &prepared_write.grant_target, now)
             .unwrap();
         let write_authorized = Arc::new(AtomicBool::new(false));
         let (create_entered_tx, create_entered_rx) = mpsc::channel();
@@ -4509,40 +4542,194 @@ mod tests {
         let (write_started_tx, write_started_rx) = mpsc::channel();
 
         let (create_result, write_result) = std::thread::scope(|scope| {
+            let winner_authority = create_authority.clone();
+            let winner_session = session_id.clone();
+            let winner_token = create_token.clone();
             let create_handle = scope.spawn(move || {
-                prepared_create.execute_authorized(|_| {
+                prepared_create.execute_authorized(|grant_target| {
                     create_entered_tx.send(()).unwrap();
                     release_create_rx.recv().unwrap();
-                    Ok(())
+                    winner_authority.consume_at(
+                        Some(&winner_token),
+                        &winner_session,
+                        grant_target,
+                        now,
+                    )
                 })
             });
 
             create_entered_rx.recv().unwrap();
+            assert!(matches!(
+                FILESYSTEM_MUTATION_LOCK.try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+            let loser_authority = write_authority.clone();
+            let loser_session = session_id.clone();
+            let loser_token = write_token.clone();
             let write_authorized_for_worker = Arc::clone(&write_authorized);
             let write_handle = scope.spawn(move || {
                 write_started_tx.send(()).unwrap();
-                prepared_write.execute_authorized(|_| {
+                prepared_write.execute_authorized(|grant_target| {
                     write_authorized_for_worker.store(true, Ordering::SeqCst);
-                    Ok(())
+                    loser_authority.consume_at(
+                        Some(&loser_token),
+                        &loser_session,
+                        grant_target,
+                        now,
+                    )
                 })
             });
 
             write_started_rx.recv().unwrap();
             std::thread::sleep(Duration::from_millis(50));
-            assert!(!write_authorized.load(Ordering::SeqCst));
+            let write_reached_authorization_while_create_held_lock =
+                write_authorized.load(Ordering::SeqCst);
             release_create_tx.send(()).unwrap();
 
-            (create_handle.join().unwrap(), write_handle.join().unwrap())
+            let results = (create_handle.join().unwrap(), write_handle.join().unwrap());
+            assert!(!write_reached_authorization_while_create_held_lock);
+            results
         });
 
         assert!(create_result.is_ok());
+        assert!(matches!(
+            write_result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!write_authorized.load(Ordering::SeqCst));
+        assert!(target.is_dir());
+        assert_no_mutation_staging_artifacts(root.path());
+
+        std::fs::remove_dir(&target).unwrap();
+        let write_retry = write_tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                first_write_content.to_owned(),
+            )
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                write_authority.consume_at(
+                    Some(&write_token),
+                    &session_id,
+                    grant_target,
+                    now,
+                )
+            });
+        assert!(write_retry.is_ok());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), first_write_content);
+        assert_no_mutation_staging_artifacts(root.path());
+        std::fs::remove_file(&target).unwrap();
+
+        // Write wins the second race at the same absent final name. The
+        // independently granted create must likewise fail before authorization
+        // and remain reusable after the file posture is removed.
+        let second_now = now + 1;
+        let winning_write_content = "write-wins-shared-lock-race";
+        let prepared_create = create_tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let prepared_write = write_tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                winning_write_content.to_owned(),
+            )
+            .await
+            .unwrap();
+        let create_token = create_authority
+            .issue_at(&session_id, &prepared_create.grant_target, second_now)
+            .unwrap();
+        let write_token = write_authority
+            .issue_at(&session_id, &prepared_write.grant_target, second_now)
+            .unwrap();
+        let create_authorized = Arc::new(AtomicBool::new(false));
+        let (write_entered_tx, write_entered_rx) = mpsc::channel();
+        let (release_write_tx, release_write_rx) = mpsc::channel();
+        let (create_started_tx, create_started_rx) = mpsc::channel();
+
+        let (write_result, create_result) = std::thread::scope(|scope| {
+            let winner_authority = write_authority.clone();
+            let winner_session = session_id.clone();
+            let winner_token = write_token.clone();
+            let write_handle = scope.spawn(move || {
+                prepared_write.execute_authorized(|grant_target| {
+                    write_entered_tx.send(()).unwrap();
+                    release_write_rx.recv().unwrap();
+                    winner_authority.consume_at(
+                        Some(&winner_token),
+                        &winner_session,
+                        grant_target,
+                        second_now,
+                    )
+                })
+            });
+
+            write_entered_rx.recv().unwrap();
+            assert!(matches!(
+                FILESYSTEM_MUTATION_LOCK.try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+            let loser_authority = create_authority.clone();
+            let loser_session = session_id.clone();
+            let loser_token = create_token.clone();
+            let create_authorized_for_worker = Arc::clone(&create_authorized);
+            let create_handle = scope.spawn(move || {
+                create_started_tx.send(()).unwrap();
+                prepared_create.execute_authorized(|grant_target| {
+                    create_authorized_for_worker.store(true, Ordering::SeqCst);
+                    loser_authority.consume_at(
+                        Some(&loser_token),
+                        &loser_session,
+                        grant_target,
+                        second_now,
+                    )
+                })
+            });
+
+            create_started_rx.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            let create_reached_authorization_while_write_held_lock =
+                create_authorized.load(Ordering::SeqCst);
+            release_write_tx.send(()).unwrap();
+
+            let results = (write_handle.join().unwrap(), create_handle.join().unwrap());
+            assert!(!create_reached_authorization_while_write_held_lock);
+            results
+        });
+
         assert!(write_result.is_ok());
-        assert!(write_authorized.load(Ordering::SeqCst));
-        assert!(directory.is_dir());
+        assert!(matches!(
+            create_result,
+            Err(AuthorizedCreateDirectoryError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!create_authorized.load(Ordering::SeqCst));
         assert_eq!(
-            std::fs::read_to_string(file).unwrap(),
-            "serialized-content"
+            std::fs::read_to_string(&target).unwrap(),
+            winning_write_content
         );
+        assert_no_mutation_staging_artifacts(root.path());
+
+        std::fs::remove_file(&target).unwrap();
+        let create_retry = create_tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                create_authority.consume_at(
+                    Some(&create_token),
+                    &session_id,
+                    grant_target,
+                    second_now,
+                )
+            });
+        assert!(create_retry.is_ok());
+        assert!(target.is_dir());
+        assert_no_mutation_staging_artifacts(root.path());
     }
 
     #[tokio::test]

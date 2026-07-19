@@ -378,6 +378,7 @@ initialize_session() {
 
 issue_grant() {
   local stream="$1" level="$2" output="$3"
+  local version key_id payload_hex signature extra
   : >"$output"; chmod 600 "$output"
   MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_CONFIG" \
   MCP__CAPABILITY__SESSION_ID="$SESSION_ID" \
@@ -385,6 +386,10 @@ issue_grant() {
   MCP__CAPABILITY__VOLUME_LEVEL="$level" \
     "$ARTIFACT" --issue-android-volume-grant >"$output" 2>/dev/null || fail grant_issuance_failed
   [[ "$(wc -l <"$output")" == 1 ]] || fail grant_line_count_invalid
+  IFS='.' read -r version key_id payload_hex signature extra <"$output"
+  [[ "$version" == v1 && -n "$key_id" && ${#payload_hex} -eq 182 && ${#signature} -eq 64 && -z "$extra" ]] || fail grant_wire_shape_invalid
+  [[ "$payload_hex" =~ ^[0-9a-f]+$ && "$signature" =~ ^[0-9a-f]+$ ]] || fail grant_wire_encoding_invalid
+  [[ "${payload_hex:128:2}" == 03 ]] || fail grant_capability_code_invalid
 }
 
 log 'validating disabled runtime posture'

@@ -41,8 +41,7 @@ fn filesystem_grants_are_pairwise_isolated_and_wrong_use_does_not_consume() {
             content_sha256(b"isolated content"),
         )
         .unwrap();
-    let directory =
-        CreateDirectoryGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
+    let directory = CreateDirectoryGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
     let write = WriteFileGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
     let directory_grant = directory.issue_at(SESSION, &directory_target, NOW).unwrap();
     let write_grant = write.issue_at(SESSION, &write_target, NOW).unwrap();
@@ -90,10 +89,8 @@ fn all_live_grant_families_reject_every_wrong_family_before_consumption() {
             content_sha256(b"all-family content"),
         )
         .unwrap();
-    let volume_target =
-        AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
-    let directory =
-        CreateDirectoryGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
+    let volume_target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+    let directory = CreateDirectoryGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
     let write = WriteFileGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
     let volume = AndroidVolumeGrantAuthority::from_hex_key(KEY_ID, KEY, PRINCIPAL).unwrap();
     let directory_grant = directory.issue_at(SESSION, &directory_target, NOW).unwrap();

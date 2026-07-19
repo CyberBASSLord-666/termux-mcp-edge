@@ -296,6 +296,9 @@ const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 const FILESYSTEM_MUTATION_COMMIT_PENDING: u8 = 0;
 const FILESYSTEM_MUTATION_COMMIT_WORKER_OWNED: u8 = 1;
 const FILESYSTEM_MUTATION_COMMIT_REQUEST_CANCELLED: u8 = 2;
+const MUTATION_AUDIT_PENDING: u8 = 0;
+const MUTATION_AUDIT_COMMITTED: u8 = 1;
+const MUTATION_AUDIT_FINISHED: u8 = 2;
 
 const COMMAND_EXECUTION_ERROR: &str = "command_profile_execution_failed";
 
@@ -303,6 +306,172 @@ const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the requi
 const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised input schema.";
 
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
+
+#[derive(Clone, Copy)]
+struct MutationAuditContract {
+    tool_name: &'static str,
+    gate_name: &'static str,
+    fallback_reason: &'static str,
+}
+
+struct MutationAuditState {
+    counters: SharedAuditCounters,
+    contract: MutationAuditContract,
+    state: AtomicU8,
+}
+
+/// Audit ownership before a mutation crosses its irreversible authorization
+/// boundary. Clones are observation handles only: dropping them records
+/// nothing, and exactly one transition can publish a terminal event.
+#[derive(Clone)]
+struct PendingMutationAudit {
+    inner: Arc<MutationAuditState>,
+}
+
+impl PendingMutationAudit {
+    fn new(counters: &SharedAuditCounters, contract: MutationAuditContract) -> Self {
+        Self {
+            inner: Arc::new(MutationAuditState {
+                counters: Arc::clone(counters),
+                contract,
+                state: AtomicU8::new(MUTATION_AUDIT_PENDING),
+            }),
+        }
+    }
+
+    fn commit(self) -> CommittedMutationAudit {
+        let previous = self
+            .inner
+            .state
+            .compare_exchange(
+                MUTATION_AUDIT_PENDING,
+                MUTATION_AUDIT_COMMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .expect("pending mutation audit can be committed only once");
+        debug_assert_eq!(previous, MUTATION_AUDIT_PENDING);
+        CommittedMutationAudit { inner: self.inner }
+    }
+
+    /// Finish a result that failed before commit while the request handler is
+    /// still alive. Returns false when the worker already owns or published the
+    /// terminal event.
+    fn finish_precommit(&self, decision: AuditDecision, reason_code: &'static str) -> bool {
+        if self
+            .inner
+            .state
+            .compare_exchange(
+                MUTATION_AUDIT_PENDING,
+                MUTATION_AUDIT_FINISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.inner.record(decision, reason_code);
+        true
+    }
+}
+
+/// Sole terminal-audit owner after a mutation commits. Normal completion
+/// selects the precise outcome; unwind or task cancellation publishes the
+/// family-specific stable failure exactly once from `Drop`.
+struct CommittedMutationAudit {
+    inner: Arc<MutationAuditState>,
+}
+
+impl CommittedMutationAudit {
+    fn finish(self, decision: AuditDecision, reason_code: &'static str) {
+        if self
+            .inner
+            .state
+            .compare_exchange(
+                MUTATION_AUDIT_COMMITTED,
+                MUTATION_AUDIT_FINISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.inner.record(decision, reason_code);
+        }
+    }
+}
+
+impl Drop for CommittedMutationAudit {
+    fn drop(&mut self) {
+        if self
+            .inner
+            .state
+            .compare_exchange(
+                MUTATION_AUDIT_COMMITTED,
+                MUTATION_AUDIT_FINISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.inner
+                .record(AuditDecision::Denied, self.inner.contract.fallback_reason);
+        }
+    }
+}
+
+impl MutationAuditState {
+    fn record(&self, decision: AuditDecision, reason_code: &'static str) {
+        let event = AuditEvent::new(
+            current_unix_seconds(),
+            self.contract.tool_name,
+            self.contract.gate_name,
+            AuditMode::Mutating,
+            decision,
+            reason_code,
+        );
+        record_audit_event(&self.counters, &event);
+    }
+}
+
+struct DetachedMutationResult<T, E> {
+    result: Result<T, E>,
+    committed: bool,
+}
+
+fn create_directory_mutation_audit(counters: &SharedAuditCounters) -> PendingMutationAudit {
+    PendingMutationAudit::new(
+        counters,
+        MutationAuditContract {
+            tool_name: CREATE_DIRECTORY_TOOL,
+            gate_name: FILESYSTEM_WRITE_GATE,
+            fallback_reason: FILESYSTEM_CREATE_FAILED,
+        },
+    )
+}
+
+fn write_file_mutation_audit(counters: &SharedAuditCounters) -> PendingMutationAudit {
+    PendingMutationAudit::new(
+        counters,
+        MutationAuditContract {
+            tool_name: WRITE_FILE_TOOL,
+            gate_name: FILESYSTEM_WRITE_GATE,
+            fallback_reason: FILESYSTEM_WRITE_FAILED,
+        },
+    )
+}
+
+#[cfg(feature = "android-volume-control")]
+fn android_volume_mutation_audit(counters: &SharedAuditCounters) -> PendingMutationAudit {
+    PendingMutationAudit::new(
+        counters,
+        MutationAuditContract {
+            tool_name: SET_ANDROID_VOLUME_TOOL,
+            gate_name: ANDROID_VOLUME_CONTROL_GATE,
+            fallback_reason: AndroidVolumeControlError::WorkerFailed.reason_code(),
+        },
+    )
+}
 
 /// Keeps request cancellation and one detached filesystem mutation worker on
 /// opposite sides of a linearized authorization boundary.
@@ -341,9 +510,10 @@ impl Drop for FilesystemMutationRequestCommitGuard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FilesystemMutationRequestCancelled;
 
-fn claim_filesystem_mutation_commit(
+fn claim_filesystem_mutation_and_audit(
     state: &AtomicU8,
-) -> Result<(), FilesystemMutationRequestCancelled> {
+    pending_audit: PendingMutationAudit,
+) -> Result<CommittedMutationAudit, FilesystemMutationRequestCancelled> {
     state
         .compare_exchange(
             FILESYSTEM_MUTATION_COMMIT_PENDING,
@@ -354,7 +524,8 @@ fn claim_filesystem_mutation_commit(
         .map(|_| ())
         // A cancelled request has no response surface. Keep the detached
         // worker's internal rejection stable and free of grant/path/content.
-        .map_err(|_| FilesystemMutationRequestCancelled)
+        .map_err(|_| FilesystemMutationRequestCancelled)?;
+    Ok(pending_audit.commit())
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2879,7 +3050,7 @@ async fn handle_set_android_volume_call(
                         json!(result),
                     )
                 }
-                Err(error) => volume_control_error_response(id, state, mode, error),
+                Err(error) => volume_control_error_response(id, state, mode, error, true),
             };
         }
 
@@ -2889,7 +3060,7 @@ async fn handle_set_android_volume_call(
             .await
         {
             Ok(prepared) => prepared,
-            Err(error) => return volume_control_error_response(id, state, mode, error),
+            Err(error) => return volume_control_error_response(id, state, mode, error, true),
         };
         let target = match AndroidVolumeGrantTarget::new(stream, args.level) {
             Ok(target) => target,
@@ -2907,6 +3078,8 @@ async fn handle_set_android_volume_call(
             .android_volume_control_authority
             .as_ref()
             .expect("enabled Android volume control owns an authority");
+        let pending_audit = android_volume_mutation_audit(&state.audit_counters);
+        let response_audit = pending_audit.clone();
         if let Err(error) =
             authority.consume_at(capability_grant, session_id, target, current_unix_seconds())
         {
@@ -2918,34 +3091,45 @@ async fn handle_set_android_volume_call(
             );
             return capability_authorization_denied(id, error.reason_code());
         }
+        let committed_audit = pending_audit.commit();
 
         // The prepared operation owns the one mutation permit and is detached
         // from request cancellation. If the HTTP future is dropped after grant
         // consumption, the fixed command, verification, and rollback sequence
         // still runs to completion under its own strict process deadlines.
-        let worker = tokio::spawn(prepared.execute());
-        match worker.await {
-            Ok(Ok(result)) => {
-                record_volume_control_decision(
-                    &state.audit_counters,
-                    mode,
+        let worker = tokio::spawn(async move {
+            let result = prepared.execute().await;
+            let (decision, reason_code) = match &result {
+                Ok(_) => (
                     AuditDecision::Allowed,
                     ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED,
+                ),
+                Err(error) => (AuditDecision::Denied, error.reason_code()),
+            };
+            committed_audit.finish(decision, reason_code);
+            result
+        });
+        match worker.await {
+            Ok(Ok(result)) => ok_result(
+                id,
+                "set_android_volume: exact stream mutation completed and was verified."
+                    .to_owned(),
+                json!(result),
+            ),
+            Ok(Err(error)) => volume_control_error_response(id, state, mode, error, false),
+            Err(_error) => {
+                response_audit.finish_precommit(
+                    AuditDecision::Denied,
+                    AndroidVolumeControlError::WorkerFailed.reason_code(),
                 );
-                ok_result(
+                volume_control_error_response(
                     id,
-                    "set_android_volume: exact stream mutation completed and was verified."
-                        .to_owned(),
-                    json!(result),
+                    state,
+                    mode,
+                    AndroidVolumeControlError::WorkerFailed,
+                    false,
                 )
             }
-            Ok(Err(error)) => volume_control_error_response(id, state, mode, error),
-            Err(_error) => volume_control_error_response(
-                id,
-                state,
-                mode,
-                AndroidVolumeControlError::WorkerFailed,
-            ),
         }
     }
 }
@@ -2956,14 +3140,17 @@ fn volume_control_error_response(
     state: &McpTransportState,
     mode: AuditMode,
     error: AndroidVolumeControlError,
+    record_audit: bool,
 ) -> Response {
     let reason_code = error.reason_code();
-    record_volume_control_decision(
-        &state.audit_counters,
-        mode,
-        AuditDecision::Denied,
-        reason_code,
-    );
+    if record_audit {
+        record_volume_control_decision(
+            &state.audit_counters,
+            mode,
+            AuditDecision::Denied,
+            reason_code,
+        );
+    }
     tool_error_result(
         id,
         SET_ANDROID_VOLUME_TOOL,
@@ -4435,7 +4622,9 @@ async fn handle_create_directory_call(
             .await
         {
             Ok(prepared) => prepared,
-            Err(error) => return create_directory_filesystem_error(id, audit_counters, mode, error),
+            Err(error) => {
+                return create_directory_filesystem_error(id, audit_counters, mode, error, true)
+            }
         };
         let authority = state
             .create_directory_authority
@@ -4445,41 +4634,70 @@ async fn handle_create_directory_call(
         let capability_grant = capability_grant.map(str::to_owned);
         let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
         let worker_commit_state = request_commit_guard.worker_state();
+        let pending_audit = create_directory_mutation_audit(audit_counters);
+        let response_audit = pending_audit.clone();
         let worker_result = tokio::task::spawn_blocking(move || {
-            prepared.execute_authorized(|target| {
+            let mut pending_audit = Some(pending_audit);
+            let mut committed_audit = None;
+            let result = prepared.execute_authorized(|target| {
                 let now = current_unix_seconds();
                 // This CAS is the request-cancellation commit point. It must
                 // remain immediately before grant consumption: cancellation
                 // wins without consuming or mutating, while a worker that
-                // wins owns the complete publication/verification/cleanup path.
-                claim_filesystem_mutation_commit(&worker_commit_state)
-                    .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                // wins owns publication, verification, cleanup, and terminal
+                // audit publication.
+                let audit = claim_filesystem_mutation_and_audit(
+                    &worker_commit_state,
+                    pending_audit
+                        .take()
+                        .expect("create-directory authorization runs once"),
+                )
+                .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                committed_audit = Some(audit);
                 authority.consume_at(
                     capability_grant.as_deref(),
                     &session_id,
                     target,
                     now,
                 )
-            })
+            });
+            let committed = committed_audit.is_some();
+            if let Some(audit) = committed_audit {
+                let (decision, reason_code) = create_directory_mutation_outcome(&result);
+                audit.finish(decision, reason_code);
+            }
+            DetachedMutationResult { result, committed }
         })
         .await;
         drop(request_commit_guard);
         match worker_result {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(AuthorizedCreateDirectoryError::Authorization(error))) => {
-                record_filesystem_denied(
-                    audit_counters,
-                    CREATE_DIRECTORY_TOOL,
-                    FILESYSTEM_WRITE_GATE,
-                    mode,
-                    error.reason_code(),
-                );
-                return capability_authorization_denied(id, error.reason_code());
+            Ok(worker_result) => {
+                if !worker_result.committed
+                    && !matches!(
+                        &worker_result.result,
+                        Err(AuthorizedCreateDirectoryError::Authorization(
+                            CreateDirectoryGrantError::StateUnavailable
+                        ))
+                    )
+                {
+                    let (decision, reason_code) =
+                        create_directory_mutation_outcome(&worker_result.result);
+                    response_audit.finish_precommit(decision, reason_code);
+                }
+                match worker_result.result {
+                    Ok(result) => Ok(result),
+                    Err(AuthorizedCreateDirectoryError::Authorization(error)) => {
+                        return capability_authorization_denied(id, error.reason_code());
+                    }
+                    Err(AuthorizedCreateDirectoryError::Filesystem(error)) => Err(error),
+                }
             }
-            Ok(Err(AuthorizedCreateDirectoryError::Filesystem(error))) => Err(error),
-            Err(_error) => Err(AppError::Io(std::io::Error::other(
-                "create directory worker failed",
-            ))),
+            Err(_error) => {
+                response_audit.finish_precommit(AuditDecision::Denied, FILESYSTEM_CREATE_FAILED);
+                Err(AppError::Io(std::io::Error::other(
+                    "create directory worker failed",
+                )))
+            }
         }
     };
 
@@ -4492,33 +4710,63 @@ async fn handle_create_directory_call(
                 json!(result),
                 MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
             ) else {
-                record_filesystem_denied(
-                    audit_counters,
-                    CREATE_DIRECTORY_TOOL,
-                    FILESYSTEM_WRITE_GATE,
-                    mode,
-                    FILESYSTEM_RESPONSE_TOO_LARGE,
-                );
+                if dry_run {
+                    record_filesystem_denied(
+                        audit_counters,
+                        CREATE_DIRECTORY_TOOL,
+                        FILESYSTEM_WRITE_GATE,
+                        mode,
+                        FILESYSTEM_RESPONSE_TOO_LARGE,
+                    );
+                }
                 return bounded_payload_too_large(
                     error_id,
                     "Directory creation response exceeds the staged response byte limit.",
                     MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
                 );
             };
-            record_filesystem_allowed(
-                audit_counters,
-                CREATE_DIRECTORY_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                if dry_run {
-                    FILESYSTEM_DRY_RUN_ALLOWED
-                } else {
-                    FILESYSTEM_CREATE_ALLOWED
-                },
-            );
+            if dry_run {
+                record_filesystem_allowed(
+                    audit_counters,
+                    CREATE_DIRECTORY_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_DRY_RUN_ALLOWED,
+                );
+            }
             response
         }
-        Err(error) => create_directory_filesystem_error(id, audit_counters, mode, error),
+        Err(error) => {
+            create_directory_filesystem_error(id, audit_counters, mode, error, dry_run)
+        }
+    }
+}
+
+fn create_directory_filesystem_reason(error: &AppError) -> &'static str {
+    match error {
+        AppError::PathTraversal { .. } => FILESYSTEM_SAFE_ROOT_REJECTED,
+        AppError::PathNotFound => FILESYSTEM_CREATE_PARENT_NOT_FOUND,
+        AppError::PathAlreadyExists => FILESYSTEM_CREATE_EXISTS,
+        _ => FILESYSTEM_CREATE_FAILED,
+    }
+}
+
+fn create_directory_mutation_outcome<T>(
+    result: &Result<T, AuthorizedCreateDirectoryError>,
+) -> (AuditDecision, &'static str) {
+    match result {
+        Ok(_) => (
+            AuditDecision::Allowed,
+            FILESYSTEM_CREATE_ALLOWED,
+        ),
+        Err(AuthorizedCreateDirectoryError::Authorization(error)) => (
+            AuditDecision::Denied,
+            error.reason_code(),
+        ),
+        Err(AuthorizedCreateDirectoryError::Filesystem(error)) => (
+            AuditDecision::Denied,
+            create_directory_filesystem_reason(error),
+        ),
     }
 }
 
@@ -4528,49 +4776,31 @@ fn create_directory_filesystem_error(
     audit_counters: &SharedAuditCounters,
     mode: AuditMode,
     error: AppError,
+    record_audit: bool,
 ) -> Response {
+    if record_audit {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            create_directory_filesystem_reason(&error),
+        );
+    }
     match error {
         AppError::PathTraversal { .. } => {
-            record_filesystem_denied(
-                audit_counters,
-                CREATE_DIRECTORY_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_SAFE_ROOT_REJECTED,
-            );
             invalid_params(
                 id,
                 "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
             )
         }
         AppError::PathNotFound => {
-            record_filesystem_denied(
-                audit_counters,
-                CREATE_DIRECTORY_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_CREATE_PARENT_NOT_FOUND,
-            );
             invalid_params(id, "Filesystem parent directory does not exist.")
         }
         AppError::PathAlreadyExists => {
-            record_filesystem_denied(
-                audit_counters,
-                CREATE_DIRECTORY_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_CREATE_EXISTS,
-            );
             invalid_params(id, "Filesystem destination already exists.")
         }
         _error => {
-            record_filesystem_denied(
-                audit_counters,
-                CREATE_DIRECTORY_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_CREATE_FAILED,
-            );
             internal_error(id, "Filesystem directory creation failed.")
         }
     }
@@ -5375,7 +5605,9 @@ async fn handle_write_file_call(
             .await
         {
             Ok(prepared) => prepared,
-            Err(error) => return write_file_filesystem_error(id, audit_counters, mode, error),
+            Err(error) => {
+                return write_file_filesystem_error(id, audit_counters, mode, error, true)
+            }
         };
         let authority = state
             .write_file_authority
@@ -5385,57 +5617,118 @@ async fn handle_write_file_call(
         let capability_grant = capability_grant.map(str::to_owned);
         let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
         let worker_commit_state = request_commit_guard.worker_state();
+        let pending_audit = write_file_mutation_audit(audit_counters);
+        let response_audit = pending_audit.clone();
         let worker_result = tokio::task::spawn_blocking(move || {
-            prepared.execute_authorized(|target| {
+            let mut pending_audit = Some(pending_audit);
+            let mut committed_audit = None;
+            let result = prepared.execute_authorized(|target| {
                 let now = current_unix_seconds();
                 // This CAS is the request-cancellation commit point. It must
                 // remain immediately before grant consumption: cancellation
                 // wins without consuming or mutating, while a worker that
-                // wins owns the complete mutation/verification/cleanup path.
-                claim_filesystem_mutation_commit(&worker_commit_state)
-                    .map_err(|_| WriteFileGrantError::StateUnavailable)?;
+                // wins owns mutation, verification, cleanup, and terminal
+                // audit publication.
+                let audit = claim_filesystem_mutation_and_audit(
+                    &worker_commit_state,
+                    pending_audit
+                        .take()
+                        .expect("write-file authorization runs once"),
+                )
+                .map_err(|_| WriteFileGrantError::StateUnavailable)?;
+                committed_audit = Some(audit);
                 authority.consume_at(
                     capability_grant.as_deref(),
                     &session_id,
                     target,
                     now,
                 )
-            })
+            });
+            let committed = committed_audit.is_some();
+            if let Some(audit) = committed_audit {
+                let (decision, reason_code) = write_file_mutation_outcome(&result);
+                audit.finish(decision, reason_code);
+            }
+            DetachedMutationResult { result, committed }
         })
         .await;
         drop(request_commit_guard);
         match worker_result {
-            Ok(Ok(result)) => Ok(result.message),
-            Ok(Err(AuthorizedWriteFileError::Authorization(error))) => {
-                record_filesystem_denied(
-                    audit_counters,
-                    WRITE_FILE_TOOL,
-                    FILESYSTEM_WRITE_GATE,
-                    mode,
-                    error.reason_code(),
-                );
-                return capability_authorization_denied(id, error.reason_code());
+            Ok(worker_result) => {
+                if !worker_result.committed
+                    && !matches!(
+                        &worker_result.result,
+                        Err(AuthorizedWriteFileError::Authorization(
+                            WriteFileGrantError::StateUnavailable
+                        ))
+                    )
+                {
+                    let (decision, reason_code) =
+                        write_file_mutation_outcome(&worker_result.result);
+                    response_audit.finish_precommit(decision, reason_code);
+                }
+                match worker_result.result {
+                    Ok(result) => Ok(result.message),
+                    Err(AuthorizedWriteFileError::Authorization(error)) => {
+                        return capability_authorization_denied(id, error.reason_code());
+                    }
+                    Err(AuthorizedWriteFileError::Filesystem(error)) => Err(error),
+                }
             }
-            Ok(Err(AuthorizedWriteFileError::Filesystem(error))) => Err(error),
-            Err(_error) => Err(AppError::Io(std::io::Error::other(
-                "write file worker failed",
-            ))),
+            Err(_error) => {
+                response_audit.finish_precommit(AuditDecision::Denied, FILESYSTEM_WRITE_FAILED);
+                Err(AppError::Io(std::io::Error::other(
+                    "write file worker failed",
+                )))
+            }
         }
     };
 
     match operation {
         Ok(actual_message) => {
             debug_assert_eq!(actual_message, message);
-            record_filesystem_allowed(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                filesystem_write_allowed_reason(dry_run),
-            );
+            if dry_run {
+                record_filesystem_allowed(
+                    audit_counters,
+                    WRITE_FILE_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    filesystem_write_allowed_reason(true),
+                );
+            }
             success_response
         }
-        Err(error) => write_file_filesystem_error(id, audit_counters, mode, error),
+        Err(error) => write_file_filesystem_error(id, audit_counters, mode, error, dry_run),
+    }
+}
+
+fn write_file_filesystem_reason(error: &AppError) -> &'static str {
+    match error {
+        AppError::PathTraversal { .. } => FILESYSTEM_SAFE_ROOT_REJECTED,
+        AppError::WritePayloadTooLarge { .. } => FILESYSTEM_WRITE_TOO_LARGE,
+        AppError::PathNotFound => FILESYSTEM_WRITE_NOT_FOUND,
+        AppError::UnsupportedPathType => FILESYSTEM_WRITE_UNSUPPORTED,
+        AppError::PathAlreadyExists => FILESYSTEM_WRITE_EXISTS,
+        _ => FILESYSTEM_WRITE_FAILED,
+    }
+}
+
+fn write_file_mutation_outcome<T>(
+    result: &Result<T, AuthorizedWriteFileError>,
+) -> (AuditDecision, &'static str) {
+    match result {
+        Ok(_) => (
+            AuditDecision::Allowed,
+            FILESYSTEM_WRITE_ALLOWED,
+        ),
+        Err(AuthorizedWriteFileError::Authorization(error)) => (
+            AuditDecision::Denied,
+            error.reason_code(),
+        ),
+        Err(AuthorizedWriteFileError::Filesystem(error)) => (
+            AuditDecision::Denied,
+            write_file_filesystem_reason(error),
+        ),
     }
 }
 
@@ -5445,72 +5738,40 @@ fn write_file_filesystem_error(
     audit_counters: &SharedAuditCounters,
     mode: AuditMode,
     error: AppError,
+    record_audit: bool,
 ) -> Response {
+    if record_audit {
+        record_filesystem_denied(
+            audit_counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            write_file_filesystem_reason(&error),
+        );
+    }
     match error {
         AppError::PathTraversal { .. } => {
-            record_filesystem_denied(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_SAFE_ROOT_REJECTED,
-            );
             invalid_params(
                 id,
                 "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
             )
         }
         AppError::WritePayloadTooLarge { .. } => {
-            record_filesystem_denied(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_WRITE_TOO_LARGE,
-            );
             payload_too_large(
                 id,
                 "File content exceeds the staged write_file byte limit.",
             )
         }
         AppError::PathNotFound => {
-            record_filesystem_denied(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_WRITE_NOT_FOUND,
-            );
             invalid_params(id, "Filesystem write target or parent does not exist.")
         }
         AppError::UnsupportedPathType => {
-            record_filesystem_denied(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_WRITE_UNSUPPORTED,
-            );
             invalid_params(id, "Filesystem write target must be absent or a regular file.")
         }
         AppError::PathAlreadyExists => {
-            record_filesystem_denied(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_WRITE_EXISTS,
-            );
             invalid_params(id, "Filesystem write create target now exists.")
         }
         _error => {
-            record_filesystem_denied(
-                audit_counters,
-                WRITE_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_WRITE_FAILED,
-            );
             internal_error(id, "Filesystem write failed.")
         }
     }
@@ -5893,6 +6154,98 @@ mod tests {
         COMMAND_PROFILE_ALLOWED_REASON, COMMAND_RUNTIME_DISABLED_REASON,
     };
 
+    fn empty_audit_counters() -> SharedAuditCounters {
+        Arc::new(Mutex::new(AuditCounters::default()))
+    }
+
+    #[test]
+    fn pending_mutation_audit_drop_records_nothing() {
+        let counters = empty_audit_counters();
+        drop(create_directory_mutation_audit(&counters));
+
+        assert!(counters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn committed_mutation_audit_finishes_exactly_once() {
+        let counters = empty_audit_counters();
+        let pending = write_file_mutation_audit(&counters);
+        let observer = pending.clone();
+        pending
+            .commit()
+            .finish(AuditDecision::Allowed, FILESYSTEM_WRITE_ALLOWED);
+
+        assert!(!observer.finish_precommit(
+            AuditDecision::Denied,
+            FILESYSTEM_WRITE_FAILED,
+        ));
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.total(), 1);
+        assert_eq!(counters.allowed_total, 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_WRITE_ALLOWED].allowed,
+            1
+        );
+        assert!(!counters.by_reason_code.contains_key(FILESYSTEM_WRITE_FAILED));
+    }
+
+    #[test]
+    fn unfinished_committed_mutation_audit_records_fallback_once() {
+        let counters = empty_audit_counters();
+        let pending = create_directory_mutation_audit(&counters);
+        let observer = pending.clone();
+        drop(pending.commit());
+
+        assert!(!observer.finish_precommit(
+            AuditDecision::Allowed,
+            FILESYSTEM_CREATE_ALLOWED,
+        ));
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.total(), 1);
+        assert_eq!(counters.denied_total, 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_CREATE_FAILED].denied,
+            1
+        );
+        assert!(!counters.by_reason_code.contains_key(FILESYSTEM_CREATE_ALLOWED));
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[test]
+    fn unfinished_volume_mutation_audit_uses_worker_failure_fallback() {
+        let counters = empty_audit_counters();
+        drop(android_volume_mutation_audit(&counters).commit());
+
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.total(), 1);
+        assert_eq!(
+            counters.by_reason_code[AndroidVolumeControlError::WorkerFailed.reason_code()].denied,
+            1
+        );
+    }
+
+    #[test]
+    fn live_handler_can_finish_precommit_audit_only_once() {
+        let counters = empty_audit_counters();
+        let pending = create_directory_mutation_audit(&counters);
+        let observer = pending.clone();
+
+        assert!(pending.finish_precommit(
+            AuditDecision::Denied,
+            FILESYSTEM_SAFE_ROOT_REJECTED,
+        ));
+        assert!(!observer.finish_precommit(
+            AuditDecision::Denied,
+            FILESYSTEM_CREATE_FAILED,
+        ));
+        let counters = counters.lock().unwrap();
+        assert_eq!(counters.total(), 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_SAFE_ROOT_REJECTED].denied,
+            1
+        );
+    }
+
     #[test]
     fn json_response_collection_limit_covers_every_bounded_tool_contract() {
         assert_eq!(MAX_MCP_JSON_RESPONSE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES);
@@ -5936,6 +6289,7 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_filesystem_request_cancels_detached_worker_before_commit() {
+        let audit_counters = empty_audit_counters();
         let grant_consumed = Arc::new(AtomicU8::new(0));
         let mutation_started = Arc::new(AtomicU8::new(0));
         let (worker_waiting_tx, worker_waiting_rx) = tokio::sync::oneshot::channel();
@@ -5944,21 +6298,28 @@ mod tests {
 
         let request_grant_consumed = Arc::clone(&grant_consumed);
         let request_mutation_started = Arc::clone(&mutation_started);
+        let request_audit = write_file_mutation_audit(&audit_counters);
         let request = tokio::spawn(async move {
             let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
             let worker_commit_state = request_commit_guard.worker_state();
             let worker = tokio::task::spawn_blocking(move || {
                 worker_waiting_tx.send(()).unwrap();
                 release_worker_rx.recv().unwrap();
-                let claim = claim_filesystem_mutation_commit(&worker_commit_state);
-                if claim.is_ok() {
-                    request_grant_consumed.store(1, Ordering::Release);
-                    request_mutation_started.store(1, Ordering::Release);
-                }
+                let claim = claim_filesystem_mutation_and_audit(
+                    &worker_commit_state,
+                    request_audit,
+                );
+                let outcome = match claim {
+                    Ok(audit) => {
+                        request_grant_consumed.store(1, Ordering::Release);
+                        request_mutation_started.store(1, Ordering::Release);
+                        audit.finish(AuditDecision::Allowed, FILESYSTEM_WRITE_ALLOWED);
+                        Ok(())
+                    }
+                    Err(_) => Err(WriteFileGrantError::StateUnavailable.reason_code()),
+                };
                 worker_done_tx
-                    .send(claim.map_err(|_| {
-                        WriteFileGrantError::StateUnavailable.reason_code()
-                    }))
+                    .send(outcome)
                     .unwrap();
             });
             worker.await.unwrap();
@@ -5976,27 +6337,35 @@ mod tests {
         );
         assert_eq!(grant_consumed.load(Ordering::Acquire), 0);
         assert_eq!(mutation_started.load(Ordering::Acquire), 0);
+        assert!(audit_counters.lock().unwrap().is_empty());
     }
 
     #[test]
     fn filesystem_worker_claim_survives_later_request_drop() {
+        let audit_counters = empty_audit_counters();
         let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
         let worker_commit_state = request_commit_guard.worker_state();
 
-        assert_eq!(
-            claim_filesystem_mutation_commit(&worker_commit_state),
-            Ok(())
-        );
+        let committed_audit = claim_filesystem_mutation_and_audit(
+            &worker_commit_state,
+            create_directory_mutation_audit(&audit_counters),
+        )
+        .unwrap();
         drop(request_commit_guard);
 
         assert_eq!(
             worker_commit_state.load(Ordering::Acquire),
             FILESYSTEM_MUTATION_COMMIT_WORKER_OWNED
         );
-        assert_eq!(
-            claim_filesystem_mutation_commit(&worker_commit_state),
+        assert!(matches!(
+            claim_filesystem_mutation_and_audit(
+                &worker_commit_state,
+                create_directory_mutation_audit(&audit_counters),
+            ),
             Err(FilesystemMutationRequestCancelled)
-        );
+        ));
+        committed_audit.finish(AuditDecision::Allowed, FILESYSTEM_CREATE_ALLOWED);
+        assert_eq!(audit_counters.lock().unwrap().allowed_total, 1);
     }
 
     #[tokio::test]
@@ -6005,6 +6374,7 @@ mod tests {
             "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
         let root = tempfile::tempdir().unwrap();
+        let audit_counters = empty_audit_counters();
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let target = root.path().join("cancelled-create");
         let grant_target = tools
@@ -6031,6 +6401,7 @@ mod tests {
         let worker_authority = authority.clone();
         let worker_session = session_id.clone();
         let worker_token = token.clone();
+        let request_audit = create_directory_mutation_audit(&audit_counters);
 
         let request = tokio::spawn(async move {
             let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
@@ -6038,9 +6409,15 @@ mod tests {
             let worker = tokio::task::spawn_blocking(move || {
                 let _ = worker_waiting_tx.send(());
                 let _ = release_worker_rx.recv();
+                let mut pending_audit = Some(request_audit);
+                let mut committed_audit = None;
                 let result = prepared.execute_authorized(|grant_target| {
-                    claim_filesystem_mutation_commit(&worker_commit_state)
-                        .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    let audit = claim_filesystem_mutation_and_audit(
+                        &worker_commit_state,
+                        pending_audit.take().unwrap(),
+                    )
+                    .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    committed_audit = Some(audit);
                     worker_authority.consume_at(
                         Some(&worker_token),
                         &worker_session,
@@ -6048,6 +6425,10 @@ mod tests {
                         now,
                     )
                 });
+                if let Some(audit) = committed_audit {
+                    let (decision, reason_code) = create_directory_mutation_outcome(&result);
+                    audit.finish(decision, reason_code);
+                }
                 let _ = worker_done_tx.send(result);
             });
             let _ = worker.await;
@@ -6066,6 +6447,7 @@ mod tests {
             ))
         ));
         assert!(!target.exists());
+        assert!(audit_counters.lock().unwrap().is_empty());
 
         let retry = tools
             .prepare_create_directory_mutation(target.to_string_lossy().to_string())
@@ -6084,6 +6466,7 @@ mod tests {
             "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
         let root = tempfile::tempdir().unwrap();
+        let audit_counters = empty_audit_counters();
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let target = root.path().join("worker-owned-create");
         let grant_target = tools
@@ -6110,14 +6493,21 @@ mod tests {
         let worker_authority = authority.clone();
         let worker_session = session_id.clone();
         let worker_token = token.clone();
+        let request_audit = create_directory_mutation_audit(&audit_counters);
 
         let request = tokio::spawn(async move {
             let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
             let worker_commit_state = request_commit_guard.worker_state();
             let worker = tokio::task::spawn_blocking(move || {
+                let mut pending_audit = Some(request_audit);
+                let mut committed_audit = None;
                 let result = prepared.execute_authorized(|grant_target| {
-                    claim_filesystem_mutation_commit(&worker_commit_state)
-                        .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    let audit = claim_filesystem_mutation_and_audit(
+                        &worker_commit_state,
+                        pending_audit.take().unwrap(),
+                    )
+                    .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    committed_audit = Some(audit);
                     let _ = worker_claimed_tx.send(());
                     let _ = release_worker_rx.recv();
                     worker_authority.consume_at(
@@ -6127,6 +6517,10 @@ mod tests {
                         now,
                     )
                 });
+                if let Some(audit) = committed_audit {
+                    let (decision, reason_code) = create_directory_mutation_outcome(&result);
+                    audit.finish(decision, reason_code);
+                }
                 let _ = worker_done_tx.send(result);
             });
             let _ = worker.await;
@@ -6140,6 +6534,15 @@ mod tests {
 
         assert!(worker_done_rx.await.unwrap().is_ok());
         assert!(target.is_dir());
+        {
+            let counters = audit_counters.lock().unwrap();
+            assert_eq!(counters.total(), 1);
+            assert_eq!(counters.allowed_total, 1);
+            assert_eq!(
+                counters.by_reason_code[FILESYSTEM_CREATE_ALLOWED].allowed,
+                1
+            );
+        }
         std::fs::remove_dir(&target).unwrap();
         let replay = tools
             .prepare_create_directory_mutation(target.to_string_lossy().to_string())
@@ -6155,6 +6558,319 @@ mod tests {
             ))
         ));
         assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn create_worker_denial_after_commit_is_audited_after_request_drop() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let audit_counters = empty_audit_counters();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("worker-owned-create-denial");
+        let grant_target = tools
+            .create_directory_grant_target(target.to_string_lossy().as_ref())
+            .unwrap();
+        let prepared = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = current_unix_seconds();
+        let valid_token = authority
+            .issue_at(&session_id, &grant_target, now)
+            .unwrap();
+        let (worker_claimed_tx, worker_claimed_rx) = tokio::sync::oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = tokio::sync::oneshot::channel();
+        let worker_authority = authority.clone();
+        let worker_session = session_id.clone();
+        let request_audit = create_directory_mutation_audit(&audit_counters);
+
+        let request = tokio::spawn(async move {
+            let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
+            let worker_commit_state = request_commit_guard.worker_state();
+            let worker = tokio::task::spawn_blocking(move || {
+                let mut pending_audit = Some(request_audit);
+                let mut committed_audit = None;
+                let result = prepared.execute_authorized(|grant_target| {
+                    let audit = claim_filesystem_mutation_and_audit(
+                        &worker_commit_state,
+                        pending_audit.take().unwrap(),
+                    )
+                    .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    committed_audit = Some(audit);
+                    let _ = worker_claimed_tx.send(());
+                    let _ = release_worker_rx.recv();
+                    worker_authority.consume_at(None, &worker_session, grant_target, now)
+                });
+                if let Some(audit) = committed_audit {
+                    let (decision, reason_code) = create_directory_mutation_outcome(&result);
+                    audit.finish(decision, reason_code);
+                }
+                let _ = worker_done_tx.send(result);
+            });
+            let _ = worker.await;
+            drop(request_commit_guard);
+        });
+
+        worker_claimed_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        release_worker_tx.send(()).unwrap();
+
+        assert!(matches!(
+            worker_done_rx.await.unwrap(),
+            Err(AuthorizedCreateDirectoryError::Authorization(
+                CreateDirectoryGrantError::Missing
+            ))
+        ));
+        assert!(!target.exists());
+        {
+            let counters = audit_counters.lock().unwrap();
+            assert_eq!(counters.total(), 1);
+            assert_eq!(counters.denied_total, 1);
+            assert_eq!(
+                counters.by_reason_code[CreateDirectoryGrantError::Missing.reason_code()].denied,
+                1
+            );
+        }
+
+        let retry = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(Some(&valid_token), &session_id, grant_target, now)
+            });
+        assert!(retry.is_ok());
+        assert!(target.is_dir());
+    }
+
+    #[tokio::test]
+    async fn write_worker_that_claims_commit_owns_completion_after_request_drop() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let audit_counters = empty_audit_counters();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("worker-owned-write.txt");
+        let content = "worker-owned payload";
+        let grant_target = tools
+            .write_file_grant_target(
+                target.to_string_lossy().as_ref(),
+                crate::write_file_grant::content_sha256(content.as_bytes()),
+            )
+            .unwrap();
+        let prepared = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                content.to_owned(),
+            )
+            .await
+            .unwrap();
+        let authority = WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = current_unix_seconds();
+        let token = authority.issue_at(&session_id, &grant_target, now).unwrap();
+        let (worker_claimed_tx, worker_claimed_rx) = tokio::sync::oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = tokio::sync::oneshot::channel();
+        let worker_authority = authority.clone();
+        let worker_session = session_id.clone();
+        let worker_token = token.clone();
+        let request_audit = write_file_mutation_audit(&audit_counters);
+
+        let request = tokio::spawn(async move {
+            let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
+            let worker_commit_state = request_commit_guard.worker_state();
+            let worker = tokio::task::spawn_blocking(move || {
+                let mut pending_audit = Some(request_audit);
+                let mut committed_audit = None;
+                let result = prepared.execute_authorized(|grant_target| {
+                    let audit = claim_filesystem_mutation_and_audit(
+                        &worker_commit_state,
+                        pending_audit.take().unwrap(),
+                    )
+                    .map_err(|_| WriteFileGrantError::StateUnavailable)?;
+                    committed_audit = Some(audit);
+                    let _ = worker_claimed_tx.send(());
+                    let _ = release_worker_rx.recv();
+                    worker_authority.consume_at(
+                        Some(&worker_token),
+                        &worker_session,
+                        grant_target,
+                        now,
+                    )
+                });
+                if let Some(audit) = committed_audit {
+                    let (decision, reason_code) = write_file_mutation_outcome(&result);
+                    audit.finish(decision, reason_code);
+                }
+                let _ = worker_done_tx.send(result);
+            });
+            let _ = worker.await;
+            drop(request_commit_guard);
+        });
+
+        worker_claimed_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        release_worker_tx.send(()).unwrap();
+
+        assert!(worker_done_rx.await.unwrap().is_ok());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), content);
+        {
+            let counters = audit_counters.lock().unwrap();
+            assert_eq!(counters.total(), 1);
+            assert_eq!(counters.allowed_total, 1);
+            assert_eq!(
+                counters.by_reason_code[FILESYSTEM_WRITE_ALLOWED].allowed,
+                1
+            );
+        }
+        std::fs::remove_file(&target).unwrap();
+        let replay = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                content.to_owned(),
+            )
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(Some(&token), &session_id, grant_target, now)
+            });
+        assert!(matches!(
+            replay,
+            Err(AuthorizedWriteFileError::Authorization(
+                WriteFileGrantError::Replayed
+            ))
+        ));
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn live_filesystem_handlers_publish_one_terminal_audit_per_mutation() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let create_authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let write_authority = WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let state = McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            tools.clone(),
+            false,
+            false,
+            false,
+            Some(create_authority.clone()),
+        )
+        .with_write_file_authority(Some(write_authority.clone()));
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = current_unix_seconds();
+
+        let create_target = root.path().join("live-handler-create");
+        let create_binding = tools
+            .create_directory_grant_target(create_target.to_string_lossy().as_ref())
+            .unwrap();
+        let create_grant = create_authority
+            .issue_at(&session_id, &create_binding, now)
+            .unwrap();
+        let create_response = handle_create_directory_call(
+            Some(json!("create")),
+            Some(json!({
+                "path": create_target.to_string_lossy(),
+                "dry_run": false,
+            })),
+            &state,
+            &session_id,
+            Some(&create_grant),
+        )
+        .await;
+        assert_eq!(create_response.status(), StatusCode::OK);
+
+        let write_target = root.path().join("live-handler-write.txt");
+        let write_content = "live-handler-content";
+        let write_binding = tools
+            .write_file_grant_target(
+                write_target.to_string_lossy().as_ref(),
+                crate::write_file_grant::content_sha256(write_content.as_bytes()),
+            )
+            .unwrap();
+        let write_grant = write_authority
+            .issue_at(&session_id, &write_binding, now)
+            .unwrap();
+        let write_response = handle_write_file_call(
+            Some(json!("write")),
+            Some(json!({
+                "path": write_target.to_string_lossy(),
+                "content": write_content,
+                "dry_run": false,
+            })),
+            &state,
+            &session_id,
+            Some(&write_grant),
+        )
+        .await;
+        assert_eq!(write_response.status(), StatusCode::OK);
+
+        let missing_target = root.path().join("live-handler-missing-grant");
+        let missing_response = handle_create_directory_call(
+            Some(json!("missing")),
+            Some(json!({
+                "path": missing_target.to_string_lossy(),
+                "dry_run": false,
+            })),
+            &state,
+            &session_id,
+            None,
+        )
+        .await;
+        assert_eq!(missing_response.status(), StatusCode::FORBIDDEN);
+
+        let counters = state.audit_counters.lock().unwrap();
+        assert_eq!(counters.total(), 3);
+        assert_eq!(counters.allowed_total, 2);
+        assert_eq!(counters.denied_total, 1);
+        assert_eq!(counters.by_tool[CREATE_DIRECTORY_TOOL].allowed, 1);
+        assert_eq!(counters.by_tool[CREATE_DIRECTORY_TOOL].denied, 1);
+        assert_eq!(counters.by_tool[WRITE_FILE_TOOL].allowed, 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_CREATE_ALLOWED].allowed,
+            1
+        );
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_WRITE_ALLOWED].allowed,
+            1
+        );
+        assert_eq!(
+            counters.by_reason_code[CreateDirectoryGrantError::Missing.reason_code()].denied,
+            1
+        );
     }
 
     #[cfg(all(
@@ -6791,6 +7507,126 @@ printf '%s\n' "$2" >"$level"
         let serialized = serde_json::to_string(&counters).unwrap();
         assert!(!serialized.contains(&grant));
         assert!(!serialized.contains("private-static-principal"));
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[tokio::test]
+    async fn committed_volume_worker_finishes_and_audits_after_request_drop() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+
+        let _guard = crate::android_provider::ANDROID_PROVIDER_TEST_LOCK.lock().await;
+        let program_root = tempfile::tempdir().unwrap();
+        let program = program_root.path().join("termux-volume-blocking");
+        let level = program_root.path().join("level");
+        let started = program_root.path().join("started");
+        let release = program_root.path().join("release");
+        fs::write(&level, "5\n").unwrap();
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+level='{}'
+started='{}'
+release='{}'
+if [ "$#" -eq 0 ]; then
+  IFS= read -r music <"$level"
+  printf '[{{"stream":"alarm","volume":1,"max_volume":7}},{{"stream":"call","volume":1,"max_volume":5}},{{"stream":"music","volume":%s,"max_volume":15}},{{"stream":"notification","volume":2,"max_volume":7}},{{"stream":"ring","volume":3,"max_volume":7}},{{"stream":"system","volume":2,"max_volume":7}}]' "$music"
+  exit 0
+fi
+test "$#" -eq 2
+: >"$started"
+while [ ! -e "$release" ]; do sleep 0.01; done
+printf '%s\n' "$2" >"$level"
+"#,
+                level.display(),
+                started.display(),
+                release.display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = AndroidVolumeControlClient::with_program_and_limits(
+            program,
+            Duration::from_secs(2),
+            crate::android_volume::MAX_VOLUME_STDOUT_BYTES,
+            crate::android_volume::MAX_VOLUME_STDERR_BYTES,
+        );
+        let safe_root = tempfile::tempdir().unwrap();
+        let authority = test_volume_authority();
+        let state = Arc::new(McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            Some(authority.clone()),
+            client,
+        ));
+        let session = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+        let target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+        let grant = authority
+            .issue_at(session, target, current_unix_seconds())
+            .unwrap();
+        let request_state = Arc::clone(&state);
+        let request_grant = grant.clone();
+        let request = tokio::spawn(async move {
+            handle_set_android_volume_call(
+                Some(json!("detached-volume")),
+                Some(json!({"stream":"music", "level":9, "dry_run":false})),
+                &request_state,
+                session,
+                Some(&request_grant),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        fs::write(&release, "release\n").unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let finished = state
+                    .audit_counters
+                    .lock()
+                    .unwrap()
+                    .by_reason_code
+                    .get(ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED)
+                    .is_some_and(|counters| counters.allowed == 1);
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&level).unwrap(), "9\n");
+        {
+            let counters = state.audit_counters.lock().unwrap();
+            assert_eq!(counters.total(), 1);
+            assert_eq!(counters.allowed_total, 1);
+            assert_eq!(
+                counters.by_reason_code[ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED].allowed,
+                1
+            );
+        }
+
+        let replay = handle_set_android_volume_call(
+            Some(json!("detached-volume-replay")),
+            Some(json!({"stream":"music", "level":9, "dry_run":false})),
+            &state,
+            session,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
     }
 
     #[cfg(feature = "android-volume-control")]

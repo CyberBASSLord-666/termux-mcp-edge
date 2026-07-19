@@ -516,11 +516,7 @@ mod tests {
     fn legacy_colliding_write_code_is_rejected_without_consuming_the_volume_grant() {
         let authority = authority();
         let token = authority.issue_at(SESSION, target(), NOW).unwrap();
-        let legacy = resign_with_capability(
-            &authority,
-            &token,
-            RequestGrantCapability::WriteFile,
-        );
+        let legacy = resign_with_capability(&authority, &token, RequestGrantCapability::WriteFile);
 
         assert_eq!(
             authority

@@ -161,6 +161,7 @@ fn exact_volume_cli_issuer_outputs_one_private_target_bound_grant() {
     assert_eq!(segments[0], "v1");
     assert_eq!(segments[1], "volume-cli-1");
     assert_eq!(segments[2].len(), 182);
+    assert_eq!(&segments[2][128..130], "03");
     assert_eq!(segments[3].len(), 64);
     assert!(segments[2..].iter().all(|segment| segment
         .bytes()
@@ -311,6 +312,7 @@ fn exact_cli_issuer_outputs_one_private_target_bound_grant() {
     assert_eq!(segments[0], "v1");
     assert_eq!(segments[1], "cli-test-1");
     assert_eq!(segments[2].len(), 260);
+    assert_eq!(&segments[2][128..130], "01");
     assert_eq!(segments[3].len(), 64);
     assert!(segments[2..].iter().all(|segment| segment
         .bytes()
@@ -386,6 +388,7 @@ fn exact_write_cli_issuer_outputs_one_private_operation_bound_grant() {
     assert_eq!(segments[0], "v1");
     assert_eq!(segments[1], "write-cli-1");
     assert_eq!(segments[2].len(), 260);
+    assert_eq!(&segments[2][128..130], "02");
     assert_eq!(segments[3].len(), 64);
     assert!(segments[2..].iter().all(|segment| segment
         .bytes()
