@@ -17,20 +17,23 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::request_grant::{
+    RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+};
+
 type HmacSha256 = Hmac<Sha256>;
 
-pub const WRITE_FILE_GRANT_HEADER: &str = "mcp-capability-grant";
+pub const WRITE_FILE_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
 pub const WRITE_FILE_GRANT_VERSION: &str = "v1";
 pub const WRITE_FILE_GRANT_TTL_SECONDS: u64 = 60;
 pub const MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS: u64 = 120;
 pub const MAX_WRITE_FILE_GRANT_FUTURE_SKEW_SECONDS: u64 = 5;
-pub const MAX_WRITE_FILE_GRANT_HEADER_BYTES: usize = 384;
+pub const MAX_WRITE_FILE_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
 pub const MAX_WRITE_FILE_GRANT_KEY_ID_BYTES: usize = 32;
 pub const WRITE_FILE_GRANT_KEY_BYTES: usize = 32;
 pub const WRITE_FILE_GRANT_KEY_HEX_BYTES: usize = WRITE_FILE_GRANT_KEY_BYTES * 2;
 pub const MAX_CONSUMED_WRITE_FILE_GRANTS: usize = 4_096;
 
-const WRITE_FILE_CAPABILITY: u8 = 2;
 const MUTATING_POSTURE: u8 = 1;
 const CREATE_PUBLICATION: u8 = 1;
 const REPLACE_PUBLICATION: u8 = 2;
@@ -281,7 +284,7 @@ impl WriteFileGrantAuthority {
             grant_id: *Uuid::new_v4().as_bytes(),
             principal_digest: self.principal_digest,
             session_id,
-            capability: WRITE_FILE_CAPABILITY,
+            capability: RequestGrantCapability::WriteFile.code(),
             root_device: target.root_device,
             root_inode: target.root_inode,
             operation_digest: target.operation_digest,
@@ -305,7 +308,7 @@ impl WriteFileGrantAuthority {
 
         if grant.principal_digest != self.principal_digest
             || grant.session_id != expected_session
-            || grant.capability != WRITE_FILE_CAPABILITY
+            || grant.capability != RequestGrantCapability::WriteFile.code()
             || grant.root_device != target.root_device
             || grant.root_inode != target.root_inode
             || grant.operation_digest != target.operation_digest

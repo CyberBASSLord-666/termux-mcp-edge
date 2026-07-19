@@ -53,6 +53,9 @@ pub enum AppError {
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
+    #[error("Directory mutation requires request-scoped authorization")]
+    CreateDirectoryMutationAuthorizationRequired,
+
     #[error("File mutation requires request-scoped authorization")]
     WriteMutationAuthorizationRequired,
 
@@ -128,6 +131,10 @@ impl AppError {
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
             ),
+            AppError::CreateDirectoryMutationAuthorizationRequired => (
+                StatusCode::FORBIDDEN,
+                "Directory mutation requires request authorization",
+            ),
             AppError::WriteMutationAuthorizationRequired => (
                 StatusCode::FORBIDDEN,
                 "File mutation requires request authorization",
@@ -200,6 +207,13 @@ mod tests {
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
+            )
+        );
+        assert_eq!(
+            AppError::CreateDirectoryMutationAuthorizationRequired.public_response(),
+            (
+                StatusCode::FORBIDDEN,
+                "Directory mutation requires request authorization",
             )
         );
         assert_eq!(

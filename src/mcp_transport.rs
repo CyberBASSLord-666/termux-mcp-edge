@@ -47,8 +47,8 @@ use crate::{
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
     },
     create_directory_grant::{
-        CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER,
-        CREATE_DIRECTORY_GRANT_TTL_SECONDS, MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES,
+        CreateDirectoryGrantAuthority, CreateDirectoryGrantError,
+        CREATE_DIRECTORY_GRANT_TTL_SECONDS,
     },
     error::{AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE, INVALID_TEXT_RANGE_PUBLIC_MESSAGE},
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
@@ -59,6 +59,7 @@ use crate::{
         SSE_RETRY_MILLISECONDS,
     },
     platform_info::collect_platform_info,
+    request_grant::{MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER},
     service_status::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
@@ -77,8 +78,7 @@ use crate::{
     },
     transport_security::TransportSecurityPolicy,
     write_file_grant::{
-        WriteFileGrantAuthority, WriteFileGrantError, MAX_WRITE_FILE_GRANT_HEADER_BYTES,
-        WRITE_FILE_GRANT_HEADER, WRITE_FILE_GRANT_TTL_SECONDS,
+        WriteFileGrantAuthority, WriteFileGrantError, WRITE_FILE_GRANT_TTL_SECONDS,
     },
     write_policy::{WriteMode, WritePolicy, DEFAULT_MAX_WRITE_BYTES},
 };
@@ -104,13 +104,8 @@ pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
-const MCP_CAPABILITY_GRANT_HEADER: &str = WRITE_FILE_GRANT_HEADER;
-const MAX_MCP_CAPABILITY_GRANT_HEADER_BYTES: usize =
-    if MAX_WRITE_FILE_GRANT_HEADER_BYTES > MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES {
-        MAX_WRITE_FILE_GRANT_HEADER_BYTES
-    } else {
-        MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
-    };
+const MCP_CAPABILITY_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
+const MAX_MCP_CAPABILITY_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
 
 // Every successful tool response is collected once before the transport can
 // decide whether it fits in a bounded SSE event. Keep the collector tied to
@@ -298,9 +293,9 @@ const FILESYSTEM_WRITE_EXISTS: &str = "filesystem_write_destination_exists";
 const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
-const WRITE_FILE_COMMIT_PENDING: u8 = 0;
-const WRITE_FILE_COMMIT_WORKER_OWNED: u8 = 1;
-const WRITE_FILE_COMMIT_REQUEST_CANCELLED: u8 = 2;
+const FILESYSTEM_MUTATION_COMMIT_PENDING: u8 = 0;
+const FILESYSTEM_MUTATION_COMMIT_WORKER_OWNED: u8 = 1;
+const FILESYSTEM_MUTATION_COMMIT_REQUEST_CANCELLED: u8 = 2;
 
 const COMMAND_EXECUTION_ERROR: &str = "command_profile_execution_failed";
 
@@ -309,21 +304,21 @@ const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised
 
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
 
-/// Keeps request cancellation and the detached write worker on opposite sides
-/// of one linearized authorization boundary.
+/// Keeps request cancellation and one detached filesystem mutation worker on
+/// opposite sides of a linearized authorization boundary.
 ///
 /// Only the pending state can transition, so the three-state byte is bounded:
 /// request drop wins by moving it to cancelled, or the worker wins by moving it
 /// to worker-owned immediately before it consumes the grant.
-#[must_use = "the guard must remain alive while its detached write worker can claim"]
-struct WriteFileRequestCommitGuard {
+#[must_use = "the guard must remain alive while its detached filesystem worker can claim"]
+struct FilesystemMutationRequestCommitGuard {
     state: Arc<AtomicU8>,
 }
 
-impl WriteFileRequestCommitGuard {
+impl FilesystemMutationRequestCommitGuard {
     fn new() -> Self {
         Self {
-            state: Arc::new(AtomicU8::new(WRITE_FILE_COMMIT_PENDING)),
+            state: Arc::new(AtomicU8::new(FILESYSTEM_MUTATION_COMMIT_PENDING)),
         }
     }
 
@@ -332,29 +327,34 @@ impl WriteFileRequestCommitGuard {
     }
 }
 
-impl Drop for WriteFileRequestCommitGuard {
+impl Drop for FilesystemMutationRequestCommitGuard {
     fn drop(&mut self) {
         let _ = self.state.compare_exchange(
-            WRITE_FILE_COMMIT_PENDING,
-            WRITE_FILE_COMMIT_REQUEST_CANCELLED,
+            FILESYSTEM_MUTATION_COMMIT_PENDING,
+            FILESYSTEM_MUTATION_COMMIT_REQUEST_CANCELLED,
             Ordering::AcqRel,
             Ordering::Acquire,
         );
     }
 }
 
-fn claim_write_file_commit(state: &AtomicU8) -> Result<(), WriteFileGrantError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilesystemMutationRequestCancelled;
+
+fn claim_filesystem_mutation_commit(
+    state: &AtomicU8,
+) -> Result<(), FilesystemMutationRequestCancelled> {
     state
         .compare_exchange(
-            WRITE_FILE_COMMIT_PENDING,
-            WRITE_FILE_COMMIT_WORKER_OWNED,
+            FILESYSTEM_MUTATION_COMMIT_PENDING,
+            FILESYSTEM_MUTATION_COMMIT_WORKER_OWNED,
             Ordering::AcqRel,
             Ordering::Acquire,
         )
         .map(|_| ())
         // A cancelled request has no response surface. Keep the detached
         // worker's internal rejection stable and free of grant/path/content.
-        .map_err(|_| WriteFileGrantError::StateUnavailable)
+        .map_err(|_| FilesystemMutationRequestCancelled)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1096,7 +1096,7 @@ async fn handle_mcp_request(
             })),
         )
             .into_response()
-    } else if method != Method::POST && headers.contains_key(CREATE_DIRECTORY_GRANT_HEADER) {
+    } else if method != Method::POST && headers.contains_key(MCP_CAPABILITY_GRANT_HEADER) {
         capability_context_not_allowed(None)
     } else {
         match method {
@@ -3276,13 +3276,13 @@ fn runtime_status_response(
         "createDirectoryMutationEnabled": create_directory_mutation_enabled,
         "createDirectoryMutationMode": create_directory_mode,
         "createDirectoryGrantRequired": create_directory_mutation_enabled,
-        "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+        "createDirectoryGrantHeader": MCP_CAPABILITY_GRANT_HEADER,
         "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
         "fileWrites": true,
         "fileWriteMode": write_file_mode,
         "fileWriteMutationEnabled": write_file_mutation_enabled,
         "fileWriteGrantRequired": write_file_mutation_enabled,
-        "fileWriteGrantHeader": WRITE_FILE_GRANT_HEADER,
+        "fileWriteGrantHeader": MCP_CAPABILITY_GRANT_HEADER,
         "fileWriteGrantTtlSeconds": WRITE_FILE_GRANT_TTL_SECONDS,
         "fileWriteMaxBytes": DEFAULT_MAX_WRITE_BYTES,
         "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
@@ -3296,7 +3296,7 @@ fn runtime_status_response(
         "androidVolumeControlEnabled": android_volume_control_enabled,
         "androidVolumeControlMode": volume_control_mode,
         "androidVolumeGrantRequired": android_volume_control_enabled,
-        "androidVolumeGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+        "androidVolumeGrantHeader": MCP_CAPABILITY_GRANT_HEADER,
         "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
         "androidDeviceControl": android_volume_control_enabled,
         "commandExecutionCompiled": cfg!(feature = "command-execution"),
@@ -4443,18 +4443,28 @@ async fn handle_create_directory_call(
             .expect("enabled create_directory mutation owns an authority");
         let session_id = session_id.to_owned();
         let capability_grant = capability_grant.map(str::to_owned);
-        match tokio::task::spawn_blocking(move || {
+        let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
+        let worker_commit_state = request_commit_guard.worker_state();
+        let worker_result = tokio::task::spawn_blocking(move || {
             prepared.execute_authorized(|target| {
+                let now = current_unix_seconds();
+                // This CAS is the request-cancellation commit point. It must
+                // remain immediately before grant consumption: cancellation
+                // wins without consuming or mutating, while a worker that
+                // wins owns the complete publication/verification/cleanup path.
+                claim_filesystem_mutation_commit(&worker_commit_state)
+                    .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
                 authority.consume_at(
                     capability_grant.as_deref(),
                     &session_id,
                     target,
-                    current_unix_seconds(),
+                    now,
                 )
             })
         })
-        .await
-        {
+        .await;
+        drop(request_commit_guard);
+        match worker_result {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(AuthorizedCreateDirectoryError::Authorization(error))) => {
                 record_filesystem_denied(
@@ -5373,7 +5383,7 @@ async fn handle_write_file_call(
             .expect("enabled write_file mutation owns an authority");
         let session_id = session_id.to_owned();
         let capability_grant = capability_grant.map(str::to_owned);
-        let request_commit_guard = WriteFileRequestCommitGuard::new();
+        let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
         let worker_commit_state = request_commit_guard.worker_state();
         let worker_result = tokio::task::spawn_blocking(move || {
             prepared.execute_authorized(|target| {
@@ -5382,7 +5392,8 @@ async fn handle_write_file_call(
                 // remain immediately before grant consumption: cancellation
                 // wins without consuming or mutating, while a worker that
                 // wins owns the complete mutation/verification/cleanup path.
-                claim_write_file_commit(&worker_commit_state)?;
+                claim_filesystem_mutation_commit(&worker_commit_state)
+                    .map_err(|_| WriteFileGrantError::StateUnavailable)?;
                 authority.consume_at(
                     capability_grant.as_deref(),
                     &session_id,
@@ -5924,7 +5935,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_write_request_cancels_detached_worker_before_commit() {
+    async fn dropped_filesystem_request_cancels_detached_worker_before_commit() {
         let grant_consumed = Arc::new(AtomicU8::new(0));
         let mutation_started = Arc::new(AtomicU8::new(0));
         let (worker_waiting_tx, worker_waiting_rx) = tokio::sync::oneshot::channel();
@@ -5934,18 +5945,20 @@ mod tests {
         let request_grant_consumed = Arc::clone(&grant_consumed);
         let request_mutation_started = Arc::clone(&mutation_started);
         let request = tokio::spawn(async move {
-            let request_commit_guard = WriteFileRequestCommitGuard::new();
+            let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
             let worker_commit_state = request_commit_guard.worker_state();
             let worker = tokio::task::spawn_blocking(move || {
                 worker_waiting_tx.send(()).unwrap();
                 release_worker_rx.recv().unwrap();
-                let claim = claim_write_file_commit(&worker_commit_state);
+                let claim = claim_filesystem_mutation_commit(&worker_commit_state);
                 if claim.is_ok() {
                     request_grant_consumed.store(1, Ordering::Release);
                     request_mutation_started.store(1, Ordering::Release);
                 }
                 worker_done_tx
-                    .send(claim.map_err(WriteFileGrantError::reason_code))
+                    .send(claim.map_err(|_| {
+                        WriteFileGrantError::StateUnavailable.reason_code()
+                    }))
                     .unwrap();
             });
             worker.await.unwrap();
@@ -5966,21 +5979,182 @@ mod tests {
     }
 
     #[test]
-    fn write_worker_claim_survives_later_request_drop() {
-        let request_commit_guard = WriteFileRequestCommitGuard::new();
+    fn filesystem_worker_claim_survives_later_request_drop() {
+        let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
         let worker_commit_state = request_commit_guard.worker_state();
 
-        assert_eq!(claim_write_file_commit(&worker_commit_state), Ok(()));
+        assert_eq!(
+            claim_filesystem_mutation_commit(&worker_commit_state),
+            Ok(())
+        );
         drop(request_commit_guard);
 
         assert_eq!(
             worker_commit_state.load(Ordering::Acquire),
-            WRITE_FILE_COMMIT_WORKER_OWNED
+            FILESYSTEM_MUTATION_COMMIT_WORKER_OWNED
         );
         assert_eq!(
-            claim_write_file_commit(&worker_commit_state),
-            Err(WriteFileGrantError::StateUnavailable)
+            claim_filesystem_mutation_commit(&worker_commit_state),
+            Err(FilesystemMutationRequestCancelled)
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_create_request_preserves_grant_and_target() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("cancelled-create");
+        let grant_target = tools
+            .create_directory_grant_target(target.to_string_lossy().as_ref())
+            .unwrap();
+        let prepared = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = current_unix_seconds();
+        let token = authority
+            .issue_at(&session_id, &grant_target, now)
+            .unwrap();
+        let (worker_waiting_tx, worker_waiting_rx) = tokio::sync::oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = tokio::sync::oneshot::channel();
+        let worker_authority = authority.clone();
+        let worker_session = session_id.clone();
+        let worker_token = token.clone();
+
+        let request = tokio::spawn(async move {
+            let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
+            let worker_commit_state = request_commit_guard.worker_state();
+            let worker = tokio::task::spawn_blocking(move || {
+                let _ = worker_waiting_tx.send(());
+                let _ = release_worker_rx.recv();
+                let result = prepared.execute_authorized(|grant_target| {
+                    claim_filesystem_mutation_commit(&worker_commit_state)
+                        .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    worker_authority.consume_at(
+                        Some(&worker_token),
+                        &worker_session,
+                        grant_target,
+                        now,
+                    )
+                });
+                let _ = worker_done_tx.send(result);
+            });
+            let _ = worker.await;
+            drop(request_commit_guard);
+        });
+
+        worker_waiting_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        release_worker_tx.send(()).unwrap();
+
+        assert!(matches!(
+            worker_done_rx.await.unwrap(),
+            Err(AuthorizedCreateDirectoryError::Authorization(
+                CreateDirectoryGrantError::StateUnavailable
+            ))
+        ));
+        assert!(!target.exists());
+
+        let retry = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(Some(&token), &session_id, grant_target, now)
+            });
+        assert!(retry.is_ok());
+        assert!(target.is_dir());
+    }
+
+    #[tokio::test]
+    async fn create_worker_that_claims_commit_owns_completion_after_request_drop() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("worker-owned-create");
+        let grant_target = tools
+            .create_directory_grant_target(target.to_string_lossy().as_ref())
+            .unwrap();
+        let prepared = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = current_unix_seconds();
+        let token = authority
+            .issue_at(&session_id, &grant_target, now)
+            .unwrap();
+        let (worker_claimed_tx, worker_claimed_rx) = tokio::sync::oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = tokio::sync::oneshot::channel();
+        let worker_authority = authority.clone();
+        let worker_session = session_id.clone();
+        let worker_token = token.clone();
+
+        let request = tokio::spawn(async move {
+            let request_commit_guard = FilesystemMutationRequestCommitGuard::new();
+            let worker_commit_state = request_commit_guard.worker_state();
+            let worker = tokio::task::spawn_blocking(move || {
+                let result = prepared.execute_authorized(|grant_target| {
+                    claim_filesystem_mutation_commit(&worker_commit_state)
+                        .map_err(|_| CreateDirectoryGrantError::StateUnavailable)?;
+                    let _ = worker_claimed_tx.send(());
+                    let _ = release_worker_rx.recv();
+                    worker_authority.consume_at(
+                        Some(&worker_token),
+                        &worker_session,
+                        grant_target,
+                        now,
+                    )
+                });
+                let _ = worker_done_tx.send(result);
+            });
+            let _ = worker.await;
+            drop(request_commit_guard);
+        });
+
+        worker_claimed_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        release_worker_tx.send(()).unwrap();
+
+        assert!(worker_done_rx.await.unwrap().is_ok());
+        assert!(target.is_dir());
+        std::fs::remove_dir(&target).unwrap();
+        let replay = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(Some(&token), &session_id, grant_target, now)
+            });
+        assert!(matches!(
+            replay,
+            Err(AuthorizedCreateDirectoryError::Authorization(
+                CreateDirectoryGrantError::Replayed
+            ))
+        ));
+        assert!(!target.exists());
     }
 
     #[cfg(all(

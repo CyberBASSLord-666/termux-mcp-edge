@@ -56,7 +56,7 @@ async fn create_list_hash_metadata_read_and_search_reject_symlinked_parent_compo
     let create_result = tools
         .create_directory(
             linked_parent.join("created").to_string_lossy().to_string(),
-            Some(false),
+            Some(true),
         )
         .await;
     let read_result = tools

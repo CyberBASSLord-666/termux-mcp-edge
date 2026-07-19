@@ -66,12 +66,13 @@ pub const MAX_SEARCH_TOTAL_BYTES: usize = 8_388_608;
 pub const MAX_SEARCH_MATCHES: usize = 256;
 pub const MAX_SEARCH_RESPONSE_BYTES: usize = 262_144;
 
-// Write publication is deliberately serialized process-wide. The critical
-// section is rare, operates on at most one bounded payload, and must cover every
-// in-process FileSystemTools instance so two separately prepared replacements
-// cannot both act on the same captured destination identity. A single lock
-// also protects unpredictable staging names from another in-process write.
-static WRITE_FILE_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// Filesystem publication is deliberately serialized process-wide. The critical
+// section is rare, operates on at most one bounded mutation, and must cover
+// every in-process FileSystemTools instance so independently prepared
+// transactions cannot both consume authorization against stale destination
+// posture. A single lock also protects unpredictable staging names from other
+// in-process mutations.
+static FILESYSTEM_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // Leave deterministic room for the JSON-RPC envelope, bounded summary, and a
 // normally sized request id. The transport independently enforces the exact
@@ -314,6 +315,13 @@ impl PreparedCreateDirectoryMutation {
         self,
         authorize: impl FnOnce(&CreateDirectoryGrantTarget) -> Result<(), CreateDirectoryGrantError>,
     ) -> Result<CreateDirectoryResult, AuthorizedCreateDirectoryError> {
+        let _mutation_guard = FILESYSTEM_MUTATION_LOCK.lock().map_err(|_| {
+            AuthorizedCreateDirectoryError::Filesystem(AppError::Io(std::io::Error::other(
+                "filesystem mutation state is unavailable",
+            )))
+        })?;
+        self.validate_destination_posture()
+            .map_err(AuthorizedCreateDirectoryError::Filesystem)?;
         let temp_name = OsString::from(format!(
             ".termux-mcp-create-directory-{}.tmp",
             uuid::Uuid::new_v4()
@@ -328,6 +336,21 @@ impl PreparedCreateDirectoryMutation {
             .record(started.elapsed().as_secs_f64());
         counter!("mcp.fs.create_directory.created_total").increment(1);
         Ok(result)
+    }
+
+    fn validate_destination_posture(&self) -> Result<(), AppError> {
+        match descriptor_fs::statat(
+            &self.parent_fd,
+            &self.directory_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
+                Err(path_rejected("create_directory target"))
+            }
+            Ok(_) => Err(AppError::PathAlreadyExists),
+            Err(error) => Err(descriptor_error(error)),
+        }
     }
 
     fn execute_after_authorization(
@@ -410,9 +433,9 @@ impl PreparedWriteFileMutation {
         authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
         before_publication: impl FnOnce(&OwnedFd, &OsStr, &OsStr),
     ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
-        let _mutation_guard = WRITE_FILE_MUTATION_LOCK.lock().map_err(|_| {
+        let _mutation_guard = FILESYSTEM_MUTATION_LOCK.lock().map_err(|_| {
             AuthorizedWriteFileError::Filesystem(AppError::Io(std::io::Error::other(
-                "write mutation state is unavailable",
+                "filesystem mutation state is unavailable",
             )))
         })?;
         self.validate_destination_posture()
@@ -1319,19 +1342,10 @@ impl FileSystemTools {
         dry_run: Option<bool>,
     ) -> Result<CreateDirectoryResult, AppError> {
         let dry_run = dry_run.unwrap_or(true);
-        let prepared = self.prepare_create_directory(path, dry_run).await?;
-        if dry_run {
-            Ok(prepared.preview())
-        } else {
-            prepared
-                .execute_authorized(|_| Ok(()))
-                .map_err(|error| match error {
-                    AuthorizedCreateDirectoryError::Authorization(_) => AppError::Io(
-                        std::io::Error::other("unexpected direct create authorization failure"),
-                    ),
-                    AuthorizedCreateDirectoryError::Filesystem(error) => error,
-                })
+        if !dry_run {
+            return Err(AppError::CreateDirectoryMutationAuthorizationRequired);
         }
+        Ok(self.prepare_create_directory(path, true).await?.preview())
     }
 
     pub(crate) async fn prepare_create_directory_mutation(
@@ -3041,6 +3055,7 @@ mod tests {
     };
 
     use crate::audit::{AuditDecision, AuditMode};
+    use crate::create_directory_grant::CreateDirectoryGrantAuthority;
     use crate::write_file_grant::WriteFileGrantAuthority;
     use crate::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
@@ -4100,7 +4115,7 @@ mod tests {
 
             first_entered_rx.recv().unwrap();
             assert!(matches!(
-                WRITE_FILE_MUTATION_LOCK.try_lock(),
+                FILESYSTEM_MUTATION_LOCK.try_lock(),
                 Err(TryLockError::WouldBlock)
             ));
 
@@ -4203,35 +4218,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_directory_defaults_to_validated_dry_run() {
+    async fn create_directory_omitted_and_true_are_validated_dry_runs() {
         let root = tempfile::tempdir().unwrap();
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
-        let target = root.path().join("preview-directory");
+        for (name, dry_run) in [
+            ("preview-directory-default", None),
+            ("preview-directory-explicit", Some(true)),
+        ] {
+            let target = root.path().join(name);
+            let result = tools
+                .create_directory(target.to_string_lossy().to_string(), dry_run)
+                .await
+                .unwrap();
 
-        let result = tools
-            .create_directory(target.to_string_lossy().to_string(), None)
-            .await
-            .unwrap();
-
-        assert_eq!(result.path, target.to_string_lossy());
-        assert!(result.dry_run);
-        assert_eq!(result.mode, "0700");
-        assert_eq!(
-            result.max_response_bytes,
-            MAX_CREATE_DIRECTORY_RESPONSE_BYTES
-        );
-        assert!(!target.exists());
+            assert_eq!(result.path, target.to_string_lossy());
+            assert!(result.dry_run);
+            assert_eq!(result.mode, "0700");
+            assert_eq!(
+                result.max_response_bytes,
+                MAX_CREATE_DIRECTORY_RESPONSE_BYTES
+            );
+            assert!(!target.exists());
+        }
     }
 
     #[tokio::test]
-    async fn create_directory_requires_explicit_false_and_publishes_mode_0700() {
+    async fn public_create_directory_rejects_mutation_before_path_inspection() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let valid = root.path().join("valid-target");
+        let existing = root.path().join("existing-target");
+        let outside_target = outside.path().join("outside-target");
+        let linked_target = root.path().join("linked-target");
+        std::fs::write(&existing, "unchanged").unwrap();
+        symlink(outside.path().join("redirected"), &linked_target).unwrap();
+
+        for target in [&valid, &existing, &outside_target, &linked_target] {
+            assert!(matches!(
+                tools
+                    .create_directory(target.to_string_lossy().to_string(), Some(false))
+                    .await,
+                Err(AppError::CreateDirectoryMutationAuthorizationRequired)
+            ));
+        }
+
+        assert!(!valid.exists());
+        assert_eq!(std::fs::read_to_string(existing).unwrap(), "unchanged");
+        assert!(!outside_target.exists());
+        assert!(std::fs::symlink_metadata(linked_target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!outside.path().join("redirected").exists());
+    }
+
+    #[tokio::test]
+    async fn authorized_create_directory_publishes_mode_0700() {
         let root = tempfile::tempdir().unwrap();
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let target = root.path().join("created-directory");
 
         let result = tools
-            .create_directory(target.to_string_lossy().to_string(), Some(false))
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
             .await
+            .unwrap()
+            .execute_authorized(|_| Ok(()))
             .unwrap();
 
         assert!(!result.dry_run);
@@ -4253,14 +4305,14 @@ mod tests {
 
         for target in [&existing_file, &existing_directory] {
             let result = tools
-                .create_directory(target.to_string_lossy().to_string(), Some(false))
+                .prepare_create_directory_mutation(target.to_string_lossy().to_string())
                 .await;
             assert!(matches!(result, Err(AppError::PathAlreadyExists)));
         }
 
         let missing_parent = root.path().join("missing-parent").join("child");
         let result = tools
-            .create_directory(missing_parent.to_string_lossy().to_string(), Some(false))
+            .prepare_create_directory_mutation(missing_parent.to_string_lossy().to_string())
             .await;
         assert!(matches!(result, Err(AppError::PathNotFound)));
         assert!(!missing_parent.exists());
@@ -4284,7 +4336,7 @@ mod tests {
             linked_target,
         ] {
             let result = tools
-                .create_directory(target.to_string_lossy().to_string(), Some(false))
+                .prepare_create_directory_mutation(target.to_string_lossy().to_string())
                 .await;
             assert!(matches!(result, Err(AppError::PathTraversal { .. })));
         }
@@ -4292,6 +4344,205 @@ mod tests {
         assert!(!outside.path().join("outside-created").exists());
         assert!(!outside.path().join("child").exists());
         assert!(!outside.path().join("redirected").exists());
+    }
+
+    #[tokio::test]
+    async fn prepared_create_revalidates_destination_before_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("stale-create-target");
+        let prepared = tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        std::fs::write(&target, "foreign-file").unwrap();
+        let authorized = AtomicBool::new(false);
+
+        let result = prepared.execute_authorized(|_| {
+            authorized.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedCreateDirectoryError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!authorized.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "foreign-file");
+    }
+
+    #[tokio::test]
+    async fn distinct_create_grants_serialize_and_stale_loser_remains_reusable() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let first_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let second_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("serialized-directory");
+        let first = first_tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let second = second_tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = unix_timestamp_seconds();
+        let first_token = authority
+            .issue_at(&session_id, &first.grant_target, now)
+            .unwrap();
+        let second_token = authority
+            .issue_at(&session_id, &second.grant_target, now)
+            .unwrap();
+        let second_authorized = Arc::new(AtomicBool::new(false));
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+
+        let (first_result, second_result) = std::thread::scope(|scope| {
+            let first_authority = authority.clone();
+            let first_session = session_id.clone();
+            let first_token_for_worker = first_token.clone();
+            let first_handle = scope.spawn(move || {
+                first.execute_authorized(|grant_target| {
+                    first_entered_tx.send(()).unwrap();
+                    release_first_rx.recv().unwrap();
+                    first_authority.consume_at(
+                        Some(&first_token_for_worker),
+                        &first_session,
+                        grant_target,
+                        now,
+                    )
+                })
+            });
+
+            first_entered_rx.recv().unwrap();
+            assert!(matches!(
+                FILESYSTEM_MUTATION_LOCK.try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+
+            let second_authority = authority.clone();
+            let second_session = session_id.clone();
+            let second_token_for_worker = second_token.clone();
+            let second_authorized_for_worker = Arc::clone(&second_authorized);
+            let second_handle = scope.spawn(move || {
+                second_started_tx.send(()).unwrap();
+                second.execute_authorized(|grant_target| {
+                    second_authorized_for_worker.store(true, Ordering::SeqCst);
+                    second_authority.consume_at(
+                        Some(&second_token_for_worker),
+                        &second_session,
+                        grant_target,
+                        now,
+                    )
+                })
+            });
+
+            second_started_rx.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!second_authorized.load(Ordering::SeqCst));
+            release_first_tx.send(()).unwrap();
+
+            (first_handle.join().unwrap(), second_handle.join().unwrap())
+        });
+
+        assert!(first_result.is_ok());
+        assert!(matches!(
+            second_result,
+            Err(AuthorizedCreateDirectoryError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!second_authorized.load(Ordering::SeqCst));
+        assert!(target.is_dir());
+
+        std::fs::remove_dir(&target).unwrap();
+        let retry = second_tools
+            .prepare_create_directory_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(Some(&second_token), &session_id, grant_target, now)
+            });
+        assert!(retry.is_ok());
+        assert!(target.is_dir());
+        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".termux-mcp-create-directory-")
+        }));
+    }
+
+    #[tokio::test]
+    async fn create_and_write_publications_share_one_process_wide_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let create_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let write_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let directory = root.path().join("serialized-create");
+        let file = root.path().join("serialized-write.txt");
+        let prepared_create = create_tools
+            .prepare_create_directory_mutation(directory.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let prepared_write = write_tools
+            .prepare_write_file_mutation(
+                file.to_string_lossy().to_string(),
+                "serialized-content".to_owned(),
+            )
+            .await
+            .unwrap();
+        let write_authorized = Arc::new(AtomicBool::new(false));
+        let (create_entered_tx, create_entered_rx) = mpsc::channel();
+        let (release_create_tx, release_create_rx) = mpsc::channel();
+        let (write_started_tx, write_started_rx) = mpsc::channel();
+
+        let (create_result, write_result) = std::thread::scope(|scope| {
+            let create_handle = scope.spawn(move || {
+                prepared_create.execute_authorized(|_| {
+                    create_entered_tx.send(()).unwrap();
+                    release_create_rx.recv().unwrap();
+                    Ok(())
+                })
+            });
+
+            create_entered_rx.recv().unwrap();
+            let write_authorized_for_worker = Arc::clone(&write_authorized);
+            let write_handle = scope.spawn(move || {
+                write_started_tx.send(()).unwrap();
+                prepared_write.execute_authorized(|_| {
+                    write_authorized_for_worker.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+            });
+
+            write_started_rx.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!write_authorized.load(Ordering::SeqCst));
+            release_create_tx.send(()).unwrap();
+
+            (create_handle.join().unwrap(), write_handle.join().unwrap())
+        });
+
+        assert!(create_result.is_ok());
+        assert!(write_result.is_ok());
+        assert!(write_authorized.load(Ordering::SeqCst));
+        assert!(directory.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(file).unwrap(),
+            "serialized-content"
+        );
     }
 
     #[tokio::test]

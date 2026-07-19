@@ -4,7 +4,9 @@
 //! wrapper. Callers select one value from the documented six-stream enum and
 //! one integer level. Execution always uses the fixed absolute `termux-volume`
 //! program, a cleared environment, `/` as the working directory, null stdin,
-//! bounded output, and the shared cancellation-safe process supervisor.
+//! bounded output, and the shared cancellation-safe process supervisor. The
+//! public client surface is preview-only; live preparation and execution stay
+//! crate-private behind the transport's request-grant boundary.
 
 use std::{ffi::OsString, path::PathBuf, sync::Arc, time::Duration};
 
@@ -183,7 +185,7 @@ impl AndroidVolumeControlClient {
     /// Authorization is intentionally not accepted here. The caller validates
     /// and consumes the request grant only after this preparation succeeds and
     /// immediately before spawning [`PreparedAndroidVolumeMutation::execute`].
-    pub async fn prepare_mutation(
+    pub(crate) async fn prepare_mutation(
         &self,
         stream: AndroidVolumeStreamName,
         requested_level: i64,
@@ -268,7 +270,7 @@ impl Default for AndroidVolumeControlClient {
 }
 
 #[derive(Debug)]
-pub struct PreparedAndroidVolumeMutation {
+pub(crate) struct PreparedAndroidVolumeMutation {
     client: AndroidVolumeControlClient,
     _permit: OwnedSemaphorePermit,
     stream: AndroidVolumeStreamName,
@@ -282,7 +284,9 @@ impl PreparedAndroidVolumeMutation {
     /// This value is intended to be moved into an independently owned Tokio
     /// task. Dropping the HTTP request future then detaches, rather than
     /// cancels, the recovery sequence.
-    pub async fn execute(self) -> Result<AndroidVolumeControlResult, AndroidVolumeControlError> {
+    pub(crate) async fn execute(
+        self,
+    ) -> Result<AndroidVolumeControlResult, AndroidVolumeControlError> {
         if self
             .client
             .set_level(self.stream, self.requested_level)
