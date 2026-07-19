@@ -253,6 +253,29 @@ impl McpTransportOptions {
     }
 }
 
+/// Independently optional authorities for high-impact MCP capabilities.
+///
+/// Grouping these authorities keeps transport construction explicit while
+/// preventing feature additions from growing an error-prone positional API.
+#[cfg(feature = "android-volume-control")]
+pub struct McpCapabilityAuthorities {
+    create_directory: Option<CreateDirectoryGrantAuthority>,
+    android_volume_control: Option<AndroidVolumeGrantAuthority>,
+}
+
+#[cfg(feature = "android-volume-control")]
+impl McpCapabilityAuthorities {
+    pub fn new(
+        create_directory: Option<CreateDirectoryGrantAuthority>,
+        android_volume_control: Option<AndroidVolumeGrantAuthority>,
+    ) -> Self {
+        Self {
+            create_directory,
+            android_volume_control,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct McpTransportState {
     security_policy: TransportSecurityPolicy,
@@ -746,8 +769,10 @@ pub fn router_with_capability_authorities(
         android_battery_status_enabled,
         android_volume_status_enabled,
         command_execution_enabled,
-        create_directory_authority,
-        android_volume_control_authority,
+        McpCapabilityAuthorities::new(
+            create_directory_authority,
+            android_volume_control_authority,
+        ),
         McpTransportOptions::default(),
     )
 }
@@ -762,10 +787,13 @@ pub fn router_with_capability_authorities_and_options(
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
+    authorities: McpCapabilityAuthorities,
     options: McpTransportOptions,
 ) -> Router {
+    let McpCapabilityAuthorities {
+        create_directory,
+        android_volume_control,
+    } = authorities;
     router_from_state(
         McpTransportState::new(
             security_policy,
@@ -773,9 +801,9 @@ pub fn router_with_capability_authorities_and_options(
             android_battery_status_enabled,
             android_volume_status_enabled,
             command_execution_enabled,
-            create_directory_authority,
+            create_directory,
         )
-        .with_android_volume_control_authority(android_volume_control_authority)
+        .with_android_volume_control_authority(android_volume_control)
         .with_options(options),
     )
 }
@@ -2226,16 +2254,7 @@ fn handle_runtime_status_call(
         RUNTIME_STATUS_GATE,
         RUNTIME_STATUS_ALLOWED,
     );
-    runtime_status_response(
-        id,
-        &state.audit_counters,
-        state.create_directory_authority.is_some(),
-        state.android_battery_status_enabled,
-        state.android_volume_status_enabled,
-        state.android_volume_control_enabled,
-        state.command_execution_enabled,
-        state.sse_enabled,
-    )
+    runtime_status_response(id, state)
 }
 
 async fn handle_android_battery_status_call(
@@ -2770,15 +2789,15 @@ fn available_tools(
 #[rustfmt::skip]
 fn runtime_status_response(
     id: Option<Value>,
-    audit_counters: &SharedAuditCounters,
-    create_directory_mutation_enabled: bool,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    android_volume_control_enabled: bool,
-    command_execution_enabled: bool,
-    sse_enabled: bool,
+    state: &McpTransportState,
 ) -> Response {
-    let audit_counters_snapshot = audit_counters_snapshot(audit_counters);
+    let audit_counters_snapshot = audit_counters_snapshot(&state.audit_counters);
+    let create_directory_mutation_enabled = state.create_directory_authority.is_some();
+    let android_battery_status_enabled = state.android_battery_status_enabled;
+    let android_volume_status_enabled = state.android_volume_status_enabled;
+    let android_volume_control_enabled = state.android_volume_control_enabled;
+    let command_execution_enabled = state.command_execution_enabled;
+    let sse_enabled = state.sse_enabled;
     let available_tools = available_tools(
         android_battery_status_enabled,
         android_volume_status_enabled,
@@ -5152,16 +5171,7 @@ mod tests {
             ]
         );
 
-        let runtime = runtime_status_response(
-            Some(json!("runtime")),
-            &state.audit_counters,
-            state.create_directory_authority.is_some(),
-            state.android_battery_status_enabled,
-            state.android_volume_status_enabled,
-            state.android_volume_control_enabled,
-            state.command_execution_enabled,
-            state.sse_enabled,
-        );
+        let runtime = runtime_status_response(Some(json!("runtime")), &state);
         let runtime: Value = serde_json::from_slice(
             &to_bytes(runtime.into_body(), 64 * 1024).await.unwrap(),
         )

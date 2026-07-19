@@ -50,10 +50,6 @@ pub(crate) struct SseReplayEvent {
 }
 
 impl SseReplayEvent {
-    pub(crate) fn id(&self) -> &str {
-        &self.id
-    }
-
     pub(crate) fn append_wire_bytes(&self, output: &mut Vec<u8>) {
         output.extend_from_slice(b"id: ");
         output.extend_from_slice(self.id.as_bytes());
@@ -429,11 +425,11 @@ mod tests {
         );
 
         assert_eq!(
-            store.replay_sse_after(&session_id, events[0].id()).unwrap(),
+            store.replay_sse_after(&session_id, &events[0].id).unwrap(),
             vec![events[1].clone()]
         );
         assert!(store
-            .replay_sse_after(&session_id, events[1].id())
+            .replay_sse_after(&session_id, &events[1].id)
             .unwrap()
             .is_empty());
     }
@@ -452,13 +448,13 @@ mod tests {
 
         assert_eq!(
             store
-                .replay_sse_after(&second, first_events[0].id())
+                .replay_sse_after(&second, &first_events[0].id)
                 .unwrap_err(),
             SseReplayError::CursorNotFound
         );
         assert_eq!(
             store
-                .replay_sse_after(&first, second_events[0].id())
+                .replay_sse_after(&first, &second_events[0].id)
                 .unwrap_err(),
             SseReplayError::CursorNotFound
         );
@@ -479,12 +475,12 @@ mod tests {
         }
         assert_eq!(
             store
-                .replay_sse_after(&session_id, first[0].id())
+                .replay_sse_after(&session_id, &first[0].id)
                 .unwrap_err(),
             SseReplayError::CursorNotFound
         );
         assert_eq!(
-            store.replay_sse_after(&session_id, newest[0].id()).unwrap(),
+            store.replay_sse_after(&session_id, &newest[0].id).unwrap(),
             vec![newest[1].clone()]
         );
 
@@ -496,13 +492,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .replay_sse_after(&session_id, large_first[0].id())
+                .replay_sse_after(&session_id, &large_first[0].id)
                 .unwrap_err(),
             SseReplayError::CursorNotFound
         );
         assert_eq!(
             store
-                .replay_sse_after(&session_id, large_second[0].id())
+                .replay_sse_after(&session_id, &large_second[0].id)
                 .unwrap(),
             vec![large_second[1].clone()]
         );
@@ -524,7 +520,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .replay_sse_after(&session_id, retained[0].id())
+                .replay_sse_after(&session_id, &retained[0].id)
                 .unwrap(),
             vec![retained[1].clone()]
         );
@@ -541,7 +537,7 @@ mod tests {
         store.terminate_at(&terminated, start).unwrap();
         assert_eq!(
             store
-                .replay_sse_after_at(&terminated, terminated_events[0].id(), start)
+                .replay_sse_after_at(&terminated, &terminated_events[0].id, start)
                 .unwrap_err(),
             SseReplayError::SessionNotFound
         );
@@ -554,7 +550,7 @@ mod tests {
             store
                 .replay_sse_after_at(
                     &expired,
-                    expired_events[0].id(),
+                    &expired_events[0].id,
                     start + Duration::from_secs(10),
                 )
                 .unwrap_err(),
