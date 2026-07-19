@@ -122,6 +122,6 @@ The exact PR head must also pass:
 - evidence validation against `command-emulated-evidence-schema-v2.json`;
 - ordinary-dependency and selected-workspace API compile failures for removed authority symbols, the private command switch, raw types, legacy constructors, and former public option/authority bundle types;
 - runtime pre-spawn rejection for wrong name, wrong inode, symlink/non-regular/non-executable candidates, forged/raw input shapes, root/cwd aliases, and every hard-limit maximum-plus-one case;
-- exact 34-request native v2 evidence whose combined phase proves `/proc/self/exe` continues to execute the already-running image and the retained safe-root descriptor survives pathname rename/replacement.
+- strict native v2 evidence with exactly 29 MCP requests plus a separate wrong-name construction-failure phase; the combined phase proves `/proc/self/exe` continues to execute the already-running image and the retained safe-root descriptor survives pathname rename/replacement, while the separate phase proves typed rejection before request serving without sensitive diagnostics.
 
 Do not substitute a long idle observation for these deterministic boundary tests. Physical observation, when release governance requires it for changed runtime inputs, is a separate release-qualification decision and does not replace command-policy evidence.
