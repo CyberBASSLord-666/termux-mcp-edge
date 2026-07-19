@@ -437,6 +437,7 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
 async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
     let (root, file_tools) = empty_test_file_tools();
     let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
     let source = root.path().join("source.txt");
     tokio::fs::write(&source, "safe content").await.unwrap();
 
@@ -461,8 +462,9 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
             ("empty-object", json!({})),
         ] {
             let id = json!(format!("{tool_name}-{label}"));
-            let response = post_to_router(
+            let response = post_json_to_session(
                 router.clone(),
+                &session_id,
                 tool_call(id.clone(), tool_name, Some(arguments)),
             )
             .await;
@@ -583,8 +585,9 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
 
     for (index, (tool_name, arguments)) in wrong_field_types.into_iter().enumerate() {
         let id = json!(format!("wrong-field-type-{index}"));
-        let response = post_to_router(
+        let response = post_json_to_session(
             router.clone(),
+            &session_id,
             tool_call(id.clone(), tool_name, Some(arguments)),
         )
         .await;
