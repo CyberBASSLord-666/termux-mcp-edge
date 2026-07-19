@@ -934,7 +934,7 @@ fn public_wire_contract_constants_remain_bounded() {
     assert_eq!(COPY_FILE_GRANT_HEADER, "mcp-capability-grant");
     assert_eq!(MAX_COPY_FILE_GRANT_HEADER_BYTES, 384);
     assert_eq!(COPY_FILE_GRANT_TTL_SECONDS, 60);
-    assert!(MAX_COPY_FILE_RESPONSE_BYTES < MAX_MCP_JSON_RPC_ID_BYTES);
+    assert!(std::hint::black_box(MAX_COPY_FILE_RESPONSE_BYTES) < MAX_MCP_JSON_RPC_ID_BYTES);
     assert_eq!(MCP_POST_ACCEPT, "application/json, text/event-stream");
 }
 
