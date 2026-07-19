@@ -229,6 +229,8 @@ run_validator() {
 
 bash -n "$SCRIPT"
 grep -Fq 'valid_capability_grant()' "$SCRIPT"
+grep -Fq 'capability_grant_has_signed_byte "$grant" 64 01' "$SCRIPT"
+grep -Fq 'capability_grant_has_signed_byte "$grant" 16 02' "$SCRIPT"
 for marker in \
   'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
   '--issue-write-file-grant' \
