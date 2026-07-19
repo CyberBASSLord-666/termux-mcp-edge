@@ -128,6 +128,8 @@ Any invocation change must prove:
 8. enabled tools enforce safe roots, bounds, dry-run/mutation rules, and audit privacy;
 9. failures do not leak secrets, private paths, raw I/O errors, serde diagnostics, rejected values, command arguments, tokens, or personal data.
 
+For the baseline Class 2 filesystem mutations, discovery and invocation must also prove that directory and file-write gates are independently default-disabled; `dry_run:false` alone is denied; exact-binary grants cannot cross capability, principal, session, root, target, content, create/replace disposition, posture, or time bindings; preview does not consume; response preflight precedes consumption; and every post-consumption failure retains replay state while descriptor-safe cleanup preserves foreign objects.
+
 ## High-impact tool requirements
 
 High-impact tools include arbitrary or mutating command execution, new executable authority beyond the fixed server diagnostics, package management, process/service control, Android/device control, broad filesystem mutation, network mutation, browser automation, credential handling, and shared-storage operations.

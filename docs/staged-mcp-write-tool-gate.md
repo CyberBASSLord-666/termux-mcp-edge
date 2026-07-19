@@ -14,7 +14,7 @@ Before the write-tool transport stage merged:
 
 ## Current baseline after the write-tool stage
 
-The current staged MCP runtime exposes `write_file` with safe-root enforcement, payload-size controls, and dry-run-by-default behavior. Omitted `dry_run` defaults to `true`; mutating writes require explicit `dry_run: false` and remain bounded by the configured filesystem safe roots.
+The current staged MCP runtime exposes `write_file` preview with safe-root enforcement, payload-size controls, and dry-run-by-default behavior. Omitted `dry_run` defaults to `true`. This historical note's earlier `dry_run:false` authorization model was superseded by issue #276: live mutation now also requires the independent default-disabled write gate and one request-scoped grant bound to principal, session, anchored root, normalized target, exact content SHA-256, create-or-replace disposition, and mutating posture. The normative contracts are [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md) and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 
 At this historical stage, Android platform control, shell fallback, arbitrary command execution, high-impact tools, and broad runtime-surface expansion remained unavailable. Later focused gates added fixed read-only diagnostics and exact request-authorized volume control without changing this write-tool contract.
 
@@ -22,7 +22,7 @@ At this historical stage, Android platform control, shell fallback, arbitrary co
 
 The first transport PR that exposed `write_file` had to remain default-deny and dry-run-first:
 
-1. `tools/list` may advertise `write_file` only with an input schema that makes write intent explicit.
+1. `tools/list` may advertise `write_file` only with an input schema that makes write intent and the current disabled/enabled gate posture explicit.
 2. `dry_run` must default to `true` if omitted at the transport boundary.
 3. Mutating writes must require `dry_run: false` in the tool arguments.
 4. Safe-root validation must remain mandatory for every write request.

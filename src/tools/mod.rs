@@ -26,11 +26,14 @@ pub use filesystem::{
     MAX_SEARCH_FILE_BYTES, MAX_SEARCH_MATCHES, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES,
     MAX_SEARCH_TOTAL_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_ESCAPED_BYTES,
     MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
-    MIN_TEXT_RANGE_BYTES,
+    MIN_TEXT_RANGE_BYTES, WriteFileResult, MAX_WRITE_FILE_RESPONSE_BYTES, WRITE_FILE_MODE,
 };
 
 #[cfg(feature = "mcp-runtime")]
-pub(crate) use filesystem::{AuthorizedCreateDirectoryError, PreparedCreateDirectoryMutation};
+pub(crate) use filesystem::{
+    AuthorizedCreateDirectoryError, AuthorizedWriteFileError, PreparedCreateDirectoryMutation,
+    PreparedWriteFileMutation,
+};
 
 #[cfg(not(feature = "mcp-runtime"))]
 #[derive(Clone)]

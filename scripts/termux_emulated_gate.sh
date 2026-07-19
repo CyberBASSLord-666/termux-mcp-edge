@@ -315,6 +315,11 @@ jq -e \
     and ([.results[].code] | index("volume_control_disabled_call_rejected") != null)
     and ([.results[].code] | index("exact_tool_allowlist") != null)
     and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
+    and ([.results[].code] | index("expanded_body_posture_verified") != null)
+    and ([.results[].code] | index("safe_root_file_create_replace_verified") != null)
+    and ([.results[].code] | index("request_scoped_single_use_write_grant_enforced") != null)
+    and ([.results[].code] | index("exact_write_file_byte_limit_verified") != null)
+    and ([.results[].code] | index("bounded_write_file_response_preflight_verified") != null)
     and ([.results[].code] | index("symlink_escape_rejected") != null)
     and ([.results[].code] | index("authentication_precedes_body_limit") != null)
   ' "$RUNTIME_REPORT" >/dev/null || fail runtime_report_invalid
@@ -338,6 +343,7 @@ start_stress_server() {
   MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
   MCP__TRANSPORT__MAX_BODY_BYTES=1024 \
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+  MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$MCP_ARTIFACT" >"$STRESS_LOG" 2>&1 &
   SERVER_PID=$!
@@ -410,6 +416,12 @@ for sample in $(seq 1 "$SAMPLES"); do
     | $tool.inputSchema.properties.dry_run.const == true
       and ($tool.description | contains("mutation gate is disabled"))
   ' "$BODY_FILE" >/dev/null || fail stress_create_directory_disabled_posture_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "write_file"))[0] as $tool
+    | $tool.inputSchema.properties.dry_run.const == true
+      and ($tool.description | contains("mutation gate is disabled"))
+  ' "$BODY_FILE" >/dev/null || fail stress_write_file_disabled_posture_invalid
 
   if ((sample % 16 == 0)); then
     post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
@@ -425,11 +437,24 @@ for sample in $(seq 1 "$SAMPLES"); do
       and .result.structuredContent.createDirectoryMutationEnabled == false
       and .result.structuredContent.createDirectoryGrantRequired == false
       and .result.structuredContent.createDirectoryMutationMode == "dry_run_only_mutation_disabled"
+      and .result.structuredContent.fileWrites == true
+      and .result.structuredContent.fileWriteMutationEnabled == false
+      and .result.structuredContent.fileWriteGrantRequired == false
+      and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
+      and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant"
+      and .result.structuredContent.fileWriteGrantTtlSeconds == 60
+      and .result.structuredContent.fileWriteMaxBytes == 1048576
+      and .result.structuredContent.fileWriteMaxResponseBytes == 16384
       and .result.structuredContent.highImpactTools == false
     ' "$BODY_FILE" >/dev/null || fail stress_high_impact_gate_invalid
   fi
 
   if ((sample == 1)); then
+    post_mcp "$(jq -cn --arg path "$SAFE_ROOT/write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
+    [[ "$MCP_STATUS" == 403 ]] || fail stress_write_file_disabled_status_invalid
+    jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_write_file_disabled_contract_invalid
+    [[ ! -e "$SAFE_ROOT/write-disabled.txt" && ! -L "$SAFE_ROOT/write-disabled.txt" ]] || fail stress_write_file_disabled_mutated
+
     post_mcp '{"jsonrpc":"2.0","id":"battery-uncompiled","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
     [[ "$MCP_STATUS" == 200 ]] || fail stress_battery_uncompiled_status_invalid
     jq -e '

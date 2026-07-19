@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="7"
+readonly VALIDATOR_VERSION="8"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -160,6 +160,7 @@ MCP_SESSION_ID=""
 CAPABILITY_KEY_ID="release-validator-1"
 CAPABILITY_KEY_HEX=""
 CAPABILITY_GRANT_FILE=""
+WRITE_CAPABILITY_GRANT_FILE=""
 CAPABILITY_RUNTIME_CONFIG_FILE=""
 AUTH_HEADER_FILE=""
 REQUEST_FILE=""
@@ -698,13 +699,15 @@ prepare_runtime_inputs() {
     REQUEST_FILE="$TEMP_ROOT/request.json"
     SESSION_HEADER_FILE="$TEMP_ROOT/session-headers.txt"
     CAPABILITY_GRANT_FILE="$TEMP_ROOT/create-directory-grant.txt"
+    WRITE_CAPABILITY_GRANT_FILE="$TEMP_ROOT/write-file-grant.txt"
     CAPABILITY_RUNTIME_CONFIG_FILE="$TEMP_ROOT/capability-runtime.env"
     printf 'Authorization: Bearer %s\n' "$MCP_TOKEN" >"$AUTH_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
+    : >"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
-    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
+    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_GRANT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
   fi
   [[ "$SAFE_ROOT" == /* && -d "$SAFE_ROOT" && ! -L "$SAFE_ROOT" ]] || fail safe_root_invalid
   SAFE_ROOT="${SAFE_ROOT%/}"
@@ -732,6 +735,7 @@ prepare_runtime_inputs() {
     'MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false' \
     "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT" \
     'MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true' \
+    'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
     "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID" \
     "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
     >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail capability_runtime_config_failed
@@ -805,8 +809,30 @@ issue_create_directory_grant() {
   unset grant
 }
 
+issue_write_file_grant() {
+  local target="$1" content_file="$2" session_id="${3:-$MCP_SESSION_ID}" content_sha256
+  validate_private_file "$content_file" write_file_content_staging_invalid
+  content_sha256="$(sha256sum -- "$content_file" | awk '{print $1}')" || fail write_file_content_digest_failed
+  [[ "$content_sha256" =~ ^[0-9a-f]{64}$ ]] || fail write_file_content_digest_failed
+  : >"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null || fail write_file_grant_staging_failed
+  chmod 600 "$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null || fail write_file_grant_staging_failed
+  if ! MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_RUNTIME_CONFIG_FILE" \
+    MCP__CAPABILITY__SESSION_ID="$session_id" \
+    MCP__CAPABILITY__WRITE_FILE_TARGET="$target" \
+    MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256="$content_sha256" \
+      "$MCP_PINNED_ARTIFACT" --issue-write-file-grant >"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null
+  then
+    fail write_file_grant_issue_failed
+  fi
+  [[ "$(wc -l <"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null)" == 1 ]] || fail write_file_grant_output_invalid
+  local grant
+  grant="$(<"$WRITE_CAPABILITY_GRANT_FILE")"
+  valid_capability_grant "$grant" || fail write_file_grant_output_invalid
+  unset grant content_sha256
+}
+
 start_server() {
-  local artifact="$1" posture="$2"
+  local artifact="$1" posture="$2" max_body_bytes="${3:-1024}"
   local log_file="$TEMP_ROOT/server-$posture.log"
   local -a environment=(
     "MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN"
@@ -819,13 +845,14 @@ start_server() {
     "MCP__TRANSPORT__SSE_ENABLED=false"
     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4"
     "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30"
-    "MCP__TRANSPORT__MAX_BODY_BYTES=1024"
+    "MCP__TRANSPORT__MAX_BODY_BYTES=$max_body_bytes"
     "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT"
     "RUST_LOG=termux_mcp_server=info"
   )
   if [[ "$posture" == mcp ]]; then
     environment+=(
       "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true"
+      "MCP__FILE__WRITE_MUTATION_ENABLED=true"
       "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
       "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
     )
@@ -868,6 +895,256 @@ mcp_post() {
     -H 'Accept: application/json, text/event-stream'
   )
   curl_local "${args[@]}" --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp"
+}
+
+mcp_post_staged() {
+  local output="$1" session_id="${2:-}" include_protocol="${3:-1}" grant_file="${4:-}"
+  stage_session_headers "$session_id" "$include_protocol" "$grant_file"
+  local -a args=(
+    -sS -o "$output" -w '%{http_code}'
+    -H "@$SESSION_HEADER_FILE"
+    -H "Host: localhost:$PORT"
+    -H "Origin: http://localhost:$PORT"
+    -H 'Content-Type: application/json'
+    -H 'Accept: application/json, text/event-stream'
+  )
+  curl_local "${args[@]}" --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp"
+}
+
+stage_write_file_request() {
+  local identifier="$1" target="$2" content_file="$3" dry_run="$4"
+  validate_private_file "$content_file" write_file_content_staging_invalid
+  jq -cn \
+    --arg identifier "$identifier" \
+    --arg target "$target" \
+    --rawfile content "$content_file" \
+    --argjson dry_run "$dry_run" \
+    '{jsonrpc:"2.0",id:$identifier,method:"tools/call",params:{name:"write_file",arguments:{path:$target,content:$content,dry_run:$dry_run}}}' \
+    >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
+  chmod 600 "$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
+}
+
+stage_write_file_request_with_id_file() {
+  local identifier_file="$1" target="$2" content_file="$3"
+  validate_private_file "$identifier_file" write_file_identifier_staging_invalid
+  validate_private_file "$content_file" write_file_content_staging_invalid
+  jq -cn \
+    --rawfile identifier "$identifier_file" \
+    --arg target "$target" \
+    --rawfile content "$content_file" \
+    '{jsonrpc:"2.0",id:$identifier,method:"tools/call",params:{name:"write_file",arguments:{path:$target,content:$content,dry_run:false}}}' \
+    >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
+  chmod 600 "$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
+}
+
+write_file_staging_absent() {
+  local -a matches=()
+  shopt -s nullglob
+  matches=("$VALIDATION_SAFE_ROOT"/.termux-mcp-write-file-*.tmp)
+  shopt -u nullglob
+  ((${#matches[@]} == 0))
+}
+
+run_write_file_authorization_checks() {
+  local body="$TEMP_ROOT/write-file-response.json" headers="$TEMP_ROOT/write-file-headers.txt"
+  local create_content="$TEMP_ROOT/write-file-create-content.txt"
+  local mismatch_content="$TEMP_ROOT/write-file-mismatch-content.txt"
+  local replace_content="$TEMP_ROOT/write-file-replace-content.txt"
+  local exact_content="$TEMP_ROOT/write-file-exact-limit.txt"
+  local over_content="$TEMP_ROOT/write-file-over-limit.txt"
+  local identifier_file="$TEMP_ROOT/write-file-oversized-id.txt"
+  local preflight_content="$TEMP_ROOT/write-file-preflight-content.txt"
+  local target="$VALIDATION_SAFE_ROOT/write-file.txt"
+  local mismatch_target="$VALIDATION_SAFE_ROOT/write-file-target-mismatch.txt"
+  local cross_directory="$VALIDATION_SAFE_ROOT/write-file-cross-context-directory"
+  local posture_target="$VALIDATION_SAFE_ROOT/write-file-posture.txt"
+  local reverse_posture_target="$VALIDATION_SAFE_ROOT/write-file-reverse-posture.txt"
+  local session_target="$VALIDATION_SAFE_ROOT/write-file-session.txt"
+  local exact_target="$VALIDATION_SAFE_ROOT/write-file-exact-limit.txt"
+  local over_target="$VALIDATION_SAFE_ROOT/write-file-over-limit.txt"
+  local preflight_target="$VALIDATION_SAFE_ROOT/write-file-preflight.txt"
+  local status payload bytes
+
+  printf '%s' 'validation-write-create' >"$create_content" 2>/dev/null || fail write_file_content_staging_failed
+  printf '%s' 'validation-write-mismatch' >"$mismatch_content" 2>/dev/null || fail write_file_content_staging_failed
+  printf '%s' 'validation-write-replace' >"$replace_content" 2>/dev/null || fail write_file_content_staging_failed
+  printf '%s' 'validation-write-preflight' >"$preflight_content" 2>/dev/null || fail write_file_content_staging_failed
+  dd if=/dev/zero bs=1048576 count=1 status=none 2>/dev/null | tr '\000' x >"$exact_content" || fail write_file_content_staging_failed
+  dd if=/dev/zero bs=1048577 count=1 status=none 2>/dev/null | tr '\000' y >"$over_content" || fail write_file_content_staging_failed
+  printf '%*s' 17000 '' | tr ' ' i >"$identifier_file" || fail write_file_identifier_staging_failed
+  chmod 600 "$create_content" "$mismatch_content" "$replace_content" "$exact_content" "$over_content" "$identifier_file" "$preflight_content" 2>/dev/null || fail write_file_content_staging_failed
+  [[ "$(stat -c '%s' "$exact_content" 2>/dev/null)" == 1048576 ]] || fail write_file_exact_fixture_size_invalid
+  [[ "$(stat -c '%s' "$over_content" 2>/dev/null)" == 1048577 ]] || fail write_file_over_fixture_size_invalid
+
+  start_server "$MCP_PINNED_ARTIFACT" mcp 2097152
+  curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null || fail write_file_readiness_failed
+  jq -e --arg version "$EXPECTED_VERSION" '
+    .status == "ready"
+    and .version == $version
+    and .mcp_runtime_enabled == true
+    and .mcp_request_limits.max_body_bytes == 2097152
+  ' "$body" >/dev/null 2>&1 || fail write_file_runtime_posture_mismatch
+  record_result runtime write_file_readiness pass expanded_body_posture_verified
+
+  payload='{"jsonrpc":"2.0","id":"write-file-initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-validator","version":"1.0.0"}}}'
+  stage_request "$payload"
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp")"
+  expect_status write_file_initialize "$status" 200 write_file_initialize_succeeded
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail write_file_session_header_invalid
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status write_file_initialized_notification "$status" 202 write_file_initialized_notification_accepted
+  [[ ! -s "$body" ]] || fail write_file_initialized_notification_body_present
+
+  stage_write_file_request write-file-missing-grant "$target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID")"
+  expect_status write_file_missing_grant "$status" 403 write_file_missing_grant_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_missing"' "$body" >/dev/null 2>&1 || fail write_file_missing_grant_body_invalid
+  [[ ! -e "$target" ]] || fail write_file_missing_grant_mutated
+
+  issue_write_file_grant "$target" "$create_content"
+  payload='{"jsonrpc":"2.0","id":"write-file-wrong-context","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_grant_context "$status" 400 write_file_grant_wrong_context_rejected
+  jq -e '.error.code == -32600' "$body" >/dev/null 2>&1 || fail write_file_grant_context_body_invalid
+
+  stage_write_file_request write-file-dry-run "$target" "$create_content" true
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_dry_run "$status" 200 write_file_dry_run_succeeded
+  jq -e '.result.structuredContent == {dryRun:true,bytes:23,message:"DRY-RUN"}' "$body" >/dev/null 2>&1 || fail write_file_dry_run_body_invalid
+  [[ ! -e "$target" ]] || fail write_file_dry_run_mutated
+
+  stage_write_file_request write-file-target-mismatch "$mismatch_target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_target_binding "$status" 403 write_file_target_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_target_binding_body_invalid
+  [[ ! -e "$mismatch_target" ]] || fail write_file_target_binding_mutated
+
+  stage_write_file_request write-file-content-mismatch "$target" "$mismatch_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_content_binding "$status" 403 write_file_content_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_content_binding_body_invalid
+  [[ ! -e "$target" ]] || fail write_file_content_binding_mutated
+
+  payload="$(jq -cn --arg path "$cross_directory" '{jsonrpc:"2.0",id:"write-file-cross-capability",method:"tools/call",params:{name:"create_directory",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_cross_capability "$status" 403 write_file_cross_capability_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_cross_capability_body_invalid
+  [[ ! -e "$cross_directory" ]] || fail write_file_cross_capability_mutated
+
+  issue_create_directory_grant "$cross_directory"
+  stage_write_file_request write-file-create-grant-mismatch "$target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$CAPABILITY_GRANT_FILE")"
+  expect_status write_file_create_grant_binding "$status" 403 write_file_create_grant_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_create_grant_binding_body_invalid
+  [[ ! -e "$target" ]] || fail write_file_create_grant_binding_mutated
+
+  stage_write_file_request write-file-create "$target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_create "$status" 200 write_file_create_succeeded
+  jq -e '.result.structuredContent == {dryRun:false,bytes:23,message:"Wrote 23 bytes"}' "$body" >/dev/null 2>&1 || fail write_file_create_body_invalid
+  cmp -s "$create_content" "$target" || fail write_file_create_content_invalid
+  [[ "$(stat -c '%a' "$target" 2>/dev/null)" == 600 ]] || fail write_file_create_mode_invalid
+  grep -Fq validation-write-create "$body" && fail write_file_create_content_reflected
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail write_file_create_path_reflected
+
+  rm -f -- "$target" 2>/dev/null || fail write_file_replay_fixture_cleanup_failed
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_replay "$status" 403 write_file_grant_replay_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"' "$body" >/dev/null 2>&1 || fail write_file_replay_body_invalid
+  [[ ! -e "$target" ]] || fail write_file_replay_mutated
+
+  printf '%s' 'validation-write-old' >"$target" 2>/dev/null || fail write_file_replace_fixture_failed
+  chmod 644 "$target" 2>/dev/null || fail write_file_replace_fixture_failed
+  issue_write_file_grant "$target" "$replace_content"
+  stage_write_file_request write-file-replace "$target" "$replace_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_replace "$status" 200 write_file_replace_succeeded
+  jq -e '.result.structuredContent == {dryRun:false,bytes:24,message:"Wrote 24 bytes"}' "$body" >/dev/null 2>&1 || fail write_file_replace_body_invalid
+  cmp -s "$replace_content" "$target" || fail write_file_replace_content_invalid
+  [[ "$(stat -c '%a' "$target" 2>/dev/null)" == 600 ]] || fail write_file_replace_mode_invalid
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_replace_replay "$status" 403 write_file_replace_grant_replay_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"' "$body" >/dev/null 2>&1 || fail write_file_replace_replay_body_invalid
+  cmp -s "$replace_content" "$target" || fail write_file_replace_replay_modified
+  record_result runtime write_file_publication pass safe_root_file_create_replace_verified
+
+  issue_write_file_grant "$posture_target" "$create_content"
+  printf '%s' 'preserve-create-posture' >"$posture_target" 2>/dev/null || fail write_file_posture_fixture_failed
+  chmod 600 "$posture_target" 2>/dev/null || fail write_file_posture_fixture_failed
+  stage_write_file_request write-file-create-posture-mismatch "$posture_target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_create_posture "$status" 403 write_file_create_posture_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_create_posture_body_invalid
+  [[ "$(<"$posture_target")" == preserve-create-posture ]] || fail write_file_create_posture_overwrote
+
+  printf '%s' 'preserve-replace-posture' >"$reverse_posture_target" 2>/dev/null || fail write_file_posture_fixture_failed
+  chmod 600 "$reverse_posture_target" 2>/dev/null || fail write_file_posture_fixture_failed
+  issue_write_file_grant "$reverse_posture_target" "$create_content"
+  rm -f -- "$reverse_posture_target" 2>/dev/null || fail write_file_posture_fixture_cleanup_failed
+  stage_write_file_request write-file-replace-posture-mismatch "$reverse_posture_target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_replace_posture "$status" 403 write_file_replace_posture_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_replace_posture_body_invalid
+  [[ ! -e "$reverse_posture_target" ]] || fail write_file_replace_posture_mutated
+
+  issue_write_file_grant "$session_target" "$create_content" '0194f9f9-bbbb-7ccc-8ddd-ffffffffffff'
+  stage_write_file_request write-file-session-mismatch "$session_target" "$create_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_session_binding "$status" 403 write_file_session_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail write_file_session_binding_body_invalid
+  [[ ! -e "$session_target" ]] || fail write_file_session_binding_mutated
+  record_result runtime write_file_authorization pass request_scoped_single_use_write_grant_enforced
+
+  issue_write_file_grant "$exact_target" "$exact_content"
+  stage_write_file_request write-file-exact-limit "$exact_target" "$exact_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_exact_limit "$status" 200 write_file_exact_limit_succeeded
+  jq -e '.result.structuredContent == {dryRun:false,bytes:1048576,message:"Wrote 1048576 bytes"}' "$body" >/dev/null 2>&1 || fail write_file_exact_limit_body_invalid
+  cmp -s "$exact_content" "$exact_target" || fail write_file_exact_limit_content_invalid
+  [[ "$(stat -c '%a' "$exact_target" 2>/dev/null)" == 600 ]] || fail write_file_exact_limit_mode_invalid
+
+  issue_write_file_grant "$over_target" "$over_content"
+  stage_write_file_request write-file-over-limit "$over_target" "$over_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_over_limit "$status" 413 write_file_over_limit_rejected
+  jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail write_file_over_limit_body_invalid
+  [[ ! -e "$over_target" ]] || fail write_file_over_limit_mutated
+  write_file_staging_absent || fail write_file_over_limit_left_staging
+  record_result runtime write_file_exact_limit pass exact_write_file_byte_limit_verified
+
+  issue_write_file_grant "$preflight_target" "$preflight_content"
+  stage_write_file_request_with_id_file "$identifier_file" "$preflight_target" "$preflight_content"
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_response_preflight "$status" 413 write_file_response_preflight_rejected
+  jq -e '.id == null and .error.code == -32001' "$body" >/dev/null 2>&1 || fail write_file_response_preflight_body_invalid
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail write_file_response_preflight_size_failed
+  ((bytes <= 16384)) || fail write_file_response_preflight_size_invalid
+  [[ ! -e "$preflight_target" ]] || fail write_file_response_preflight_mutated
+  write_file_staging_absent || fail write_file_response_preflight_left_staging
+
+  stage_write_file_request write-file-response-retry "$preflight_target" "$preflight_content" false
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$WRITE_CAPABILITY_GRANT_FILE")"
+  expect_status write_file_response_retry "$status" 200 write_file_response_retry_succeeded
+  cmp -s "$preflight_content" "$preflight_target" || fail write_file_response_retry_content_invalid
+  [[ "$(stat -c '%a' "$preflight_target" 2>/dev/null)" == 600 ]] || fail write_file_response_retry_mode_invalid
+  write_file_staging_absent || fail write_file_response_retry_left_staging
+  record_result runtime write_file_response_preflight pass bounded_write_file_response_preflight_verified
+
+  stage_session_headers "$MCP_SESSION_ID"
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "@$SESSION_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    "http://$BIND_HOST:$PORT/mcp")"
+  expect_status write_file_session_delete "$status" 204 write_file_session_deleted
+  [[ ! -s "$body" ]] || fail write_file_session_delete_body_present
+  MCP_SESSION_ID=""
+  stop_server || fail write_file_runtime_stop_failed
 }
 
 run_default_runtime_checks() {
@@ -995,6 +1272,19 @@ run_mcp_runtime_checks() {
   ' "$body" >/dev/null 2>&1 || fail create_directory_grant_discovery_invalid
   jq -e '
     .result.tools
+    | map(select(.name == "write_file"))[0] as $tool
+    | $tool.inputSchema.type == "object"
+      and ($tool.inputSchema.properties | keys) == ["content","dry_run","path"]
+      and $tool.inputSchema.properties.path.type == "string"
+      and $tool.inputSchema.properties.content.type == "string"
+      and $tool.inputSchema.properties.dry_run.type == "boolean"
+      and ($tool.inputSchema.properties.dry_run | has("const") | not)
+      and $tool.inputSchema.required == ["path","content"]
+      and $tool.inputSchema.additionalProperties == false
+      and ($tool.description | contains("MCP-Capability-Grant"))
+  ' "$body" >/dev/null 2>&1 || fail write_file_grant_discovery_invalid
+  jq -e '
+    .result.tools
     | map(select(.name == "find_paths"))[0].inputSchema as $schema
     | $schema.type == "object"
       and ($schema.properties | keys) == ["kind","max_depth","path","query"]
@@ -1079,6 +1369,14 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
     and .result.structuredContent.createDirectoryGrantTtlSeconds == 60
     and .result.structuredContent.createDirectoryMutationMode == "dry_run_or_request_scoped_single_use_grant"
+    and .result.structuredContent.fileWrites == true
+    and .result.structuredContent.fileWriteMode == "dry_run_or_request_scoped_single_use_grant"
+    and .result.structuredContent.fileWriteMutationEnabled == true
+    and .result.structuredContent.fileWriteGrantRequired == true
+    and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.fileWriteGrantTtlSeconds == 60
+    and .result.structuredContent.fileWriteMaxBytes == 1048576
+    and .result.structuredContent.fileWriteMaxResponseBytes == 16384
     and .result.structuredContent.pathDiscovery == true
     and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename"
     and .result.structuredContent.pathDiscoveryMaxDepth == 5
@@ -1559,19 +1857,6 @@ run_mcp_runtime_checks() {
   ((bytes <= 65536)) || fail read_error_response_too_large
   grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail read_error_path_reflected
 
-  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/write.txt" --arg content validation-write '{"jsonrpc":"2.0","id":"write-dry","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  expect_status write_dry_run "$status" 200 write_dry_run_succeeded
-  jq -e '.result.structuredContent.dryRun == true' "$body" >/dev/null 2>&1 || fail write_dry_run_invalid
-  [[ ! -e "$VALIDATION_SAFE_ROOT/write.txt" ]] || fail write_dry_run_mutated
-
-  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/write.txt" --arg content validation-write '{"jsonrpc":"2.0","id":"write","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  expect_status write_explicit "$status" 200 write_explicit_succeeded
-  jq -e '.result.structuredContent.dryRun == false' "$body" >/dev/null 2>&1 || fail write_explicit_body_invalid
-  [[ "$(stat -c '%a' "$VALIDATION_SAFE_ROOT/write.txt" 2>/dev/null)" == 600 ]] || fail write_mode_invalid
-  [[ "$(<"$VALIDATION_SAFE_ROOT/write.txt")" == validation-write ]] || fail write_content_invalid
-
   printf '%s' outside-private-content >"$TEMP_ROOT/outside.txt"
   payload="$(jq -cn --arg path "$TEMP_ROOT/outside.txt" '{"jsonrpc":"2.0","id":"outside","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1624,6 +1909,7 @@ run_mcp_runtime_checks() {
   [[ ! -s "$body" ]] || fail session_delete_body_present
   MCP_SESSION_ID=""
   stop_server || fail mcp_runtime_stop_failed
+  run_write_file_authorization_checks
 }
 
 run_volume_control_runtime_checks() {
@@ -1687,6 +1973,12 @@ run_volume_control_runtime_checks() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
   jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "write_file"))[0] as $tool
+    | $tool.inputSchema.properties.dry_run.const == true
+      and $tool.inputSchema.additionalProperties == false
+  ' "$body" >/dev/null 2>&1 || fail volume_control_write_file_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1697,6 +1989,14 @@ run_volume_control_runtime_checks() {
     and .result.structuredContent.androidVolumeControlEnabled == false
     and .result.structuredContent.androidVolumeGrantRequired == false
     and .result.structuredContent.highImpactTools == false
+    and .result.structuredContent.fileWrites == true
+    and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
+    and .result.structuredContent.fileWriteMutationEnabled == false
+    and .result.structuredContent.fileWriteGrantRequired == false
+    and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.fileWriteGrantTtlSeconds == 60
+    and .result.structuredContent.fileWriteMaxBytes == 1048576
+    and .result.structuredContent.fileWriteMaxResponseBytes == 16384
     and .result.structuredContent.binaryRangeReads == true
     and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864
     and .result.structuredContent.binaryRangeReadMaxBytes == 262144
@@ -1708,6 +2008,12 @@ run_volume_control_runtime_checks() {
     and .result.structuredContent.textRangeReadMaxBytes == 262144
     and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936
   ' "$body" >/dev/null 2>&1 || fail volume_control_runtime_status_invalid
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/volume-control-write-disabled.txt" '{jsonrpc:"2.0",id:"volume-control-write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_write_file_disabled "$status" 403 volume_control_write_file_mutation_disabled
+  jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$body" >/dev/null 2>&1 || fail volume_control_write_file_disabled_body_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/volume-control-write-disabled.txt" ]] || fail volume_control_write_file_disabled_mutated
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1790,6 +2096,10 @@ MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=1024
 MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT
+MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
+MCP__FILE__WRITE_MUTATION_ENABLED=true
+MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID
+MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX
 RUST_LOG=termux_mcp_server=info
 EOF
   then

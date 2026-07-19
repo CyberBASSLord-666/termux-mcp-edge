@@ -166,7 +166,7 @@ Minimum reason codes:
 7. Add operator documentation and manual recovery notes.
 8. Only then expose MCP discovery/tool-call handling for that family.
 
-The exact-stream volume slice completed this sequence with a preview-first model, offline exact-binary grants, fixed execution, non-queueing concurrency, verification, automatic restoration, cancellation-independent recovery, and aggregate privacy-preserving counters. Aggregate counters are the intentionally bounded audit design for this slice; they retain stable decision/recovery labels and no per-request timestamps or targets.
+The exact-stream volume slice completed this sequence with a preview-first model, offline exact-binary grants, fixed execution, non-queueing concurrency, verification, automatic restoration, cancellation-independent recovery, and aggregate privacy-preserving counters. Narrow Class 2 directory and file-write mutations use separate purpose-built grants and do not activate the inert general high-impact framework. Aggregate counters are the intentionally bounded audit design for these slices; they retain stable decision/recovery labels and no per-request timestamps or targets.
 
 ## Required tests before any high-impact tool is enabled
 

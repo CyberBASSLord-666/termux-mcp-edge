@@ -89,7 +89,7 @@ For mutation, the runtime performs this order:
 
 1. authenticate the HTTP request;
 2. validate Host/Origin, media types, body limits, JSON-RPC, protocol version, and active session;
-3. accept exactly one bounded ASCII capability header only for `tools/call` → `create_directory`;
+3. accept a directory grant only as exactly one bounded ASCII capability header on `tools/call` → `create_directory`; the shared header name may carry a distinct write or volume grant only in that capability's exact tool context;
 4. validate the closed tool schema and preflight the complete 16 KiB response;
 5. resolve safe-root confinement, open and hold the exact parent descriptor, prove the final target is absent, and compute the target binding;
 6. verify and atomically consume the JTI under the replay lock;
@@ -124,4 +124,4 @@ Audit counters retain only the stable reason, tool, gate, dry-run/mutating mode,
 
 Only one key identifier is active in a process. Rotate by replacing both capability key settings atomically and restarting the service; all grants signed under the old key then fail as unknown-key grants. Changing the static bearer token also changes the principal binding. A restart clears the in-memory replay set, but pre-restart grants still expire within their short lifetime; operators that require immediate invalidation should rotate the key during restart.
 
-The grant is deliberately narrower than a general capability-token framework. It authorizes only one already-confined, absent directory target and does not authorize copy, write, delete, rename, permissions, recursive creation, shell, service, package, process, network, or Android control.
+The grant is deliberately narrower than a general capability-token framework. It authorizes only one already-confined, absent directory target and does not authorize copy, write, delete, rename, permissions, recursive creation, shell, service, package, process, network, or Android control. `write_file` uses a distinct capability code and content/disposition-bound contract in [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md); sharing the HMAC key and header name cannot cross-authorize it.

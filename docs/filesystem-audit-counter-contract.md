@@ -48,8 +48,8 @@ The runtime should count:
 - allowed bounded safe-rooted literal text searches
 - denied search requests, including invalid arguments/query/depth, safe-root rejection, response bounds, and internal failures
 - allowed `write_file` dry-run previews
-- allowed explicit `write_file` mutations
-- denied write requests, including invalid arguments, safe-root rejections, and byte-limit failures
+- allowed exact-grant-authorized `write_file` create and replace mutations
+- denied write requests, including invalid arguments, disabled mutation, stable grant authorization failures, safe-root/type/disposition rejection, byte/response limits, namespace changes, and internal failures
 
 The runtime should continue exposing aggregate counters only through the additive `runtime_status.structuredContent.auditCounters` snapshot.
 
@@ -103,11 +103,11 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 | `read_text_range` | `read_only` | `read_only` | `filesystem_read` |
 | `search_text` | `read_only` | `read_only` | `filesystem_read` |
 | `write_file` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
-| `write_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
+| `write_file` with grant-authorized mutation intent | `mutating` | `mutating` | `filesystem_write` |
 
-A directory or file mutation call is a dry-run preview unless `dry_run=false` resolves to an explicit mutation. Audit wiring must use the resolved mode, not merely the raw caller argument.
+A directory, copy, or file-write call is a dry-run preview unless `dry_run=false` resolves to mutation intent. Audit wiring must use the resolved mode, not merely the raw caller argument; the mutating mode does not assert that a gate or grant authorized the request.
 
-For `create_directory`, mutating mode is only the requested posture. It does not imply authorization: the dedicated runtime gate and exact request grant are checked separately. A denied grant records the mutating mode and one stable `capability_*` reason only; successful grant consumption adds no secret or caller-derived label.
+For `create_directory` and `write_file`, mutating mode is only the requested posture. It does not imply authorization: each dedicated runtime gate and exact request grant is checked separately. A denied grant records the mutating mode and one stable `capability_*` reason only; successful grant consumption adds no secret or caller-derived label. Write counters also exclude content digest, create/replace disposition, staging name, file identity/mode/size, and cleanup/rollback target.
 
 ## Stable reason-code guidance
 
@@ -203,9 +203,9 @@ A focused runtime wiring PR should verify all of the following:
 9. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
 10. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
 11. `read_text_range` records allowed and denied read-only decisions without retaining its path, filename, offset, requested/returned size, text content, file size/identity, request ID, or raw error.
-12. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
-13. `write_file` records an allowed mutating filesystem event for successful explicit writes.
-14. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
+12. `write_file` records an allowed dry-run filesystem event for successful previews without consuming a grant.
+13. `write_file` records an allowed mutating filesystem event only after one exact grant-authorized create or replace completes its durability and cleanup contract.
+14. `write_file` records exactly one denied filesystem event using the resolved dry-run or mutating mode for invalid arguments, disabled gate, grant failure, write/response byte limit, safe-root/type/disposition rejection, namespace change, and internal failure; it retains no grant, content, digest, path, response ID, target/staging identity, or raw error.
 15. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
 16. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
 17. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content/digests/base64/text data.

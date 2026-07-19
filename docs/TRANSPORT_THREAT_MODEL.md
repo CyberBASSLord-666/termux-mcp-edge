@@ -28,7 +28,7 @@ POST requires JSON content and explicit client support for JSON and SSE response
 - Local-network resources reachable from the Android device.
 - Process, package, service, shell, Shizuku/rish, and Android-control boundaries.
 - MCP client identity, lifecycle state, request integrity, and tool authorization decisions.
-- The `create_directory` HMAC key, issued grants, consumed-JTI state, and target-binding integrity.
+- The shared capability HMAC key plus directory/write issued grants, consumed-JTI state, and target/content/disposition-binding integrity.
 - Mobile memory, CPU, battery, thermal, and process-lifetime budgets.
 
 ## Threats and Current Controls
@@ -97,7 +97,7 @@ Current controls:
 - SSE replay has fixed event, stream, cursor, and retained-byte ceilings; count or byte pressure evicts the oldest complete stream, and responses above the event ceiling use the existing bounded JSON path.
 - enabling SSE intentionally retains eligible serialized tool responses in process memory until eviction, DELETE, idle expiry, or restart; the default remains JSON-only so operators must opt into that confidentiality/liveness tradeoff.
 
-Deterministic filesystem response-byte budgets and single-content serialization landed through #206. One-directory creation has a 16 KiB full-response ceiling. One-file copy has a 1 MiB source ceiling, a pre-mutation 16 KiB full-response ceiling, a fixed-size content-free result, and no subprocess or caller-selected resource controls. Single-object metadata has a 16 KiB full-response ceiling and never reads content or returns host identifiers. Binary read has a 1 MiB raw ceiling, an exact 1,398,104-byte canonical base64 maximum, and a pre-access 1,507,328-byte complete-response ceiling that includes the actual JSON-RPC ID. Literal search adds fixed query, traversal, byte, match, and response ceilings and returns no content. Any future long-lived streaming expansion must independently add connection, queue, heartbeat, shutdown, and backpressure bounds rather than reusing the finite replay posture implicitly.
+Deterministic filesystem response-byte budgets and single-content serialization landed through #206. One-directory creation has a 16 KiB full-response ceiling. One-file copy has a 1 MiB source ceiling, a pre-mutation 16 KiB full-response ceiling, a fixed-size content-free result, and no subprocess or caller-selected resource controls. One-file write has a 1 MiB content ceiling and preflights its actual-ID 16 KiB response before grant consumption or staging. Single-object metadata has a 16 KiB full-response ceiling and never reads content or returns host identifiers. Binary read has a 1 MiB raw ceiling, an exact 1,398,104-byte canonical base64 maximum, and a pre-access 1,507,328-byte complete-response ceiling that includes the actual JSON-RPC ID. Literal search adds fixed query, traversal, byte, match, and response ceilings and returns no content. Any future long-lived streaming expansion must independently add connection, queue, heartbeat, shutdown, and backpressure bounds rather than reusing the finite replay posture implicitly.
 
 ### Filesystem escape and mutation
 
@@ -109,11 +109,11 @@ Current controls:
 - rejection of explicit parent traversal, NUL bytes, unsafe missing parents, and symlink components;
 - safe-root descriptor anchoring and component-by-component no-follow descendant resolution;
 - bounded deterministic UTF-8 and canonical base64 reads plus directory traversal;
-- dry-run-by-default directory/file mutation and explicit `dry_run:false`;
-- a separately default-disabled directory-mutation gate plus one 60-second, single-use HMAC grant bound to the static principal, canonical session, exact root identity, normalized target, and mutating posture;
+- dry-run-by-default directory/file mutation, where explicit `dry_run:false` selects intent but never authorizes it;
+- separately default-disabled directory and file-write gates plus 60-second, single-use HMAC grants; write grants bind the static principal, canonical session, exact root identity, normalized target, exact content SHA-256, create-or-replace disposition, and mutating posture;
 - confinement and response preflight before grant matching, atomic JTI consumption immediately before the first mutation attempt, concurrent replay exclusion, and retained consumption after downstream failure;
 - one-directory creation with existing parents, fixed mode `0700`, unpredictable staging, atomic no-replace publication, descriptor sync, and identity-checked cleanup;
-- payload-bounded descriptor-relative mode-0600 temporary files, file sync, atomic rename, and parent-directory sync.
+- payload-bounded descriptor-relative mode-0600 write staging, verified type/device/inode/mode/size/content, create/no-replace or replace/exchange publication, exact-owned cleanup, file sync, and parent-directory sync.
 
 The focused remediation and regression evidence landed through #200, #206, #240, #242, #244, #247, #248, #261, #262, and #203. Any future filesystem expansion must preserve these descriptor, response, authorization, and deployment boundaries.
 
@@ -123,19 +123,19 @@ An authenticated caller may try to reuse a grant for another session, root, targ
 
 Current controls:
 
-- grants are issued only by the local exact binary after it independently anchors the configured safe root and validates an absent target;
-- the signed fixed-shape payload includes principal/session/capability/root/target/posture/version/key/JTI/time bindings;
-- only one bounded ASCII `MCP-Capability-Grant` header is accepted, and only for an active-session `tools/call` targeting `create_directory`;
+- grants are issued only by the local exact binary after it independently anchors the configured safe root and validates the exact directory or file create/replace target;
+- the signed fixed-shape payload includes principal/session/capability/root/target/posture/version/key/JTI/time bindings; write operations additionally digest exact content and disposition;
+- only one bounded ASCII `MCP-Capability-Grant` header is accepted, and only for an active-session `tools/call` targeting `create_directory`, `write_file`, or the separately compiled exact-stream volume tool;
 - malformed, unknown-key/version, invalid-signature, expired, future, excessive-lifetime, mismatched, replayed, clock-rollback, full-state, and poisoned-state cases fail closed with non-sensitive stable reasons;
 - a mutex makes validation plus replay insertion atomic, so concurrent replay reaches at most one mutation attempt;
-- consumption precedes `mkdirat` and survives every subsequent filesystem or response failure;
+- consumption immediately precedes `mkdirat`, write staging creation, or the exact volume setter and survives every subsequent failure;
 - dry-run and rejected-context requests cannot consume the grant;
 - responses, tracing, audit labels, CLI errors, and production evidence never serialize the header, key, principal fingerprint, session, JTI, target digest, or bound time.
 
 Residual boundary:
 
 - a process restart clears the bounded in-memory replay set. Grants expire after 60 seconds; rotate the key on restart when immediate invalidation is required.
-- a caller that steals the bearer token, active session ID, exact target knowledge, and an unexpired grant can attempt that one mutation. Protect all four and keep the listener/transport allowlists narrow.
+- a caller that steals the bearer token, active session ID, matching request data, and an unexpired grant can attempt that one operation. Protect all of them and keep the listener/transport allowlists narrow.
 
 ### Schema confusion and response reflection
 
@@ -159,7 +159,7 @@ Current controls:
 - its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input;
 - empty environment, null stdin, safe-root cwd, bounded streams/deadline/concurrency, process-group cleanup, zero-exit/UTF-8 success, and non-sensitive audit reasons are enforced;
 - arbitrary commands, shells, broader Android/service/package/network mutation, broad inspection, credentials, and unrelated high-impact capabilities are absent from discovery and dispatch;
-- the narrow `create_directory` and exact-stream volume request-grant modules are live only for their distinct bound mutations; the separate general capability-token policy module remains inert;
+- the narrow `create_directory`, `write_file`, and exact-stream volume request-grant modules are live only for their distinct bound mutations; the separate general capability-token policy module remains inert;
 - read-only Android and service metadata use fixed allowlists and expose no control path.
 
 Required controls for expansion:

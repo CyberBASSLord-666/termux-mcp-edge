@@ -21,7 +21,7 @@ Enabled staged tools:
 - `read_file`
 - `read_text_range` for one 4-to-256 KiB UTF-8 byte range from a no-follow safe-rooted regular file of at most 64 MiB, returned only on code-point boundaries with explicit next-offset and EOF metadata
 - `search_text` for bounded literal UTF-8 location search without content excerpts
-- `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`
+- `write_file` preview for one safe-rooted UTF-8 target up to 1 MiB; mutation additionally requires the independent default-disabled runtime gate and one principal/session/root/target/content/disposition-bound single-use grant, then publishes fixed mode `0600`
 
 Separately gated read-only tool:
 
@@ -57,6 +57,21 @@ Status: implemented as a narrowly scoped Class 2 authorization layer.
 - Privacy: no key, grant, fingerprint, session, JTI, target digest, path, or timestamp in responses, logs, or audit labels.
 
 The complete contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
+
+### `write_file` request grant
+
+Status: implemented as a distinct narrowly scoped Class 2 authorization layer.
+
+- Runtime gate: `MCP__FILE__WRITE_MUTATION_ENABLED`, default `false` and independent from directory or Android gates.
+- Key configuration: the paired lowercase key ID and 32-byte HMAC-SHA-256 key; static-token authentication is mandatory.
+- Issuance: local exact-binary `--issue-write-file-grant`, never an MCP tool or HTTP endpoint.
+- Transport: exactly one bounded `MCP-Capability-Grant` header, accepted only on `tools/call` for `write_file`; a preview may carry it but cannot consume it.
+- Binding: keyed static principal, canonical session UUID, write capability, root device/inode, normalized target, exact content SHA-256, create-or-replace disposition, mutating posture, format/key ID, JTI, issuance, and expiry.
+- Consumption: atomic immediately before exclusive staging creation; complete-response preflight and all classification happen first, while every later failure retains consumption.
+- Publication: exact 1 MiB ceiling, fixed mode `0600`, create/no-replace or replace/exchange, held descriptor verification, durable sync, and exact-owned cleanup.
+- Privacy: no key, grant, fingerprint, session, JTI, content/target digest, path, content, root identity, staging name, or timestamp in responses, logs, evidence, or audit labels.
+
+The complete contracts are [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md).
 
 ## Gate 1: non-sensitive platform metadata
 

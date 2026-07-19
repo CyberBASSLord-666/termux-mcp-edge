@@ -173,7 +173,7 @@ Authenticated discovery currently exposes:
 13. `read_file` — bounded safe-rooted UTF-8 reads.
 14. `read_text_range` — one code-point-safe UTF-8 byte range up to 256 KiB from a no-follow regular file up to 64 MiB, with explicit continuation and EOF metadata and no path or host metadata.
 15. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
-16. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
+16. `write_file` — safe-rooted preview by default; one exact-content mode-`0600` create or replace only after its independent gate and content/disposition-bound single-use grant authorize it.
 
 An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the seventeenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
 
@@ -188,6 +188,7 @@ The runtime does not expose Android platform control beyond exact request-author
 Filesystem responses have explicit mobile-oriented ceilings:
 
 - `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
+- `write_file` validates one absent or regular-file target by default. Explicit `dry_run:false` succeeds only when `MCP__FILE__WRITE_MUTATION_ENABLED=true` and one unexpired grant matches principal, session, root, normalized target, exact content SHA-256, create-or-replace disposition, and mutating posture. The actual-ID response is capped at 16 KiB before consumption; consumption immediately precedes exclusive staging creation and survives later failure. Content is capped at 1 MiB, publication is fixed mode `0600`, create never replaces, replacement exchanges and verifies both identities, and cleanup preserves foreign objects; see [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_WRITES.md`](SAFE_ROOT_FILE_WRITES.md).
 - `copy_file` validates one regular source and absent destination by default and mutates only with explicit `dry_run:false`. It copies at most 1 MiB from the exact held source descriptor, publishes fixed mode `0600` atomically without replacement, verifies identities and sizes, syncs file and parent descriptors, returns no content, and caps the complete response at 16 KiB; see [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
 - `find_paths` accepts one case-sensitive literal basename query of at most 256 UTF-8 bytes, traverses no-follow descriptors to depth 5, examines at most 8,192 entries, returns at most 512 lexicographically ordered file/directory matches, and caps the complete response at 262,144 bytes; see [`SAFE_ROOT_PATH_DISCOVERY.md`](SAFE_ROOT_PATH_DISCOVERY.md).
 - `hash_file` streams at most 16 MiB from one exact held no-follow regular-file descriptor through SHA-256, rejects growth past the limit, returns only lowercase digest and byte count, and caps the complete response at 16 KiB before the file read; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
@@ -211,7 +212,7 @@ The default filesystem root is:
 
 Keep configured roots limited to dedicated project directories. Empty lists, relative roots, filesystem root `/`, traversal, and symlink escapes are rejected. Broad shared Android storage is not a default.
 
-The runtime opens the safe root and walks each descendant with descriptor-relative no-follow operations. Symlinks are not a supported aliasing mechanism inside a safe root. Writes use a private same-directory temporary file, sync the file before atomic rename, and sync the parent directory after rename; an error before the parent sync must be treated as a failed durability confirmation even if the new name is visible.
+The runtime opens the safe root and walks each descendant with descriptor-relative no-follow operations. Symlinks are not a supported aliasing mechanism inside a safe root. File writes retain safe-root, parent, staging, and replacement descriptors; verify type/device/inode/mode/size/content around publication; sync the file before atomic create/no-replace or replace/exchange; and sync the parent at publication and cleanup boundaries. Any failure before the documented parent sync is a failed durability confirmation even if a new name was briefly visible.
 
 ## Deployment status and recovery
 

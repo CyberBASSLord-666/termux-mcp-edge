@@ -42,6 +42,10 @@ assert_no_private_output() {
     if grep -Fq "$ROOT" "$file" \
       || grep -Fq fixture-private-token "$file" \
       || grep -Fq fixture-session "$file" \
+      || grep -Fq '0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee' "$file" \
+      || grep -Fq 'v1.release-validator-1.' "$file" \
+      || grep -Fq validation-write-create "$file" \
+      || grep -Fq validation-write-preflight "$file" \
       || grep -Fq outside-private-content "$file"; then
       fail_test "$label exposed private validation data"
     fi
@@ -111,7 +115,10 @@ if [[ '$posture' == mcp && "\${MCP__ANDROID__VOLUME_CONTROL_ENABLED:-false}" == 
   exit 1
 fi
 if [[ "\${1:-}" == --issue-create-directory-grant ]]; then
-  exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue
+  exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-create-directory
+fi
+if [[ "\${1:-}" == --issue-write-file-grant ]]; then
+  exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-write-file
 fi
 exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' '$posture' '$version'
 EOF
@@ -289,7 +296,7 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "7"
+  and .validatorVersion == "8"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
@@ -558,7 +565,8 @@ if ! run_validator \
 fi
 
 jq -e '
-  .status == "fixture"
+  .validatorVersion == "8"
+  and .status == "fixture"
   and .phases.preflight == "pass"
   and .phases.runtime == "pass"
   and .phases.deployment == "not_run"
@@ -574,6 +582,27 @@ jq -e '
   and ([.results[].code] | index("safe_root_path_discovery_verified") != null)
   and ([.results[].code] | index("safe_root_directory_creation_verified") != null)
   and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
+  and ([.results[].code] | index("expanded_body_posture_verified") != null)
+  and ([.results[].code] | index("write_file_missing_grant_rejected") != null)
+  and ([.results[].code] | index("write_file_grant_wrong_context_rejected") != null)
+  and ([.results[].code] | index("write_file_dry_run_succeeded") != null)
+  and ([.results[].code] | index("write_file_target_binding_rejected") != null)
+  and ([.results[].code] | index("write_file_content_binding_rejected") != null)
+  and ([.results[].code] | index("write_file_cross_capability_rejected") != null)
+  and ([.results[].code] | index("write_file_create_grant_binding_rejected") != null)
+  and ([.results[].code] | index("write_file_grant_replay_rejected") != null)
+  and ([.results[].code] | index("write_file_replace_grant_replay_rejected") != null)
+  and ([.results[].code] | index("write_file_create_posture_rejected") != null)
+  and ([.results[].code] | index("write_file_replace_posture_rejected") != null)
+  and ([.results[].code] | index("write_file_session_binding_rejected") != null)
+  and ([.results[].code] | index("safe_root_file_create_replace_verified") != null)
+  and ([.results[].code] | index("request_scoped_single_use_write_grant_enforced") != null)
+  and ([.results[].code] | index("write_file_exact_limit_succeeded") != null)
+  and ([.results[].code] | index("write_file_over_limit_rejected") != null)
+  and ([.results[].code] | index("exact_write_file_byte_limit_verified") != null)
+  and ([.results[].code] | index("write_file_response_preflight_rejected") != null)
+  and ([.results[].code] | index("write_file_response_retry_succeeded") != null)
+  and ([.results[].code] | index("bounded_write_file_response_preflight_verified") != null)
   and ([.results[].code] | index("safe_root_file_copy_verified") != null)
   and ([.results[].code] | index("safe_root_file_hash_verified") != null)
   and ([.results[].code] | index("safe_root_binary_read_verified") != null)
@@ -588,6 +617,7 @@ jq -e '
   and ([.results[].code] | index("volume_control_posture_verified") != null)
   and ([.results[].code] | index("volume_control_hidden_while_disabled") != null)
   and ([.results[].code] | index("volume_control_runtime_status_read") != null)
+  and ([.results[].code] | index("volume_control_write_file_mutation_disabled") != null)
   and ([.results[].code] | index("volume_control_disabled_call_rejected") != null)
 ' "$RUNTIME_REPORT" >/dev/null
 if grep -Fq "$ROOT" "$RUNTIME_REPORT" \
@@ -596,7 +626,7 @@ if grep -Fq "$ROOT" "$RUNTIME_REPORT" \
   || grep -Fq outside-private-content "$RUNTIME_REPORT"; then
   fail_test "runtime report exposed private validation data"
 fi
-assert_no_private_output "runtime output" "$ROOT/runtime.stdout" "$ROOT/runtime.stderr"
+assert_no_private_output "runtime evidence" "$RUNTIME_REPORT" "$ROOT/runtime.stdout" "$ROOT/runtime.stderr"
 [[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] || fail_test "runtime phase left safe-root state"
 
 python3 -m http.server 18765 --bind 127.0.0.1 >"$ROOT/listener.log" 2>&1 &

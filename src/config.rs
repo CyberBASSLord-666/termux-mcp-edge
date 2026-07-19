@@ -75,6 +75,8 @@ pub struct FileConfig {
     pub safe_roots: Vec<PathBuf>,
     /// Dedicated default-disabled runtime gate for `create_directory` mutation.
     pub create_directory_mutation_enabled: bool,
+    /// Dedicated default-disabled runtime gate for `write_file` mutation.
+    pub write_mutation_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -266,6 +268,11 @@ impl AppConfig {
                     "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
                     false,
                 )?,
+                write_mutation_enabled: env_bool(
+                    &read_variable,
+                    "MCP__FILE__WRITE_MUTATION_ENABLED",
+                    false,
+                )?,
             },
             transport: TransportConfig {
                 allowed_hosts: env_exact_string_list(
@@ -307,7 +314,7 @@ impl AppConfig {
         };
 
         validate_file_safe_roots(&config.file)?;
-        validate_create_directory_mutation_capability(&config)?;
+        validate_filesystem_mutation_capabilities(&config)?;
         validate_android_capabilities(&config.android)?;
         validate_android_volume_control_capability(&config)?;
         validate_command_capability(&config.command)?;
@@ -509,7 +516,7 @@ fn validate_file_safe_roots(file: &FileConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_create_directory_mutation_capability(config: &AppConfig) -> anyhow::Result<()> {
+fn validate_filesystem_mutation_capabilities(config: &AppConfig) -> anyhow::Result<()> {
     const MAX_KEY_ID_BYTES: usize = 32;
     const KEY_HEX_BYTES: usize = 64;
 
@@ -544,13 +551,29 @@ fn validate_create_directory_mutation_capability(config: &AppConfig) -> anyhow::
         );
     }
 
-    if !config.file.create_directory_mutation_enabled {
+    validate_filesystem_mutation_gate(
+        config,
+        config.file.create_directory_mutation_enabled,
+        "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+    )?;
+    validate_filesystem_mutation_gate(
+        config,
+        config.file.write_mutation_enabled,
+        "MCP__FILE__WRITE_MUTATION_ENABLED",
+    )?;
+    Ok(())
+}
+
+fn validate_filesystem_mutation_gate(
+    config: &AppConfig,
+    enabled: bool,
+    variable: &str,
+) -> anyhow::Result<()> {
+    if !enabled {
         return Ok(());
     }
     if !cfg!(feature = "mcp-runtime") {
-        bail!(
-            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
-        );
+        bail!("{variable} requires a binary built with the mcp-runtime feature");
     }
     if config
         .auth
@@ -558,11 +581,11 @@ fn validate_create_directory_mutation_capability(config: &AppConfig) -> anyhow::
         .as_deref()
         .is_none_or(|token| token.trim().is_empty())
     {
-        bail!("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN");
+        bail!("{variable} requires MCP__AUTH__STATIC_TOKEN");
     }
     if config.capability.key_id.is_none() {
         bail!(
-            "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+            "{variable} requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
         );
     }
     Ok(())
@@ -700,6 +723,7 @@ mod tests {
             file: FileConfig {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
                 create_directory_mutation_enabled: false,
+                write_mutation_enabled: false,
             },
             transport: transport_config(),
         }
@@ -755,6 +779,7 @@ mod tests {
             "MCP__AUTH__STATIC_TOKEN=private-issuer-principal\n\
              MCP__FILE__SAFE_ROOTS={}\n\
              MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true\n\
+             MCP__FILE__WRITE_MUTATION_ENABLED=true\n\
              MCP__CAPABILITY__KEY_ID=offline-1\n\
              MCP__CAPABILITY__HMAC_KEY_HEX={}\n\
              RUST_LOG=termux_mcp_server=info\n",
@@ -771,6 +796,7 @@ mod tests {
         );
         assert_eq!(config.capability.key_id.as_deref(), Some("offline-1"));
         assert!(config.file.create_directory_mutation_enabled);
+        assert!(config.file.write_mutation_enabled);
         assert_eq!(config.file.safe_roots, vec![safe_root]);
 
         std::fs::write(
@@ -801,6 +827,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             create_directory_mutation_enabled: false,
+            write_mutation_enabled: false,
         };
         let broad_storage = PathBuf::from("/storage/emulated/0");
         let sdcard = PathBuf::from("/sdcard");
@@ -825,6 +852,7 @@ mod tests {
         assert!(!config.android.volume_control_enabled);
         assert!(!config.command.enabled);
         assert!(!config.file.create_directory_mutation_enabled);
+        assert!(!config.file.write_mutation_enabled);
         assert!(!config.transport.sse_enabled);
         assert_eq!(
             config.file.safe_roots,
@@ -1083,6 +1111,145 @@ mod tests {
     }
 
     #[test]
+    fn write_mutation_compile_auth_and_key_requirements_are_exhaustive() {
+        for gate_enabled in [false, true] {
+            for static_auth_configured in [false, true] {
+                for key_pair_configured in [false, true] {
+                    let mut entries = vec![(
+                        "MCP__FILE__WRITE_MUTATION_ENABLED",
+                        OsString::from(if gate_enabled { "true" } else { "false" }),
+                    )];
+                    if static_auth_configured {
+                        entries.push((
+                            "MCP__AUTH__STATIC_TOKEN",
+                            OsString::from("static-principal-secret"),
+                        ));
+                    }
+                    if key_pair_configured {
+                        entries.push((
+                            "MCP__CAPABILITY__KEY_ID",
+                            OsString::from("primary-1"),
+                        ));
+                        entries.push((
+                            "MCP__CAPABILITY__HMAC_KEY_HEX",
+                            OsString::from("a".repeat(64)),
+                        ));
+                    }
+
+                    let configured = load_from_os_values(entries);
+                    if !gate_enabled {
+                        let configured = configured.expect(
+                            "a disabled write gate must not require static auth or a signing key",
+                        );
+                        assert!(!configured.file.write_mutation_enabled);
+                    } else if !cfg!(feature = "mcp-runtime") {
+                        assert_eq!(
+                            configured.unwrap_err().to_string(),
+                            "MCP__FILE__WRITE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+                        );
+                    } else if !static_auth_configured {
+                        assert_eq!(
+                            configured.unwrap_err().to_string(),
+                            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+                        );
+                    } else if !key_pair_configured {
+                        assert_eq!(
+                            configured.unwrap_err().to_string(),
+                            "MCP__FILE__WRITE_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+                        );
+                    } else {
+                        let configured = configured
+                            .expect("the fully authorized write-mutation posture must validate");
+                        assert!(configured.file.write_mutation_enabled);
+                        assert_eq!(
+                            configured.auth.static_token.as_deref(),
+                            Some("static-principal-secret")
+                        );
+                        assert_eq!(
+                            configured.capability.key_id.as_deref(),
+                            Some("primary-1")
+                        );
+                        assert_eq!(
+                            configured.capability.hmac_key_hex(),
+                            Some("a".repeat(64).as_str())
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn create_directory_and_write_mutation_gates_remain_independent() {
+        for (create_directory_enabled, write_enabled) in [
+            (false, false),
+            (true, false),
+            (false, true),
+            (true, true),
+        ] {
+            let configured = load_from_os_values([
+                (
+                    "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+                    OsString::from(if create_directory_enabled {
+                        "true"
+                    } else {
+                        "false"
+                    }),
+                ),
+                (
+                    "MCP__FILE__WRITE_MUTATION_ENABLED",
+                    OsString::from(if write_enabled { "true" } else { "false" }),
+                ),
+                (
+                    "MCP__AUTH__STATIC_TOKEN",
+                    OsString::from("static-principal-secret"),
+                ),
+                ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+                (
+                    "MCP__CAPABILITY__HMAC_KEY_HEX",
+                    OsString::from("a".repeat(64)),
+                ),
+            ]);
+
+            if cfg!(feature = "mcp-runtime") || (!create_directory_enabled && !write_enabled) {
+                let configured = configured.expect(
+                    "each gate combination must preserve its exact configured state when valid",
+                );
+                assert_eq!(
+                    configured.file.create_directory_mutation_enabled,
+                    create_directory_enabled
+                );
+                assert_eq!(configured.file.write_mutation_enabled, write_enabled);
+            } else {
+                let expected_gate = if create_directory_enabled {
+                    "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED"
+                } else {
+                    "MCP__FILE__WRITE_MUTATION_ENABLED"
+                };
+                assert_eq!(
+                    configured.unwrap_err().to_string(),
+                    format!(
+                        "{expected_gate} requires a binary built with the mcp-runtime feature"
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn write_mutation_rejects_invalid_runtime_flag() {
+        let error = load_from_os_values([(
+            "MCP__FILE__WRITE_MUTATION_ENABLED",
+            OsString::from("sometimes"),
+        )])
+        .expect_err("invalid write-mutation booleans must fail closed");
+        assert_eq!(
+            error.to_string(),
+            "MCP__FILE__WRITE_MUTATION_ENABLED must be a boolean value: true/false, 1/0, yes/no, or on/off"
+        );
+    }
+
+    #[test]
     fn capability_key_configuration_is_exact_and_fail_closed_even_while_gate_is_disabled() {
         for key_id in ["", "Upper", "bad.key", &"a".repeat(33)] {
             let error = load_from_os_values([
@@ -1133,6 +1300,7 @@ mod tests {
             "MCP__CAPABILITY__KEY_ID",
             "MCP__CAPABILITY__HMAC_KEY_HEX",
             "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
+            "MCP__FILE__WRITE_MUTATION_ENABLED",
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
@@ -1221,6 +1389,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![],
             create_directory_mutation_enabled: false,
+            write_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("empty safe roots must fail closed");
@@ -1232,6 +1401,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from("relative/path")],
             create_directory_mutation_enabled: false,
+            write_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("relative safe roots must fail");
@@ -1243,6 +1413,7 @@ mod tests {
         let file = FileConfig {
             safe_roots: vec![PathBuf::from("/")],
             create_directory_mutation_enabled: false,
+            write_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");

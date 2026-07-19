@@ -44,7 +44,7 @@ Required evidence:
 4. Each Android job uploads the expected posture-specific binary artifact.
 5. Artifact checksums are generated from the downloaded release candidates, not from unrelated local builds.
 6. The release candidate version reported by the binary matches `Cargo.toml`.
-7. Installation, upgrade, rollback, service restart, and operator smoke-test instructions are current for the candidate.
+7. Installation, upgrade, rollback, service restart, and operator smoke-test instructions are current for the candidate; filesystem authorization changes include exact disabled/enabled gate, grant-binding, boundary, race, cleanup, and private-evidence coverage.
 8. No unresolved blocking review thread, open merge-conflict state, or failed newer run exists for the same commit.
 
 A successful run on an older SHA is not transferable. A rerun is acceptable only when GitHub still identifies the same exact commit and the failure was transient rather than code-dependent.
@@ -90,7 +90,7 @@ The release process should be reproducible from the tagged source using the docu
 4. Merge only through the normal protected-main process with expected-head SHA validation.
 5. Wait for post-merge CI, security, and Android validation on the resulting `main` SHA.
 6. Download all six posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
-7. Run the default, `mcp-runtime`, and `android-volume-control` bundles through the complete validator in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), and run every optional posture through its exact-source native ARM64 official-Termux gate. Retain all schema-versioned sanitized evidence and complete either the direct physical route or the strictly bounded inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md).
+7. Run the default, `mcp-runtime`, and `android-volume-control` bundles through validator v8 in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), including independent directory/file-write grants, exact write limits, create/replace, actual-ID preflight, and disabled optional-posture proofs; run every optional posture through its exact-source native ARM64 official-Termux gate. Retain all schema-versioned sanitized evidence and complete either the direct physical route or the strictly bounded inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md).
 8. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the validated `main` SHA.
 9. Publish the GitHub Release from that immutable tag and attach all supported binaries, manifests, and checksum sidecars.
 10. Re-open the release page and independently verify every asset, checksum, link, version, and recorded SHA.

@@ -36,6 +36,7 @@ fn help_is_successful_and_describes_supported_commands() {
     assert!(stdout.contains("termux-mcp-server --version"));
     assert!(stdout.contains("termux-mcp-server --help"));
     assert!(stdout.contains("termux-mcp-server --issue-create-directory-grant"));
+    assert!(stdout.contains("termux-mcp-server --issue-write-file-grant"));
     assert!(stdout.contains("termux-mcp-server --issue-android-volume-grant"));
     assert!(output.stderr.is_empty());
 }
@@ -57,15 +58,17 @@ fn volume_grant_issuance_fails_closed_without_the_compiled_capability() {
 #[cfg(not(feature = "mcp-runtime"))]
 #[test]
 fn grant_issuance_fails_closed_without_the_compiled_runtime() {
-    let output = isolated_binary()
-        .arg("--issue-create-directory-grant")
-        .output()
-        .unwrap();
+    for argument in [
+        "--issue-create-directory-grant",
+        "--issue-write-file-grant",
+    ] {
+        let output = isolated_binary().arg(argument).output().unwrap();
 
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("requires a binary built with the mcp-runtime feature"));
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("requires a binary built with the mcp-runtime feature"));
+    }
 }
 
 #[cfg(feature = "mcp-runtime")]
@@ -85,6 +88,34 @@ fn configured_issuer(root: &std::path::Path, target: &std::path::Path) -> Comman
             "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
         )
         .env("MCP__CAPABILITY__CREATE_DIRECTORY_TARGET", target);
+    command
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn configured_write_issuer(
+    root: &std::path::Path,
+    target: &std::path::Path,
+    content_sha256: &str,
+) -> Command {
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let mut command = isolated_binary();
+    command
+        .arg("--issue-write-file-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-write-cli-principal")
+        .env("MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY", "false")
+        .env("MCP__FILE__SAFE_ROOTS", root)
+        .env("MCP__FILE__WRITE_MUTATION_ENABLED", "true")
+        .env("MCP__CAPABILITY__KEY_ID", "write-cli-1")
+        .env("MCP__CAPABILITY__HMAC_KEY_HEX", KEY)
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__WRITE_FILE_TARGET", target)
+        .env(
+            "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256",
+            content_sha256,
+        );
     command
 }
 
@@ -321,6 +352,148 @@ fn exact_cli_issuer_outputs_one_private_target_bound_grant() {
             .unwrap_err(),
         CreateDirectoryGrantError::BindingMismatch
     );
+}
+
+#[cfg(feature = "mcp-runtime")]
+#[test]
+fn exact_write_cli_issuer_outputs_one_private_operation_bound_grant() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use sha2::{Digest, Sha256};
+    use termux_mcp_server::{
+        tools::FileSystemTools,
+        write_file_grant::{
+            content_sha256, WriteFileGrantAuthority, WriteFileGrantError,
+            MAX_WRITE_FILE_GRANT_HEADER_BYTES,
+        },
+    };
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    const CONTENT: &str = "private write cli content";
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("private-write-cli-target.txt");
+    let digest = Sha256::digest(CONTENT.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let output = configured_write_issuer(root.path(), &target, &digest)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    let grant = stdout.trim_end();
+    assert!(grant.len() <= MAX_WRITE_FILE_GRANT_HEADER_BYTES);
+    let segments = grant.split('.').collect::<Vec<_>>();
+    assert_eq!(segments.len(), 4);
+    assert_eq!(segments[0], "v1");
+    assert_eq!(segments[1], "write-cli-1");
+    assert_eq!(segments[2].len(), 260);
+    assert_eq!(segments[3].len(), 64);
+    assert!(segments[2..].iter().all(|segment| segment
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))));
+    for private in [
+        "private-write-cli-principal",
+        "private-write-cli-target",
+        CONTENT,
+        digest.as_str(),
+        SESSION,
+    ] {
+        assert!(!stdout.contains(private));
+    }
+    assert!(!target.exists());
+
+    let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+    let binding = tools
+        .write_file_grant_target(
+            target.to_string_lossy().as_ref(),
+            content_sha256(CONTENT.as_bytes()),
+        )
+        .unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let authority = WriteFileGrantAuthority::from_hex_key(
+        "write-cli-1",
+        KEY,
+        "private-write-cli-principal",
+    )
+    .unwrap();
+    authority
+        .consume_at(Some(grant), SESSION, &binding, now)
+        .unwrap();
+
+    let other_binding = tools
+        .write_file_grant_target(
+            target.to_string_lossy().as_ref(),
+            content_sha256(b"different content"),
+        )
+        .unwrap();
+    let other_authority = WriteFileGrantAuthority::from_hex_key(
+        "write-cli-1",
+        KEY,
+        "private-write-cli-principal",
+    )
+    .unwrap();
+    assert_eq!(
+        other_authority
+            .consume_at(Some(grant), SESSION, &other_binding, now)
+            .unwrap_err(),
+        WriteFileGrantError::BindingMismatch
+    );
+}
+
+#[cfg(feature = "mcp-runtime")]
+#[test]
+fn write_cli_issuer_fails_closed_without_gate_or_for_invalid_private_inputs() {
+    use sha2::{Digest, Sha256};
+
+    const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("private-write-denied-target.txt");
+    let digest = Sha256::digest(b"content")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    let disabled = isolated_binary()
+        .arg("--issue-write-file-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-write-cli-principal")
+        .env("MCP__FILE__SAFE_ROOTS", root.path())
+        .env("MCP__CAPABILITY__SESSION_ID", SESSION)
+        .env("MCP__CAPABILITY__WRITE_FILE_TARGET", &target)
+        .env("MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256", &digest)
+        .output()
+        .unwrap();
+    assert!(!disabled.status.success());
+    assert!(disabled.stdout.is_empty());
+    let disabled_stderr = String::from_utf8(disabled.stderr).unwrap();
+    assert!(disabled_stderr.contains("write_file mutation gate is disabled"));
+
+    let invalid_digest = configured_write_issuer(root.path(), &target, "PRIVATE-DIGEST")
+        .output()
+        .unwrap();
+    assert!(!invalid_digest.status.success());
+    assert!(invalid_digest.stdout.is_empty());
+    let invalid_stderr = String::from_utf8(invalid_digest.stderr).unwrap();
+    assert!(invalid_stderr.contains("content digest validation failed"));
+
+    for stderr in [disabled_stderr, invalid_stderr] {
+        for private in [
+            "private-write-cli-principal",
+            "private-write-denied-target",
+            "PRIVATE-DIGEST",
+            SESSION,
+            digest.as_str(),
+        ] {
+            assert!(!stderr.contains(private));
+        }
+    }
 }
 
 #[cfg(all(feature = "mcp-runtime", unix))]

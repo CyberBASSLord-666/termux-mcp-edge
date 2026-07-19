@@ -197,6 +197,7 @@ CAPABILITY_KEY="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk
 cat >"$CAPABILITY_CONFIG" <<EOF
 MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN
 MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
+MCP__FILE__WRITE_MUTATION_ENABLED=false
 MCP__CAPABILITY__KEY_ID=native-volume-1
 MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY
 EOF
@@ -317,6 +318,7 @@ start_server() {
   MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
   MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+  MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
@@ -389,9 +391,13 @@ log 'validating disabled runtime posture'
 start_server false
 initialize_session
 post_mcp '{"jsonrpc":"2.0","id":"tools-disabled","method":"tools/list"}' "$SESSION_ID"
-jq -e '[.result.tools[].name] | index("set_android_volume") == null' "$BODY_FILE" >/dev/null || fail disabled_discovery_invalid
+jq -e '([.result.tools[].name] | index("set_android_volume") == null) and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)' "$BODY_FILE" >/dev/null || fail disabled_discovery_invalid
 post_mcp '{"jsonrpc":"2.0","id":"runtime-disabled","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
-jq -e '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.highImpactTools == false' "$BODY_FILE" >/dev/null || fail disabled_runtime_invalid
+jq -e '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.highImpactTools == false' "$BODY_FILE" >/dev/null || fail disabled_runtime_invalid
+post_mcp "$(jq -cn --arg path "$SAFE_ROOT/volume-control-write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled-shared-key",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 403 ]] || fail disabled_write_file_http_invalid
+jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail disabled_write_file_contract_invalid
+[[ ! -e "$SAFE_ROOT/volume-control-write-disabled.txt" && ! -L "$SAFE_ROOT/volume-control-write-disabled.txt" ]] || fail disabled_write_file_mutated
 post_mcp '{"jsonrpc":"2.0","id":"call-disabled","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":9}}}' "$SESSION_ID"
 jq -e '.result.isError == true and .result.structuredContent.reasonCode == "volume_control_runtime_disabled"' "$BODY_FILE" >/dev/null || fail disabled_call_invalid
 stop_server
@@ -408,6 +414,7 @@ jq -e '
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.properties.stream.enum) == ["alarm","call","music","notification","ring","system"]
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.properties.level.type) == "integer"
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.properties.level.minimum) == 0
+  and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail enabled_discovery_invalid
 post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
 jq -e '
@@ -417,9 +424,17 @@ jq -e '
   and .result.structuredContent.androidVolumeGrantHeader == "mcp-capability-grant"
   and .result.structuredContent.androidVolumeGrantTtlSeconds == 60
   and .result.structuredContent.androidDeviceControl == true
+  and .result.structuredContent.fileWriteMutationEnabled == false
+  and .result.structuredContent.fileWriteGrantRequired == false
+  and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
   and .result.structuredContent.highImpactTools == true
   and .result.structuredContent.arbitraryCommandExecution == false
 ' "$BODY_FILE" >/dev/null || fail enabled_runtime_invalid
+
+post_mcp "$(jq -cn --arg path "$SAFE_ROOT/volume-control-write-key-isolation.txt" '{jsonrpc:"2.0",id:"write-key-isolation",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 403 ]] || fail shared_key_enabled_write_file_http_invalid
+jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail shared_key_enabled_write_file_contract_invalid
+[[ ! -e "$SAFE_ROOT/volume-control-write-key-isolation.txt" && ! -L "$SAFE_ROOT/volume-control-write-key-isolation.txt" ]] || fail shared_key_enabled_write_file_mutated
 
 GRANT_MAIN="$WORK_ROOT/grant-main"
 issue_grant music 9 "$GRANT_MAIN"

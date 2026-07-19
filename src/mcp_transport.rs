@@ -60,8 +60,8 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        AuthorizedCreateDirectoryError, FileSystemTools, FindPathFilter,
-        PreparedCreateDirectoryMutation, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
+        AuthorizedCreateDirectoryError, AuthorizedWriteFileError, FileSystemTools, FindPathFilter,
+        PreparedCreateDirectoryMutation, PreparedWriteFileMutation, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
         MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
         MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
         MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH, MAX_FIND_ENTRIES, MAX_FIND_MATCHES,
@@ -70,10 +70,14 @@ use crate::{
         MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
         MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_ESCAPED_BYTES,
         MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
-        MIN_TEXT_RANGE_BYTES,
+        MIN_TEXT_RANGE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES,
     },
     transport_security::TransportSecurityPolicy,
-    write_policy::{WriteMode, WritePolicy},
+    write_policy::{WriteMode, WritePolicy, DEFAULT_MAX_WRITE_BYTES},
+    write_file_grant::{
+        WriteFileGrantAuthority, WRITE_FILE_GRANT_HEADER, WRITE_FILE_GRANT_TTL_SECONDS,
+        MAX_WRITE_FILE_GRANT_HEADER_BYTES,
+    },
 };
 #[cfg(feature = "android-volume-control")]
 use crate::{
@@ -95,6 +99,14 @@ pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
+const MCP_CAPABILITY_GRANT_HEADER: &str = WRITE_FILE_GRANT_HEADER;
+const MAX_MCP_CAPABILITY_GRANT_HEADER_BYTES: usize = if MAX_WRITE_FILE_GRANT_HEADER_BYTES
+    > MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
+{
+    MAX_WRITE_FILE_GRANT_HEADER_BYTES
+} else {
+    MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
+};
 
 #[cfg(feature = "android-volume-control")]
 const ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED: u64 = ANDROID_VOLUME_GRANT_TTL_SECONDS;
@@ -243,6 +255,10 @@ const FILESYSTEM_FIND_FAILED: &str = "filesystem_find_failed";
 const FILESYSTEM_READ_FAILED: &str = "filesystem_read_failed";
 const FILESYSTEM_DRY_RUN_ALLOWED: &str = "dry_run_preview";
 const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
+const FILESYSTEM_WRITE_MUTATION_DISABLED: &str = "write_file_mutation_disabled";
+const FILESYSTEM_WRITE_NOT_FOUND: &str = "filesystem_write_target_not_found";
+const FILESYSTEM_WRITE_UNSUPPORTED: &str = "filesystem_write_target_type_unsupported";
+const FILESYSTEM_WRITE_EXISTS: &str = "filesystem_write_destination_exists";
 const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
@@ -272,6 +288,7 @@ impl McpTransportOptions {
 #[cfg(feature = "android-volume-control")]
 pub struct McpCapabilityAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
+    write_file: Option<WriteFileGrantAuthority>,
     android_volume_control: Option<AndroidVolumeGrantAuthority>,
 }
 
@@ -279,10 +296,12 @@ pub struct McpCapabilityAuthorities {
 impl McpCapabilityAuthorities {
     pub fn new(
         create_directory: Option<CreateDirectoryGrantAuthority>,
+        write_file: Option<WriteFileGrantAuthority>,
         android_volume_control: Option<AndroidVolumeGrantAuthority>,
     ) -> Self {
         Self {
             create_directory,
+            write_file,
             android_volume_control,
         }
     }
@@ -300,6 +319,7 @@ struct McpTransportState {
     android_volume_control_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
     #[cfg(feature = "android-volume-status")]
@@ -345,6 +365,7 @@ impl McpTransportState {
             command_execution_enabled: command_execution_enabled
                 && cfg!(feature = "command-execution"),
             create_directory_authority,
+            write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
@@ -360,6 +381,11 @@ impl McpTransportState {
 
     fn with_options(mut self, options: McpTransportOptions) -> Self {
         self.sse_enabled = options.sse_enabled;
+        self
+    }
+
+    fn with_write_file_authority(mut self, authority: Option<WriteFileGrantAuthority>) -> Self {
+        self.write_file_authority = authority;
         self
     }
 
@@ -401,6 +427,7 @@ impl McpTransportState {
             android_volume_control_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
+            write_file_authority: None,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
             android_volume_client: AndroidVolumeClient::termux(),
@@ -441,6 +468,7 @@ impl McpTransportState {
             android_volume_control_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
+            write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             android_volume_client,
@@ -471,6 +499,7 @@ impl McpTransportState {
             android_volume_control_enabled: false,
             command_execution_enabled,
             create_directory_authority: None,
+            write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
             #[cfg(feature = "android-volume-status")]
@@ -768,6 +797,76 @@ pub fn router_with_create_directory_authority_and_options(
     ).with_options(options))
 }
 
+/// Build the transport with independently optional filesystem mutation
+/// authorities. Preview calls remain available when either mutation gate is
+/// disabled; every enabled mutation still requires its exact request grant.
+#[rustfmt::skip]
+pub fn router_with_filesystem_authorities(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+) -> Router {
+    router_with_filesystem_authorities_and_options(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        create_directory_authority,
+        write_file_authority,
+        McpTransportOptions::default(),
+    )
+}
+
+#[rustfmt::skip]
+pub fn router_with_filesystem_authorities_and_options(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+    options: McpTransportOptions,
+) -> Router {
+    router_from_state(
+        McpTransportState::new(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            create_directory_authority,
+        )
+        .with_write_file_authority(write_file_authority)
+        .with_options(options),
+    )
+}
+
+#[rustfmt::skip]
+pub fn router_with_write_file_authority(
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    write_file_authority: WriteFileGrantAuthority,
+) -> Router {
+    router_with_filesystem_authorities(
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        None,
+        Some(write_file_authority),
+    )
+}
+
 /// Build the MCP transport with independently optional filesystem and Android
 /// mutation authorities. The volume-control tool remains hidden unless the
 /// volume authority is present; every live call still requires an exact
@@ -781,6 +880,7 @@ pub fn router_with_capability_authorities(
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
     android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
 ) -> Router {
     router_with_capability_authorities_and_options(
@@ -791,6 +891,7 @@ pub fn router_with_capability_authorities(
         command_execution_enabled,
         McpCapabilityAuthorities::new(
             create_directory_authority,
+            write_file_authority,
             android_volume_control_authority,
         ),
         McpTransportOptions::default(),
@@ -812,6 +913,7 @@ pub fn router_with_capability_authorities_and_options(
 ) -> Router {
     let McpCapabilityAuthorities {
         create_directory,
+        write_file,
         android_volume_control,
     } = authorities;
     router_from_state(
@@ -823,6 +925,7 @@ pub fn router_with_capability_authorities_and_options(
             command_execution_enabled,
             create_directory,
         )
+        .with_write_file_authority(write_file)
         .with_android_volume_control_authority(android_volume_control)
         .with_options(options),
     )
@@ -887,10 +990,10 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
         );
     }
 
-    let capability_grant = match single_header_value(headers, CREATE_DIRECTORY_GRANT_HEADER) {
+    let capability_grant = match single_header_value(headers, MCP_CAPABILITY_GRANT_HEADER) {
         Ok(Some(value))
             if !value.is_empty()
-                && value.len() <= MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
+                && value.len() <= MAX_MCP_CAPABILITY_GRANT_HEADER_BYTES
                 && value.is_ascii() =>
         {
             Some(value.to_owned())
@@ -1961,7 +2064,10 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                                 },
                                 "content": {
                                     "type": "string",
-                                    "description": "UTF-8 text content to write, subject to the staged byte limit.",
+                                    "x-maxBytes": DEFAULT_MAX_WRITE_BYTES,
+                                    "description": format!(
+                                        "UTF-8 text content to write; the encoded payload must not exceed {DEFAULT_MAX_WRITE_BYTES} bytes."
+                                    ),
                                 },
                                 "dry_run": {
                                     "type": "boolean",
@@ -2002,6 +2108,38 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
         let dry_run_schema = create_directory_tool
             .pointer_mut("/inputSchema/properties/dry_run")
             .expect("create_directory owns a dry_run schema");
+        dry_run_schema["const"] = json!(true);
+        dry_run_schema["description"] = json!(
+            "Mutation is disabled in this runtime posture; omitted dry_run and explicit true are accepted."
+        );
+    }
+
+    let write_file_tool = body
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+        .and_then(|tools| {
+            tools
+                .iter_mut()
+                .find(|tool| tool.get("name") == Some(&json!(WRITE_FILE_TOOL)))
+        })
+        .expect("baseline discovery owns write_file");
+    if state.write_file_authority.is_some() {
+        write_file_tool["description"] = json!(
+            "Preview one bounded safe-rooted UTF-8 file write, or create/replace it with fixed mode 0600 only when dry_run=false and one target/content/publication-bound MCP-Capability-Grant is valid."
+        );
+        let dry_run_schema = write_file_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("write_file owns a dry_run schema");
+        dry_run_schema["description"] = json!(
+            "Defaults to true. Explicit false additionally requires the enabled mutation gate and one request-scoped grant."
+        );
+    } else {
+        write_file_tool["description"] = json!(
+            "Preview one bounded safe-rooted UTF-8 file write without mutation; the dedicated mutation gate is disabled."
+        );
+        let dry_run_schema = write_file_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("write_file owns a dry_run schema");
         dry_run_schema["const"] = json!(true);
         dry_run_schema["description"] = json!(
             "Mutation is disabled in this runtime posture; omitted dry_run and explicit true are accepted."
@@ -2115,7 +2253,7 @@ async fn handle_tool_call(
     if capability_grant.is_some()
         && !matches!(
             call.name.as_str(),
-            CREATE_DIRECTORY_TOOL | SET_ANDROID_VOLUME_TOOL
+            CREATE_DIRECTORY_TOOL | WRITE_FILE_TOOL | SET_ANDROID_VOLUME_TOOL
         )
     {
         return capability_context_not_allowed(id);
@@ -2276,8 +2414,9 @@ async fn handle_tool_call(
             handle_write_file_call(
                 id,
                 call.arguments.into_value(),
-                &state.file_tools,
-                &state.audit_counters,
+                state,
+                session_id,
+                capability_grant,
             )
             .await
         }
@@ -2853,6 +2992,7 @@ fn runtime_status_response(
 ) -> Response {
     let audit_counters_snapshot = audit_counters_snapshot(&state.audit_counters);
     let create_directory_mutation_enabled = state.create_directory_authority.is_some();
+    let write_file_mutation_enabled = state.write_file_authority.is_some();
     let android_battery_status_enabled = state.android_battery_status_enabled;
     let android_volume_status_enabled = state.android_volume_status_enabled;
     let android_volume_control_enabled = state.android_volume_control_enabled;
@@ -2905,6 +3045,11 @@ fn runtime_status_response(
     } else {
         "dry_run_only_mutation_disabled"
     };
+    let write_file_mode = if write_file_mutation_enabled {
+        "dry_run_or_request_scoped_single_use_grant"
+    } else {
+        "dry_run_only_mutation_disabled"
+    };
     let transport_mode = if sse_enabled {
         "streamable-http-2025-11-25-session-scoped-bounded-sse-replay"
     } else {
@@ -2921,13 +3066,14 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, write_file_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search-and-grant-gated-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                             transport_mode,
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
                             volume_control_mode,
                             create_directory_mode,
+                            write_file_mode,
                             if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
                             command_execution_mode,
                         ),
@@ -2954,7 +3100,7 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text_and_default_dry_run_grant_gated_write_file",
                     "pathDiscovery": true,
                     "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
                     "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
@@ -2986,7 +3132,13 @@ fn runtime_status_response(
                     "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
                     "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
                     "fileWrites": true,
-                    "fileWriteMode": "dry_run_by_default_explicit_false_required",
+                    "fileWriteMode": write_file_mode,
+                    "fileWriteMutationEnabled": write_file_mutation_enabled,
+                    "fileWriteGrantRequired": write_file_mutation_enabled,
+                    "fileWriteGrantHeader": WRITE_FILE_GRANT_HEADER,
+                    "fileWriteGrantTtlSeconds": WRITE_FILE_GRANT_TTL_SECONDS,
+                    "fileWriteMaxBytes": DEFAULT_MAX_WRITE_BYTES,
+                    "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
                     "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled,
                     "androidPlatformToolMode": android_platform_mode,
                     "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
@@ -3004,6 +3156,9 @@ fn runtime_status_response(
                     "commandExecution": command_execution_enabled,
                     "commandExecutionMode": command_execution_mode,
                     "arbitraryCommandExecution": false,
+                    // Preserve the established runtime-status contract: this
+                    // field reports Android device-control exposure. Filesystem
+                    // mutations have their own explicit gate/mode fields above.
                     "highImpactTools": android_volume_control_enabled,
                     "auditCounters": audit_counters_snapshot,
                 },
@@ -4948,9 +5103,12 @@ async fn handle_search_text_call(
 async fn handle_write_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-    audit_counters: &SharedAuditCounters,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
 ) -> Response {
+    let file_tools = &state.file_tools;
+    let audit_counters = &state.audit_counters;
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => {
@@ -4983,12 +5141,95 @@ async fn handle_write_file_call(
     let bytes = args.content.len();
     let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
     let mode = filesystem_write_mode(dry_run);
+    if !dry_run && state.write_file_authority.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_WRITE_MUTATION_DISABLED,
+        );
+        return capability_authorization_denied(id, FILESYSTEM_WRITE_MUTATION_DISABLED);
+    }
 
-    match file_tools
-        .write_file(args.path, args.content, Some(dry_run))
+    let message = if dry_run {
+        "DRY-RUN".to_owned()
+    } else {
+        format!("Wrote {bytes} bytes")
+    };
+    let Some(success_response) = bounded_ok_result(
+        id.clone(),
+        message.clone(),
+        json!({
+            "dryRun": dry_run,
+            "bytes": bytes,
+            "message": message.clone(),
+        }),
+        MAX_WRITE_FILE_RESPONSE_BYTES,
+    ) else {
+        record_filesystem_denied(
+            audit_counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "File-write response exceeds the staged response byte limit.",
+            MAX_WRITE_FILE_RESPONSE_BYTES,
+        );
+    };
+
+    let operation = if dry_run {
+        file_tools.write_file(args.path, args.content, Some(true)).await
+    } else {
+        let prepared: PreparedWriteFileMutation = match file_tools
+            .prepare_write_file_mutation(args.path, args.content)
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => return write_file_filesystem_error(id, audit_counters, mode, error),
+        };
+        let authority = state
+            .write_file_authority
+            .clone()
+            .expect("enabled write_file mutation owns an authority");
+        let session_id = session_id.to_owned();
+        let capability_grant = capability_grant.map(str::to_owned);
+        match tokio::task::spawn_blocking(move || {
+            prepared.execute_authorized(|target| {
+                authority.consume_at(
+                    capability_grant.as_deref(),
+                    &session_id,
+                    target,
+                    current_unix_seconds(),
+                )
+            })
+        })
         .await
-    {
-        Ok(message) => {
+        {
+            Ok(Ok(result)) => Ok(result.message),
+            Ok(Err(AuthorizedWriteFileError::Authorization(error))) => {
+                record_filesystem_denied(
+                    audit_counters,
+                    WRITE_FILE_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    error.reason_code(),
+                );
+                return capability_authorization_denied(id, error.reason_code());
+            }
+            Ok(Err(AuthorizedWriteFileError::Filesystem(error))) => Err(error),
+            Err(_error) => Err(AppError::Io(std::io::Error::other(
+                "write file worker failed",
+            ))),
+        }
+    };
+
+    match operation {
+        Ok(actual_message) => {
+            debug_assert_eq!(actual_message, message);
             record_filesystem_allowed(
                 audit_counters,
                 WRITE_FILE_TOOL,
@@ -4996,17 +5237,21 @@ async fn handle_write_file_call(
                 mode,
                 filesystem_write_allowed_reason(dry_run),
             );
-            ok_result(
-                id,
-                message.clone(),
-                json!({
-                    "dryRun": dry_run,
-                    "bytes": bytes,
-                    "message": message,
-                }),
-            )
+            success_response
         }
-        Err(AppError::PathTraversal { .. }) => {
+        Err(error) => write_file_filesystem_error(id, audit_counters, mode, error),
+    }
+}
+
+#[rustfmt::skip]
+fn write_file_filesystem_error(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    mode: AuditMode,
+    error: AppError,
+) -> Response {
+    match error {
+        AppError::PathTraversal { .. } => {
             record_filesystem_denied(
                 audit_counters,
                 WRITE_FILE_TOOL,
@@ -5019,7 +5264,7 @@ async fn handle_write_file_call(
                 "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
             )
         }
-        Err(AppError::WritePayloadTooLarge { .. }) => {
+        AppError::WritePayloadTooLarge { .. } => {
             record_filesystem_denied(
                 audit_counters,
                 WRITE_FILE_TOOL,
@@ -5032,7 +5277,37 @@ async fn handle_write_file_call(
                 "File content exceeds the staged write_file byte limit.",
             )
         }
-        Err(_error) => {
+        AppError::PathNotFound => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_WRITE_NOT_FOUND,
+            );
+            invalid_params(id, "Filesystem write target or parent does not exist.")
+        }
+        AppError::UnsupportedPathType => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_WRITE_UNSUPPORTED,
+            );
+            invalid_params(id, "Filesystem write target must be absent or a regular file.")
+        }
+        AppError::PathAlreadyExists => {
+            record_filesystem_denied(
+                audit_counters,
+                WRITE_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                mode,
+                FILESYSTEM_WRITE_EXISTS,
+            );
+            invalid_params(id, "Filesystem write create target now exists.")
+        }
+        _error => {
             record_filesystem_denied(
                 audit_counters,
                 WRITE_FILE_TOOL,

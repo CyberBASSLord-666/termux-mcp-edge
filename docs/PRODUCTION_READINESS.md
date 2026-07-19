@@ -31,6 +31,7 @@ The confirmed implementation lanes have focused merge evidence:
 - #247: bounded binary-safe file copy with held source/destination descriptors, atomic no-replace publication, fixed mode, response preflight, identity-safe cleanup, and content-private audit evidence.
 - #244: dry-run-first one-directory creation with fixed mode, no-replace publication, durability sync, and identity-checked cleanup.
 - #248: default-disabled one-directory mutation with exact-binary offline issuance, short-lived principal/session/root/target binding, atomic single-use consumption, private stable denials, and release/device evidence.
+- #276: independent default-disabled file-write mutation with exact-binary offline issuance, principal/session/root/target/content/disposition binding, actual-ID response preflight, exact 1 MiB and mode-`0600` publication, create/no-replace and replace/exchange identity verification, durable cleanup, and validator/device/emulated evidence.
 
 Source remediation alone is not a release declaration. A candidate is production-ready only after the exact commit completes every applicable PR/release gate below, every published Android posture is retained and verified, and the on-device install/upgrade/rollback smoke procedure succeeds without waived failures.
 
@@ -110,7 +111,7 @@ A change to the stable transport or staged tool registry must prove:
 - unauthenticated callers cannot discover or invoke tools;
 - discovery lists exactly sixteen baseline tools, plus only those battery, volume-status, volume-control, and fixed-command tools whose independent gates are active (seventeen with one through twenty with all four);
 - every tool call enforces its advertised closed input schema, including the omitted-or-empty contract for no-argument tools;
-- filesystem tools remain safe-rooted and bounded; mutations remain dry-run-first; directory creation is additionally default-disabled, exact-target grant-gated, fixed-mode/no-replace/non-recursive, and single-use; file copy is single-regular-file, 1 MiB, binary-safe, fixed-mode, content-private, and no-replace; path discovery is literal-basename-only, descriptor-relative, 8,192-entry/512-match/depth/response bounded, and content-free; hashing is single-regular-file, streaming SHA-256, 16 MiB, and digest/path/content-private; binary read is single-regular-file, canonical padded base64, 1 MiB raw, response-preflighted, and path/host-metadata-private; metadata is descriptor-classified/content-free; and text search is literal/content-free;
+- filesystem tools remain safe-rooted and bounded; mutations remain dry-run-first; directory creation is independently default-disabled, exact-target grant-gated, fixed-mode/no-replace/non-recursive, and single-use; file-write mutation has its own default-disabled gate plus target/content/create-or-replace-bound grant, exact 1 MiB/mode-`0600` contract, actual-ID preflight, held-identity publication, and foreign-preserving cleanup; file copy is single-regular-file, 1 MiB, binary-safe, fixed-mode, content-private, and no-replace; path discovery is literal-basename-only, descriptor-relative, 8,192-entry/512-match/depth/response bounded, and content-free; hashing is single-regular-file, streaming SHA-256, 16 MiB, and digest/path/content-private; binary read is single-regular-file, canonical padded base64, 1 MiB raw, response-preflighted, and path/host-metadata-private; metadata is descriptor-classified/content-free; and text search is literal/content-free;
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
 - errors and audit counters retain only stable non-sensitive data;
 - arbitrary command execution, broader Android control, shell fallback, and unrelated high-impact tools remain absent; fixed diagnostics and exact-stream volume control appear only in their explicit postures.
@@ -142,6 +143,6 @@ Do not merge or release when any applicable condition is true:
 - unauthenticated clients can reach MCP discovery or invocation in static-token mode;
 - browser-reachable MCP traffic lacks exact Host/Origin enforcement;
 - errors, logs, or audit data can expose tokens, private paths, raw I/O text, or caller payloads;
-- filesystem mutation can occur without explicit `dry_run:false` and safe-root validation, or directory mutation can occur without its enabled gate and exact request-scoped single-use grant;
+- filesystem mutation can occur without explicit `dry_run:false` and safe-root validation, or directory/file-write mutation can occur without its independent enabled gate and exact request-scoped single-use grant;
 - a dependency advisory is unresolved without a documented accepted-risk decision;
 - a high-impact capability appears without its independent gate and validation evidence.
