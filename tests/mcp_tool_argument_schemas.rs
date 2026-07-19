@@ -503,10 +503,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
                 "dry_run": "false"
             }),
         ),
-        (
-            "find_paths",
-            json!({"path": false, "query": "source"}),
-        ),
+        ("find_paths", json!({"path": false, "query": "source"})),
         (
             "find_paths",
             json!({

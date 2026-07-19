@@ -75,14 +75,8 @@ async fn discovery_advertises_one_closed_literal_path_schema() {
         schema["properties"]["kind"]["enum"],
         json!(["any", "regular_file", "directory"])
     );
-    assert_eq!(
-        schema["properties"]["max_depth"]["minimum"],
-        MIN_FIND_DEPTH
-    );
-    assert_eq!(
-        schema["properties"]["max_depth"]["maximum"],
-        MAX_FIND_DEPTH
-    );
+    assert_eq!(schema["properties"]["max_depth"]["minimum"], MIN_FIND_DEPTH);
+    assert_eq!(schema["properties"]["max_depth"]["maximum"], MAX_FIND_DEPTH);
 }
 
 #[tokio::test]
@@ -216,10 +210,7 @@ async fn find_paths_is_literal_content_private_ordered_and_kind_filtered() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        payload["result"]["structuredContent"]["matches"],
-        json!([])
-    );
+    assert_eq!(payload["result"]["structuredContent"]["matches"], json!([]));
 }
 
 #[tokio::test]
@@ -511,14 +502,14 @@ async fn find_paths_preflights_arguments_and_response_then_audits_private_reason
         5
     );
     assert_eq!(counters["by_reason_code"]["invalid_arguments"]["denied"], 2);
-    assert_eq!(
-        counters["by_reason_code"]["invalid_max_depth"]["denied"],
-        2
-    );
+    assert_eq!(counters["by_reason_code"]["invalid_max_depth"]["denied"], 2);
     assert_eq!(
         counters["by_reason_code"]["response_size_limit_exceeded"]["denied"],
         2
     );
-    assert_eq!(counters["by_reason_code"]["safe_root_rejected"]["denied"], 1);
+    assert_eq!(
+        counters["by_reason_code"]["safe_root_rejected"]["denied"],
+        1
+    );
     assert_eq!(counters["by_reason_code"]["missing_arguments"]["denied"], 1);
 }
