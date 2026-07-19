@@ -2719,12 +2719,8 @@ fn rollback_write_exchange_if_staged(
     let Ok(published) = descriptor_fs::statat(parent, file_name, AtFlags::SYMLINK_NOFOLLOW) else {
         return;
     };
-    if !write_file_identity_and_contract_match(
-        &published,
-        staged_device,
-        staged_inode,
-        staged_size,
-    ) {
+    if !write_file_identity_and_contract_match(&published, staged_device, staged_inode, staged_size)
+    {
         return;
     }
     if descriptor_fs::statat(parent, temp_name, AtFlags::SYMLINK_NOFOLLOW).is_err() {
@@ -3787,9 +3783,7 @@ mod tests {
             std::fs::rename(&directory_path, &directory_parked).unwrap();
             std::fs::create_dir(&directory_path).unwrap();
         }
-        assert!(std::fs::symlink_metadata(&directory_path)
-            .unwrap()
-            .is_dir());
+        assert!(std::fs::symlink_metadata(&directory_path).unwrap().is_dir());
         assert_eq!(
             std::fs::read_to_string(&directory_parked).unwrap(),
             "operation-owned"
@@ -3802,8 +3796,7 @@ mod tests {
         let fifo_metadata =
             descriptor_fs::statat(&root_fd, fifo_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
         {
-            let mut cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from(fifo_name));
+            let mut cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from(fifo_name));
             cleanup.set_expected_identity(fifo_metadata.st_dev, fifo_metadata.st_ino);
             std::fs::rename(&fifo_path, &fifo_parked).unwrap();
             descriptor_fs::mkfifoat(&root_fd, fifo_name, Mode::RUSR | Mode::WUSR).unwrap();
@@ -4049,8 +4042,7 @@ mod tests {
 
     #[tokio::test]
     async fn distinct_replace_grants_serialize_before_authorization_and_loser_is_reusable() {
-        const TEST_KEY: &str =
-            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
         let root = tempfile::tempdir().unwrap();
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
@@ -4072,12 +4064,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let authority = WriteFileGrantAuthority::from_hex_key(
-            "test-key-1",
-            TEST_KEY,
-            "test-static-principal",
-        )
-        .unwrap();
+        let authority =
+            WriteFileGrantAuthority::from_hex_key("test-key-1", TEST_KEY, "test-static-principal")
+                .unwrap();
         let session_id = uuid::Uuid::new_v4().to_string();
         let now = unix_timestamp_seconds();
         let first_token = authority
@@ -4155,12 +4144,7 @@ mod tests {
             .await
             .unwrap()
             .execute_authorized(|grant_target| {
-                authority.consume_at(
-                    Some(&second_token),
-                    &session_id,
-                    grant_target,
-                    now,
-                )
+                authority.consume_at(Some(&second_token), &session_id, grant_target, now)
             });
         assert!(retry.is_ok());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), second_content);
