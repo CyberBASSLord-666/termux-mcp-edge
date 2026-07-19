@@ -23,8 +23,30 @@ pub mod auth;
 ))]
 mod bounded_process;
 pub mod capability_token;
+/// Raw process-client construction and execution are intentionally not part of
+/// the downstream embedding API.
 #[cfg(feature = "command-execution")]
-pub mod command_execution;
+mod command_execution;
+/// The public command-policy surface exposes only closed profile identifiers;
+/// profile construction remains policy-owned.
+///
+/// ```compile_fail
+/// use termux_mcp_server::command_policy::CommandProfile;
+/// ```
+///
+/// Raw execution construction is likewise inaccessible:
+///
+/// ```compile_fail
+/// use termux_mcp_server::command_execution::CommandExecutionClient;
+/// ```
+///
+/// Resolved policy handles remain opaque:
+///
+/// ```compile_fail
+/// use termux_mcp_server::command_policy::CommandExecutionPolicy;
+/// let decision = CommandExecutionPolicy::new().evaluate("server_version", true, true);
+/// let _ = decision.profile;
+/// ```
 pub mod command_policy;
 pub mod config;
 #[cfg(feature = "mcp-runtime")]
