@@ -84,7 +84,7 @@ use crate::{
         MAX_TEXT_RANGE_ESCAPED_BYTES, MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES,
         MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
-    transport_security::TransportSecurityPolicy,
+    transport_security::{normalize_host, TransportSecurityPolicy},
     write_file_grant::{
         WriteFileGrantAuthority, WriteFileGrantError, WRITE_FILE_GRANT_TTL_SECONDS,
     },
@@ -1007,16 +1007,17 @@ impl McpRouterProtection {
 }
 
 fn validate_declared_listener_host(listener_host: &str) -> Result<(), McpRouterBuildError> {
-    if listener_host.is_empty()
-        || listener_host != listener_host.trim()
-        || listener_host
-            .bytes()
-            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-    {
-        return Err(McpRouterBuildError::InvalidListenerHost);
-    }
+    // The builder accepts a host only, never an authority containing a port.
+    // Raw IPv4/IPv6 literals use IpAddr parsing; DNS names use the same strict
+    // ASCII normalization contract as the Host allowlist.
+    let valid_ip_literal = listener_host.parse::<IpAddr>().is_ok();
+    let valid_dns_name = !listener_host.contains(':') && normalize_host(listener_host).is_some();
 
-    Ok(())
+    if valid_ip_literal || valid_dns_name {
+        Ok(())
+    } else {
+        Err(McpRouterBuildError::InvalidListenerHost)
+    }
 }
 
 fn is_loopback_listener_host(listener_host: &str) -> bool {
