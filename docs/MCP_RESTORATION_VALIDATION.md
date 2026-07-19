@@ -185,7 +185,7 @@ curl -sS \
   -H 'MCP-Protocol-Version: 2025-11-25' \
   -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 11'
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 12'
 
 test "$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \

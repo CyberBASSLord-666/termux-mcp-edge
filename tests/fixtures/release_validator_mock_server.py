@@ -108,6 +108,7 @@ TOOLS = [
     "project_service_status",
     "create_directory",
     "copy_file",
+    "hash_file",
     "list_directory",
     "path_metadata",
     "read_file",
@@ -482,6 +483,19 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "hash_file":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded safe-root SHA-256 file hashing.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"path": {"type": "string"}},
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -531,6 +545,9 @@ class Handler(BaseHTTPRequestHandler):
                         "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
                         "androidVolumeControlEnabled": False,
                         "androidVolumeGrantRequired": False,
+                        "fileHashing": True,
+                        "fileHashAlgorithm": "sha256",
+                        "fileHashMaxBytes": 16777216,
                         "createDirectoryMutationEnabled": CAPABILITY_ENABLED,
                         "createDirectoryGrantRequired": CAPABILITY_ENABLED,
                         "createDirectoryGrantHeader": "mcp-capability-grant",
@@ -706,6 +723,34 @@ class Handler(BaseHTTPRequestHandler):
                         "mode": "0600",
                         "maxFileBytes": 1048576,
                         "maxResponseBytes": 16384,
+                    },
+                ),
+            )
+            return
+        if name == "hash_file":
+            target = safe_path(str(arguments.get("path", "")))
+            if target is None or target.is_symlink() or not target.is_file():
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "File hash invalid."),
+                )
+                return
+            size = target.stat().st_size
+            if size > 16777216:
+                self.send_json(
+                    413,
+                    rpc_error(identifier, -32001, "Payload too large", "File hash too large."),
+                )
+                return
+            content = target.read_bytes()
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "algorithm": "sha256",
+                        "digest": hashlib.sha256(content).hexdigest(),
+                        "sizeBytes": len(content),
                     },
                 ),
             )

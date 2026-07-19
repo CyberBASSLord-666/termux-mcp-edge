@@ -668,7 +668,7 @@ impl FileSystemTools {
             let file_fd = descriptor_fs::openat(
                 &parent_fd,
                 &file_name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                 Mode::empty(),
             )
             .map_err(descriptor_error)?;
@@ -713,18 +713,16 @@ impl FileSystemTools {
             let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
             let root_fd = open_root_directory(&anchored.root_path)?;
             let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
-            let path_metadata = descriptor_fs::statat(
-                &parent_fd,
-                &file_name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
-            .map_err(|error| {
-                if error == rustix::io::Errno::NOENT {
-                    AppError::PathNotFound
-                } else {
-                    descriptor_error(error)
-                }
-            })?;
+            let path_metadata =
+                descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW).map_err(
+                    |error| {
+                        if error == rustix::io::Errno::NOENT {
+                            AppError::PathNotFound
+                        } else {
+                            descriptor_error(error)
+                        }
+                    },
+                )?;
             let path_type = FileType::from_raw_mode(path_metadata.st_mode);
             if path_type.is_symlink() {
                 return Err(path_rejected(
@@ -2629,6 +2627,39 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(outside_source).unwrap(),
             "outside-source"
+        );
+    }
+
+    #[test]
+    fn held_hash_descriptor_prevents_redirection_after_path_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let parked = root.path().join("source-parked");
+        let outside_source = outside.path().join("outside-source");
+        std::fs::write(&source, b"inside-hash").unwrap();
+        std::fs::write(&outside_source, b"outside-secret").unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+        let source_fd = descriptor_fs::openat(
+            &root_fd,
+            "source",
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        std::fs::rename(&source, &parked).unwrap();
+        symlink(&outside_source, &source).unwrap();
+
+        let mut bytes = Vec::new();
+        File::from(source_fd).read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"inside-hash");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            format!("{:x}", Sha256::digest(b"inside-hash"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(outside_source).unwrap(),
+            "outside-secret"
         );
     }
 

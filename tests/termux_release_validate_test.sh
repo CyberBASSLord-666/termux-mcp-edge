@@ -574,6 +574,7 @@ jq -e '
   and ([.results[].code] | index("safe_root_directory_creation_verified") != null)
   and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
   and ([.results[].code] | index("safe_root_file_copy_verified") != null)
+  and ([.results[].code] | index("safe_root_file_hash_verified") != null)
   and ([.results[].code] | index("safe_root_path_metadata_succeeded") != null)
   and ([.results[].code] | index("safe_root_text_search_succeeded") != null)
   and ([.results[].code] | index("read_response_bound_enforced") != null)

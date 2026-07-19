@@ -14,6 +14,8 @@ Each safe root must:
 
 Canonical aliases and duplicate entries are collapsed before the filesystem tools and readiness state are constructed. Readiness therefore reports the number of distinct anchored roots, not the number of repeated configuration values.
 
+Every live create, copy, hash, list, metadata, read, search, and write operation starts from one of these opened anchors and traverses descendants descriptor-relatively with no-follow semantics. `hash_file` retains the exact regular-file descriptor after path identity verification and streams at most 16 MiB through SHA-256; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
+
 ## Failure behavior
 
 A missing, inaccessible, or non-directory root aborts startup before the TCP listener is bound. Startup errors identify only the one-based configuration position and a stable reason. They do not echo the configured path or operating-system error text.

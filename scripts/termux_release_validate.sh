@@ -897,7 +897,7 @@ run_default_runtime_checks() {
 
 run_mcp_runtime_checks() {
   local body="$TEMP_ROOT/mcp-response.json" headers="$TEMP_ROOT/mcp-headers.txt"
-  local second="$TEMP_ROOT/mcp-second.json" status payload oversized bytes directory_target mismatch_target
+  local second="$TEMP_ROOT/mcp-second.json" status payload oversized bytes directory_target mismatch_target hash_digest
   start_server "$MCP_PINNED_ARTIFACT" mcp
   curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null || fail mcp_readiness_failed
   jq -e --arg version "$EXPECTED_VERSION" '
@@ -983,7 +983,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -991,6 +991,15 @@ run_mcp_runtime_checks() {
       and ($tool.inputSchema.additionalProperties == false)
       and ($tool.description | contains("MCP-Capability-Grant"))
   ' "$body" >/dev/null 2>&1 || fail create_directory_grant_discovery_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "hash_file"))[0].inputSchema as $schema
+    | $schema.type == "object"
+      and ($schema.properties | keys) == ["path"]
+      and $schema.properties.path.type == "string"
+      and $schema.required == ["path"]
+      and $schema.additionalProperties == false
+  ' "$body" >/dev/null 2>&1 || fail hash_file_discovery_schema_invalid
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1005,6 +1014,9 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
     and .result.structuredContent.createDirectoryGrantTtlSeconds == 60
     and .result.structuredContent.createDirectoryMutationMode == "dry_run_or_request_scoped_single_use_grant"
+    and .result.structuredContent.fileHashing == true
+    and .result.structuredContent.fileHashAlgorithm == "sha256"
+    and .result.structuredContent.fileHashMaxBytes == 16777216
   ' "$body" >/dev/null 2>&1 || fail high_impact_gate_enabled
 
   payload='{"jsonrpc":"2.0","id":"platform","method":"tools/call","params":{"name":"platform_info","arguments":{}}}'
@@ -1095,6 +1107,36 @@ run_mcp_runtime_checks() {
       and $metadata.maxResponseBytes == 16384
   ' "$body" >/dev/null 2>&1 || fail path_metadata_contract_invalid
   grep -Eq 'inode|device|uid|gid|mode|accessTime|validation-visible' "$body" && fail path_metadata_sensitive_field_reflected
+
+  hash_digest="$(sha256sum -- "$VALIDATION_SAFE_ROOT/visible.txt" | awk '{print $1}')" || fail hash_file_expected_digest_failed
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"hash","method":"tools/call","params":{"name":"hash_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status hash_file "$status" 200 safe_root_file_hash_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail hash_file_response_size_failed
+  ((bytes <= 16384)) || fail hash_file_response_too_large
+  jq -e --arg digest "$hash_digest" '
+    .result.structuredContent as $hash
+    | ($hash | keys) == ["algorithm","digest","sizeBytes"]
+      and $hash.algorithm == "sha256"
+      and $hash.digest == $digest
+      and $hash.sizeBytes == 18
+  ' "$body" >/dev/null 2>&1 || fail hash_file_contract_invalid
+  grep -Eq 'validation-visible|visible\.txt|/\.termux-mcp-release-validation-' "$body" && fail hash_file_path_or_content_reflected
+
+  ln -s -- "$VALIDATION_SAFE_ROOT/visible.txt" "$VALIDATION_SAFE_ROOT/hash-link" 2>/dev/null || fail hash_file_symlink_fixture_create_failed
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/hash-link" '{"jsonrpc":"2.0","id":"hash-link","method":"tools/call","params":{"name":"hash_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status hash_file_symlink "$status" 400 hash_file_symlink_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail hash_file_symlink_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail hash_file_symlink_path_reflected
+
+  dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/hash-oversized.bin" bs=1 seek=16777216 count=1 status=none 2>/dev/null || fail hash_file_oversized_fixture_create_failed
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/hash-oversized.bin" '{"jsonrpc":"2.0","id":"hash-oversized","method":"tools/call","params":{"name":"hash_file","arguments":{"path":$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status hash_file_oversized "$status" 413 hash_file_oversized_rejected
+  jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail hash_file_oversized_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail hash_file_oversized_path_reflected
+  record_result runtime hash_file pass safe_root_file_hash_verified
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1376,7 +1418,7 @@ run_volume_control_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'

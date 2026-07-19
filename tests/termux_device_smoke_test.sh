@@ -67,7 +67,7 @@ done
 
 for protocol_marker in \
   '"notifications/initialized"' \
-  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","list_directory","path_metadata","read_file","search_text","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_file","search_text","write_file"' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
   'create_directory_missing_grant_http' \
@@ -78,6 +78,10 @@ for protocol_marker in \
   'volume_control_runtime_disabled' \
   'copy_dry_run_http' \
   'copy_existing=unchanged' \
+  'hash_file_http' \
+  'hash_file=sha256' \
+  'hash_file_schema' \
+  'fileHashMaxBytes == 16777216' \
   '"name":"shell"' \
   'mcp_request_body_too_large' \
   'outside-secret-must-not-be-returned' \

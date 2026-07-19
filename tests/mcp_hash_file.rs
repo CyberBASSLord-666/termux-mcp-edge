@@ -69,8 +69,10 @@ async fn discovery_advertises_one_closed_hash_file_schema() {
 async fn hash_file_returns_exact_binary_digest_without_content_or_path() {
     let (root, file_tools) = empty_test_file_tools();
     let path = root.path().join("private-binary.bin");
+    let empty_path = root.path().join("empty.bin");
     let bytes = [0_u8, 0xff, 0x80, b'a', b'\n', 0x01, 0xfe];
     std::fs::write(&path, bytes).unwrap();
+    std::fs::write(&empty_path, []).unwrap();
 
     let direct = file_tools
         .hash_file(path.to_string_lossy().to_string())
@@ -79,6 +81,13 @@ async fn hash_file_returns_exact_binary_digest_without_content_or_path() {
     assert_eq!(direct.algorithm, "sha256");
     assert_eq!(direct.digest, digest(&bytes));
     assert_eq!(direct.size_bytes, bytes.len());
+    let empty = file_tools
+        .hash_file(empty_path.to_string_lossy().to_string())
+        .await
+        .unwrap();
+    assert_eq!(empty.algorithm, "sha256");
+    assert_eq!(empty.digest, digest(&[]));
+    assert_eq!(empty.size_bytes, 0);
 
     let router = test_router(file_tools);
     let session_id = initialize_session(&router).await;
@@ -221,6 +230,7 @@ async fn transport_hash_errors_and_audit_counters_are_bounded_and_private() {
     .await;
     assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
 
+    std::fs::remove_file(&path).unwrap();
     let oversized_id = "x".repeat(MAX_HASH_FILE_RESPONSE_BYTES);
     let oversized = post_json_to_session(
         router.clone(),
