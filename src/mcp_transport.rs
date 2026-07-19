@@ -1604,10 +1604,6 @@ pub fn protected_router_with_create_directory_authority_and_options(
 /// Build a protected MCP router with the request-authorized `copy_file`
 /// mutation capability enabled. Preview calls remain available without a
 /// grant, while every live copy requires an exact single-use grant.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
 #[rustfmt::skip]
 pub fn protected_router_with_copy_file_authority(
     protection: McpRouterProtection,
