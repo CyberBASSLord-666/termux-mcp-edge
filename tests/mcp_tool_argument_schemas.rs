@@ -132,6 +132,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
         ),
         ("read_file", "read_file requires a path argument."),
         (
+            "read_text_range",
+            "read_text_range requires path, offset_bytes, and max_bytes arguments.",
+        ),
+        (
             "search_text",
             "search_text requires path and query arguments.",
         ),
@@ -284,6 +288,15 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             json!({"path": source.to_string_lossy()}),
         ),
         (
+            "text-range-minimal-and-full",
+            "read_text_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": 0,
+                "max_bytes": 4
+            }),
+        ),
+        (
             "search-minimal",
             "search_text",
             json!({"path": root.path().to_string_lossy(), "query": "safe"}),
@@ -399,6 +412,15 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
         (
+            "read_text_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": 0,
+                "max_bytes": 4,
+                "unexpected": true
+            }),
+        ),
+        (
             "search_text",
             json!({
                 "path": root.path().to_string_lossy(),
@@ -452,6 +474,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "read_binary_file",
         "read_binary_range",
         "read_file",
+        "read_text_range",
         "search_text",
         "write_file",
     ] {
@@ -557,6 +580,22 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
             }),
         ),
         ("read_file", json!({"path": [source.to_string_lossy()]})),
+        (
+            "read_text_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": "0",
+                "max_bytes": 4
+            }),
+        ),
+        (
+            "read_text_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": 0,
+                "max_bytes": false
+            }),
+        ),
         (
             "search_text",
             json!({"path": root.path().to_string_lossy(), "query": false}),

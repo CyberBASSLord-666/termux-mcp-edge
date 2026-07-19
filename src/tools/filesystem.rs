@@ -33,6 +33,11 @@ pub const MAX_BINARY_RANGE_FILE_BYTES: usize = 67_108_864;
 pub const MAX_BINARY_RANGE_BYTES: usize = 262_144;
 pub const MAX_BINARY_RANGE_BASE64_BYTES: usize = 349_528;
 pub const MAX_BINARY_RANGE_RESPONSE_BYTES: usize = 393_216;
+pub const MAX_TEXT_RANGE_FILE_BYTES: usize = 67_108_864;
+pub const MIN_TEXT_RANGE_BYTES: usize = 4;
+pub const MAX_TEXT_RANGE_BYTES: usize = 262_144;
+pub const MAX_TEXT_RANGE_ESCAPED_BYTES: usize = MAX_TEXT_RANGE_BYTES * 6;
+pub const MAX_TEXT_RANGE_RESPONSE_BYTES: usize = 1_703_936;
 pub const MAX_HASH_FILE_BYTES: usize = 16_777_216;
 pub const MAX_HASH_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
@@ -823,6 +828,60 @@ impl FileSystemTools {
             .record(start.elapsed().as_secs_f64());
         counter!("mcp.fs.read_binary_range.calls_total").increment(1);
         counter!("mcp.fs.read_binary_range.bytes_total").increment(result.size_bytes as u64);
+        Ok(result)
+    }
+
+    /// Read one bounded UTF-8 byte range through the exact descriptor retained
+    /// after safe-root confinement. The returned content always starts and ends
+    /// on code-point boundaries; an incomplete code point at a non-EOF range
+    /// boundary is deferred to the next page.
+    pub async fn read_text_range(
+        &self,
+        path: String,
+        offset_bytes: u64,
+        max_bytes: usize,
+    ) -> Result<ReadTextRangeResult, AppError> {
+        if offset_bytes > MAX_TEXT_RANGE_FILE_BYTES as u64
+            || !(MIN_TEXT_RANGE_BYTES..=MAX_TEXT_RANGE_BYTES).contains(&max_bytes)
+        {
+            counter!("mcp.fs.read_text_range.rejected_invalid_total").increment(1);
+            return Err(AppError::InvalidTextRange);
+        }
+
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let result = tokio::task::spawn_blocking(move || {
+            let file = match open_verified_regular_file(&anchored, MAX_TEXT_RANGE_FILE_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.read_text_range.rejected_too_large_total").increment(1);
+                    return Err(error);
+                }
+                result => result?,
+            };
+            let range = read_verified_text_range(file, offset_bytes, max_bytes)?;
+            let size_bytes = range.content.len();
+            let next_offset_bytes = offset_bytes
+                .checked_add(size_bytes as u64)
+                .ok_or(AppError::InvalidTextRange)?;
+            Ok::<_, AppError>(ReadTextRangeResult {
+                content: range.content,
+                offset_bytes,
+                next_offset_bytes,
+                size_bytes,
+                file_size_bytes: range.file_size_bytes,
+                eof: range.eof,
+                max_read_bytes: MAX_TEXT_RANGE_BYTES,
+                max_file_bytes: MAX_TEXT_RANGE_FILE_BYTES,
+                max_response_bytes: MAX_TEXT_RANGE_RESPONSE_BYTES,
+            })
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.read_text_range.latency_seconds")
+            .record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.read_text_range.calls_total").increment(1);
+        counter!("mcp.fs.read_text_range.bytes_total").increment(result.size_bytes as u64);
         Ok(result)
     }
 
@@ -1706,6 +1765,12 @@ struct BinaryRangeRead {
     eof: bool,
 }
 
+struct TextRangeRead {
+    content: String,
+    file_size_bytes: u64,
+    eof: bool,
+}
+
 fn open_verified_regular_file(
     anchored: &AnchoredPath,
     max_bytes: usize,
@@ -1808,6 +1873,63 @@ fn read_verified_binary_range(
         bytes,
         file_size_bytes: verified.size_bytes,
         eof: end_bytes >= verified.size_bytes,
+    })
+}
+
+fn read_verified_text_range(
+    mut verified: VerifiedRegularFile,
+    offset_bytes: u64,
+    max_bytes: usize,
+) -> Result<TextRangeRead, AppError> {
+    if offset_bytes > verified.size_bytes
+        || !(MIN_TEXT_RANGE_BYTES..=MAX_TEXT_RANGE_BYTES).contains(&max_bytes)
+    {
+        return Err(AppError::InvalidTextRange);
+    }
+
+    verified.file.seek(SeekFrom::Start(offset_bytes))?;
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1_024));
+    {
+        let mut reader = (&mut verified.file).take(max_bytes as u64);
+        reader.read_to_end(&mut bytes)?;
+    }
+
+    let post_metadata = descriptor_fs::fstat(&verified.file).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(post_metadata.st_mode).is_file() {
+        return Err(AppError::UnsupportedPathType);
+    }
+    let post_size = u64::try_from(post_metadata.st_size)
+        .map_err(|_| AppError::Io(std::io::Error::other("file reported an invalid size")))?;
+    if post_size != verified.size_bytes {
+        return Err(AppError::FileChangedDuringRead);
+    }
+
+    if bytes
+        .first()
+        .is_some_and(|byte| byte & 0b1100_0000 == 0b1000_0000)
+    {
+        return Err(AppError::InvalidTextRange);
+    }
+
+    let physical_end = offset_bytes
+        .checked_add(bytes.len() as u64)
+        .ok_or(AppError::InvalidTextRange)?;
+    let content = match std::str::from_utf8(&bytes) {
+        Ok(content) => content.to_owned(),
+        Err(error) if error.error_len().is_none() && physical_end < verified.size_bytes => {
+            bytes.truncate(error.valid_up_to());
+            String::from_utf8(bytes).expect("the UTF-8 validator supplied a valid prefix")
+        }
+        Err(_) => return Err(AppError::InvalidFileEncoding),
+    };
+    let logical_end = offset_bytes
+        .checked_add(content.len() as u64)
+        .ok_or(AppError::InvalidTextRange)?;
+
+    Ok(TextRangeRead {
+        content,
+        file_size_bytes: verified.size_bytes,
+        eof: logical_end >= verified.size_bytes,
     })
 }
 
@@ -2191,6 +2313,20 @@ pub struct ReadBinaryRangeResult {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReadTextRangeResult {
+    pub content: String,
+    pub offset_bytes: u64,
+    pub next_offset_bytes: u64,
+    pub size_bytes: usize,
+    pub file_size_bytes: u64,
+    pub eof: bool,
+    pub max_read_bytes: usize,
+    pub max_file_bytes: usize,
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HashFileResult {
     pub algorithm: String,
     pub digest: String,
@@ -2552,6 +2688,197 @@ mod tests {
 
         assert!(matches!(
             read_verified_binary_range(file, 0, 4),
+            Err(AppError::FileChangedDuringRead)
+        ));
+    }
+
+    #[tokio::test]
+    async fn text_range_pages_only_on_utf8_boundaries_and_reports_exact_offsets() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("range.txt");
+        std::fs::write(&path, "aé🙂z").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let path = path.to_string_lossy().to_string();
+
+        let first = tools
+            .read_text_range(path.clone(), 0, MIN_TEXT_RANGE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(first.content, "aé");
+        assert_eq!(first.offset_bytes, 0);
+        assert_eq!(first.next_offset_bytes, 3);
+        assert_eq!(first.size_bytes, 3);
+        assert_eq!(first.file_size_bytes, 8);
+        assert!(!first.eof);
+        assert_eq!(first.max_read_bytes, MAX_TEXT_RANGE_BYTES);
+        assert_eq!(first.max_file_bytes, MAX_TEXT_RANGE_FILE_BYTES);
+        assert_eq!(first.max_response_bytes, MAX_TEXT_RANGE_RESPONSE_BYTES);
+
+        let second = tools
+            .read_text_range(path.clone(), first.next_offset_bytes, MIN_TEXT_RANGE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(second.content, "🙂");
+        assert_eq!(second.next_offset_bytes, 7);
+        assert!(!second.eof);
+
+        let final_page = tools
+            .read_text_range(path.clone(), second.next_offset_bytes, MIN_TEXT_RANGE_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(final_page.content, "z");
+        assert_eq!(final_page.next_offset_bytes, 8);
+        assert!(final_page.eof);
+
+        let eof = tools
+            .read_text_range(path.clone(), 8, MIN_TEXT_RANGE_BYTES)
+            .await
+            .unwrap();
+        assert!(eof.content.is_empty());
+        assert_eq!(eof.next_offset_bytes, 8);
+        assert!(eof.eof);
+
+        assert!(matches!(
+            tools
+                .read_text_range(path, 2, MIN_TEXT_RANGE_BYTES)
+                .await,
+            Err(AppError::InvalidTextRange)
+        ));
+    }
+
+    #[tokio::test]
+    async fn text_range_rejects_invalid_arguments_encoding_and_file_size() {
+        let root = tempfile::tempdir().unwrap();
+        let invalid = root.path().join("invalid.txt");
+        let truncated = root.path().join("truncated.txt");
+        let exact_file = root.path().join("exact-file.txt");
+        let oversized_file = root.path().join("oversized-file.txt");
+        std::fs::write(&invalid, [b'a', 0xff]).unwrap();
+        std::fs::write(&truncated, [b'a', 0xf0, 0x9f]).unwrap();
+        File::create(&exact_file)
+            .unwrap()
+            .set_len(MAX_TEXT_RANGE_FILE_BYTES as u64)
+            .unwrap();
+        File::create(&oversized_file)
+            .unwrap()
+            .set_len((MAX_TEXT_RANGE_FILE_BYTES + 1) as u64)
+            .unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        for path in [invalid, truncated] {
+            assert!(matches!(
+                tools
+                    .read_text_range(
+                        path.to_string_lossy().to_string(),
+                        0,
+                        MIN_TEXT_RANGE_BYTES,
+                    )
+                    .await,
+                Err(AppError::InvalidFileEncoding)
+            ));
+        }
+
+        let exact_eof = tools
+            .read_text_range(
+                exact_file.to_string_lossy().to_string(),
+                MAX_TEXT_RANGE_FILE_BYTES as u64,
+                MIN_TEXT_RANGE_BYTES,
+            )
+            .await
+            .unwrap();
+        assert!(exact_eof.content.is_empty());
+        assert!(exact_eof.eof);
+
+        assert!(matches!(
+            tools
+                .read_text_range(
+                    oversized_file.to_string_lossy().to_string(),
+                    0,
+                    MIN_TEXT_RANGE_BYTES,
+                )
+                .await,
+            Err(AppError::FileTooLarge { size, max_size })
+                if size == (MAX_TEXT_RANGE_FILE_BYTES + 1) as u64
+                    && max_size == MAX_TEXT_RANGE_FILE_BYTES as u64
+        ));
+
+        for max_bytes in [MIN_TEXT_RANGE_BYTES - 1, MAX_TEXT_RANGE_BYTES + 1] {
+            assert!(matches!(
+                tools
+                    .read_text_range(
+                        exact_file.to_string_lossy().to_string(),
+                        0,
+                        max_bytes,
+                    )
+                    .await,
+                Err(AppError::InvalidTextRange)
+            ));
+        }
+        assert!(matches!(
+            tools
+                .read_text_range(
+                    exact_file.to_string_lossy().to_string(),
+                    MAX_TEXT_RANGE_FILE_BYTES as u64 + 1,
+                    MIN_TEXT_RANGE_BYTES,
+                )
+                .await,
+            Err(AppError::InvalidTextRange)
+        ));
+    }
+
+    #[tokio::test]
+    async fn text_range_accepts_the_exact_content_limit_and_redacts_path_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("private-range.txt");
+        std::fs::write(&path, "x".repeat(MAX_TEXT_RANGE_BYTES)).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let result = tools
+            .read_text_range(
+                path.to_string_lossy().to_string(),
+                0,
+                MAX_TEXT_RANGE_BYTES,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content.len(), MAX_TEXT_RANGE_BYTES);
+        assert_eq!(result.next_offset_bytes, MAX_TEXT_RANGE_BYTES as u64);
+        assert!(result.eof);
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            serialized.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec![
+                "content",
+                "eof",
+                "fileSizeBytes",
+                "maxFileBytes",
+                "maxReadBytes",
+                "maxResponseBytes",
+                "nextOffsetBytes",
+                "offsetBytes",
+                "sizeBytes"
+            ]
+        );
+        assert!(!serialized.to_string().contains("private-range.txt"));
+    }
+
+    #[test]
+    fn text_range_rejects_concurrent_size_change_without_partial_content() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("changing.txt");
+        std::fs::write(&path, b"12345678").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let anchored = tools.anchor(path.to_string_lossy().as_ref()).unwrap();
+        let file = open_verified_regular_file(&anchored, MAX_TEXT_RANGE_FILE_BYTES).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(9)
+            .unwrap();
+
+        assert!(matches!(
+            read_verified_text_range(file, 0, MIN_TEXT_RANGE_BYTES),
             Err(AppError::FileChangedDuringRead)
         ));
     }
