@@ -44,8 +44,9 @@ public `McpRouterBuilder` path used by the package binary:
 
 1. Construction receives an actually bound listener plus validated auth,
    request-limit, transport-security, and safe-root inputs. A wildcard listener
-   is rejected for unauthenticated development, while request-time missing or
-   non-loopback peer metadata is independently rejected.
+   is rejected for unauthenticated development, while request-time missing
+   metadata, a non-loopback peer, and an actual served listener different from
+   the listener validated by the builder are independently rejected.
 2. Authentication remains the outer route layer. Unauthenticated oversized,
    malformed, wrong-origin, fake-session, discovery, read, malformed-grant,
    and mutation requests all return the same HTTP 401 boundary without session
@@ -65,7 +66,8 @@ public `McpRouterBuilder` path used by the package binary:
    `McpTransportOptions`, `McpRouterProtection`, capability-authority bundles,
    binary command switches, raw command clients, or forged profiles.
 6. Documentation examples compile, the package binary serves the exact
-   listener supplied to the builder with `ConnectInfo<SocketAddr>`, and all
+   listener supplied to the builder with opaque
+   `ConnectInfo<McpConnectionInfo>` derived from each accepted stream, and all
    requested but unavailable optional clients fail startup.
 
 The exact order under test is authentication; authenticated `Content-Length`,

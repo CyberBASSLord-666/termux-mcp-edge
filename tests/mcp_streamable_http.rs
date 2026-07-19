@@ -11,7 +11,7 @@ use axum::{
 use serde_json::{json, Value};
 use support::{
     empty_test_file_tools, initialize_session, json_request, response_json, session_request,
-    test_router,
+    test_router, TEST_STATIC_PRINCIPAL,
 };
 use termux_mcp_server::mcp_transport::{
     MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
@@ -30,6 +30,10 @@ fn request_with_body(
         .uri("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, MCP_POST_ACCEPT);
     if let Some(session_id) = session_id {
@@ -315,6 +319,10 @@ async fn post_requires_json_content_type_and_both_explicit_accept_types() {
         let mut builder = Request::post("/mcp")
             .header(header::HOST, "localhost:8000")
             .header(header::ORIGIN, "http://localhost:8000")
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+            )
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(accept) = accept {
             builder = builder.header(header::ACCEPT, accept);
@@ -335,6 +343,10 @@ async fn post_requires_json_content_type_and_both_explicit_accept_types() {
         let mut builder = Request::post("/mcp")
             .header(header::HOST, "localhost:8000")
             .header(header::ORIGIN, "http://localhost:8000")
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+            )
             .header(header::ACCEPT, MCP_POST_ACCEPT);
         if let Some(content_type) = content_type {
             builder = builder.header(header::CONTENT_TYPE, content_type);
@@ -350,6 +362,10 @@ async fn post_requires_json_content_type_and_both_explicit_accept_types() {
     let accepted = Request::post("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(header::CONTENT_TYPE, "Application/JSON; charset=utf-8")
         .header(
             header::ACCEPT,
@@ -401,6 +417,10 @@ async fn get_explicitly_declines_sse_and_delete_terminates_the_session() {
     let get = Request::get("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(header::ACCEPT, "text/event-stream")
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, &session_id)
@@ -417,6 +437,10 @@ async fn get_explicitly_declines_sse_and_delete_terminates_the_session() {
     let missing_accept = Request::get("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, &session_id)
         .body(Body::empty())
@@ -491,6 +515,10 @@ async fn transport_security_precedes_media_session_and_method_handling() {
             .uri("/mcp")
             .header(header::HOST, "localhost:8000")
             .header(header::ORIGIN, "https://attacker.invalid")
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+            )
             .body(Body::from("not-json"))
             .unwrap();
         let response = router.clone().oneshot(request).await.unwrap();
@@ -509,6 +537,10 @@ async fn unsupported_methods_are_bounded_and_advertise_the_endpoint_methods() {
     let request = Request::put("/mcp")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .body(Body::empty())
         .unwrap();
 

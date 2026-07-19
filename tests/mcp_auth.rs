@@ -11,7 +11,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use termux_mcp_server::{
-    auth::McpAuthPolicy,
+    auth::{McpAuthPolicy, McpConnectionInfo},
     copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
@@ -27,6 +27,7 @@ use termux_mcp_server::{
     trash_file_grant::TrashFileGrantAuthority,
     write_file_grant::WriteFileGrantAuthority,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
 #[cfg(feature = "android-volume-control")]
@@ -137,16 +138,75 @@ fn authenticated_request(
             .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
             .header(MCP_SESSION_ID_HEADER, session_id);
     }
-    let mut request = request.body(Body::from(body.to_string())).unwrap();
-    request
-        .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
-    request
+    request.body(Body::from(body.to_string())).unwrap()
 }
 
 async fn response_json(response: Response) -> Value {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&body).unwrap()
+}
+
+async fn live_initialize_response(listener: tokio::net::TcpListener, app: Router) -> String {
+    let listener_address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<McpConnectionInfo>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": "live-loopback-initialize",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "auth-tests", "version": "1.0.0"}
+        }
+    })
+    .to_string();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: localhost:8000\r\nOrigin: http://localhost:8000\r\nContent-Type: application/json\r\nAccept: {MCP_POST_ACCEPT}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut connection = tokio::net::TcpStream::connect(listener_address)
+        .await
+        .unwrap();
+    connection.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        connection.read_to_end(&mut response),
+    )
+    .await
+    .expect("live authentication response timed out")
+    .unwrap();
+
+    server.abort();
+    let _ = server.await;
+    String::from_utf8(response).unwrap()
+}
+
+fn unauthenticated_router(listener: &tokio::net::TcpListener, safe_root: PathBuf) -> Router {
+    McpRouterBuilder::try_new(
+        listener,
+        McpAuthPolicy::unauthenticated_localhost_only(),
+        McpRequestLimits::from_seconds(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            DEFAULT_MAX_BODY_BYTES,
+        )
+        .unwrap(),
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        vec![safe_root],
+    )
+    .unwrap()
+    .build()
+    .unwrap()
 }
 
 #[tokio::test]
@@ -184,10 +244,36 @@ async fn correct_bearer_token_reaches_tool_discovery() {
 }
 
 #[tokio::test]
-async fn explicit_loopback_development_policy_reaches_discovery_without_header() {
-    let response = post_tools_list(McpAuthPolicy::unauthenticated_localhost_only(), None).await;
+async fn explicit_loopback_development_policy_accepts_the_exact_served_listener() {
+    let root = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let app = unauthenticated_router(&listener, root.path().to_path_buf());
+    let response = live_initialize_response(listener, app).await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "exact listener request was rejected: {response}"
+    );
+}
+
+#[tokio::test]
+async fn loopback_development_policy_rejects_listener_substitution() {
+    let root = tempfile::tempdir().unwrap();
+    let validated_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let app = unauthenticated_router(&validated_listener, root.path().to_path_buf());
+    let served_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    assert_ne!(
+        validated_listener.local_addr().unwrap(),
+        served_listener.local_addr().unwrap()
+    );
+
+    let response = live_initialize_response(served_listener, app).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "substituted listener was not rejected: {response}"
+    );
+    assert!(response.contains("\"error\":\"localhost_peer_required\""));
 }
 
 #[tokio::test]
@@ -196,7 +282,7 @@ async fn public_local_development_router_fails_closed_without_connect_info() {
     let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
         .expect("test safe root must validate");
     let app = protected_router(McpAuthPolicy::unauthenticated_localhost_only(), file_tools);
-    let mut request = authenticated_request(
+    let request = authenticated_request(
         json!({
             "jsonrpc": "2.0",
             "id": "missing-connect-info",
@@ -210,7 +296,6 @@ async fn public_local_development_router_fails_closed_without_connect_info() {
         None,
         None,
     );
-    request.extensions_mut().remove::<ConnectInfo<SocketAddr>>();
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -220,7 +305,7 @@ async fn public_local_development_router_fails_closed_without_connect_info() {
 }
 
 #[tokio::test]
-async fn public_local_development_router_rejects_non_loopback_connect_info() {
+async fn public_local_development_router_rejects_legacy_peer_only_connect_info() {
     let root = tempfile::tempdir().unwrap();
     let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
         .expect("test safe root must validate");
@@ -228,7 +313,7 @@ async fn public_local_development_router_rejects_non_loopback_connect_info() {
     let mut request = authenticated_request(
         json!({
             "jsonrpc": "2.0",
-            "id": "remote-connect-info",
+            "id": "peer-only-connect-info",
             "method": "initialize",
             "params": {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -241,13 +326,13 @@ async fn public_local_development_router_rejects_non_loopback_connect_info() {
     );
     request
         .extensions_mut()
-        .insert(ConnectInfo(SocketAddr::from(([192, 0, 2, 10], 40_001))));
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_001))));
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let payload = response_json(response).await;
     assert_eq!(payload["error"], "localhost_peer_required");
-    assert!(!payload.to_string().contains("192.0.2.10"));
+    assert!(!payload.to_string().contains("127.0.0.1"));
 }
 
 #[tokio::test]

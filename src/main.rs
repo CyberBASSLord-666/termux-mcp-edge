@@ -71,6 +71,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::auth::McpConnectionInfo;
 #[cfg(feature = "mcp-runtime")]
 use crate::health::McpRequestLimitReadiness;
 #[cfg(feature = "android-volume-control")]
@@ -278,12 +279,12 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Listening on http://{}", display_addr);
 
-    // Supplying peer connection metadata is part of the MCP authentication
-    // boundary. Explicit localhost-only development mode rejects every `/mcp`
-    // request whose actual TCP peer is absent or non-loopback.
+    // Supplying opaque peer-and-local connection metadata from each accepted
+    // stream is part of the MCP authentication boundary. Local development mode
+    // accepts only a loopback peer on the exact listener validated above.
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.into_make_service_with_connect_info::<McpConnectionInfo>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;

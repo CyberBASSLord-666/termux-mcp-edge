@@ -1,9 +1,11 @@
 #[cfg(feature = "mcp-runtime")]
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 #[cfg(feature = "mcp-runtime")]
 use termux_mcp_server::{
-    auth::McpAuthPolicy, mcp_transport::McpRouterBuilder, request_limits::McpRequestLimits,
+    auth::{McpAuthPolicy, McpConnectionInfo},
+    mcp_transport::McpRouterBuilder,
+    request_limits::McpRequestLimits,
     transport_security::TransportSecurityPolicy,
 };
 
@@ -25,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<McpConnectionInfo>(),
     )
     .await?;
     Ok(())

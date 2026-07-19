@@ -1,5 +1,6 @@
 use std::{
     convert::Infallible,
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -45,7 +46,7 @@ use crate::{
         filesystem_allowed_event, filesystem_denied_event, read_only_allowed_event,
         read_only_denied_event, AuditCounters, AuditDecision, AuditEvent, AuditMode,
     },
-    auth::{require_mcp_auth, McpAuthPolicy},
+    auth::{require_mcp_auth, McpAuthBoundary, McpAuthPolicy},
     command_policy::{
         command_profile_ids, COMMAND_EXECUTION_GATE, COMMAND_INVALID_ARGUMENTS_REASON,
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
@@ -1178,9 +1179,11 @@ pub enum McpRouterBuildError {
 /// validates and lifetime-pins every filesystem safe root, and requires the
 /// already-validated authentication, request-limit, and transport policies.
 /// Unauthenticated development mode is accepted only when this exact listener
-/// is loopback-bound; request-time authentication independently requires a
-/// loopback `ConnectInfo<SocketAddr>`. Serve the built router with
-/// `into_make_service_with_connect_info::<SocketAddr>()`.
+/// is loopback-bound; request-time authentication independently requires opaque
+/// `ConnectInfo<McpConnectionInfo>` derived from the actual accepted stream and
+/// verifies both its loopback peer and exact local listener address. Serve the
+/// built router with
+/// `into_make_service_with_connect_info::<McpConnectionInfo>()`.
 ///
 /// Authentication is always installed as the outermost route layer, before
 /// concurrency, timeout, streaming body limits, Host/Origin validation,
@@ -1188,6 +1191,7 @@ pub enum McpRouterBuildError {
 /// router constructors remain private to this crate.
 pub struct McpRouterBuilder {
     auth_policy: McpAuthPolicy,
+    listener_address: SocketAddr,
     request_limits: McpRequestLimits,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1257,6 +1261,7 @@ impl McpRouterBuilder {
 
         Ok(Self {
             auth_policy,
+            listener_address,
             request_limits,
             security_policy,
             file_tools: FileSystemTools::try_new(safe_roots)?,
@@ -1380,6 +1385,7 @@ impl McpRouterBuilder {
     pub fn build(self) -> Result<Router, McpRouterBuildError> {
         let Self {
             auth_policy,
+            listener_address,
             request_limits,
             security_policy,
             file_tools,
@@ -1414,7 +1420,7 @@ impl McpRouterBuilder {
 
         Ok(protect_router(
             router_from_state(state),
-            auth_policy,
+            McpAuthBoundary::new(auth_policy, listener_address),
             request_limits,
         ))
     }
@@ -1890,7 +1896,7 @@ struct SetAndroidVolumeArguments {
 // unauthenticated or unbounded `/mcp` route.
 fn protect_router(
     router: Router,
-    auth_policy: McpAuthPolicy,
+    auth_boundary: McpAuthBoundary,
     request_limits: McpRequestLimits,
 ) -> Router {
     let max_body_bytes = request_limits.max_body_bytes();
@@ -1907,7 +1913,7 @@ fn protect_router(
             enforce_mcp_request_limits,
         ))
         .route_layer(middleware::from_fn_with_state(
-            auth_policy,
+            auth_boundary,
             require_mcp_auth,
         ))
 }
@@ -8586,7 +8592,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            18
+            19
         );
     }
 

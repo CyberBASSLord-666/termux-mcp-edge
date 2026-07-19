@@ -44,7 +44,7 @@ Current controls:
 - credential parsing and comparison are bounded;
 - failures return one non-sensitive 401 contract with `WWW-Authenticate: Bearer` and `Cache-Control: no-store`;
 - unauthenticated mode requires explicit policy and proof from the actual bound listener that its local address is loopback;
-- request-time `ConnectInfo<SocketAddr>` must prove the actual TCP peer is IPv4 or IPv6 loopback. Missing metadata and non-loopback peers receive the same private denial before request resource accounting; `Host`, `Origin`, and forwarded headers are never substitutes for the socket peer.
+- request-time `ConnectInfo<McpConnectionInfo>` is derived from the accepted TCP stream and must prove both that the actual peer is IPv4 or IPv6 loopback and that the stream's local address exactly matches the listener validated by the builder. Missing metadata, non-loopback peers, and listener substitution receive the same private denial before request resource accounting; `Host`, `Origin`, and forwarded headers are never substitutes for socket identity.
 
 Preserved boundary:
 

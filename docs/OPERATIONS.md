@@ -31,8 +31,9 @@ concurrency, and timeout enforcement; streaming body limit and extraction;
 Host/Origin validation; then method/media, JSON-RPC, lifecycle/session,
 discovery, grant, tool, and mutation work. There is no public raw-router path
 that an embedding can use to omit or reorder these controls. Explicit
-unauthenticated development also requires both an actually loopback-bound
-listener and request-time proof of an actual loopback peer. See
+unauthenticated development also requires opaque metadata from the accepted
+stream proving both an actual loopback peer and the exact local listener
+validated by the builder. See
 [`EMBEDDING.md`](EMBEDDING.md) for the supported integration flow.
 
 ## Android hardening

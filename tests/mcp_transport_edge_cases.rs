@@ -7,7 +7,9 @@ use axum::{
     http::{header, Request, StatusCode},
 };
 use serde_json::{json, Value};
-use support::{post_json, post_raw, response_json, test_file_tools, test_router};
+use support::{
+    post_json, post_raw, response_json, test_file_tools, test_router, TEST_STATIC_PRINCIPAL,
+};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -88,6 +90,10 @@ async fn invalid_origin_is_rejected_before_body_parsing() {
             Request::post("/mcp")
                 .header(header::HOST, "localhost:8000")
                 .header(header::ORIGIN, "https://example.invalid")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
                 .unwrap(),

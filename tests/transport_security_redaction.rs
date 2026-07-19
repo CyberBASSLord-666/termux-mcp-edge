@@ -6,7 +6,7 @@ use axum::{
     body::Body,
     http::{header, Request, StatusCode},
 };
-use support::{response_json, test_file_tools, test_router};
+use support::{response_json, test_file_tools, test_router, TEST_STATIC_PRINCIPAL};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -16,6 +16,10 @@ async fn missing_host_response_uses_stable_reason_code() {
         .oneshot(
             Request::post("/mcp")
                 .header(header::HOST, "")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(header::ORIGIN, "http://localhost:8000")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
@@ -37,6 +41,10 @@ async fn required_origin_response_uses_stable_reason_code() {
         .oneshot(
             Request::post("/mcp")
                 .header(header::HOST, "localhost:8000")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
                 .unwrap(),
@@ -57,6 +65,10 @@ async fn disallowed_host_response_uses_stable_reason_code() {
         .oneshot(
             Request::post("/mcp")
                 .header(header::HOST, "attacker.example:8000")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(header::ORIGIN, "http://localhost:8000")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
@@ -81,6 +93,10 @@ async fn disallowed_origin_response_uses_stable_reason_code() {
         .oneshot(
             Request::post("/mcp")
                 .header(header::HOST, "localhost:8000")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(header::ORIGIN, "https://attacker.example")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
@@ -105,6 +121,10 @@ async fn malformed_origin_response_uses_stable_reason_code() {
         .oneshot(
             Request::post("/mcp")
                 .header(header::HOST, "localhost:8000")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(header::ORIGIN, "https://identity@localhost:8000")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("not-json"))
