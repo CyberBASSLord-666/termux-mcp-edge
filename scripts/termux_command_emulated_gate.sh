@@ -307,6 +307,7 @@ jq -e '
     "list_directory",
     "path_metadata",
     "read_binary_file",
+    "read_binary_range",
     "read_file",
     "search_text",
     "write_file",
@@ -435,6 +436,7 @@ jq -e '
     "list_directory",
     "path_metadata",
     "read_binary_file",
+    "read_binary_range",
     "read_file",
     "search_text",
     "write_file"

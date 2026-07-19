@@ -113,6 +113,7 @@ TOOLS = [
     "list_directory",
     "path_metadata",
     "read_binary_file",
+    "read_binary_range",
     "read_file",
     "search_text",
     "write_file",
@@ -511,6 +512,31 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "read_binary_range":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded base64 safe-root file range read.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "offset_bytes": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 67108864,
+                                    },
+                                    "length_bytes": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 262144,
+                                    },
+                                },
+                                "required": ["path", "offset_bytes", "length_bytes"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -564,6 +590,11 @@ class Handler(BaseHTTPRequestHandler):
                         "binaryFileReadEncoding": "base64",
                         "binaryFileReadMaxBytes": 1048576,
                         "binaryFileReadMaxResponseBytes": 1507328,
+                        "binaryRangeReads": True,
+                        "binaryRangeReadEncoding": "base64",
+                        "binaryRangeReadMaxFileBytes": 67108864,
+                        "binaryRangeReadMaxBytes": 262144,
+                        "binaryRangeReadMaxResponseBytes": 393216,
                         "fileHashing": True,
                         "fileHashAlgorithm": "sha256",
                         "fileHashMaxBytes": 16777216,
@@ -901,6 +932,97 @@ class Handler(BaseHTTPRequestHandler):
                         "sizeBytes": len(content),
                         "maxFileBytes": 1048576,
                         "maxResponseBytes": 1507328,
+                    },
+                ),
+            )
+            return
+        if name == "read_binary_range":
+            target = safe_path(str(arguments.get("path", "")))
+            offset = arguments.get("offset_bytes")
+            length = arguments.get("length_bytes")
+            if (
+                target is None
+                or target.is_symlink()
+                or not target.is_file()
+                or isinstance(offset, bool)
+                or not isinstance(offset, int)
+                or offset < 0
+                or offset > 67108864
+                or isinstance(length, bool)
+                or not isinstance(length, int)
+                or length < 1
+                or length > 262144
+            ):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Binary range invalid."),
+                )
+                return
+            try:
+                descriptor = os.open(
+                    target,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        raise OSError("binary range target is not regular")
+                    if metadata.st_size > 67108864:
+                        self.send_json(
+                            413,
+                            rpc_error(
+                                identifier,
+                                -32001,
+                                "Payload too large",
+                                "Binary range file too large.",
+                            ),
+                        )
+                        return
+                    if offset > metadata.st_size:
+                        self.send_json(
+                            400,
+                            rpc_error(
+                                identifier,
+                                -32602,
+                                "Invalid params",
+                                "Binary range invalid.",
+                            ),
+                        )
+                        return
+                    stream.seek(offset)
+                    content = stream.read(length)
+                    post_metadata = os.fstat(stream.fileno())
+                    if post_metadata.st_size != metadata.st_size:
+                        self.send_json(
+                            409,
+                            rpc_error(
+                                identifier,
+                                -32004,
+                                "Resource changed",
+                                "Binary range file changed.",
+                            ),
+                        )
+                        return
+            except OSError:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Binary range invalid."),
+                )
+                return
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "encoding": "base64",
+                        "data": base64.b64encode(content).decode("ascii"),
+                        "offsetBytes": offset,
+                        "sizeBytes": len(content),
+                        "fileSizeBytes": metadata.st_size,
+                        "eof": offset + len(content) >= metadata.st_size,
+                        "maxReadBytes": 262144,
+                        "maxFileBytes": 67108864,
+                        "maxResponseBytes": 393216,
                     },
                 ),
             )

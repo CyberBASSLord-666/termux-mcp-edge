@@ -8,7 +8,7 @@ This roadmap assumes informed operators who understand local automation risk. Th
 
 ## Current Baseline
 
-`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and thirteen baseline tools: deterministic runtime/platform/Android/project-service metadata, preview-first and independently grant-gated single-directory creation, dry-run-first bounded binary file copy, streaming bounded SHA-256 file hashing, safe-rooted listing, descriptor-relative single-object metadata, bounded canonical base64 binary reads, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
+`main` exposes the health-check runtime by default. The optional `mcp-runtime` feature exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp`, exact transport security, bounded sessions, and fourteen baseline tools: deterministic runtime/platform/Android/project-service metadata, preview-first and independently grant-gated single-directory creation, dry-run-first bounded binary file copy, streaming bounded SHA-256 file hashing, safe-rooted listing, descriptor-relative single-object metadata, bounded canonical base64 whole-file and range reads, bounded UTF-8 reads, bounded literal text search, and dry-run-first file writes.
 
 The transport implements POST media negotiation, single request/notification/response classification, initialized gating, the subsequent-request protocol header, HTTP 202 notification/response semantics, and DELETE session termination. GET returns HTTP 405 as permitted when a server does not offer optional SSE. SSE, replay, and resumability are deliberately absent rather than partially implemented.
 

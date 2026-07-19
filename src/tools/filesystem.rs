@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +29,10 @@ pub const MAX_READ_RESPONSE_BYTES: usize = 1_114_112;
 pub const MAX_BINARY_READ_BYTES: usize = 1_048_576;
 pub const MAX_BINARY_READ_BASE64_BYTES: usize = 1_398_104;
 pub const MAX_BINARY_READ_RESPONSE_BYTES: usize = 1_507_328;
+pub const MAX_BINARY_RANGE_FILE_BYTES: usize = 67_108_864;
+pub const MAX_BINARY_RANGE_BYTES: usize = 262_144;
+pub const MAX_BINARY_RANGE_BASE64_BYTES: usize = 349_528;
+pub const MAX_BINARY_RANGE_RESPONSE_BYTES: usize = 393_216;
 pub const MAX_HASH_FILE_BYTES: usize = 16_777_216;
 pub const MAX_HASH_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const MAX_PATH_METADATA_RESPONSE_BYTES: usize = 16_384;
@@ -665,7 +669,7 @@ impl FileSystemTools {
                 }
                 result => result?,
             };
-            let bytes = match read_bounded_bytes(file, MAX_READ_BYTES) {
+            let bytes = match read_bounded_bytes(file.file, MAX_READ_BYTES) {
                 Err(error @ AppError::FileTooLarge { .. }) => {
                     counter!("mcp.fs.read.rejected_too_large_total").increment(1);
                     return Err(error);
@@ -704,7 +708,7 @@ impl FileSystemTools {
                 }
                 result => result?,
             };
-            let bytes = match read_bounded_bytes(file, MAX_BINARY_READ_BYTES) {
+            let bytes = match read_bounded_bytes(file.file, MAX_BINARY_READ_BYTES) {
                 Err(error @ AppError::FileTooLarge { .. }) => {
                     counter!("mcp.fs.read_binary.rejected_too_large_total").increment(1);
                     return Err(error);
@@ -730,6 +734,55 @@ impl FileSystemTools {
         Ok(result)
     }
 
+    /// Read one bounded byte range as canonical padded RFC 4648 base64 through
+    /// the exact descriptor retained after safe-root confinement.
+    pub async fn read_binary_range(
+        &self,
+        path: String,
+        offset_bytes: u64,
+        length_bytes: usize,
+    ) -> Result<ReadBinaryRangeResult, AppError> {
+        if offset_bytes > MAX_BINARY_RANGE_FILE_BYTES as u64
+            || !(1..=MAX_BINARY_RANGE_BYTES).contains(&length_bytes)
+        {
+            counter!("mcp.fs.read_binary_range.rejected_invalid_total").increment(1);
+            return Err(AppError::InvalidBinaryRange);
+        }
+
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let result = tokio::task::spawn_blocking(move || {
+            let file = match open_verified_regular_file(&anchored, MAX_BINARY_RANGE_FILE_BYTES) {
+                Err(error @ AppError::FileTooLarge { .. }) => {
+                    counter!("mcp.fs.read_binary_range.rejected_too_large_total").increment(1);
+                    return Err(error);
+                }
+                result => result?,
+            };
+            let range = read_verified_binary_range(file, offset_bytes, length_bytes)?;
+            let size_bytes = range.bytes.len();
+            Ok::<_, AppError>(ReadBinaryRangeResult {
+                encoding: "base64".to_owned(),
+                data: encode_base64(&range.bytes),
+                offset_bytes,
+                size_bytes,
+                file_size_bytes: range.file_size_bytes,
+                eof: range.eof,
+                max_read_bytes: MAX_BINARY_RANGE_BYTES,
+                max_file_bytes: MAX_BINARY_RANGE_FILE_BYTES,
+                max_response_bytes: MAX_BINARY_RANGE_RESPONSE_BYTES,
+            })
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.read_binary_range.latency_seconds")
+            .record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.read_binary_range.calls_total").increment(1);
+        counter!("mcp.fs.read_binary_range.bytes_total").increment(result.size_bytes as u64);
+        Ok(result)
+    }
+
     /// Hash one regular file through the exact descriptor retained after
     /// safe-root confinement. The bounded streaming read never returns file
     /// contents or a partial digest.
@@ -744,7 +797,7 @@ impl FileSystemTools {
                 }
                 result => result?,
             };
-            let mut reader = file.take((MAX_HASH_FILE_BYTES + 1) as u64);
+            let mut reader = file.file.take((MAX_HASH_FILE_BYTES + 1) as u64);
             let mut buffer = [0_u8; 64 * 1_024];
             let mut hasher = Sha256::new();
             let mut bytes_hashed = 0_usize;
@@ -1430,7 +1483,21 @@ fn scan_search_file(
     Ok(())
 }
 
-fn open_verified_regular_file(anchored: &AnchoredPath, max_bytes: usize) -> Result<File, AppError> {
+struct VerifiedRegularFile {
+    file: File,
+    size_bytes: u64,
+}
+
+struct BinaryRangeRead {
+    bytes: Vec<u8>,
+    file_size_bytes: u64,
+    eof: bool,
+}
+
+fn open_verified_regular_file(
+    anchored: &AnchoredPath,
+    max_bytes: usize,
+) -> Result<VerifiedRegularFile, AppError> {
     let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
     let root_fd = open_root_directory(&anchored.root_path)?;
     let parent_fd = open_metadata_parent_directory(root_fd, &parent_relative)?;
@@ -1490,7 +1557,46 @@ fn open_verified_regular_file(anchored: &AnchoredPath, max_bytes: usize) -> Resu
             max_size: max_bytes as u64,
         });
     }
-    Ok(File::from(file_fd))
+    Ok(VerifiedRegularFile {
+        file: File::from(file_fd),
+        size_bytes: opened_size,
+    })
+}
+
+fn read_verified_binary_range(
+    mut verified: VerifiedRegularFile,
+    offset_bytes: u64,
+    length_bytes: usize,
+) -> Result<BinaryRangeRead, AppError> {
+    if offset_bytes > verified.size_bytes || !(1..=MAX_BINARY_RANGE_BYTES).contains(&length_bytes) {
+        return Err(AppError::InvalidBinaryRange);
+    }
+
+    verified.file.seek(SeekFrom::Start(offset_bytes))?;
+    let mut bytes = Vec::with_capacity(length_bytes.min(64 * 1_024));
+    {
+        let mut reader = (&mut verified.file).take(length_bytes as u64);
+        reader.read_to_end(&mut bytes)?;
+    }
+
+    let post_metadata = descriptor_fs::fstat(&verified.file).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(post_metadata.st_mode).is_file() {
+        return Err(AppError::UnsupportedPathType);
+    }
+    let post_size = u64::try_from(post_metadata.st_size)
+        .map_err(|_| AppError::Io(std::io::Error::other("file reported an invalid size")))?;
+    if post_size != verified.size_bytes {
+        return Err(AppError::FileChangedDuringRead);
+    }
+
+    let end_bytes = offset_bytes
+        .checked_add(bytes.len() as u64)
+        .ok_or(AppError::InvalidBinaryRange)?;
+    Ok(BinaryRangeRead {
+        bytes,
+        file_size_bytes: verified.size_bytes,
+        eof: end_bytes >= verified.size_bytes,
+    })
 }
 
 fn base64_encoded_len(byte_len: usize) -> Option<usize> {
@@ -1849,6 +1955,20 @@ pub struct ReadBinaryFileResult {
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReadBinaryRangeResult {
+    pub encoding: String,
+    pub data: String,
+    pub offset_bytes: u64,
+    pub size_bytes: usize,
+    pub file_size_bytes: u64,
+    pub eof: bool,
+    pub max_read_bytes: usize,
+    pub max_file_bytes: usize,
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HashFileResult {
     pub algorithm: String,
     pub digest: String,
@@ -1960,6 +2080,10 @@ mod tests {
             base64_encoded_len(MAX_BINARY_READ_BYTES),
             Some(MAX_BINARY_READ_BASE64_BYTES)
         );
+        assert_eq!(
+            base64_encoded_len(MAX_BINARY_RANGE_BYTES),
+            Some(MAX_BINARY_RANGE_BASE64_BYTES)
+        );
         assert_eq!(base64_encoded_len(usize::MAX), None);
     }
 
@@ -2016,6 +2140,147 @@ mod tests {
             .unwrap();
         assert!(empty.data.is_empty());
         assert_eq!(empty.size_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn binary_range_returns_canonical_slice_and_explicit_eof_without_path_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("range.bin");
+        std::fs::write(&path, [0x00, 0xff, 0x80, b'a', b'\n', 0x01, 0xfe]).unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let range = tools
+            .read_binary_range(path.to_string_lossy().to_string(), 2, 4)
+            .await
+            .unwrap();
+        assert_eq!(range.encoding, "base64");
+        assert_eq!(range.data, "gGEKAQ==");
+        assert_eq!(range.offset_bytes, 2);
+        assert_eq!(range.size_bytes, 4);
+        assert_eq!(range.file_size_bytes, 7);
+        assert!(!range.eof);
+        assert_eq!(range.max_read_bytes, MAX_BINARY_RANGE_BYTES);
+        assert_eq!(range.max_file_bytes, MAX_BINARY_RANGE_FILE_BYTES);
+        assert_eq!(range.max_response_bytes, MAX_BINARY_RANGE_RESPONSE_BYTES);
+        let serialized = serde_json::to_value(range).unwrap();
+        assert_eq!(
+            serialized.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec![
+                "data",
+                "encoding",
+                "eof",
+                "fileSizeBytes",
+                "maxFileBytes",
+                "maxReadBytes",
+                "maxResponseBytes",
+                "offsetBytes",
+                "sizeBytes"
+            ]
+        );
+        assert!(!serialized.to_string().contains("range.bin"));
+
+        let short_final = tools
+            .read_binary_range(path.to_string_lossy().to_string(), 5, 10)
+            .await
+            .unwrap();
+        assert_eq!(short_final.data, "Af4=");
+        assert_eq!(short_final.size_bytes, 2);
+        assert_eq!(short_final.file_size_bytes, 7);
+        assert!(short_final.eof);
+
+        let eof = tools
+            .read_binary_range(path.to_string_lossy().to_string(), 7, 1)
+            .await
+            .unwrap();
+        assert!(eof.data.is_empty());
+        assert_eq!(eof.size_bytes, 0);
+        assert!(eof.eof);
+
+        assert!(matches!(
+            tools
+                .read_binary_range(path.to_string_lossy().to_string(), 8, 1)
+                .await,
+            Err(AppError::InvalidBinaryRange)
+        ));
+        for length in [0, MAX_BINARY_RANGE_BYTES + 1] {
+            assert!(matches!(
+                tools
+                    .read_binary_range(path.to_string_lossy().to_string(), 0, length)
+                    .await,
+                Err(AppError::InvalidBinaryRange)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn binary_range_enforces_exact_range_and_file_limits() {
+        let root = tempfile::tempdir().unwrap();
+        let exact_range = root.path().join("exact-range.bin");
+        let exact_file = root.path().join("exact-file.bin");
+        let oversized_file = root.path().join("oversized-file.bin");
+        std::fs::write(&exact_range, vec![0xa5; MAX_BINARY_RANGE_BYTES]).unwrap();
+        File::create(&exact_file)
+            .unwrap()
+            .set_len(MAX_BINARY_RANGE_FILE_BYTES as u64)
+            .unwrap();
+        File::create(&oversized_file)
+            .unwrap()
+            .set_len((MAX_BINARY_RANGE_FILE_BYTES + 1) as u64)
+            .unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+
+        let range = tools
+            .read_binary_range(
+                exact_range.to_string_lossy().to_string(),
+                0,
+                MAX_BINARY_RANGE_BYTES,
+            )
+            .await
+            .unwrap();
+        assert_eq!(range.size_bytes, MAX_BINARY_RANGE_BYTES);
+        assert_eq!(range.data.len(), MAX_BINARY_RANGE_BASE64_BYTES);
+        assert!(range.eof);
+
+        let exact_eof = tools
+            .read_binary_range(
+                exact_file.to_string_lossy().to_string(),
+                MAX_BINARY_RANGE_FILE_BYTES as u64,
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(exact_eof.size_bytes, 0);
+        assert!(exact_eof.eof);
+
+        assert!(matches!(
+            tools
+                .read_binary_range(oversized_file.to_string_lossy().to_string(), 0, 1)
+                .await,
+            Err(AppError::FileTooLarge { size, max_size })
+                if size == (MAX_BINARY_RANGE_FILE_BYTES + 1) as u64
+                    && max_size == MAX_BINARY_RANGE_FILE_BYTES as u64
+        ));
+    }
+
+    #[test]
+    fn binary_range_rejects_concurrent_size_change_without_returning_partial_data() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("changing.bin");
+        std::fs::write(&path, b"12345678").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let anchored = tools.anchor(path.to_string_lossy().as_ref()).unwrap();
+        let file = open_verified_regular_file(&anchored, MAX_BINARY_RANGE_FILE_BYTES).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(9)
+            .unwrap();
+
+        assert!(matches!(
+            read_verified_binary_range(file, 0, 4),
+            Err(AppError::FileChangedDuringRead)
+        ));
     }
 
     #[test]
@@ -2864,8 +3129,30 @@ mod tests {
         std::fs::rename(&source, &parked).unwrap();
         symlink(&outside_source, &source).unwrap();
 
-        let bytes = read_bounded_bytes(file, MAX_BINARY_READ_BYTES).unwrap();
+        let bytes = read_bounded_bytes(file.file, MAX_BINARY_READ_BYTES).unwrap();
         assert_eq!(bytes, b"inside-binary");
+        assert_eq!(std::fs::read(outside_source).unwrap(), b"outside-secret");
+    }
+
+    #[test]
+    fn held_binary_range_descriptor_prevents_redirection_after_path_exchange() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let parked = root.path().join("source-parked");
+        let outside_source = outside.path().join("outside-source");
+        std::fs::write(&source, b"inside-binary").unwrap();
+        std::fs::write(&outside_source, b"outside-secret").unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let anchored = tools.anchor(source.to_string_lossy().as_ref()).unwrap();
+        let file = open_verified_regular_file(&anchored, MAX_BINARY_RANGE_FILE_BYTES).unwrap();
+
+        std::fs::rename(&source, &parked).unwrap();
+        symlink(&outside_source, &source).unwrap();
+
+        let range = read_verified_binary_range(file, 7, 6).unwrap();
+        assert_eq!(range.bytes, b"binary");
+        assert!(range.eof);
         assert_eq!(std::fs::read(outside_source).unwrap(), b"outside-secret");
     }
 

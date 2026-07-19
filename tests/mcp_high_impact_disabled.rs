@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use serde_json::json;
 use support::{post_json_with_empty_root, response_json};
 
-const EXPECTED_STAGED_TOOLS: [&str; 13] = [
+const EXPECTED_STAGED_TOOLS: [&str; 14] = [
     "runtime_status",
     "platform_info",
     "android_status",
@@ -17,6 +17,7 @@ const EXPECTED_STAGED_TOOLS: [&str; 13] = [
     "list_directory",
     "path_metadata",
     "read_binary_file",
+    "read_binary_range",
     "read_file",
     "search_text",
     "write_file",

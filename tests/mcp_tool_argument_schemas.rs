@@ -122,6 +122,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
             "read_binary_file",
             "read_binary_file requires a path argument.",
         ),
+        (
+            "read_binary_range",
+            "read_binary_range requires path, offset_bytes, and length_bytes arguments.",
+        ),
         ("read_file", "read_file requires a path argument."),
         (
             "search_text",
@@ -247,6 +251,15 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             json!({"path": source.to_string_lossy()}),
         ),
         (
+            "binary-range-minimal-and-full",
+            "read_binary_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": 0,
+                "length_bytes": 4
+            }),
+        ),
+        (
             "read-minimal-and-full",
             "read_file",
             json!({"path": source.to_string_lossy()}),
@@ -346,6 +359,15 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
         (
+            "read_binary_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": 0,
+                "length_bytes": 4,
+                "unexpected": true
+            }),
+        ),
+        (
             "read_file",
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
@@ -399,6 +421,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "list_directory",
         "path_metadata",
         "read_binary_file",
+        "read_binary_range",
         "read_file",
         "search_text",
         "write_file",
@@ -462,6 +485,22 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         (
             "read_binary_file",
             json!({"path": [source.to_string_lossy()]}),
+        ),
+        (
+            "read_binary_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": "0",
+                "length_bytes": 4
+            }),
+        ),
+        (
+            "read_binary_range",
+            json!({
+                "path": source.to_string_lossy(),
+                "offset_bytes": 0,
+                "length_bytes": false
+            }),
         ),
         ("read_file", json!({"path": [source.to_string_lossy()]})),
         (

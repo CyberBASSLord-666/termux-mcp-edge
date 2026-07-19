@@ -16,6 +16,7 @@ Enabled staged tools:
 - `list_directory`
 - `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers
 - `read_binary_file` for one no-follow safe-rooted regular file of at most 1 MiB, returned as canonical padded base64 without path or host metadata under a fixed complete-response ceiling
+- `read_binary_range` for one range of at most 256 KiB from a no-follow safe-rooted regular file of at most 64 MiB, returned as canonical padded base64 with explicit EOF and fixed response metadata
 - `read_file`
 - `search_text` for bounded literal UTF-8 location search without content excerpts
 - `write_file` with dry-run by default and explicit safe-rooted mutation only when `dry_run: false`
