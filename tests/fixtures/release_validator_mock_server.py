@@ -735,14 +735,48 @@ class Handler(BaseHTTPRequestHandler):
                     rpc_error(identifier, -32602, "Invalid params", "File hash invalid."),
                 )
                 return
-            size = target.stat().st_size
-            if size > 16777216:
+            try:
+                descriptor = os.open(
+                    target,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        self.send_json(
+                            400,
+                            rpc_error(
+                                identifier,
+                                -32602,
+                                "Invalid params",
+                                "File hash invalid.",
+                            ),
+                        )
+                        return
+                    if metadata.st_size > 16777216:
+                        self.send_json(
+                            413,
+                            rpc_error(
+                                identifier,
+                                -32001,
+                                "Payload too large",
+                                "File hash too large.",
+                            ),
+                        )
+                        return
+                    content = stream.read(16777217)
+            except OSError:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "File hash invalid."),
+                )
+                return
+            if len(content) > 16777216:
                 self.send_json(
                     413,
                     rpc_error(identifier, -32001, "Payload too large", "File hash too large."),
                 )
                 return
-            content = target.read_bytes()
             self.send_json(
                 200,
                 result(

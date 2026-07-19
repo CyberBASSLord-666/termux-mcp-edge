@@ -19,6 +19,7 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
+assert_contains 'HARNESS_VERSION="4"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
 assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then

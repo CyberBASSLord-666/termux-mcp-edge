@@ -751,10 +751,12 @@ impl FileSystemTools {
                 Mode::empty(),
             )
             .map_err(|error| {
-                if matches!(error, rustix::io::Errno::NOENT | rustix::io::Errno::LOOP) {
-                    path_rejected(anchored.display_path.to_string_lossy().as_ref())
-                } else {
-                    descriptor_error(error)
+                match error {
+                    rustix::io::Errno::NOENT => AppError::PathNotFound,
+                    rustix::io::Errno::LOOP => {
+                        path_rejected(anchored.display_path.to_string_lossy().as_ref())
+                    }
+                    _ => descriptor_error(error),
                 }
             })?;
             let opened_metadata = descriptor_fs::fstat(&file_fd).map_err(descriptor_error)?;
@@ -767,6 +769,16 @@ impl FileSystemTools {
                 return Err(path_rejected(
                     anchored.display_path.to_string_lossy().as_ref(),
                 ));
+            }
+            let opened_size = u64::try_from(opened_metadata.st_size).map_err(|_| {
+                AppError::Io(std::io::Error::other("file reported an invalid size"))
+            })?;
+            if opened_size > MAX_HASH_FILE_BYTES as u64 {
+                counter!("mcp.fs.hash.rejected_too_large_total").increment(1);
+                return Err(AppError::FileTooLarge {
+                    size: opened_size,
+                    max_size: MAX_HASH_FILE_BYTES as u64,
+                });
             }
 
             let mut reader = File::from(file_fd).take((MAX_HASH_FILE_BYTES + 1) as u64);

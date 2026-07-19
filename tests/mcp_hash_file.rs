@@ -232,6 +232,26 @@ async fn transport_hash_errors_and_audit_counters_are_bounded_and_private() {
 
     std::fs::remove_file(&path).unwrap();
     let oversized_id = "x".repeat(MAX_HASH_FILE_RESPONSE_BYTES);
+    let oversized_missing = post_json_to_session(
+        router.clone(),
+        &session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": oversized_id.clone(),
+            "method": "tools/call",
+            "params": {"name": "hash_file"},
+        }),
+    )
+    .await;
+    assert_eq!(oversized_missing.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body = to_bytes(
+        oversized_missing.into_body(),
+        MAX_HASH_FILE_RESPONSE_BYTES + 1,
+    )
+    .await
+    .unwrap();
+    assert!(body.len() <= MAX_HASH_FILE_RESPONSE_BYTES);
+
     let oversized = post_json_to_session(
         router.clone(),
         &session_id,
@@ -276,7 +296,7 @@ async fn transport_hash_errors_and_audit_counters_are_bounded_and_private() {
     assert_eq!(runtime["fileHashMaxBytes"], MAX_HASH_FILE_BYTES);
     let counters = &runtime["auditCounters"];
     assert_eq!(counters["by_tool"]["hash_file"]["allowed"], 1);
-    assert_eq!(counters["by_tool"]["hash_file"]["denied"], 5);
+    assert_eq!(counters["by_tool"]["hash_file"]["denied"], 6);
     assert_eq!(
         counters["by_reason_code"]["safe_root_file_hashed"]["allowed"],
         1
@@ -287,6 +307,6 @@ async fn transport_hash_errors_and_audit_counters_are_bounded_and_private() {
     );
     assert_eq!(
         counters["by_reason_code"]["response_size_limit_exceeded"]["denied"],
-        1
+        2
     );
 }

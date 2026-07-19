@@ -3356,34 +3356,6 @@ async fn handle_hash_file_call(
     file_tools: &FileSystemTools,
     audit_counters: &SharedAuditCounters,
 ) -> Response {
-    let arguments = match arguments {
-        Some(arguments) => arguments,
-        None => {
-            record_filesystem_denied(
-                audit_counters,
-                HASH_FILE_TOOL,
-                FILESYSTEM_READ_GATE,
-                AuditMode::ReadOnly,
-                FILESYSTEM_MISSING_ARGUMENTS,
-            );
-            return invalid_params(id, "hash_file requires a path argument.");
-        }
-    };
-
-    let args = match serde_json::from_value::<HashFileArguments>(arguments) {
-        Ok(args) => args,
-        Err(_error) => {
-            record_filesystem_denied(
-                audit_counters,
-                HASH_FILE_TOOL,
-                FILESYSTEM_READ_GATE,
-                AuditMode::ReadOnly,
-                FILESYSTEM_INVALID_ARGUMENTS,
-            );
-            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
-        }
-    };
-
     let maximum_summary = format!(
         "Computed a SHA-256 digest for {MAX_HASH_FILE_BYTES} bytes from one safe-rooted regular file."
     );
@@ -3412,6 +3384,34 @@ async fn handle_hash_file_call(
             MAX_HASH_FILE_RESPONSE_BYTES,
         );
     }
+
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "hash_file requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<HashFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                HASH_FILE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
 
     match file_tools.hash_file(args.path).await {
         Ok(result) => {

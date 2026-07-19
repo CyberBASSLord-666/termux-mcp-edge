@@ -289,7 +289,7 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "3"
+  and .validatorVersion == "4"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
