@@ -83,12 +83,13 @@ Never paste grants, keys, bearer tokens, content, or private target paths into t
 ## Wire representation and privacy
 
 The `MCP-Capability-Grant` value has the fixed ASCII shape
-`v1.<key-id>.<payload-hex>.<signature-hex>`. The payload is exactly 64 bytes,
-encoded as exactly 128 lowercase hexadecimal characters. It contains only:
+`v1.<key-id>.<payload-hex>.<signature-hex>`. The payload is exactly 65 bytes,
+encoded as exactly 130 lowercase hexadecimal characters. It contains only:
 
 | Bytes | Value |
 |---:|---|
 | 16 | fresh random grant identifier |
+| 1 | globally allocated signed `write_file` capability byte (`2`) |
 | 32 | keyed, domain-separated HMAC-SHA-256 operation binding |
 | 8 | issued Unix seconds, big-endian |
 | 8 | expiry Unix seconds, big-endian |
@@ -98,8 +99,9 @@ payload. The payload is intentionally opaque: the operation binding is not a
 serialized concatenation or digest of the bound request fields. In particular,
 the wire payload never serializes the raw principal or its binding digest,
 canonical session, root or target, content digest, disposition, replacement
-device/inode/size/high-resolution ctime/link-count identity, or capability and
-posture codes. The issued and expiry timestamps above are the only time values
+device/inode/size/high-resolution ctime/link-count identity, or posture code.
+The non-sensitive family byte is explicit so exact binaries and native gates can
+pin the wire registry. The issued and expiry timestamps above are the only time values
 on the wire; replacement ctime is only operation-binding input. The random ID
 makes two grants for the same request unlinkable from their payload bindings.
 
@@ -111,7 +113,7 @@ authorization input, not a claim about their serialization in the payload:
 - the fresh random 128-bit grant identifier;
 - a domain-separated digest of the configured static bearer principal;
 - the canonical 128-bit MCP session UUID;
-- the globally allocated `write_file` capability code `3`;
+- the globally allocated `write_file` capability code `2`;
 - the anchored safe-root device and inode;
 - a domain-separated digest of the normalized root-relative target components;
 - the SHA-256 digest of the exact UTF-8 content bytes;
@@ -121,7 +123,7 @@ authorization input, not a claim about their serialization in the payload:
   ctime seconds, ctime nanoseconds, and link count (which must be one).
 
 The code is allocated by the same internal registry that assigns directory
-creation `1`, Android volume `2`, and reserves file copy `4`. Pairwise
+creation `1`, Android volume `3`, and reserves file copy `4`. Pairwise
 uniqueness is an invariant test and callers cannot supply or alter the family
 identifier.
 
