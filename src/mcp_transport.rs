@@ -84,6 +84,7 @@ use crate::{
         MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
     transport_security::TransportSecurityPolicy,
+    trash_file_grant::TrashFileGrantAuthority,
     write_file_grant::{
         WriteFileGrantAuthority, WriteFileGrantError, WRITE_FILE_GRANT_TTL_SECONDS,
     },
@@ -961,6 +962,7 @@ impl McpTransportOptions {
 struct FilesystemMutationAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
     copy_file: Option<CopyFileGrantAuthority>,
+    trash_file: Option<TrashFileGrantAuthority>,
     write_file: Option<WriteFileGrantAuthority>,
 }
 
@@ -1043,6 +1045,10 @@ impl std::fmt::Debug for McpRouterBuilder {
             .field(
                 "copy_file_authority",
                 &self.filesystem_authorities.copy_file.is_some(),
+            )
+            .field(
+                "trash_file_authority",
+                &self.filesystem_authorities.trash_file.is_some(),
             )
             .field(
                 "write_file_authority",
@@ -1131,6 +1137,18 @@ impl McpRouterBuilder {
         Ok(self)
     }
 
+    pub fn try_with_trash_file_authority(
+        mut self,
+        authority: TrashFileGrantAuthority,
+    ) -> Result<Self, McpRouterBuildError> {
+        self.ensure_authority_principal(
+            "trash_file",
+            authority.binds_static_principal(self.auth_policy.static_principal()),
+        )?;
+        self.filesystem_authorities.trash_file = Some(authority);
+        Ok(self)
+    }
+
     pub fn try_with_write_file_authority(
         mut self,
         authority: WriteFileGrantAuthority,
@@ -1195,6 +1213,7 @@ impl McpRouterBuilder {
         let FilesystemMutationAuthorities {
             create_directory,
             copy_file,
+            trash_file,
             write_file,
         } = filesystem_authorities;
         let state = McpTransportState::try_new(
@@ -1207,6 +1226,7 @@ impl McpRouterBuilder {
             write_file,
         )?
         .with_copy_file_authority(copy_file)
+        .with_trash_file_authority(trash_file)
         .with_options(options);
         #[cfg(feature = "android-volume-control")]
         let state = state.with_android_volume_control_authority(android_volume_control_authority);
@@ -1233,6 +1253,7 @@ struct McpTransportState {
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     copy_file_authority: Option<CopyFileGrantAuthority>,
+    trash_file_authority: Option<TrashFileGrantAuthority>,
     write_file_authority: Option<WriteFileGrantAuthority>,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
@@ -1318,6 +1339,7 @@ impl McpTransportState {
             command_execution_enabled,
             create_directory_authority,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority,
             #[cfg(feature = "android-battery-status")]
             android_battery_client,
@@ -1364,6 +1386,11 @@ impl McpTransportState {
         self
     }
 
+    fn with_trash_file_authority(mut self, authority: Option<TrashFileGrantAuthority>) -> Self {
+        self.trash_file_authority = authority;
+        self
+    }
+
     #[cfg(feature = "android-volume-control")]
     fn with_android_volume_control_authority(
         mut self,
@@ -1394,6 +1421,7 @@ impl McpTransportState {
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority: None,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
@@ -1427,6 +1455,7 @@ impl McpTransportState {
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
@@ -1460,6 +1489,7 @@ impl McpTransportState {
             command_execution_enabled,
             create_directory_authority: None,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),

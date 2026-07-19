@@ -18,6 +18,7 @@ use crate::audit::AuditEvent;
 use crate::copy_file_grant::{CopyFileGrantError, CopyFileGrantTarget, CopyFileSourceIdentity};
 use crate::create_directory_grant::{CreateDirectoryGrantError, CreateDirectoryGrantTarget};
 use crate::error::AppError;
+use crate::trash_file_grant::{TrashFileGrantTarget, TrashFileIdentity};
 use crate::write_file_grant::{
     WriteFileDisposition, WriteFileExistingIdentity, WriteFileGrantError, WriteFileGrantTarget,
 };
@@ -55,6 +56,7 @@ pub const CREATE_DIRECTORY_MODE: u32 = 0o700;
 pub const MAX_COPY_FILE_BYTES: usize = 1_048_576;
 pub const MAX_COPY_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const COPY_FILE_MODE: u32 = 0o600;
+pub const MAX_TRASH_FILE_BYTES: usize = 1_048_576;
 pub const MAX_WRITE_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const WRITE_FILE_MODE: u32 = 0o600;
 pub const MIN_FIND_DEPTH: u32 = 1;
@@ -1759,6 +1761,12 @@ impl FileSystemTools {
         Ok(prepare_copy_file(source, destination, false)?.grant_target)
     }
 
+    /// Inspect one confined, single-link regular file and return the exact
+    /// non-mutating authorization target used by an offline trash grant issuer.
+    pub fn trash_file_grant_target(&self, path: &str) -> Result<TrashFileGrantTarget, AppError> {
+        prepare_trash_file_grant_target(self.anchor(path)?)
+    }
+
     async fn prepare_copy_file(
         &self,
         source_path: String,
@@ -3401,6 +3409,100 @@ fn prepare_copy_file(
         grant_target,
         started,
     })
+}
+
+fn prepare_trash_file_grant_target(
+    anchored: AnchoredPath,
+) -> Result<TrashFileGrantTarget, AppError> {
+    let (parent_relative, file_name) = split_parent_and_name(&anchored.relative_path)?;
+    let root_fd = anchored.duplicate_root()?;
+    let root_metadata = descriptor_fs::fstat(&root_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(root_metadata.st_mode).is_dir() {
+        return Err(path_rejected(
+            anchored.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    let parent_fd = open_metadata_parent_directory(
+        duplicate_directory_descriptor(&root_fd)?,
+        &parent_relative,
+    )?;
+    let named_before = descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|error| match error {
+            rustix::io::Errno::NOENT => AppError::PathNotFound,
+            _ => descriptor_error(error),
+        })?;
+    let identity = trash_file_identity(&named_before)?;
+    if identity.size > MAX_TRASH_FILE_BYTES as u64 {
+        return Err(AppError::FileTooLarge {
+            size: identity.size,
+            max_size: MAX_TRASH_FILE_BYTES as u64,
+        });
+    }
+
+    let target_fd = descriptor_fs::openat(
+        &parent_fd,
+        &file_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| match error {
+        rustix::io::Errno::NOENT => AppError::PathNotFound,
+        rustix::io::Errno::LOOP => path_rejected(anchored.display_path.to_string_lossy().as_ref()),
+        _ => descriptor_error(error),
+    })?;
+    let held_before = descriptor_fs::fstat(&target_fd).map_err(descriptor_error)?;
+    if trash_file_identity(&held_before).ok() != Some(identity) {
+        return Err(AppError::FileChangedDuringRead);
+    }
+
+    let mut target_file = File::from(target_fd);
+    let content = read_bounded_bytes(&mut target_file, MAX_TRASH_FILE_BYTES)?;
+    let held_after = descriptor_fs::fstat(&target_file).map_err(descriptor_error)?;
+    let named_after = descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|_| AppError::FileChangedDuringRead)?;
+    if content.len() as u64 != identity.size
+        || trash_file_identity(&held_after).ok() != Some(identity)
+        || trash_file_identity(&named_after).ok() != Some(identity)
+    {
+        return Err(AppError::FileChangedDuringRead);
+    }
+
+    let mut normalized_components = Vec::new();
+    for component in anchored.relative_path.components() {
+        let Component::Normal(component) = component else {
+            return Err(path_rejected(
+                anchored.display_path.to_string_lossy().as_ref(),
+            ));
+        };
+        normalized_components.push(component.as_bytes());
+    }
+    TrashFileGrantTarget::from_normalized_components(
+        root_metadata.st_dev,
+        root_metadata.st_ino,
+        normalized_components,
+        identity,
+        Sha256::digest(&content).into(),
+    )
+    .map_err(|_| {
+        AppError::Io(std::io::Error::other(
+            "trash file authorization target is invalid",
+        ))
+    })
+}
+
+fn trash_file_identity(metadata: &descriptor_fs::Stat) -> Result<TrashFileIdentity, AppError> {
+    if !FileType::from_raw_mode(metadata.st_mode).is_file() {
+        return Err(AppError::UnsupportedPathType);
+    }
+    TrashFileIdentity::new(
+        metadata.st_dev,
+        metadata.st_ino,
+        u64::try_from(metadata.st_size).map_err(|_| AppError::UnsupportedPathType)?,
+        metadata.st_ctime,
+        i64::try_from(metadata.st_ctime_nsec).map_err(|_| AppError::UnsupportedPathType)?,
+        normalized_link_count(metadata.st_nlink),
+    )
+    .map_err(|_| AppError::UnsupportedPathType)
 }
 
 fn copy_file_result(dry_run: bool, size_bytes: usize) -> CopyFileResult {

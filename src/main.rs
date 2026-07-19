@@ -57,6 +57,8 @@ pub mod service_status;
 pub mod tools;
 pub mod transport_security;
 #[cfg(feature = "mcp-runtime")]
+pub mod trash_file_grant;
+#[cfg(feature = "mcp-runtime")]
 pub mod write_file_grant;
 pub mod write_policy;
 
@@ -84,6 +86,7 @@ use crate::{
     mcp_transport::McpRouterBuilder,
     request_limits::McpRequestLimits,
     transport_security::TransportSecurityPolicy,
+    trash_file_grant::TrashFileGrantAuthority,
     write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
     write_policy::DEFAULT_MAX_WRITE_BYTES,
 };
@@ -99,7 +102,7 @@ use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n  termux-mcp-server --issue-copy-file-grant\n  termux-mcp-server --issue-write-file-grant\n  termux-mcp-server --issue-android-volume-grant\n";
+const CLI_HELP: &str = "Termux MCP Edge\n\nUsage:\n  termux-mcp-server\n  termux-mcp-server --version\n  termux-mcp-server --help\n  termux-mcp-server --issue-create-directory-grant\n  termux-mcp-server --issue-copy-file-grant\n  termux-mcp-server --issue-trash-file-grant\n  termux-mcp-server --issue-write-file-grant\n  termux-mcp-server --issue-android-volume-grant\n";
 
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_SESSION_ENV: &str = "MCP__CAPABILITY__SESSION_ID";
@@ -109,6 +112,8 @@ const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DI
 const CAPABILITY_COPY_FILE_SOURCE_ENV: &str = "MCP__CAPABILITY__COPY_FILE_SOURCE";
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_COPY_FILE_DESTINATION_ENV: &str = "MCP__CAPABILITY__COPY_FILE_DESTINATION";
+#[cfg(feature = "mcp-runtime")]
+const CAPABILITY_TRASH_FILE_TARGET_ENV: &str = "MCP__CAPABILITY__TRASH_FILE_TARGET";
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_WRITE_FILE_TARGET_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_TARGET";
 #[cfg(feature = "mcp-runtime")]
@@ -217,6 +222,9 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp-runtime")]
     let copy_file_authority = configured_copy_file_authority(&config)?;
 
+    #[cfg(feature = "mcp-runtime")]
+    let trash_file_authority = configured_trash_file_authority(&config)?;
+
     #[cfg(feature = "android-volume-control")]
     let android_volume_control_authority = configured_android_volume_control_authority(&config)?;
 
@@ -250,6 +258,9 @@ async fn main() -> anyhow::Result<()> {
         }
         if let Some(authority) = copy_file_authority {
             builder = builder.try_with_copy_file_authority(authority)?;
+        }
+        if let Some(authority) = trash_file_authority {
+            builder = builder.try_with_trash_file_authority(authority)?;
         }
         if let Some(authority) = write_file_authority {
             builder = builder.try_with_write_file_authority(authority)?;
@@ -343,6 +354,19 @@ fn handle_cli() -> anyhow::Result<bool> {
                 )
             }
         }
+        (Some(argument), None) if argument == OsStr::new("--issue-trash-file-grant") => {
+            #[cfg(feature = "mcp-runtime")]
+            {
+                issue_trash_file_grant()?;
+                Ok(true)
+            }
+            #[cfg(not(feature = "mcp-runtime"))]
+            {
+                anyhow::bail!(
+                    "trash_file grant issuance requires a binary built with the mcp-runtime feature"
+                )
+            }
+        }
         (Some(argument), None) if argument == OsStr::new("--issue-android-volume-grant") => {
             #[cfg(feature = "android-volume-control")]
             {
@@ -427,6 +451,30 @@ fn configured_copy_file_authority(
     CopyFileGrantAuthority::from_hex_key(key_id, key, principal)
         .map(Some)
         .map_err(|_| anyhow::anyhow!("copy_file capability configuration is invalid"))
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn configured_trash_file_authority(
+    config: &AppConfig,
+) -> anyhow::Result<Option<TrashFileGrantAuthority>> {
+    if !config.file.trash_file_mutation_enabled {
+        return Ok(None);
+    }
+    let key_id = config
+        .capability
+        .key_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("trash_file capability configuration is incomplete"))?;
+    let key = config
+        .capability
+        .hmac_key_hex()
+        .ok_or_else(|| anyhow::anyhow!("trash_file capability configuration is incomplete"))?;
+    let principal = config.auth.static_token.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("trash_file capability requires static-token authentication")
+    })?;
+    TrashFileGrantAuthority::from_hex_key(key_id, key, principal)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("trash_file capability configuration is invalid"))
 }
 
 #[cfg(feature = "android-volume-control")]
@@ -530,6 +578,28 @@ fn issue_copy_file_grant() -> anyhow::Result<()> {
     let grant = authority
         .issue(&session_id, &target)
         .map_err(|_| anyhow::anyhow!("copy_file grant issuance failed"))?;
+    println!("{grant}");
+    Ok(())
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn issue_trash_file_grant() -> anyhow::Result<()> {
+    let config = load_offline_issuer_config()?;
+    if !config.file.trash_file_mutation_enabled {
+        anyhow::bail!("trash_file mutation gate is disabled");
+    }
+    let _ = validate_runtime_auth_posture(&config)?;
+    let authority = configured_trash_file_authority(&config)?
+        .ok_or_else(|| anyhow::anyhow!("trash_file mutation gate is disabled"))?;
+    let session_id = required_grant_environment(CAPABILITY_SESSION_ENV)?;
+    let target_path = required_grant_environment(CAPABILITY_TRASH_FILE_TARGET_ENV)?;
+    let file_tools = FileSystemTools::try_new(config.file.safe_roots)?;
+    let target = file_tools
+        .trash_file_grant_target(&target_path)
+        .map_err(|_| anyhow::anyhow!("trash_file grant target validation failed"))?;
+    let grant = authority
+        .issue(&session_id, &target)
+        .map_err(|_| anyhow::anyhow!("trash_file grant issuance failed"))?;
     println!("{grant}");
     Ok(())
 }

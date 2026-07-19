@@ -43,6 +43,7 @@ fn help_is_successful_and_describes_supported_commands() {
     assert!(stdout.contains("termux-mcp-server --help"));
     assert!(stdout.contains("termux-mcp-server --issue-create-directory-grant"));
     assert!(stdout.contains("termux-mcp-server --issue-copy-file-grant"));
+    assert!(stdout.contains("termux-mcp-server --issue-trash-file-grant"));
     assert!(stdout.contains("termux-mcp-server --issue-write-file-grant"));
     assert!(stdout.contains("termux-mcp-server --issue-android-volume-grant"));
     assert!(output.stderr.is_empty());
@@ -68,6 +69,7 @@ fn grant_issuance_fails_closed_without_the_compiled_runtime() {
     for command in [
         "--issue-create-directory-grant",
         "--issue-copy-file-grant",
+        "--issue-trash-file-grant",
         "--issue-write-file-grant",
     ] {
         let output = isolated_binary().arg(command).output().unwrap();
@@ -121,6 +123,26 @@ fn configured_copy_issuer(
         )
         .env("MCP__CAPABILITY__COPY_FILE_SOURCE", source)
         .env("MCP__CAPABILITY__COPY_FILE_DESTINATION", destination);
+    command
+}
+
+#[cfg(feature = "mcp-runtime")]
+fn configured_trash_issuer(root: &std::path::Path, target: &std::path::Path) -> Command {
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let mut command = isolated_binary();
+    command
+        .arg("--issue-trash-file-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-trash-cli-principal")
+        .env("MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY", "false")
+        .env("MCP__FILE__SAFE_ROOTS", root)
+        .env("MCP__FILE__TRASH_FILE_MUTATION_ENABLED", "true")
+        .env("MCP__CAPABILITY__KEY_ID", "trash-cli-test-1")
+        .env("MCP__CAPABILITY__HMAC_KEY_HEX", KEY)
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__TRASH_FILE_TARGET", target);
     command
 }
 
@@ -267,6 +289,127 @@ fn copy_cli_issuer_fails_closed_without_gate_or_for_invalid_private_inputs() {
             "private-copy-cli-denied",
             "private-copy-denied-content",
             "private-copy-cli-missing",
+            "0194f9f9",
+            "0123456789abcdef",
+        ] {
+            assert!(!stderr.contains(private));
+        }
+    }
+}
+
+#[cfg(feature = "mcp-runtime")]
+#[test]
+fn exact_trash_cli_issuer_outputs_one_private_identity_and_content_bound_grant() {
+    use termux_mcp_server::{
+        tools::FileSystemTools,
+        trash_file_grant::{
+            TrashFileGrantAuthority, TrashFileGrantError, MAX_TRASH_FILE_GRANT_HEADER_BYTES,
+        },
+    };
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("private-trash-cli-target.bin");
+    let other = root.path().join("private-trash-cli-other.bin");
+    std::fs::write(&target, b"private-trash\0\xff-content").unwrap();
+    std::fs::write(&other, b"private-trash\0\xff-content").unwrap();
+
+    let output = configured_trash_issuer(root.path(), &target)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    let grant = stdout.trim_end();
+    assert!(grant.len() <= MAX_TRASH_FILE_GRANT_HEADER_BYTES);
+    let segments = grant.split('.').collect::<Vec<_>>();
+    assert_eq!(segments.len(), 4);
+    assert_eq!(segments[0], "v1");
+    assert_eq!(segments[1], "trash-cli-test-1");
+    assert_eq!(segments[2].len(), 130);
+    assert_signed_capability_byte(segments[2], 16, "05");
+    assert_eq!(segments[3].len(), 64);
+    assert!(segments[2..].iter().all(|segment| segment
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))));
+    for private in [
+        "private-trash-cli-principal",
+        "private-trash-cli-target",
+        "private-trash",
+        SESSION,
+    ] {
+        assert!(!stdout.contains(private));
+    }
+    assert!(
+        target.exists(),
+        "grant issuance must never mutate the target"
+    );
+
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+    let exact_target = tools
+        .trash_file_grant_target(target.to_string_lossy().as_ref())
+        .unwrap();
+    let authority = TrashFileGrantAuthority::from_hex_key(
+        "trash-cli-test-1",
+        KEY,
+        "private-trash-cli-principal",
+    )
+    .unwrap();
+    authority
+        .consume(Some(grant), SESSION, &exact_target)
+        .unwrap();
+
+    let other_target = tools
+        .trash_file_grant_target(other.to_string_lossy().as_ref())
+        .unwrap();
+    assert_eq!(
+        authority
+            .consume(Some(grant), SESSION, &other_target)
+            .unwrap_err(),
+        TrashFileGrantError::BindingMismatch
+    );
+}
+
+#[cfg(feature = "mcp-runtime")]
+#[test]
+fn trash_cli_issuer_fails_closed_without_gate_or_for_unsafe_private_inputs() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("private-trash-cli-denied-target");
+    let hardlink = root.path().join("private-trash-cli-denied-hardlink");
+    std::fs::write(&target, "private-trash-denied-content").unwrap();
+
+    let disabled = isolated_binary()
+        .arg("--issue-trash-file-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-trash-cli-principal")
+        .env("MCP__FILE__SAFE_ROOTS", root.path())
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__TRASH_FILE_TARGET", &target)
+        .output()
+        .unwrap();
+    assert!(!disabled.status.success());
+    assert!(disabled.stdout.is_empty());
+    let disabled_stderr = String::from_utf8(disabled.stderr).unwrap();
+    assert!(disabled_stderr.contains("trash_file mutation gate is disabled"));
+
+    std::fs::hard_link(&target, &hardlink).unwrap();
+    let unsafe_target = configured_trash_issuer(root.path(), &target)
+        .output()
+        .unwrap();
+    assert!(!unsafe_target.status.success());
+    assert!(unsafe_target.stdout.is_empty());
+    let unsafe_stderr = String::from_utf8(unsafe_target.stderr).unwrap();
+    assert!(unsafe_stderr.contains("trash_file grant target validation failed"));
+
+    for stderr in [disabled_stderr, unsafe_stderr] {
+        for private in [
+            "private-trash-cli-principal",
+            "private-trash-cli-denied",
+            "private-trash-denied-content",
             "0194f9f9",
             "0123456789abcdef",
         ] {

@@ -70,5 +70,7 @@ pub mod service_status;
 pub mod tools;
 pub mod transport_security;
 #[cfg(feature = "mcp-runtime")]
+pub mod trash_file_grant;
+#[cfg(feature = "mcp-runtime")]
 pub mod write_file_grant;
 pub mod write_policy;

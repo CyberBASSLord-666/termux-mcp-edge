@@ -24,6 +24,7 @@ use termux_mcp_server::{
     },
     tools::{FileSystemTools, SafeRootConfigurationError, MAX_SAFE_ROOTS},
     transport_security::TransportSecurityPolicy,
+    trash_file_grant::TrashFileGrantAuthority,
     write_file_grant::WriteFileGrantAuthority,
 };
 use tower::ServiceExt;
@@ -496,6 +497,28 @@ async fn builder_rejects_mutation_authorities_for_a_different_or_absent_principa
         );
     }
 
+    let trash = TrashFileGrantAuthority::from_hex_key(
+        "test-key-1",
+        TEST_CAPABILITY_KEY,
+        "different-principal",
+    )
+    .unwrap();
+    for error in [
+        static_builder()
+            .try_with_trash_file_authority(trash.clone())
+            .expect_err("trash authority and bearer principal must match"),
+        local_builder()
+            .try_with_trash_file_authority(trash)
+            .expect_err("unauthenticated mode cannot accept a trash authority"),
+    ] {
+        assert_eq!(
+            error,
+            McpRouterBuildError::AuthorityPrincipalMismatch {
+                capability: "trash_file"
+            }
+        );
+    }
+
     #[cfg(feature = "android-volume-control")]
     {
         let volume = AndroidVolumeGrantAuthority::from_hex_key(
@@ -543,6 +566,9 @@ async fn unauthenticated_requests_cannot_reach_sessions_reads_grants_or_mutation
     let write_authority =
         WriteFileGrantAuthority::from_hex_key("test-key-1", TEST_CAPABILITY_KEY, "expected-token")
             .unwrap();
+    let trash_authority =
+        TrashFileGrantAuthority::from_hex_key("test-key-1", TEST_CAPABILITY_KEY, "expected-token")
+            .unwrap();
     let app = McpRouterBuilder::try_new(
         &listener,
         McpAuthPolicy::static_bearer("expected-token").unwrap(),
@@ -554,6 +580,8 @@ async fn unauthenticated_requests_cannot_reach_sessions_reads_grants_or_mutation
     .try_with_create_directory_authority(create_authority)
     .unwrap()
     .try_with_copy_file_authority(copy_authority)
+    .unwrap()
+    .try_with_trash_file_authority(trash_authority)
     .unwrap()
     .try_with_write_file_authority(write_authority)
     .unwrap()
