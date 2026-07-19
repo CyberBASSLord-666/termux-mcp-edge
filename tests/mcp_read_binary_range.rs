@@ -112,6 +112,26 @@ async fn range_read_returns_canonical_slice_and_explicit_eof_without_path_metada
     assert_eq!(result["maxResponseBytes"], MAX_BINARY_RANGE_RESPONSE_BYTES);
     assert_eq!(result.as_object().unwrap().len(), 9);
 
+    let short_final = post_json_to_session(
+        router.clone(),
+        &session_id,
+        range_call(json!("short-final"), path.to_string_lossy().as_ref(), 5, 10),
+    )
+    .await;
+    assert_eq!(short_final.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(short_final.into_body(), MAX_BINARY_RANGE_RESPONSE_BYTES + 1)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let result = &payload["result"]["structuredContent"];
+    assert_eq!(result["data"], "Af4=");
+    assert_eq!(result["offsetBytes"], 5);
+    assert_eq!(result["sizeBytes"], 2);
+    assert_eq!(result["fileSizeBytes"], 7);
+    assert_eq!(result["eof"], true);
+
     let eof = post_json_to_session(
         router,
         &session_id,
@@ -275,6 +295,16 @@ async fn range_read_arguments_response_preflight_and_audits_are_bounded_and_priv
             "unexpected": true
         })),
         Some(json!({"path": false, "offset_bytes": 0, "length_bytes": 1})),
+        Some(json!({
+            "path": path.to_string_lossy(),
+            "offset_bytes": -1,
+            "length_bytes": 1
+        })),
+        Some(json!({
+            "path": path.to_string_lossy(),
+            "offset_bytes": 0,
+            "length_bytes": -1
+        })),
     ]
     .into_iter()
     .enumerate()
@@ -406,13 +436,17 @@ async fn range_read_arguments_response_preflight_and_audits_are_bounded_and_priv
     );
     let counters = &runtime["auditCounters"];
     assert_eq!(counters["by_tool"]["read_binary_range"]["allowed"], 1);
-    assert_eq!(counters["by_tool"]["read_binary_range"]["denied"], 10);
+    assert_eq!(counters["by_tool"]["read_binary_range"]["denied"], 12);
     assert_eq!(
         counters["by_reason_code"]["safe_root_binary_range_read"]["allowed"],
         1
     );
     assert_eq!(
         counters["by_reason_code"]["filesystem_binary_range_invalid"]["denied"],
+        4
+    );
+    assert_eq!(
+        counters["by_reason_code"]["invalid_arguments"]["denied"],
         4
     );
     assert_eq!(

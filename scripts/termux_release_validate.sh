@@ -1214,6 +1214,11 @@ run_mcp_runtime_checks() {
   ' "$body" >/dev/null 2>&1 || fail binary_range_contract_invalid
   grep -Eq 'binary-read\.bin|inode|device|uid|gid|mode|accessTime' "$body" && fail binary_range_path_or_metadata_reflected
 
+  payload="$(jq -cn --arg path "$binary_read_target" '{"jsonrpc":"2.0","id":"binary-range-short-final","method":"tools/call","params":{"name":"read_binary_range","arguments":{"path":$path,"offset_bytes":5,"length_bytes":10}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_binary_range_short_final "$status" 200 safe_root_binary_range_short_final_succeeded
+  jq -e '.result.structuredContent.data == "Af4=" and .result.structuredContent.offsetBytes == 5 and .result.structuredContent.sizeBytes == 2 and .result.structuredContent.fileSizeBytes == 7 and .result.structuredContent.eof == true' "$body" >/dev/null 2>&1 || fail binary_range_short_final_contract_invalid
+
   payload="$(jq -cn --arg path "$binary_read_target" '{"jsonrpc":"2.0","id":"binary-range-eof","method":"tools/call","params":{"name":"read_binary_range","arguments":{"path":$path,"offset_bytes":7,"length_bytes":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status read_binary_range_eof "$status" 200 safe_root_binary_range_eof_succeeded

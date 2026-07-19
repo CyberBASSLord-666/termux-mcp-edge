@@ -484,6 +484,11 @@ protocol_smoke() {
     fail "read_binary_range response reflected a path or denied metadata"
   fi
 
+  payload="$(jq -cn --arg path "$binary_read_target" '{"jsonrpc":"2.0","id":"read-binary-range-short-final","method":"tools/call","params":{"name":"read_binary_range","arguments":{"path":$path,"offset_bytes":5,"length_bytes":10}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_read_binary_range_short_final_http" "$status" 200
+  assert_json "${label}_read_binary_range_short_final" "$body" '.result.structuredContent.data == "Af4=" and .result.structuredContent.offsetBytes == 5 and .result.structuredContent.sizeBytes == 2 and .result.structuredContent.fileSizeBytes == 7 and .result.structuredContent.eof == true'
+
   payload="$(jq -cn --arg path "$binary_read_target" '{"jsonrpc":"2.0","id":"read-binary-range-eof","method":"tools/call","params":{"name":"read_binary_range","arguments":{"path":$path,"offset_bytes":7,"length_bytes":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_read_binary_range_eof_http" "$status" 200

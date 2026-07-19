@@ -2179,6 +2179,15 @@ mod tests {
         );
         assert!(!serialized.to_string().contains("range.bin"));
 
+        let short_final = tools
+            .read_binary_range(path.to_string_lossy().to_string(), 5, 10)
+            .await
+            .unwrap();
+        assert_eq!(short_final.data, "Af4=");
+        assert_eq!(short_final.size_bytes, 2);
+        assert_eq!(short_final.file_size_bytes, 7);
+        assert!(short_final.eof);
+
         let eof = tools
             .read_binary_range(path.to_string_lossy().to_string(), 7, 1)
             .await
