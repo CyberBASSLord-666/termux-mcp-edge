@@ -260,7 +260,6 @@ fn unauthenticated_policy_rejects_non_loopback_listener_declarations() {
     }
 }
 
-
 #[test]
 fn public_builder_returns_typed_errors_for_invalid_listener_syntax() {
     let root = tempfile::tempdir().unwrap();
@@ -368,7 +367,7 @@ fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
     let regular_file = parent.path().join("regular-file");
     std::fs::write(&regular_file, b"not a directory").unwrap();
 
-    let mut cases = vec![
+    let cases = vec![
         (Vec::new(), SafeRootConfigurationError::EmptyConfiguration),
         (
             vec![parent.path().to_path_buf(); MAX_SAFE_ROOTS + 1],
@@ -395,13 +394,15 @@ fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
     ];
 
     #[cfg(unix)]
-    {
+    let cases = {
+        let mut cases = cases;
         let target = parent.path().join("symlink-target");
         let linked = parent.path().join("symlink-root");
         std::fs::create_dir(&target).unwrap();
         std::os::unix::fs::symlink(&target, &linked).unwrap();
         cases.push((vec![linked], SafeRootConfigurationError::SymbolicLink));
-    }
+        cases
+    };
 
     for (safe_roots, expected) in cases {
         assert_eq!(
