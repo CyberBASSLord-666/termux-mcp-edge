@@ -107,7 +107,7 @@ An authenticated caller may attempt traversal, symlink escape, race-based path r
 
 Current controls:
 
-- fallible pre-listener construction of one through 64 configured safe-root entries, with deterministic normalization, sorting, and deduplication;
+- fallible pre-service construction of one through 64 configured safe-root entries after the actual listener is bound, with deterministic normalization, sorting, and deduplication;
 - absolute dedicated roots with no filesystem-root default and rejection of explicit parent traversal, NUL bytes, unsafe missing parents, non-directories, and symlinks in a root or any ancestor;
 - lifetime-retained no-follow directory descriptors plus device/inode identities shared by every tools clone; configured path labels select pins but are not authority;
 - per-operation duplication and identity verification of the selected pin followed by component-by-component no-follow descendant resolution, never pathname reopening;
