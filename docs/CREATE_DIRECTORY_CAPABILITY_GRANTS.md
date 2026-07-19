@@ -88,7 +88,7 @@ The fixed-shape `v1.<kid>.<payload>.<mac>` grant uses HMAC-SHA-256. The authenti
 - the signed version and key identifier.
 
 All request-grant codes come from one internal registry: directory creation is
-`1`, Android volume is `2`, file write is `3`, and file copy reserves `4` for a
+`1`, file write is `2`, Android volume is `3`, and file copy reserves `4` for a
 future independently gated design. The codes are wire commitments, are
 pairwise unique by invariant test, and are not caller-selectable.
 
