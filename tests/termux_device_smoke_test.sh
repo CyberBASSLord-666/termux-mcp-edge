@@ -21,6 +21,8 @@ assert_contains() {
 bash -n "$SCRIPT"
 assert_contains 'HARNESS_VERSION="8"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
+assert_contains 'capability_grant_has_signed_byte "$grant" 64 01' "$SCRIPT"
+assert_contains 'capability_grant_has_signed_byte "$grant" 16 02' "$SCRIPT"
 assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then
   fail "device harness uses a non-portable ERE repetition above Android RE_DUP_MAX"
