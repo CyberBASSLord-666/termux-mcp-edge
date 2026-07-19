@@ -9,7 +9,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Rust single binary.
 - `GET /health` and `GET /ready` operational endpoints.
 - Optional authenticated stable MCP 2025-11-25 `POST`, `GET`, and `DELETE /mcp` handling; GET returns 405 by default, with finite cursor replay available only through explicit SSE opt-in.
-- Exact MCP order: authentication; early `Content-Length`, fail-fast concurrency, and total timeout enforcement; streaming body limiting and extraction; exact `Host`/`Origin`; method/media/protocol/session/grant validation; then JSON-RPC lifecycle, discovery, tools, and authorized mutations.
+- Authentication before concurrency, timeout, body-size, Host, Origin, parsing, discovery, and dispatch.
 - Four concurrent authenticated MCP requests by default.
 - Thirty-second request timeout by default.
 - Two-MiB request-body ceiling by default.
@@ -17,13 +17,23 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Fixed `mcp_runtime` runit service only.
 - Dedicated safe-root defaults plus independent default-disabled directory, file-copy, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
-## Secure router construction and serving
+## Secure router construction
 
-The package binary and every downstream embedding use the one public [`McpRouterBuilder`](EMBEDDING.md). It requires sealed authentication, request-limit, transport-security, and filesystem-root policies. `new` validates the listener declaration and lifetime-pins every root; `build` initializes every requested optional client and installs the fixed layer order above. Raw state and legacy router constructors are not production API.
+The package binary and downstream Rust embeddings use the same
+`McpRouterBuilder` path. The listener is bound first. The builder then reads
+that socket's actual local address, validates and lifetime-pins the safe roots,
+requires the authentication, request-limit, and Host/Origin policies, and
+returns either a complete protected router or a typed non-sensitive startup
+error. The listener is not served until construction succeeds.
 
-Complete builder construction before opening the TCP listener. Invalid listener text, a non-loopback declaration paired with unauthenticated development mode, empty/relative/filesystem-root/missing/non-directory/symlinked roots, an uncompiled requested capability, a mutation authority paired with unauthenticated policy, or an unavailable optional client returns a typed non-sensitive `McpRouterBuildError` instead of panicking or silently disabling the request.
-
-Serve the returned router with `into_make_service_with_connect_info::<SocketAddr>()`. Static-token mode authenticates independently of peer metadata; explicit unauthenticated localhost mode requires both a loopback listener declaration and request-time `ConnectInfo` proving the actual TCP peer is IPv4 or IPv6 loopback. Missing metadata and non-loopback peers fail closed before request limits or body handling. Keep the builder declaration, actual listener bind, and `TransportSecurityPolicy` host/port consistent.
+The fixed request order is authentication; authenticated `Content-Length`,
+concurrency, and timeout enforcement; streaming body limit and extraction;
+Host/Origin validation; then method/media, JSON-RPC, lifecycle/session,
+discovery, grant, tool, and mutation work. There is no public raw-router path
+that an embedding can use to omit or reorder these controls. Explicit
+unauthenticated development also requires both an actually loopback-bound
+listener and request-time proof of an actual loopback peer. See
+[`EMBEDDING.md`](EMBEDDING.md) for the supported integration flow.
 
 ## Android hardening
 
@@ -251,7 +261,7 @@ An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 
 An `android-volume-control` binary with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and the capability key pair exposes `set_android_volume`. It defaults to fresh validated preview. Explicit mutation requires one exact request grant and performs fixed execution, verification, and restoration on failure; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. The package binary uses the same public builder as embeddings, but alone can call its crate-private command-enablement setter; downstream crates are structurally command-disabled. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. Command enablement is a crate-private method available only to the package binary; the single public builder defaults disabled and exposes no enabling method. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
 
 The runtime does not expose Android platform control beyond exact request-authorized volume, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or unrelated high-impact controls.
 
@@ -280,7 +290,7 @@ The default filesystem root is:
 /data/data/com.termux/files/home/mcp-files
 ```
 
-Keep configured roots limited to dedicated project directories. Configuration accepts one through 64 entries and deterministically normalizes, sorts, and deduplicates valid labels. Empty or relative entries, filesystem root `/`, traversal, missing/non-directory objects, and symlinks in a root or any ancestor are rejected before the listener opens. Broad shared Android storage is not a default.
+Keep configured roots limited to dedicated project directories. Configuration accepts one through 64 entries and deterministically normalizes, sorts, and deduplicates valid labels. Empty or relative entries, filesystem root `/`, traversal, missing/non-directory objects, and symlinks in a root or any ancestor are rejected after the exact listener is bound but before a router exists or any request is served. Broad shared Android storage is not a default.
 
 Fallible startup pins every distinct normalized root label with a retained no-follow directory descriptor and device/inode identity. Tool clones share those pins. Each descendant operation duplicates and verifies the selected descriptor, then walks below it with descriptor-relative no-follow operations; configured path labels are selection metadata, not authority, and are never reopened for a live request. Renaming or replacing a root or ancestor cannot redirect the running service: it continues against the original pinned directory and leaves the pathname replacement untouched. Offline grant issuers pin independently and sign the same identity contract, so issuance against a later replacement does not authorize the runtime's original root.
 

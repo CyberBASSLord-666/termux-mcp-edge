@@ -1,16 +1,17 @@
 #![cfg(feature = "mcp-runtime")]
 #![allow(dead_code)]
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::Path};
 
 use axum::{
     body::{to_bytes, Body},
     extract::{ConnectInfo, Request as AxumRequest},
-    http::{header, HeaderValue, Request},
+    http::{header, Request},
     middleware::{self, Next},
     response::Response,
     Router,
 };
+use rustix::fs::{mkfifoat, Mode, CWD};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use termux_mcp_server::{
@@ -18,8 +19,8 @@ use termux_mcp_server::{
     copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        McpRouterBuilder, McpTransportOptions, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
-        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+        McpRouterBuilder, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
+        MCP_SESSION_ID_HEADER,
     },
     request_limits::{
         McpRequestLimits, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_CONCURRENT_REQUESTS,
@@ -31,58 +32,47 @@ use termux_mcp_server::{
 };
 use tower::ServiceExt;
 
+pub(super) fn create_fifo(path: &Path) {
+    mkfifoat(CWD, path, Mode::RUSR | Mode::WUSR).expect("test FIFO fixture must be created");
+}
+
 pub(super) const TEST_CAPABILITY_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 pub(super) const TEST_STATIC_PRINCIPAL: &str = "test-static-principal";
-const TEST_STATIC_TOKEN: &str = "test-static-token";
-const TEST_STATIC_AUTHORIZATION: &str = "Bearer test-static-token";
 
-fn default_test_request_limits() -> McpRequestLimits {
-    McpRequestLimits::from_seconds(
-        DEFAULT_MAX_CONCURRENT_REQUESTS,
-        DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        DEFAULT_MAX_BODY_BYTES,
-    )
-    .expect("default test request limits must be valid")
+fn bound_loopback_listener() -> tokio::net::TcpListener {
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("test listener must bind");
+    listener
+        .set_nonblocking(true)
+        .expect("test listener must become nonblocking");
+    tokio::net::TcpListener::from_std(listener).expect("test listener requires a Tokio runtime")
 }
 
-fn test_router_builder_with_auth(
+fn test_router_builder(
     file_tools: &FileSystemTools,
-    request_limits: McpRequestLimits,
     auth_policy: McpAuthPolicy,
+    request_limits: McpRequestLimits,
 ) -> McpRouterBuilder {
-    McpRouterBuilder::new(
-        "127.0.0.1",
+    let listener = bound_loopback_listener();
+    McpRouterBuilder::try_new(
+        &listener,
         auth_policy,
         request_limits,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools.safe_roots().to_vec(),
     )
-    .expect("test MCP router builder configuration must be valid")
+    .expect("test MCP builder must validate")
 }
 
-fn unauthenticated_test_router_builder(
-    file_tools: &FileSystemTools,
-    request_limits: McpRequestLimits,
-) -> McpRouterBuilder {
-    test_router_builder_with_auth(
-        file_tools,
-        request_limits,
-        McpAuthPolicy::unauthenticated_localhost_only(),
+fn default_request_limits() -> McpRequestLimits {
+    McpRequestLimits::from_seconds(
+        DEFAULT_MAX_CONCURRENT_REQUESTS,
+        DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        DEFAULT_MAX_BODY_BYTES,
     )
-}
-
-fn static_test_router_builder(
-    file_tools: &FileSystemTools,
-    request_limits: McpRequestLimits,
-) -> McpRouterBuilder {
-    test_router_builder_with_auth(
-        file_tools,
-        request_limits,
-        McpAuthPolicy::static_bearer(TEST_STATIC_TOKEN)
-            .expect("test static bearer token must be valid"),
-    )
+    .expect("default test request limits must be valid")
 }
 
 async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Response {
@@ -94,20 +84,6 @@ async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Resp
 
 fn with_loopback_test_peer(router: Router) -> Router {
     router.route_layer(middleware::from_fn(attach_loopback_test_peer))
-}
-
-async fn attach_static_test_auth(mut request: AxumRequest, next: Next) -> Response {
-    if !request.headers().contains_key(header::AUTHORIZATION) {
-        request.headers_mut().insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static(TEST_STATIC_AUTHORIZATION),
-        );
-    }
-    next.run(request).await
-}
-
-fn with_static_test_auth(router: Router) -> Router {
-    router.route_layer(middleware::from_fn(attach_static_test_auth))
 }
 
 pub(super) fn test_file_tools() -> (TempDir, FileSystemTools) {
@@ -126,17 +102,25 @@ pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
 }
 
 pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
-    let router = unauthenticated_test_router_builder(&file_tools, default_test_request_limits())
-        .build()
-        .expect("test MCP router must build");
+    let router = test_router_builder(
+        &file_tools,
+        McpAuthPolicy::unauthenticated_localhost_only(),
+        default_request_limits(),
+    )
+    .build()
+    .expect("test router must build");
     with_loopback_test_peer(router)
 }
 
 pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
-    let router = unauthenticated_test_router_builder(&file_tools, default_test_request_limits())
-        .with_transport_options(McpTransportOptions::default().with_sse_enabled(true))
-        .build()
-        .expect("test SSE MCP router must build");
+    let router = test_router_builder(
+        &file_tools,
+        McpAuthPolicy::unauthenticated_localhost_only(),
+        default_request_limits(),
+    )
+    .with_sse_enabled(true)
+    .build()
+    .expect("SSE test router must build");
     with_loopback_test_peer(router)
 }
 
@@ -149,11 +133,16 @@ pub(super) fn create_directory_authorized_test_router(
         TEST_STATIC_PRINCIPAL,
     )
     .unwrap();
-    let router = static_test_router_builder(&file_tools, default_test_request_limits())
-        .with_create_directory_authority(authority.clone())
-        .build()
-        .expect("test create-authorized MCP router must build");
-    (with_static_test_auth(router), authority)
+    let router = test_router_builder(
+        &file_tools,
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
+        default_request_limits(),
+    )
+    .try_with_create_directory_authority(authority.clone())
+    .expect("test create authority must match the transport principal")
+    .build()
+    .expect("create-authorized test router must build");
+    (router, authority)
 }
 
 pub(super) fn write_file_authorized_test_router(
@@ -168,11 +157,16 @@ pub(super) fn write_file_authorized_test_router(
     let limits =
         McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
             .expect("write authorization tests require bounded parallel replay attempts");
-    let router = static_test_router_builder(&file_tools, limits)
-        .with_write_file_authority(authority.clone())
-        .build()
-        .expect("test write-authorized MCP router must build");
-    (with_static_test_auth(router), authority)
+    let router = test_router_builder(
+        &file_tools,
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
+        limits,
+    )
+    .try_with_write_file_authority(authority.clone())
+    .expect("test write authority must match the transport principal")
+    .build()
+    .expect("write-authorized test router must build");
+    (router, authority)
 }
 
 pub(super) fn copy_file_authorized_test_router(
@@ -187,11 +181,16 @@ pub(super) fn copy_file_authorized_test_router(
     let limits =
         McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
             .expect("copy authorization tests require bounded parallel replay attempts");
-    let router = static_test_router_builder(&file_tools, limits)
-        .with_copy_file_authority(authority.clone())
-        .build()
-        .expect("test copy-authorized MCP router must build");
-    (with_static_test_auth(router), authority)
+    let router = test_router_builder(
+        &file_tools,
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
+        limits,
+    )
+    .try_with_copy_file_authority(authority.clone())
+    .expect("test copy authority must match the transport principal")
+    .build()
+    .expect("copy-authorized test router must build");
+    (router, authority)
 }
 
 pub(super) fn issue_create_directory_grant(
@@ -239,10 +238,7 @@ pub(super) fn issue_copy_file_grant(
 
 #[cfg(feature = "command-execution")]
 pub(super) fn public_command_embedding_test_router(file_tools: FileSystemTools) -> Router {
-    let router = unauthenticated_test_router_builder(&file_tools, default_test_request_limits())
-        .build()
-        .expect("public command-feature embedding router must build");
-    with_loopback_test_peer(router)
+    test_router(file_tools)
 }
 
 pub(super) async fn post_raw(body: impl Into<Body>) -> Response {
@@ -337,6 +333,10 @@ pub(super) async fn post_raw_to_session(
                 .header(header::ORIGIN, "http://localhost:8000")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ACCEPT, MCP_POST_ACCEPT)
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+                )
                 .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
                 .header(MCP_SESSION_ID_HEADER, session_id)
                 .body(body.into())
@@ -352,6 +352,10 @@ pub(super) fn json_request(request_body: Value) -> Request<Body> {
         .header(header::ORIGIN, "http://localhost:8000")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, MCP_POST_ACCEPT)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .body(Body::from(request_body.to_string()))
         .unwrap()
 }

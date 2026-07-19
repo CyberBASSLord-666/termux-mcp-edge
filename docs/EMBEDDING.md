@@ -1,16 +1,16 @@
-# Secure MCP embedding
+# Secure Rust Embedding
 
-Downstream applications have one supported MCP router construction path: `McpRouterBuilder`. The builder requires every policy that protects `/mcp`, validates and lifetime-pins the filesystem boundary before it can return, and produces the same protected router used by the package binary. Raw transport state and legacy router constructors are not public API.
+The `mcp-runtime` feature exposes one public MCP construction path:
+`mcp_transport::McpRouterBuilder`. It returns a complete protected router, not a
+raw `/mcp` route. Legacy router constructors, raw transport state, transport
+options, and capability-authority bundles are not public API.
 
-Enable the `mcp-runtime` feature in the embedding crate:
+## Minimal static-token embedding
 
-```toml
-termux-mcp-server = { version = "0.6.0", features = ["mcp-runtime"] }
-```
-
-## Minimal static-token server
-
-Build the complete router before opening the listener. Always serve it with Axum `ConnectInfo<SocketAddr>`; unauthenticated localhost policy uses that request-time peer metadata and fails closed when it is absent.
+Bind the listener first and give that exact listener to the builder. Serve the
+result with socket `ConnectInfo`; this is mandatory even when static-token
+authentication is used because it keeps the same router valid under the
+strict localhost-development posture.
 
 ```rust,no_run
 use std::{net::SocketAddr, path::PathBuf};
@@ -24,107 +24,130 @@ use termux_mcp_server::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    const PORT: u16 = 8_000;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:8000").await?;
+    let auth = McpAuthPolicy::static_bearer("replace-with-a-strong-token")?;
+    let limits = McpRequestLimits::from_seconds(4, 30, 2 * 1024 * 1024)?;
+    let transport = TransportSecurityPolicy::localhost(8000, false)?;
 
-    let auth = McpAuthPolicy::static_bearer(std::env::var("MCP_TOKEN")?)?;
-    let limits = McpRequestLimits::from_seconds(
-        4,                 // fail-fast concurrent-request ceiling
-        30,                // total request timeout
-        2 * 1024 * 1024,   // streaming request-body ceiling
-    )?;
-    let transport = TransportSecurityPolicy::localhost(PORT, true)?;
-
-    let router = McpRouterBuilder::new(
-        "127.0.0.1",
+    let app = McpRouterBuilder::try_new(
+        &listener,
         auth,
         limits,
         transport,
-        vec![PathBuf::from(
-            "/data/data/com.termux/files/home/mcp-files",
-        )],
+        vec![PathBuf::from("/absolute/private/safe-root")],
     )?
+    .with_sse_enabled(false)
     .build()?;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", PORT)).await?;
     axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await?;
-
     Ok(())
 }
 ```
 
-The listener host passed to `new` is a declaration the builder validates; it is not a substitute for binding the intended address. Keep the declaration and `TcpListener` address identical.
+`try_new` reads the address from the already-bound socket and validates and
+lifetime-pins every safe root. It rejects an empty set, relative paths,
+filesystem root, missing objects, non-directories, and any symlink in a root or
+its ancestors. Errors use `McpRouterBuildError` and do not include bearer
+tokens, configured paths, descriptor numbers, or filesystem identities.
 
-## Exact request order
+`McpAuthPolicy` is opaque: downstream code can construct a validated static or
+localhost policy, clone it, and use its redacted `Debug` implementation, but it
+cannot destructure the policy to recover the bearer principal. This keeps the
+credential inside the authentication and startup authority-matching boundary.
 
-The returned router fixes the following outer-to-inner execution order:
+## Mandatory order
 
-1. Bearer authentication, or request-time loopback-peer proof for explicit unauthenticated localhost mode.
-2. Early `Content-Length` rejection, fail-fast concurrency acquisition, and the total request timeout.
-3. Streaming body-size enforcement and body extraction.
-4. Exact `Host` and browser `Origin` policy.
-5. HTTP method, media-type, protocol-version, session, and capability-grant validation.
-6. JSON-RPC parsing, lifecycle and discovery handling, tool dispatch, and any authorized mutation.
+The builder installs one non-configurable outer boundary in this order:
 
-This order is part of the public security contract. An unauthenticated request cannot consume a request permit, start the timeout-protected inner future, read its body, reveal body-limit details, create or inspect a session, discover tools, process grants, read a safe root, or reach a mutation.
+1. static bearer authentication, or actual-peer loopback authentication in the
+   explicit development posture;
+2. authenticated `Content-Length` rejection, fail-fast concurrency admission,
+   and the total request timeout;
+3. streaming request-body enforcement and body extraction;
+4. exact `Host` and browser `Origin` validation;
+5. HTTP method and media negotiation, JSON-RPC classification, protocol and
+   session lifecycle, discovery, grant-context handling, tool dispatch, and
+   any mutation work.
 
-## Authentication postures
+An unauthenticated request therefore cannot allocate a session, consume an MCP
+concurrency permit, obtain body-limit details, parse a grant, discover a tool,
+read a safe root, or enter mutation preparation. Embeddings cannot reorder or
+omit these layers because no raw public router constructor exists.
 
-`McpAuthPolicy` has private representation and can be created only through validated constructors:
+## Localhost-only development
 
-- `McpAuthPolicy::static_bearer(...)` validates a bounded non-empty ASCII-graphic token. Its `Debug` output redacts the token.
-- `McpAuthPolicy::from_config(...)` derives the same sealed policy from validated server configuration.
-- `McpAuthPolicy::unauthenticated_localhost_only()` is an explicit development posture. `McpRouterBuilder::new` rejects a non-loopback declared listener, and middleware independently requires an actual IPv4 or IPv6 loopback peer from `ConnectInfo<SocketAddr>`. Missing metadata and non-loopback peers fail closed before limits or body handling.
+`McpAuthPolicy::unauthenticated_localhost_only()` is accepted only when the
+listener passed to `try_new` is actually bound to an IPv4 or IPv6 loopback
+address. Each request must independently contain Axum
+`ConnectInfo<SocketAddr>` proving the actual TCP peer is loopback. Missing
+metadata, a wildcard/non-loopback listener, or a non-loopback peer fails
+closed. `Host`, `Origin`, and forwarded headers are not peer evidence.
 
-Do not remove or replace the builder's route layers. If the router is nested into a larger application, preserve `ConnectInfo<SocketAddr>` at the serving boundary and do not expose a second unprotected `/mcp` route.
-
-## Construction failures
-
-`McpRouterBuilder::new` and `build` return `McpRouterBuildError`; neither uses embedding configuration as a panic path.
-
-- `InvalidListenerHost` rejects an empty, padded, control-bearing, or whitespace-bearing listener declaration.
-- `UnauthenticatedListenerRequiresLoopback` rejects development auth with a non-loopback declaration.
-- `SafeRoots(...)` reports bounded safe-root configuration failures without exposing path, descriptor, or inode details. An empty set, relative path, filesystem root, missing path, non-directory, symlinked component, or more than 64 input entries is rejected before a router or listener exists.
-- `CapabilityNotCompiled { capability }` rejects a requested optional runtime gate when its Cargo feature is absent.
-- `CapabilityRequiresStaticAuthentication { capability }` rejects every create/copy/write or Android-volume mutation authority paired with unauthenticated localhost policy.
-- `OptionalClientUnavailable { client }` rejects a requested provider or command client that cannot be initialized safely.
-
-Safe roots are normalized, opened component-by-component without following links, and retained as pinned directory descriptors for the router lifetime. Renaming or replacing a configured pathname cannot redirect a running embedding. Builder clones do not reopen roots because the builder is consumed by `build`.
+Do not use this posture behind a proxy, tunnel, LAN listener, or adapter that
+does not preserve socket peer metadata. Prefer a static bearer token for every
+shared or remotely reachable deployment.
 
 ## Optional capabilities
 
-All optional runtime gates default to disabled. Enable only a capability compiled into the embedding:
+Read-only optional capabilities are selected before `build`:
 
 ```rust,ignore
-let builder = McpRouterBuilder::new(listener_host, auth, limits, transport, roots)?
-    .with_transport_options(options)
-    .with_android_battery_status_enabled(enable_battery)
-    .with_android_volume_status_enabled(enable_volume)
-    .with_create_directory_authority(create_authority)
-    .with_copy_file_authority(copy_authority)
-    .with_write_file_authority(write_authority);
-
-// Available only with the android-volume-control feature:
-let builder = builder.with_android_volume_control_authority(volume_authority);
-
-let router = builder.build()?;
+let builder = builder
+    .with_android_battery_status_enabled(true)
+    .with_android_volume_status_enabled(true);
 ```
 
-Transport options include the independently default-disabled bounded SSE response posture. Mutation-authority setters accept already validated authorities. `build` rejects every mutation authority unless the sealed policy is static bearer authentication; unauthenticated localhost mode can never activate create, copy, write, or Android-volume mutation. An authority also does not bypass each capability's runtime gate, request-bound grant, dry-run, replay, identity, and safe-root checks.
+Requesting a client that was not compiled into the selected feature posture
+returns `McpRouterBuildError::CapabilityUnavailable`; it is never silently
+disabled. SSE is likewise explicit and defaults off.
 
-The fixed-profile command diagnostic lane is intentionally unavailable to downstream crates. The package binary uses this same builder and a crate-private setter, so public embeddings cannot expand their authority into command execution even when the dependency is compiled with `command-execution`.
+Mutation authorities are added with the fallible
+`try_with_create_directory_authority`, `try_with_copy_file_authority`,
+`try_with_write_file_authority`, and—when compiled—
+`try_with_android_volume_control_authority` methods. Each authority must be
+cryptographically bound to the exact static-bearer principal used by the
+builder. A mismatched principal, or any mutation authority in unauthenticated
+development mode, is rejected before a router exists. These checks complement;
+they do not replace the runtime gates, active-session binding, exact target
+binding, single-use grant consumption, and mutation-specific verification.
 
-## Embedding validation checklist
+Command execution is intentionally not enableable through the public builder.
+Only the package binary can select its crate-private fixed-profile command
+posture. A dependency consumer cannot obtain raw command clients, profiles,
+transport state, legacy router constructors, or an authority that turns on the
+command lane.
 
-Before deployment:
+`filesystem_tools()` returns a clone of the exact pinned filesystem authority
+owned by the future router. Use it only where an embedding must share that
+identity with other read-only project code. Do not independently reconstruct
+safe-root tools and assume their authority identity is interchangeable.
 
-1. Construct policies and the router before binding the listener.
-2. Bind exactly the host and port represented by the listener declaration and transport policy.
-3. Serve with `into_make_service_with_connect_info::<SocketAddr>()`.
-4. Verify missing and incorrect bearer tokens return HTTP 401 for POST, GET, and DELETE, including oversized bodies.
-5. If localhost development mode is required, verify missing `ConnectInfo` and a non-loopback peer fail closed.
-6. Verify invalid safe roots and uncompiled optional gates return typed construction errors.
-7. Run default-feature and all-feature format, Clippy, and test gates, then the Android and native Termux gates documented in [Validation](VALIDATION.md).
+## Composition rules
+
+- Serve the same listener supplied to `try_new` and always use
+  `into_make_service_with_connect_info::<SocketAddr>()`.
+- Merge unrelated health/readiness routes only outside `/mcp`; never overlay or
+  replace `/mcp` after the builder returns.
+- Construct `McpAuthPolicy`, `McpRequestLimits`, and
+  `TransportSecurityPolicy` with their fallible validated constructors.
+- Treat `build` failure as a startup failure. Do not retry by dropping a
+  requested capability or weakening a policy.
+- Keep safe roots under exclusive service ownership whenever live mutation
+  gates are enabled.
+- Never log `Debug` output from surrounding application state if that state may
+  independently contain credentials. The project builder itself redacts its
+  authentication material and filesystem authority.
+
+The shipped binary follows this same builder path. Its only additional access
+is the crate-private command-profile switch, which downstream crates cannot
+name or call.
+
+The checked-in [`secure_embedding` example](../examples/secure_embedding.rs)
+is compiled by the repository's default, minimal-`mcp-runtime`, and all-feature
+gates. To run it deliberately, provide a private token and an existing absolute
+safe root through `MCP_EXAMPLE_STATIC_TOKEN` and `MCP_EXAMPLE_SAFE_ROOT`, then
+use `cargo run --example secure_embedding --features mcp-runtime`.

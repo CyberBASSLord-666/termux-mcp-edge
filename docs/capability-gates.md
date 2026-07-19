@@ -217,7 +217,7 @@ Implemented scope:
 - Separate `command-execution` feature, including `mcp-runtime`
 - Separate `MCP__COMMAND__ENABLED=true` runtime opt-in, defaulting to disabled
 - `run_command_profile` with a one-property closed schema and exact profile enum
-- Binary-crate-only command enablement; all public library routers hard-code disabled, with dependency and selected-workspace compile probes
+- Binary-crate-only command enablement; the single public builder defaults disabled and exposes no enabling method, with dependency and selected-workspace compile probes
 - Exact-name candidate opened no-follow and matched by device/inode to an independently opened `/proc/self/exe`; later launches use only `/proc/self/exe`
 - Fixed complete argv for `server_version`, `server_help`, and `execution_boundary`
 - First canonical configured safe root retained by no-follow directory descriptor, filesystem-root aliases rejected by device/inode, and child cwd selected through `/proc/self/fd/<fd>`

@@ -72,6 +72,16 @@ impl McpAuthPolicy {
     pub(crate) const fn is_unauthenticated_localhost_only(&self) -> bool {
         matches!(&self.kind, McpAuthPolicyKind::UnauthenticatedLocalhostOnly)
     }
+
+    /// Return the exact authenticated principal for startup-only authority
+    /// compatibility checks. The value is never serialized or logged.
+    #[cfg(feature = "mcp-runtime")]
+    pub(crate) fn static_principal(&self) -> Option<&str> {
+        match &self.kind {
+            McpAuthPolicyKind::StaticBearer { token } => Some(token),
+            McpAuthPolicyKind::UnauthenticatedLocalhostOnly => None,
+        }
+    }
 }
 
 impl fmt::Debug for McpAuthPolicy {

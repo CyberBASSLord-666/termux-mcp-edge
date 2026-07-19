@@ -1,5 +1,7 @@
 #![cfg(feature = "mcp-runtime")]
 
+use std::net::SocketAddr;
+
 use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
@@ -14,24 +16,35 @@ use termux_mcp_server::{
         MCP_SESSION_ID_HEADER,
     },
     request_limits::McpRequestLimits,
+    tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
 };
 use tower::ServiceExt;
 
 fn protected_limited_router(max_body_bytes: usize) -> Router {
     let root = tempfile::tempdir().unwrap();
+    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+        .expect("test safe root must validate");
+    let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
+    let listener = bound_loopback_listener();
 
-    McpRouterBuilder::new(
-        "127.0.0.1",
+    McpRouterBuilder::try_new(
+        &listener,
         McpAuthPolicy::static_bearer("expected-token").unwrap(),
-        McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap(),
+        limits,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
-        vec![root.path().to_path_buf()],
+        file_tools.safe_roots().to_vec(),
     )
-    .expect("limited router configuration must be valid")
+    .unwrap()
     .build()
-    .expect("limited router must build")
+    .unwrap()
+}
+
+fn bound_loopback_listener() -> tokio::net::TcpListener {
+    let listener = std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    tokio::net::TcpListener::from_std(listener).expect("test listener requires a Tokio runtime")
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {

@@ -1130,6 +1130,7 @@ impl FileSystemTools {
     ///
     /// The returned descriptor is identity-verified and carries authority;
     /// `safe_roots()` remains display/configuration metadata only.
+    #[cfg(feature = "command-execution")]
     pub(crate) fn duplicate_safe_root_descriptor(&self, index: usize) -> Result<OwnedFd, AppError> {
         self.roots.duplicate_root(index)
     }

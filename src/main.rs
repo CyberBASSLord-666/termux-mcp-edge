@@ -179,27 +179,32 @@ async fn main() -> anyhow::Result<()> {
 
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
-    // Construct the complete MCP boundary before any listener is opened. The
-    // one public builder validates listener/auth/limits/transport composition
-    // and lifetime-pins every configured filesystem root.
     #[cfg(feature = "mcp-runtime")]
-    let mcp_router_builder = McpRouterBuilder::new(
-        &config.server.host,
+    let transport_security = TransportSecurityPolicy::new(
+        config.transport.allowed_hosts.clone(),
+        config.transport.allowed_origins.clone(),
+        config.transport.allow_missing_origin,
+    )?;
+
+    // The secure builder reads this exact bound listener, then validates and
+    // lifetime-pins every configured jail root before the socket is served.
+    #[cfg(feature = "mcp-runtime")]
+    let mcp_router_builder = McpRouterBuilder::try_new(
+        &listener,
         mcp_auth_policy,
         mcp_request_limits,
-        TransportSecurityPolicy::new(
-            config.transport.allowed_hosts.clone(),
-            config.transport.allowed_origins.clone(),
-            config.transport.allow_missing_origin,
-        )?,
+        transport_security,
         config.file.safe_roots.clone(),
     )?;
+
     #[cfg(feature = "mcp-runtime")]
     let safe_root_count = mcp_router_builder.safe_root_count();
 
     #[cfg(not(feature = "mcp-runtime"))]
     let file_tools = FileSystemTools::try_new(config.file.safe_roots.clone())?;
+
     #[cfg(not(feature = "mcp-runtime"))]
     let safe_root_count = file_tools.safe_root_count();
 
@@ -236,36 +241,31 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "mcp-runtime")]
     let app = {
         let mut builder = mcp_router_builder
-            .with_transport_options(
-                crate::mcp_transport::McpTransportOptions::default()
-                    .with_sse_enabled(config.transport.sse_enabled),
-            )
+            .with_sse_enabled(config.transport.sse_enabled)
             .with_android_battery_status_enabled(config.android.battery_status_enabled)
             .with_android_volume_status_enabled(config.android.volume_status_enabled)
             .with_command_execution_enabled(config.command.enabled);
-
         if let Some(authority) = create_directory_authority {
-            builder = builder.with_create_directory_authority(authority);
+            builder = builder.try_with_create_directory_authority(authority)?;
         }
         if let Some(authority) = copy_file_authority {
-            builder = builder.with_copy_file_authority(authority);
+            builder = builder.try_with_copy_file_authority(authority)?;
         }
         if let Some(authority) = write_file_authority {
-            builder = builder.with_write_file_authority(authority);
+            builder = builder.try_with_write_file_authority(authority)?;
         }
         #[cfg(feature = "android-volume-control")]
         if let Some(authority) = android_volume_control_authority {
-            builder = builder.with_android_volume_control_authority(authority);
+            builder = builder.try_with_android_volume_control_authority(authority)?;
         }
-
-        app.merge(builder.build()?)
+        let mcp_app = builder.build()?;
+        app.merge(mcp_app)
     };
 
     #[cfg(not(feature = "mcp-runtime"))]
     let _ = file_tools;
 
     info!("Listening on http://{}", display_addr);
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     // Supplying peer connection metadata is part of the MCP authentication
     // boundary. Explicit localhost-only development mode rejects every `/mcp`

@@ -8,7 +8,7 @@ The default build exposes unauthenticated coarse `GET /health` and `GET /ready` 
 
 The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `DELETE /mcp` handling with:
 
-- bearer authentication, except for explicit loopback-only development mode whose declared bind and actual TCP peer must both be loopback;
+- bearer authentication, except for explicit loopback-only development mode whose already-bound listener and actual TCP peer must both be loopback;
 - bounded concurrency, request duration, and body size;
 - exact Host and browser Origin validation;
 - strict single-message JSON-RPC request, notification, and response classification;
@@ -16,8 +16,6 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
 - the sixteen-tool baseline allowlist, including bounded content-free path discovery and code-point-safe UTF-8 range pagination, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
-
-The package binary and downstream crates receive that boundary only through the one public [`McpRouterBuilder`](EMBEDDING.md). Its immutable outer-to-inner execution order is authentication; early `Content-Length`, fail-fast concurrency, and total timeout enforcement; streaming body limiting and extraction; exact `Host`/`Origin`; method/media/protocol/session/grant validation; then JSON-RPC lifecycle, discovery, tool dispatch, and authorized mutation. Raw state and router constructors are crate-private or test-only.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. The default transport returns JSON and the specification-permitted HTTP 405 for GET. `MCP__TRANSPORT__SSE_ENABLED=true` permits finite two-event SSE request responses and cursor-bearing GET resumption. Each response stream receives an unguessable UUID-derived identity, an empty priming event, and one terminal JSON-RPC event. Replay is held inside the originating session only, never broadcast, and bounded to 8 streams, 2 events per stream, 128 KiB per event, 256 KiB per session, and a 64-byte `Last-Event-ID`. Every HTTP 200 response is preflighted under the aggregate collector ceiling, and canonical serialized JSON-RPC request IDs are capped at 1 MiB before dispatch or session allocation. Oldest streams are evicted deterministically; oversized eligible responses remain JSON. DELETE and idle expiry remove both lifecycle and replay state.
 
@@ -42,28 +40,16 @@ An untrusted local, LAN, tunnel, or browser-originated caller may attempt to enu
 Current controls:
 
 - static bearer authentication wraps the complete MCP route before resource accounting, transport validation, parsing, discovery, and dispatch;
+- the single public `McpRouterBuilder` requires an already-bound listener plus validated authentication, request-limit, transport-security, and safe-root inputs; no raw public router or state constructor can omit those boundaries;
 - credential parsing and comparison are bounded;
 - failures return one non-sensitive 401 contract with `WWW-Authenticate: Bearer` and `Cache-Control: no-store`;
-- unauthenticated mode requires explicit configuration and a loopback bind;
+- unauthenticated mode requires explicit policy and proof from the actual bound listener that its local address is loopback;
 - request-time `ConnectInfo<SocketAddr>` must prove the actual TCP peer is IPv4 or IPv6 loopback. Missing metadata and non-loopback peers receive the same private denial before request resource accounting; `Host`, `Origin`, and forwarded headers are never substitutes for the socket peer.
 
 Preserved boundary:
 
 - lifecycle and session identifiers never replace request authentication;
 - authentication failures must not allocate MCP sessions, consume tool concurrency, or enter tool audit counters.
-
-### Incomplete downstream router composition
-
-An embedding may accidentally expose transport handlers without authentication, limits, listener validation, or pinned filesystem roots.
-
-Current controls:
-
-- `McpRouterBuilder` is the complete public construction surface and requires sealed authentication, validated request limits, a transport-security policy, a declared listener host, and safe roots;
-- builder construction rejects invalid listener text, non-loopback development declarations, empty/relative/filesystem-root/missing/non-directory/symlinked roots, uncompiled requested capabilities, and unavailable optional clients through typed non-sensitive errors;
-- builder completion rejects every filesystem or Android-volume mutation authority paired with unauthenticated localhost policy, preserving the static-bearer prerequisite for live mutation;
-- explicit unauthenticated development access independently requires request-time `ConnectInfo<SocketAddr>` proving an actual loopback peer, so declaration text, `Host`, `Origin`, and forwarding headers cannot create authority;
-- the package binary uses the same builder as embedders, while raw/legacy constructors and the command-enablement setter remain inaccessible downstream;
-- integration and compile probes cover the one public path and prove unauthorized POST, GET, DELETE, discovery, reads, sessions, grants, and mutations cannot cross authentication.
 
 ### Browser rebinding and ambient browser access
 
@@ -152,7 +138,7 @@ Current controls:
 - grants are issued only by the local exact binary after fallible construction independently lifetime-pins the configured safe root and validates the capability-specific target. The signed binding uses that pin's device/inode identity, and runtime consumption compares it with the identity retained by the running process; a grant issued after pathname replacement cannot authorize the earlier pin. The file-write issuer additionally reads exact UTF-8 bytes from an absolute stable no-follow private regular file of at most 1 MiB and validates the requested `create`/`replace` target state;
 - create-directory grants use their own fixed-shape signed binding. A write grant instead has an opaque 65-byte payload (random JTI, signed write-family byte, keyed domain-separated operation binding, issued/expiry timestamps) plus its outer signature: principal, canonical session, capability, root/target, posture, content digest, disposition, and replacement device/inode/size/high-resolution ctime/link count are binding inputs and are not serialized;
 - a single internal registry assigns stable globally unique family codes—directory `1`, write `2`, volume `3`, and copy `4`. Callers cannot select a code, and exhaustive all-pairs tests with one key/principal/session prove every live grant is privately rejected by every other family without consuming the source grant;
-- route authentication is outermost. Host/Origin, HTTP method, media/header shape, JSON-RPC envelope, session/lifecycle, `tools/call`, exact grant-aware tool name, closed argument schema, runtime gate, complete-response preflight, safe-root/target classification, and grant binding are checked in that order before the first state change;
+- route authentication is outermost. Authenticated `Content-Length`, concurrency, timeout, streaming body extraction, Host/Origin, HTTP method, media/header shape, JSON-RPC envelope, session/lifecycle, `tools/call`, exact grant-aware tool name, closed argument schema, runtime gate, complete-response preflight, safe-root/target classification, and grant binding are checked in that order before the first state change;
 - only one bounded ASCII `MCP-Capability-Grant` header is accepted. It is rejected on initialization, GET, DELETE, ping, discovery, notifications, client responses, and unrelated tools; an active-session `tools/call` still authorizes nothing unless its exact capability authority validates it;
 - malformed, unknown-key/version, invalid-signature, expired, future, excessive-lifetime, mismatched, replayed, clock-rollback, full-state, and poisoned-state cases fail closed with non-sensitive stable reasons;
 - a bounded process-global registry gives every equivalent same-family/key-id/key/principal authority one shared replay set, last-observed clock, and capacity; validation plus replay insertion is atomic, so independently constructed routers and concurrent callers in this process reach at most one mutation attempt, while other families, keys, and principals remain isolated and poisoned or exhausted state fails closed;
@@ -185,7 +171,7 @@ Command execution, Android control, service/package/network mutation, broad stor
 
 Current controls:
 
-- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; the package binary and downstream crates use the same public builder, but only the package binary can call its crate-private command-enablement setter, and ordinary dependency plus selected-workspace probes enforce that boundary;
+- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; the package binary compiles the module graph in its own crate and alone can call the crate-private command switch on `McpRouterBuilder`, while the single public builder defaults disabled and exposes no enabling method. Ordinary dependency and selected-workspace probes prove raw command types, the binary-only switch, legacy router constructors, and their option/authority bundles remain unreachable;
 - initialization opens the exact-name absolute candidate without following its final component, opens `/proc/self/exe` independently, requires an executable regular candidate plus a regular loaded image with equal device/inode identity, and later spawns only `/proc/self/exe`;
 - the first canonical safe root is held by a no-follow directory descriptor, filesystem-root aliases are rejected by device/inode, and the child uses `/proc/self/fd/<fd>` while the guard remains alive through execution;
 - its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input, while crate-private profiles, resolved handles, and raw execution types prevent downstream Rust embeddings from forging or inspecting those values;

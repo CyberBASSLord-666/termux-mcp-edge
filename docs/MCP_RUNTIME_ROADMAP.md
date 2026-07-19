@@ -155,7 +155,7 @@ Completed prerequisites:
 
 - Command-execution gate design and profile-review runbook.
 - Separate compile-time feature and disabled-by-default runtime flag.
-- Closed `run_command_profile` schema with three fixed already-loaded-image profiles and binary-crate-only enablement; public library routers hard-code disabled.
+- Closed `run_command_profile` schema with three fixed already-loaded-image profiles and binary-crate-only enablement; the single public builder defaults disabled and exposes no enabling method.
 - Exact-name candidate/`/proc/self/exe` device-inode attestation followed by `/proc/self/exe` spawning.
 - No-follow descriptor-pinned safe-root cwd with filesystem-root alias rejection, empty environment, and null stdin.
 - Immutable 5-second/16 KiB stdout/4 KiB stderr maxima, two non-queueing permits, fallible bytes-as-read allocation, process-group cleanup, and authoritative reaping.
