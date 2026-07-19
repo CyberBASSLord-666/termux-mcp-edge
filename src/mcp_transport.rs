@@ -50,7 +50,9 @@ use crate::{
         CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER,
         CREATE_DIRECTORY_GRANT_TTL_SECONDS, MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES,
     },
-    error::AppError,
+    error::{
+        AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE, INVALID_TEXT_RANGE_PUBLIC_MESSAGE,
+    },
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
     mcp_session::{
         McpSessionStore, SessionPhase, SessionStoreError, SseReplayError, SseReplayEvent,
@@ -109,6 +111,38 @@ const MAX_MCP_CAPABILITY_GRANT_HEADER_BYTES: usize =
     } else {
         MAX_CREATE_DIRECTORY_GRANT_HEADER_BYTES
     };
+
+// Every successful tool response is collected once before the transport can
+// decide whether it fits in a bounded SSE event. Keep the collector tied to
+// the complete set of explicit response contracts instead of to whichever
+// individual tool happened to own the largest contract previously.
+const BOUNDED_TOOL_RESPONSE_BYTES: &[usize] = &[
+    MAX_LIST_RESPONSE_BYTES,
+    MAX_PATH_METADATA_RESPONSE_BYTES,
+    MAX_BINARY_READ_RESPONSE_BYTES,
+    MAX_BINARY_RANGE_RESPONSE_BYTES,
+    MAX_TEXT_RANGE_RESPONSE_BYTES,
+    MAX_READ_RESPONSE_BYTES,
+    MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+    MAX_COPY_FILE_RESPONSE_BYTES,
+    MAX_FIND_RESPONSE_BYTES,
+    MAX_HASH_FILE_RESPONSE_BYTES,
+    MAX_SEARCH_RESPONSE_BYTES,
+    MAX_WRITE_FILE_RESPONSE_BYTES,
+];
+const MAX_MCP_JSON_RESPONSE_BYTES: usize = max_response_bytes(BOUNDED_TOOL_RESPONSE_BYTES);
+
+const fn max_response_bytes(limits: &[usize]) -> usize {
+    let mut maximum = 0;
+    let mut index = 0;
+    while index < limits.len() {
+        if limits[index] > maximum {
+            maximum = limits[index];
+        }
+        index += 1;
+    }
+    maximum
+}
 
 #[cfg(feature = "android-volume-control")]
 const ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED: u64 = ANDROID_VOLUME_GRANT_TTL_SECONDS;
@@ -1251,11 +1285,9 @@ async fn maybe_sse_response(
     }
 
     let (mut parts, body) = response.into_parts();
-    // Whole-file binary reads own the largest complete response budget in the
-    // current tool registry. Collecting under that existing bound lets an
-    // oversized SSE event fall back to JSON without introducing an unbounded
-    // second response buffer.
-    let body = match to_bytes(body, MAX_BINARY_READ_RESPONSE_BYTES).await {
+    // Collect under the largest registered response contract so an oversized
+    // SSE event can fall back to JSON without an unbounded second buffer.
+    let body = match to_bytes(body, MAX_MCP_JSON_RESPONSE_BYTES).await {
         Ok(body) => body,
         Err(_) => {
             return transport_error(
@@ -3926,7 +3958,7 @@ async fn handle_read_binary_range_call(
                 AuditMode::ReadOnly,
                 FILESYSTEM_BINARY_RANGE_INVALID,
             );
-            invalid_params(id, "Binary range is outside the bounded file contract.")
+            invalid_params(id, INVALID_BINARY_RANGE_PUBLIC_MESSAGE)
         }
         Err(AppError::FileTooLarge { .. }) => {
             record_filesystem_denied(
@@ -4113,7 +4145,7 @@ async fn handle_read_text_range_call(
                 AuditMode::ReadOnly,
                 FILESYSTEM_TEXT_RANGE_INVALID,
             );
-            invalid_params(id, "Text range is outside the bounded UTF-8 file contract.")
+            invalid_params(id, INVALID_TEXT_RANGE_PUBLIC_MESSAGE)
         }
         Err(AppError::FileTooLarge { .. }) => {
             record_filesystem_denied(
@@ -5773,6 +5805,14 @@ mod tests {
     use crate::command_policy::{
         COMMAND_PROFILE_ALLOWED_REASON, COMMAND_RUNTIME_DISABLED_REASON,
     };
+
+    #[test]
+    fn json_response_collection_limit_covers_every_bounded_tool_contract() {
+        assert_eq!(MAX_MCP_JSON_RESPONSE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES);
+        assert!(BOUNDED_TOOL_RESPONSE_BYTES
+            .iter()
+            .all(|limit| *limit <= MAX_MCP_JSON_RESPONSE_BYTES));
+    }
 
     #[tokio::test]
     async fn dropped_write_request_cancels_detached_worker_before_commit() {

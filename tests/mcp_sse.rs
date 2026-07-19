@@ -16,6 +16,9 @@ use termux_mcp_server::mcp_transport::{
     MAX_MCP_LAST_EVENT_ID_BYTES, MCP_LAST_EVENT_ID_HEADER, MCP_PROTOCOL_VERSION,
     MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
 };
+use termux_mcp_server::tools::{
+    MAX_BINARY_READ_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES,
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -408,6 +411,57 @@ async fn large_json_rpc_responses_fall_back_to_json_without_unbounded_replay() {
         .unwrap()
         .starts_with("application/json"));
     assert_eq!(response_json(response).await["id"], "large-read");
+}
+
+#[tokio::test]
+async fn maximum_escaped_text_range_falls_back_to_bounded_json() {
+    let (root, file_tools) = empty_test_file_tools();
+    let path = root.path().join("maximum-escaped-text-range.txt");
+    std::fs::write(&path, vec![0_u8; MAX_TEXT_RANGE_BYTES]).unwrap();
+    let router = sse_test_router(file_tools);
+    let (session_id, _) = initialize_active_sse(&router).await;
+
+    let response = router
+        .oneshot(session_request(
+            json!({
+                "jsonrpc":"2.0",
+                "id":"maximum-escaped-text-range",
+                "method":"tools/call",
+                "params":{
+                    "name":"read_text_range",
+                    "arguments":{
+                        "path":path.to_string_lossy(),
+                        "offset_bytes":0,
+                        "max_bytes":MAX_TEXT_RANGE_BYTES
+                    }
+                }
+            }),
+            &session_id,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
+    let body = to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES)
+        .await
+        .unwrap();
+    assert!(body.len() > MAX_BINARY_READ_RESPONSE_BYTES);
+    assert!(body.len() <= MAX_TEXT_RANGE_RESPONSE_BYTES);
+
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["id"], "maximum-escaped-text-range");
+    let content = payload["result"]["structuredContent"]["content"]
+        .as_str()
+        .unwrap();
+    assert_eq!(content.len(), MAX_TEXT_RANGE_BYTES);
+    assert!(content.bytes().all(|byte| byte == 0));
 }
 
 #[tokio::test]
