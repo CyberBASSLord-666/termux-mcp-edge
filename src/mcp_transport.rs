@@ -1,6 +1,9 @@
 use std::{
     convert::Infallible,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -74,8 +77,8 @@ use crate::{
     },
     transport_security::TransportSecurityPolicy,
     write_file_grant::{
-        WriteFileGrantAuthority, MAX_WRITE_FILE_GRANT_HEADER_BYTES, WRITE_FILE_GRANT_HEADER,
-        WRITE_FILE_GRANT_TTL_SECONDS,
+        WriteFileGrantAuthority, WriteFileGrantError, MAX_WRITE_FILE_GRANT_HEADER_BYTES,
+        WRITE_FILE_GRANT_HEADER, WRITE_FILE_GRANT_TTL_SECONDS,
     },
     write_policy::{WriteMode, WritePolicy, DEFAULT_MAX_WRITE_BYTES},
 };
@@ -261,12 +264,64 @@ const FILESYSTEM_WRITE_EXISTS: &str = "filesystem_write_destination_exists";
 const FILESYSTEM_WRITE_TOO_LARGE: &str = "write_size_limit_exceeded";
 const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 
+const WRITE_FILE_COMMIT_PENDING: u8 = 0;
+const WRITE_FILE_COMMIT_WORKER_OWNED: u8 = 1;
+const WRITE_FILE_COMMIT_REQUEST_CANCELLED: u8 = 2;
+
 const COMMAND_EXECUTION_ERROR: &str = "command_profile_execution_failed";
 
 const TOOL_CALL_PARAMS_INVALID: &str = "tools/call params do not match the required schema.";
 const TOOL_ARGUMENTS_INVALID: &str = "Tool arguments do not match the advertised input schema.";
 
 type SharedAuditCounters = Arc<Mutex<AuditCounters>>;
+
+/// Keeps request cancellation and the detached write worker on opposite sides
+/// of one linearized authorization boundary.
+///
+/// Only the pending state can transition, so the three-state byte is bounded:
+/// request drop wins by moving it to cancelled, or the worker wins by moving it
+/// to worker-owned immediately before it consumes the grant.
+#[must_use = "the guard must remain alive while its detached write worker can claim"]
+struct WriteFileRequestCommitGuard {
+    state: Arc<AtomicU8>,
+}
+
+impl WriteFileRequestCommitGuard {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(AtomicU8::new(WRITE_FILE_COMMIT_PENDING)),
+        }
+    }
+
+    fn worker_state(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.state)
+    }
+}
+
+impl Drop for WriteFileRequestCommitGuard {
+    fn drop(&mut self) {
+        let _ = self.state.compare_exchange(
+            WRITE_FILE_COMMIT_PENDING,
+            WRITE_FILE_COMMIT_REQUEST_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+fn claim_write_file_commit(state: &AtomicU8) -> Result<(), WriteFileGrantError> {
+    state
+        .compare_exchange(
+            WRITE_FILE_COMMIT_PENDING,
+            WRITE_FILE_COMMIT_WORKER_OWNED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map(|_| ())
+        // A cancelled request has no response surface. Keep the detached
+        // worker's internal rejection stable and free of grant/path/content.
+        .map_err(|_| WriteFileGrantError::StateUnavailable)
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct McpTransportOptions {
@@ -5249,18 +5304,27 @@ async fn handle_write_file_call(
             .expect("enabled write_file mutation owns an authority");
         let session_id = session_id.to_owned();
         let capability_grant = capability_grant.map(str::to_owned);
-        match tokio::task::spawn_blocking(move || {
+        let request_commit_guard = WriteFileRequestCommitGuard::new();
+        let worker_commit_state = request_commit_guard.worker_state();
+        let worker_result = tokio::task::spawn_blocking(move || {
             prepared.execute_authorized(|target| {
+                let now = current_unix_seconds();
+                // This CAS is the request-cancellation commit point. It must
+                // remain immediately before grant consumption: cancellation
+                // wins without consuming or mutating, while a worker that
+                // wins owns the complete mutation/verification/cleanup path.
+                claim_write_file_commit(&worker_commit_state)?;
                 authority.consume_at(
                     capability_grant.as_deref(),
                     &session_id,
                     target,
-                    current_unix_seconds(),
+                    now,
                 )
             })
         })
-        .await
-        {
+        .await;
+        drop(request_commit_guard);
+        match worker_result {
             Ok(Ok(result)) => Ok(result.message),
             Ok(Err(AuthorizedWriteFileError::Authorization(error))) => {
                 record_filesystem_denied(
@@ -5709,6 +5773,66 @@ mod tests {
     use crate::command_policy::{
         COMMAND_PROFILE_ALLOWED_REASON, COMMAND_RUNTIME_DISABLED_REASON,
     };
+
+    #[tokio::test]
+    async fn dropped_write_request_cancels_detached_worker_before_commit() {
+        let grant_consumed = Arc::new(AtomicU8::new(0));
+        let mutation_started = Arc::new(AtomicU8::new(0));
+        let (worker_waiting_tx, worker_waiting_rx) = tokio::sync::oneshot::channel();
+        let (release_worker_tx, release_worker_rx) = std::sync::mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = tokio::sync::oneshot::channel();
+
+        let request_grant_consumed = Arc::clone(&grant_consumed);
+        let request_mutation_started = Arc::clone(&mutation_started);
+        let request = tokio::spawn(async move {
+            let request_commit_guard = WriteFileRequestCommitGuard::new();
+            let worker_commit_state = request_commit_guard.worker_state();
+            let worker = tokio::task::spawn_blocking(move || {
+                worker_waiting_tx.send(()).unwrap();
+                release_worker_rx.recv().unwrap();
+                let claim = claim_write_file_commit(&worker_commit_state);
+                if claim.is_ok() {
+                    request_grant_consumed.store(1, Ordering::Release);
+                    request_mutation_started.store(1, Ordering::Release);
+                }
+                worker_done_tx
+                    .send(claim.map_err(WriteFileGrantError::reason_code))
+                    .unwrap();
+            });
+            worker.await.unwrap();
+            drop(request_commit_guard);
+        });
+
+        worker_waiting_rx.await.unwrap();
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        release_worker_tx.send(()).unwrap();
+
+        assert_eq!(
+            worker_done_rx.await.unwrap(),
+            Err("capability_state_unavailable")
+        );
+        assert_eq!(grant_consumed.load(Ordering::Acquire), 0);
+        assert_eq!(mutation_started.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn write_worker_claim_survives_later_request_drop() {
+        let request_commit_guard = WriteFileRequestCommitGuard::new();
+        let worker_commit_state = request_commit_guard.worker_state();
+
+        assert_eq!(claim_write_file_commit(&worker_commit_state), Ok(()));
+        drop(request_commit_guard);
+
+        assert_eq!(
+            worker_commit_state.load(Ordering::Acquire),
+            WRITE_FILE_COMMIT_WORKER_OWNED
+        );
+        assert_eq!(
+            claim_write_file_commit(&worker_commit_state),
+            Err(WriteFileGrantError::StateUnavailable)
+        );
+    }
 
     #[cfg(all(
         feature = "android-battery-status",

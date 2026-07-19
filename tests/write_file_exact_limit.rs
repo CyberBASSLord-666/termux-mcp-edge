@@ -1,12 +1,12 @@
 #![cfg(feature = "mcp-runtime")]
 
-use termux_mcp_server::tools::FileSystemTools;
+use termux_mcp_server::{error::AppError, tools::FileSystemTools};
 use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
 const EXPECTED_DRY_RUN_RESPONSE: &str = "DRY-RUN";
 
 #[tokio::test]
-async fn write_file_allows_exact_default_payload_limit_with_explicit_mutation() {
+async fn direct_write_file_rejects_exact_limit_mutation_without_request_authorization() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("exact-limit.txt");
     let content = "x".repeat(DEFAULT_MAX_WRITE_BYTES);
@@ -14,14 +14,13 @@ async fn write_file_allows_exact_default_payload_limit_with_explicit_mutation() 
 
     let result = tools
         .write_file(target.to_string_lossy().to_string(), content, Some(false))
-        .await
-        .unwrap();
+        .await;
 
-    assert_eq!(result, format!("Wrote {DEFAULT_MAX_WRITE_BYTES} bytes"));
-    assert_eq!(
-        tokio::fs::metadata(&target).await.unwrap().len(),
-        DEFAULT_MAX_WRITE_BYTES as u64
-    );
+    assert!(matches!(
+        result,
+        Err(AppError::WriteMutationAuthorizationRequired)
+    ));
+    assert!(!target.exists());
 }
 
 #[tokio::test]

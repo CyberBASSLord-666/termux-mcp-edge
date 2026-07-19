@@ -18,7 +18,7 @@ async fn write_file_rejects_link_resolving_beyond_safe_root() {
         .write_file(
             link_path.to_string_lossy().to_string(),
             "replacement data".to_string(),
-            Some(false),
+            Some(true),
         )
         .await;
 
@@ -45,7 +45,7 @@ async fn write_file_rejects_symlinked_parent_component() {
                 .to_string_lossy()
                 .to_string(),
             "must stay inside".to_string(),
-            Some(false),
+            Some(true),
         )
         .await;
 

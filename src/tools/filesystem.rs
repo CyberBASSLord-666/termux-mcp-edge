@@ -66,6 +66,13 @@ pub const MAX_SEARCH_TOTAL_BYTES: usize = 8_388_608;
 pub const MAX_SEARCH_MATCHES: usize = 256;
 pub const MAX_SEARCH_RESPONSE_BYTES: usize = 262_144;
 
+// Write publication is deliberately serialized process-wide. The critical
+// section is rare, operates on at most one bounded payload, and must cover every
+// in-process FileSystemTools instance so two separately prepared replacements
+// cannot both act on the same captured destination identity. A single lock
+// also protects unpredictable staging names from another in-process write.
+static WRITE_FILE_MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // Leave deterministic room for the JSON-RPC envelope, bounded summary, and a
 // normally sized request id. The transport independently enforces the exact
 // full-response ceilings above, including caller-controlled ids.
@@ -395,6 +402,19 @@ impl PreparedWriteFileMutation {
         self,
         authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
     ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        self.execute_authorized_with_publication_hook(authorize, |_, _, _| {})
+    }
+
+    fn execute_authorized_with_publication_hook(
+        self,
+        authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
+        before_publication: impl FnOnce(&OwnedFd, &OsStr, &OsStr),
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        let _mutation_guard = WRITE_FILE_MUTATION_LOCK.lock().map_err(|_| {
+            AuthorizedWriteFileError::Filesystem(AppError::Io(std::io::Error::other(
+                "write mutation state is unavailable",
+            )))
+        })?;
         self.validate_destination_posture()
             .map_err(AuthorizedWriteFileError::Filesystem)?;
         let temp_name = OsString::from(format!(
@@ -406,7 +426,7 @@ impl PreparedWriteFileMutation {
         let started = self.started;
         let bytes = self.result.bytes;
         let result = self
-            .execute_after_authorization(temp_name)
+            .execute_after_authorization(temp_name, before_publication)
             .map_err(AuthorizedWriteFileError::Filesystem)?;
         histogram!("mcp.fs.write.latency_seconds").record(started.elapsed().as_secs_f64());
         counter!("mcp.fs.write.bytes_total").increment(bytes as u64);
@@ -458,7 +478,11 @@ impl PreparedWriteFileMutation {
         }
     }
 
-    fn execute_after_authorization(self, temp_name: OsString) -> Result<WriteFileResult, AppError> {
+    fn execute_after_authorization(
+        self,
+        temp_name: OsString,
+        before_publication: impl FnOnce(&OwnedFd, &OsStr, &OsStr),
+    ) -> Result<WriteFileResult, AppError> {
         let temp_fd = descriptor_fs::openat(
             &self.parent_fd,
             &temp_name,
@@ -507,6 +531,8 @@ impl PreparedWriteFileMutation {
                 "write staging identity changed",
             )));
         }
+
+        before_publication(&self.parent_fd, &temp_name, &self.file_name);
 
         match self.publication {
             WriteFilePublication::Create => {
@@ -591,14 +617,13 @@ impl PreparedWriteFileMutation {
                         .as_ref()
                         .is_ok_and(|metadata| held_write_destination_matches(metadata, existing));
                 if !identities_match {
-                    rollback_write_exchange_if_exact(
+                    rollback_write_exchange_if_staged(
                         &self.parent_fd,
                         &temp_name,
                         &self.file_name,
                         created.st_dev,
                         created.st_ino,
                         self.content.len(),
-                        existing,
                     );
                     return Err(AppError::Io(std::io::Error::other(
                         "write replacement publication verification failed",
@@ -606,14 +631,13 @@ impl PreparedWriteFileMutation {
                 }
 
                 if let Err(error) = descriptor_fs::fsync(&self.parent_fd) {
-                    rollback_write_exchange_if_exact(
+                    rollback_write_exchange_if_staged(
                         &self.parent_fd,
                         &temp_name,
                         &self.file_name,
                         created.st_dev,
                         created.st_ino,
                         self.content.len(),
-                        existing,
                     );
                     return Err(descriptor_error(error));
                 }
@@ -621,9 +645,9 @@ impl PreparedWriteFileMutation {
                 // The replacement is now durably published. From this point
                 // onward no failure path may remove the new final file or any
                 // displaced entry whose full captured contract has changed.
-                cleanup.disarm();
                 unlink_exact_regular(&self.parent_fd, &temp_name, existing)?;
                 descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
+                cleanup.disarm();
             }
         }
 
@@ -1716,6 +1740,12 @@ impl FileSystemTools {
         Ok(result)
     }
 
+    /// Validate and preview one bounded file write.
+    ///
+    /// The public library entry point never mutates. Passing `Some(false)` is
+    /// rejected because live mutation must flow through the crate-private
+    /// prepared operation and request-scoped grant authority used by the MCP
+    /// transport.
     pub async fn write_file(
         &self,
         path: String,
@@ -1730,19 +1760,11 @@ impl FileSystemTools {
             .validate_payload_size(content_bytes)
             .map_err(write_policy_error_to_app_error)?;
         let dry_run = dry_run.unwrap_or(true);
+        if !dry_run {
+            return Err(AppError::WriteMutationAuthorizationRequired);
+        }
         let prepared = self.prepare_write_file(path, content, dry_run).await?;
-        let result = if dry_run {
-            prepared.preview()
-        } else {
-            prepared
-                .execute_authorized(|_| Ok(()))
-                .map_err(|error| match error {
-                    AuthorizedWriteFileError::Authorization(_) => AppError::Io(
-                        std::io::Error::other("unexpected direct write authorization failure"),
-                    ),
-                    AuthorizedWriteFileError::Filesystem(error) => error,
-                })?
-        };
+        let result = prepared.preview();
         Ok(result.message)
     }
 
@@ -2686,26 +2708,33 @@ fn hash_exact_file(file: &mut File, expected_size: usize) -> Result<[u8; 32], Ap
     Ok(hasher.finalize().into())
 }
 
-fn rollback_write_exchange_if_exact(
+fn rollback_write_exchange_if_staged(
     parent: &OwnedFd,
     temp_name: &OsStr,
     file_name: &OsStr,
     staged_device: u64,
     staged_inode: u64,
     staged_size: usize,
-    existing: &HeldWriteDestination,
 ) {
     let Ok(published) = descriptor_fs::statat(parent, file_name, AtFlags::SYMLINK_NOFOLLOW) else {
         return;
     };
-    let Ok(displaced) = descriptor_fs::statat(parent, temp_name, AtFlags::SYMLINK_NOFOLLOW) else {
-        return;
-    };
-    if !write_file_identity_and_contract_match(&published, staged_device, staged_inode, staged_size)
-        || !held_write_destination_matches(&displaced, existing)
-    {
+    if !write_file_identity_and_contract_match(
+        &published,
+        staged_device,
+        staged_inode,
+        staged_size,
+    ) {
         return;
     }
+    if descriptor_fs::statat(parent, temp_name, AtFlags::SYMLINK_NOFOLLOW).is_err() {
+        return;
+    }
+
+    // Exchange rollback is non-destructive: when publication placed the exact
+    // staged inode at the final name, swap it back regardless of which object
+    // was displaced. This restores a late foreign replacement instead of
+    // leaving authorized content published by a call that reports failure.
     if descriptor_fs::renameat_with(parent, temp_name, parent, file_name, RenameFlags::EXCHANGE)
         .is_ok()
     {
@@ -3010,8 +3039,13 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, TryLockError,
+    };
 
     use crate::audit::{AuditDecision, AuditMode};
+    use crate::write_file_grant::WriteFileGrantAuthority;
     use crate::write_policy::DEFAULT_MAX_WRITE_BYTES;
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
@@ -3536,7 +3570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_rejects_outside_root_even_with_explicit_mutation() {
+    async fn write_file_preview_rejects_outside_root() {
         let root = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let target = other.path().join("outside.txt");
@@ -3546,7 +3580,7 @@ mod tests {
             .write_file(
                 target.to_string_lossy().to_string(),
                 "should not write".to_string(),
-                Some(false),
+                Some(true),
             )
             .await;
 
@@ -3555,7 +3589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_rejects_missing_parent_even_with_explicit_mutation() {
+    async fn write_file_preview_rejects_missing_parent() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("missing-parent").join("file.txt");
 
@@ -3564,11 +3598,11 @@ mod tests {
             .write_file(
                 target.to_string_lossy().to_string(),
                 "should not write".to_string(),
-                Some(false),
+                Some(true),
             )
             .await;
 
-        assert!(matches!(result, Err(AppError::PathTraversal { .. })));
+        assert!(matches!(result, Err(AppError::PathNotFound)));
         assert!(!target.exists());
     }
 
@@ -3714,6 +3748,76 @@ mod tests {
     }
 
     #[test]
+    fn temp_file_cleanup_preserves_foreign_symlink_directory_and_fifo() {
+        let root = tempfile::tempdir().unwrap();
+        let root_fd = open_root_directory(root.path()).unwrap();
+
+        let symlink_name = "foreign-link.tmp";
+        let symlink_path = root.path().join(symlink_name);
+        let symlink_parked = root.path().join("foreign-link.parked");
+        std::fs::write(&symlink_path, "operation-owned").unwrap();
+        let symlink_metadata =
+            descriptor_fs::statat(&root_fd, symlink_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        {
+            let mut cleanup =
+                DescriptorTempFileCleanup::new(&root_fd, OsString::from(symlink_name));
+            cleanup.set_expected_identity(symlink_metadata.st_dev, symlink_metadata.st_ino);
+            std::fs::rename(&symlink_path, &symlink_parked).unwrap();
+            symlink(&symlink_parked, &symlink_path).unwrap();
+        }
+        assert!(std::fs::symlink_metadata(&symlink_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&symlink_parked).unwrap(),
+            "operation-owned"
+        );
+
+        let directory_name = "foreign-directory.tmp";
+        let directory_path = root.path().join(directory_name);
+        let directory_parked = root.path().join("foreign-directory.parked");
+        std::fs::write(&directory_path, "operation-owned").unwrap();
+        let directory_metadata =
+            descriptor_fs::statat(&root_fd, directory_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        {
+            let mut cleanup =
+                DescriptorTempFileCleanup::new(&root_fd, OsString::from(directory_name));
+            cleanup.set_expected_identity(directory_metadata.st_dev, directory_metadata.st_ino);
+            std::fs::rename(&directory_path, &directory_parked).unwrap();
+            std::fs::create_dir(&directory_path).unwrap();
+        }
+        assert!(std::fs::symlink_metadata(&directory_path)
+            .unwrap()
+            .is_dir());
+        assert_eq!(
+            std::fs::read_to_string(&directory_parked).unwrap(),
+            "operation-owned"
+        );
+
+        let fifo_name = "foreign-fifo.tmp";
+        let fifo_path = root.path().join(fifo_name);
+        let fifo_parked = root.path().join("foreign-fifo.parked");
+        std::fs::write(&fifo_path, "operation-owned").unwrap();
+        let fifo_metadata =
+            descriptor_fs::statat(&root_fd, fifo_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        {
+            let mut cleanup =
+                DescriptorTempFileCleanup::new(&root_fd, OsString::from(fifo_name));
+            cleanup.set_expected_identity(fifo_metadata.st_dev, fifo_metadata.st_ino);
+            std::fs::rename(&fifo_path, &fifo_parked).unwrap();
+            descriptor_fs::mkfifoat(&root_fd, fifo_name, Mode::RUSR | Mode::WUSR).unwrap();
+        }
+        let fifo_after =
+            descriptor_fs::statat(&root_fd, fifo_name, AtFlags::SYMLINK_NOFOLLOW).unwrap();
+        assert!(FileType::from_raw_mode(fifo_after.st_mode).is_fifo());
+        assert_eq!(
+            std::fs::read_to_string(&fifo_parked).unwrap(),
+            "operation-owned"
+        );
+    }
+
+    #[test]
     fn directory_cleanup_removes_only_the_created_identity() {
         let root = tempfile::tempdir().unwrap();
         let original = root.path().join("created.tmp");
@@ -3768,7 +3872,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_requires_explicit_false_to_mutate_safe_rooted_file() {
+    async fn direct_write_file_api_rejects_unauthorized_mutation() {
         let root = tempfile::tempdir().unwrap();
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let target = root.path().join("explicit_write.txt");
@@ -3779,18 +3883,13 @@ mod tests {
                 "written only when explicitly requested".to_string(),
                 Some(false),
             )
-            .await
-            .unwrap();
+            .await;
 
-        assert_eq!(result, "Wrote 38 bytes");
-        assert_eq!(
-            tokio::fs::read_to_string(&target).await.unwrap(),
-            "written only when explicitly requested"
-        );
-        assert_eq!(
-            std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        assert!(matches!(
+            result,
+            Err(AppError::WriteMutationAuthorizationRequired)
+        ));
+        assert!(!target.exists());
     }
 
     #[tokio::test]
@@ -3934,6 +4033,176 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
             "foreign-identity"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&parked).unwrap(),
+            "captured-original"
+        );
+        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".termux-mcp-write-file-")
+        }));
+    }
+
+    #[tokio::test]
+    async fn distinct_replace_grants_serialize_before_authorization_and_loser_is_reusable() {
+        const TEST_KEY: &str =
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("serialized-replacement.txt");
+        std::fs::write(&target, "captured-original").unwrap();
+        let first_content = "first-authorized-replacement";
+        let second_content = "second-authorized-replacement";
+        let first = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                first_content.to_owned(),
+            )
+            .await
+            .unwrap();
+        let second = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                second_content.to_owned(),
+            )
+            .await
+            .unwrap();
+        let authority = WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = unix_timestamp_seconds();
+        let first_token = authority
+            .issue_at(&session_id, &first.grant_target, now)
+            .unwrap();
+        let second_token = authority
+            .issue_at(&session_id, &second.grant_target, now)
+            .unwrap();
+        let second_authorized = Arc::new(AtomicBool::new(false));
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+
+        let (first_result, second_result) = std::thread::scope(|scope| {
+            let first_authority = authority.clone();
+            let first_session = session_id.clone();
+            let first_token_for_worker = first_token.clone();
+            let first_handle = scope.spawn(move || {
+                first.execute_authorized(|grant_target| {
+                    first_entered_tx.send(()).unwrap();
+                    release_first_rx.recv().unwrap();
+                    first_authority.consume_at(
+                        Some(&first_token_for_worker),
+                        &first_session,
+                        grant_target,
+                        now,
+                    )
+                })
+            });
+
+            first_entered_rx.recv().unwrap();
+            assert!(matches!(
+                WRITE_FILE_MUTATION_LOCK.try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
+
+            let second_authority = authority.clone();
+            let second_session = session_id.clone();
+            let second_token_for_worker = second_token.clone();
+            let second_authorized_for_worker = Arc::clone(&second_authorized);
+            let second_handle = scope.spawn(move || {
+                second_started_tx.send(()).unwrap();
+                second.execute_authorized(|grant_target| {
+                    second_authorized_for_worker.store(true, Ordering::SeqCst);
+                    second_authority.consume_at(
+                        Some(&second_token_for_worker),
+                        &second_session,
+                        grant_target,
+                        now,
+                    )
+                })
+            });
+
+            second_started_rx.recv().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!second_authorized.load(Ordering::SeqCst));
+            release_first_tx.send(()).unwrap();
+
+            (first_handle.join().unwrap(), second_handle.join().unwrap())
+        });
+
+        assert!(first_result.is_ok());
+        assert!(matches!(
+            second_result,
+            Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
+        ));
+        assert!(!second_authorized.load(Ordering::SeqCst));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), first_content);
+
+        let retry = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                second_content.to_owned(),
+            )
+            .await
+            .unwrap()
+            .execute_authorized(|grant_target| {
+                authority.consume_at(
+                    Some(&second_token),
+                    &session_id,
+                    grant_target,
+                    now,
+                )
+            });
+        assert!(retry.is_ok());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), second_content);
+        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".termux-mcp-write-file-")
+        }));
+    }
+
+    #[tokio::test]
+    async fn late_foreign_replace_is_restored_when_exchange_verification_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let target = root.path().join("late-replace-race.txt");
+        let parked = root.path().join("late-replace-race.parked");
+        std::fs::write(&target, "captured-original").unwrap();
+        let prepared = tools
+            .prepare_write_file_mutation(
+                target.to_string_lossy().to_string(),
+                "authorized-replacement".to_owned(),
+            )
+            .await
+            .unwrap();
+
+        let result = prepared.execute_authorized_with_publication_hook(
+            |_| Ok(()),
+            |_, _, _| {
+                std::fs::rename(&target, &parked).unwrap();
+                std::fs::write(&target, "late-foreign-replacement").unwrap();
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "late-foreign-replacement"
         );
         assert_eq!(
             std::fs::read_to_string(&parked).unwrap(),
