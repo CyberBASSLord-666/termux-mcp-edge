@@ -123,7 +123,9 @@ pub use filesystem::{
 };
 
 #[cfg(feature = "mcp-runtime")]
-pub(crate) use filesystem::{AuthorizedCreateDirectoryError, AuthorizedWriteFileError};
+pub(crate) use filesystem::{
+    AuthorizedCreateDirectoryError, AuthorizedWriteFileError, PreparedCreateDirectoryMutation,
+};
 
 #[cfg(not(feature = "mcp-runtime"))]
 #[derive(Clone)]
