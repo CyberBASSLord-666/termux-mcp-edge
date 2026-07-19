@@ -58,10 +58,7 @@ fn volume_grant_issuance_fails_closed_without_the_compiled_capability() {
 #[cfg(not(feature = "mcp-runtime"))]
 #[test]
 fn grant_issuance_fails_closed_without_the_compiled_runtime() {
-    for argument in [
-        "--issue-create-directory-grant",
-        "--issue-write-file-grant",
-    ] {
+    for argument in ["--issue-create-directory-grant", "--issue-write-file-grant"] {
         let output = isolated_binary().arg(argument).output().unwrap();
 
         assert!(!output.status.success());
@@ -112,10 +109,7 @@ fn configured_write_issuer(
             "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
         )
         .env("MCP__CAPABILITY__WRITE_FILE_TARGET", target)
-        .env(
-            "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256",
-            content_sha256,
-        );
+        .env("MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256", content_sha256);
     command
 }
 
@@ -418,12 +412,9 @@ fn exact_write_cli_issuer_outputs_one_private_operation_bound_grant() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let authority = WriteFileGrantAuthority::from_hex_key(
-        "write-cli-1",
-        KEY,
-        "private-write-cli-principal",
-    )
-    .unwrap();
+    let authority =
+        WriteFileGrantAuthority::from_hex_key("write-cli-1", KEY, "private-write-cli-principal")
+            .unwrap();
     authority
         .consume_at(Some(grant), SESSION, &binding, now)
         .unwrap();
@@ -434,12 +425,9 @@ fn exact_write_cli_issuer_outputs_one_private_operation_bound_grant() {
             content_sha256(b"different content"),
         )
         .unwrap();
-    let other_authority = WriteFileGrantAuthority::from_hex_key(
-        "write-cli-1",
-        KEY,
-        "private-write-cli-principal",
-    )
-    .unwrap();
+    let other_authority =
+        WriteFileGrantAuthority::from_hex_key("write-cli-1", KEY, "private-write-cli-principal")
+            .unwrap();
     assert_eq!(
         other_authority
             .consume_at(Some(grant), SESSION, &other_binding, now)

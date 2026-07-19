@@ -584,9 +584,7 @@ fn validate_filesystem_mutation_gate(
         bail!("{variable} requires MCP__AUTH__STATIC_TOKEN");
     }
     if config.capability.key_id.is_none() {
-        bail!(
-            "{variable} requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
-        );
+        bail!("{variable} requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX");
     }
     Ok(())
 }
@@ -1126,10 +1124,7 @@ mod tests {
                         ));
                     }
                     if key_pair_configured {
-                        entries.push((
-                            "MCP__CAPABILITY__KEY_ID",
-                            OsString::from("primary-1"),
-                        ));
+                        entries.push(("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")));
                         entries.push((
                             "MCP__CAPABILITY__HMAC_KEY_HEX",
                             OsString::from("a".repeat(64)),
@@ -1165,10 +1160,7 @@ mod tests {
                             configured.auth.static_token.as_deref(),
                             Some("static-principal-secret")
                         );
-                        assert_eq!(
-                            configured.capability.key_id.as_deref(),
-                            Some("primary-1")
-                        );
+                        assert_eq!(configured.capability.key_id.as_deref(), Some("primary-1"));
                         assert_eq!(
                             configured.capability.hmac_key_hex(),
                             Some("a".repeat(64).as_str())
@@ -1181,12 +1173,9 @@ mod tests {
 
     #[test]
     fn create_directory_and_write_mutation_gates_remain_independent() {
-        for (create_directory_enabled, write_enabled) in [
-            (false, false),
-            (true, false),
-            (false, true),
-            (true, true),
-        ] {
+        for (create_directory_enabled, write_enabled) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
             let configured = load_from_os_values([
                 (
                     "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
@@ -1228,9 +1217,7 @@ mod tests {
                 };
                 assert_eq!(
                     configured.unwrap_err().to_string(),
-                    format!(
-                        "{expected_gate} requires a binary built with the mcp-runtime feature"
-                    )
+                    format!("{expected_gate} requires a binary built with the mcp-runtime feature")
                 );
             }
         }

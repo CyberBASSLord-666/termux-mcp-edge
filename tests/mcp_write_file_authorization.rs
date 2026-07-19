@@ -52,7 +52,9 @@ fn assert_no_write_staging_entries(root: &std::path::Path) {
     for entry in std::fs::read_dir(root).unwrap() {
         let name = entry.unwrap().file_name();
         assert!(
-            !name.to_string_lossy().starts_with(".termux-mcp-write-file-"),
+            !name
+                .to_string_lossy()
+                .starts_with(".termux-mcp-write-file-"),
             "operation-owned staging entry leaked"
         );
     }
@@ -139,7 +141,10 @@ async fn disabled_gate_is_dry_run_only_and_denies_before_filesystem_resolution()
     let structured = &runtime["result"]["structuredContent"];
     assert_eq!(structured["fileWriteMutationEnabled"], false);
     assert_eq!(structured["fileWriteGrantRequired"], false);
-    assert_eq!(structured["fileWriteMode"], "dry_run_only_mutation_disabled");
+    assert_eq!(
+        structured["fileWriteMode"],
+        "dry_run_only_mutation_disabled"
+    );
     assert_eq!(structured["fileWriteMaxBytes"], 1_048_576);
     assert_eq!(
         structured["fileWriteMaxResponseBytes"],
@@ -492,12 +497,7 @@ async fn dry_run_and_response_preflight_do_not_consume_or_mutate() {
     let preview = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        write_call(
-            "preview",
-            target.to_string_lossy().as_ref(),
-            content,
-            None,
-        ),
+        write_call("preview", target.to_string_lossy().as_ref(), content, None),
         &grant,
     )
     .await;
@@ -718,10 +718,7 @@ async fn capability_header_is_confined_to_exact_tool_context() {
     )
     .await;
     assert_eq!(allowed.status(), StatusCode::OK);
-    assert_eq!(
-        std::fs::read_to_string(target).unwrap(),
-        "context-content"
-    );
+    assert_eq!(std::fs::read_to_string(target).unwrap(), "context-content");
 }
 
 #[tokio::test]
@@ -853,6 +850,9 @@ async fn exact_limit_succeeds_over_limit_fails_and_unsafe_types_are_preserved() 
             StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN
         ));
     }
-    assert_eq!(std::fs::read_to_string(outside_target).unwrap(), "outside-safe");
+    assert_eq!(
+        std::fs::read_to_string(outside_target).unwrap(),
+        "outside-safe"
+    );
     assert_no_write_staging_entries(root.path());
 }

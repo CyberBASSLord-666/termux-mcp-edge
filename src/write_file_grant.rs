@@ -37,16 +37,8 @@ const REPLACE_PUBLICATION: u8 = 2;
 const GRANT_ID_BYTES: usize = 16;
 const DIGEST_BYTES: usize = 32;
 const SESSION_BYTES: usize = 16;
-const PAYLOAD_BYTES: usize = GRANT_ID_BYTES
-    + DIGEST_BYTES
-    + SESSION_BYTES
-    + 1
-    + 8
-    + 8
-    + DIGEST_BYTES
-    + 1
-    + 8
-    + 8;
+const PAYLOAD_BYTES: usize =
+    GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES + 1 + 8 + 8 + DIGEST_BYTES + 1 + 8 + 8;
 const PAYLOAD_HEX_BYTES: usize = PAYLOAD_BYTES * 2;
 const MAC_BYTES: usize = 32;
 const MAC_HEX_BYTES: usize = MAC_BYTES * 2;
@@ -94,8 +86,8 @@ impl WriteFileGrantTarget {
         digest.update(TARGET_DIGEST_DOMAIN);
         let mut component_count = 0_u32;
         for component in components {
-            let length = u32::try_from(component.len())
-                .map_err(|_| WriteFileGrantError::TargetInvalid)?;
+            let length =
+                u32::try_from(component.len()).map_err(|_| WriteFileGrantError::TargetInvalid)?;
             digest.update(length.to_be_bytes());
             digest.update(component);
             component_count = component_count
@@ -147,9 +139,7 @@ pub fn content_sha256(content: &[u8]) -> [u8; DIGEST_BYTES] {
     Sha256::digest(content).into()
 }
 
-pub fn parse_content_sha256_hex(
-    value: &str,
-) -> Result<[u8; DIGEST_BYTES], WriteFileGrantError> {
+pub fn parse_content_sha256_hex(value: &str) -> Result<[u8; DIGEST_BYTES], WriteFileGrantError> {
     decode_hex_array::<DIGEST_BYTES>(value).ok_or(WriteFileGrantError::TargetInvalid)
 }
 
@@ -399,10 +389,10 @@ impl WriteFileGrantAuthority {
         if payload_hex.len() != PAYLOAD_HEX_BYTES || signature_hex.len() != MAC_HEX_BYTES {
             return Err(WriteFileGrantError::Malformed);
         }
-        let payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex)
-            .ok_or(WriteFileGrantError::Malformed)?;
-        let signature = decode_hex_array::<MAC_BYTES>(signature_hex)
-            .ok_or(WriteFileGrantError::Malformed)?;
+        let payload =
+            decode_hex_array::<PAYLOAD_BYTES>(payload_hex).ok_or(WriteFileGrantError::Malformed)?;
+        let signature =
+            decode_hex_array::<MAC_BYTES>(signature_hex).ok_or(WriteFileGrantError::Malformed)?;
         let signed_length = version.len() + 1 + key_id.len() + 1 + payload_hex.len();
         let signed = token
             .get(..signed_length)
@@ -455,8 +445,16 @@ fn encode_payload(grant: &ParsedGrant) -> [u8; PAYLOAD_BYTES] {
     put(&mut payload, &mut offset, &grant.root_inode.to_be_bytes());
     put(&mut payload, &mut offset, &grant.operation_digest);
     put(&mut payload, &mut offset, &[grant.posture]);
-    put(&mut payload, &mut offset, &grant.issued_unix_seconds.to_be_bytes());
-    put(&mut payload, &mut offset, &grant.expires_unix_seconds.to_be_bytes());
+    put(
+        &mut payload,
+        &mut offset,
+        &grant.issued_unix_seconds.to_be_bytes(),
+    );
+    put(
+        &mut payload,
+        &mut offset,
+        &grant.expires_unix_seconds.to_be_bytes(),
+    );
     debug_assert_eq!(offset, PAYLOAD_BYTES);
     payload
 }
@@ -601,12 +599,7 @@ mod tests {
             WriteFileGrantAuthority::from_hex_key("primary-1", &"0".repeat(63), PRINCIPAL),
             WriteFileGrantAuthority::from_hex_key("primary-1", &"G".repeat(64), PRINCIPAL),
             WriteFileGrantAuthority::from_hex_key("primary-1", KEY, ""),
-            WriteFileGrantAuthority::from_hex_key_with_capacity(
-                "primary-1",
-                KEY,
-                PRINCIPAL,
-                0,
-            ),
+            WriteFileGrantAuthority::from_hex_key_with_capacity("primary-1", KEY, PRINCIPAL, 0),
         ];
         for invalid in invalid_configurations {
             assert_eq!(
@@ -623,7 +616,9 @@ mod tests {
         let token = authority.issue_at(SESSION, &target, NOW).unwrap();
         assert!(token.len() <= MAX_WRITE_FILE_GRANT_HEADER_BYTES);
         assert_eq!(token.split('.').count(), 4);
-        authority.consume_at(Some(&token), SESSION, &target, NOW).unwrap();
+        authority
+            .consume_at(Some(&token), SESSION, &target, NOW)
+            .unwrap();
         assert_eq!(
             authority
                 .consume_at(Some(&token), SESSION, &target, NOW)
@@ -713,7 +708,9 @@ mod tests {
         let target = target(WriteFilePublication::Create);
         let token = authority.issue_at(SESSION, &target, NOW).unwrap();
         assert_eq!(
-            authority.consume_at(None, SESSION, &target, NOW).unwrap_err(),
+            authority
+                .consume_at(None, SESSION, &target, NOW)
+                .unwrap_err(),
             WriteFileGrantError::Missing
         );
         for malformed in ["", "v1", "v1.primary-1.bad.bad", &"x".repeat(385)] {
@@ -755,11 +752,7 @@ mod tests {
     fn rejects_malformed_and_noncanonical_sessions() {
         let authority = authority();
         let target = target(WriteFilePublication::Create);
-        for invalid_session in [
-            "",
-            "not-a-session",
-            "0194F9F9-BBBB-7CCC-8DDD-EEEEEEEEEEEE",
-        ] {
+        for invalid_session in ["", "not-a-session", "0194F9F9-BBBB-7CCC-8DDD-EEEEEEEEEEEE"] {
             assert_eq!(
                 authority
                     .issue_at(invalid_session, &target, NOW)
@@ -809,9 +802,8 @@ mod tests {
         );
         let excessive_lifetime = resign_payload(&authority, &normal, |payload| {
             let expires_offset = PAYLOAD_BYTES - 8;
-            payload[expires_offset..].copy_from_slice(
-                &(NOW + MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS + 1).to_be_bytes(),
-            );
+            payload[expires_offset..]
+                .copy_from_slice(&(NOW + MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS + 1).to_be_bytes());
         });
         assert_eq!(
             authority
@@ -866,13 +858,9 @@ mod tests {
 
     #[test]
     fn replay_storage_is_bounded_and_expired_entries_are_pruned() {
-        let authority = WriteFileGrantAuthority::from_hex_key_with_capacity(
-            "primary-1",
-            KEY,
-            PRINCIPAL,
-            1,
-        )
-        .unwrap();
+        let authority =
+            WriteFileGrantAuthority::from_hex_key_with_capacity("primary-1", KEY, PRINCIPAL, 1)
+                .unwrap();
         let target = target(WriteFilePublication::Create);
         let first = authority.issue_at(SESSION, &target, NOW).unwrap();
         authority

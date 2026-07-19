@@ -47,8 +47,7 @@ const CAPABILITY_CREATE_DIRECTORY_TARGET_ENV: &str = "MCP__CAPABILITY__CREATE_DI
 #[cfg(feature = "mcp-runtime")]
 const CAPABILITY_WRITE_FILE_TARGET_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_TARGET";
 #[cfg(feature = "mcp-runtime")]
-const CAPABILITY_WRITE_FILE_CONTENT_SHA256_ENV: &str =
-    "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256";
+const CAPABILITY_WRITE_FILE_CONTENT_SHA256_ENV: &str = "MCP__CAPABILITY__WRITE_FILE_CONTENT_SHA256";
 #[cfg(feature = "android-volume-control")]
 const CAPABILITY_VOLUME_STREAM_ENV: &str = "MCP__CAPABILITY__VOLUME_STREAM";
 #[cfg(feature = "android-volume-control")]

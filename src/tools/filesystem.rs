@@ -386,8 +386,7 @@ impl PreparedCreateDirectoryMutation {
 
 impl PreparedWriteFileMutation {
     pub(crate) fn preview(self) -> WriteFileResult {
-        histogram!("mcp.fs.write.latency_seconds")
-            .record(self.started.elapsed().as_secs_f64());
+        histogram!("mcp.fs.write.latency_seconds").record(self.started.elapsed().as_secs_f64());
         counter!("mcp.fs.write.dry_runs_total").increment(1);
         self.result
     }
@@ -459,10 +458,7 @@ impl PreparedWriteFileMutation {
         }
     }
 
-    fn execute_after_authorization(
-        self,
-        temp_name: OsString,
-    ) -> Result<WriteFileResult, AppError> {
+    fn execute_after_authorization(self, temp_name: OsString) -> Result<WriteFileResult, AppError> {
         let temp_fd = descriptor_fs::openat(
             &self.parent_fd,
             &temp_name,
@@ -498,12 +494,9 @@ impl PreparedWriteFileMutation {
         }
 
         self.validate_destination_posture()?;
-        let staged_named = descriptor_fs::statat(
-            &self.parent_fd,
-            &temp_name,
-            AtFlags::SYMLINK_NOFOLLOW,
-        )
-        .map_err(descriptor_error)?;
+        let staged_named =
+            descriptor_fs::statat(&self.parent_fd, &temp_name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(descriptor_error)?;
         if !write_file_identity_and_contract_match(
             &staged_named,
             created.st_dev,
@@ -573,11 +566,8 @@ impl PreparedWriteFileMutation {
                     &self.file_name,
                     AtFlags::SYMLINK_NOFOLLOW,
                 );
-                let displaced = descriptor_fs::statat(
-                    &self.parent_fd,
-                    &temp_name,
-                    AtFlags::SYMLINK_NOFOLLOW,
-                );
+                let displaced =
+                    descriptor_fs::statat(&self.parent_fd, &temp_name, AtFlags::SYMLINK_NOFOLLOW);
                 let held_staged = descriptor_fs::fstat(&staged_file);
                 let held_existing = descriptor_fs::fstat(&existing.descriptor);
                 let identities_match = published.as_ref().is_ok_and(|metadata| {
@@ -594,11 +584,12 @@ impl PreparedWriteFileMutation {
                         created.st_ino,
                         self.content.len(),
                     )
-                }) && displaced.as_ref().is_ok_and(|metadata| {
-                    held_write_destination_matches(metadata, existing)
-                }) && held_existing.as_ref().is_ok_and(|metadata| {
-                    held_write_destination_matches(metadata, existing)
-                });
+                }) && displaced
+                    .as_ref()
+                    .is_ok_and(|metadata| held_write_destination_matches(metadata, existing))
+                    && held_existing
+                        .as_ref()
+                        .is_ok_and(|metadata| held_write_destination_matches(metadata, existing));
                 if !identities_match {
                     rollback_write_exchange_if_exact(
                         &self.parent_fd,
@@ -631,11 +622,7 @@ impl PreparedWriteFileMutation {
                 // onward no failure path may remove the new final file or any
                 // displaced entry whose full captured contract has changed.
                 cleanup.disarm();
-                unlink_exact_regular(
-                    &self.parent_fd,
-                    &temp_name,
-                    existing,
-                )?;
+                unlink_exact_regular(&self.parent_fd, &temp_name, existing)?;
                 descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
             }
         }
@@ -2557,59 +2544,56 @@ fn prepare_write_file_target(
         &parent_relative,
     )?;
 
-    let (publication, existing) = match descriptor_fs::statat(
-        &parent_fd,
-        &file_name,
-        AtFlags::SYMLINK_NOFOLLOW,
-    ) {
-        Err(rustix::io::Errno::NOENT) => (WriteFilePublication::Create, None),
-        Ok(metadata) => {
-            let file_type = FileType::from_raw_mode(metadata.st_mode);
-            if file_type.is_symlink() {
-                return Err(path_rejected(
-                    anchored.display_path.to_string_lossy().as_ref(),
-                ));
-            }
-            if !file_type.is_file() {
-                return Err(AppError::UnsupportedPathType);
-            }
-            let descriptor = descriptor_fs::openat(
-                &parent_fd,
-                &file_name,
-                OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|error| match error {
-                rustix::io::Errno::NOENT => AppError::PathNotFound,
-                rustix::io::Errno::LOOP => {
-                    path_rejected(anchored.display_path.to_string_lossy().as_ref())
+    let (publication, existing) =
+        match descriptor_fs::statat(&parent_fd, &file_name, AtFlags::SYMLINK_NOFOLLOW) {
+            Err(rustix::io::Errno::NOENT) => (WriteFilePublication::Create, None),
+            Ok(metadata) => {
+                let file_type = FileType::from_raw_mode(metadata.st_mode);
+                if file_type.is_symlink() {
+                    return Err(path_rejected(
+                        anchored.display_path.to_string_lossy().as_ref(),
+                    ));
                 }
-                _ => descriptor_error(error),
-            })?;
-            let opened = descriptor_fs::fstat(&descriptor).map_err(descriptor_error)?;
-            if !regular_identity_matches(&opened, metadata.st_dev, metadata.st_ino) {
-                return Err(AppError::Io(std::io::Error::other(
-                    "write replacement identity changed during classification",
-                )));
+                if !file_type.is_file() {
+                    return Err(AppError::UnsupportedPathType);
+                }
+                let descriptor = descriptor_fs::openat(
+                    &parent_fd,
+                    &file_name,
+                    OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|error| match error {
+                    rustix::io::Errno::NOENT => AppError::PathNotFound,
+                    rustix::io::Errno::LOOP => {
+                        path_rejected(anchored.display_path.to_string_lossy().as_ref())
+                    }
+                    _ => descriptor_error(error),
+                })?;
+                let opened = descriptor_fs::fstat(&descriptor).map_err(descriptor_error)?;
+                if !regular_identity_matches(&opened, metadata.st_dev, metadata.st_ino) {
+                    return Err(AppError::Io(std::io::Error::other(
+                        "write replacement identity changed during classification",
+                    )));
+                }
+                let size = u64::try_from(opened.st_size).map_err(|_| {
+                    AppError::Io(std::io::Error::other(
+                        "write replacement reported an invalid size",
+                    ))
+                })?;
+                (
+                    WriteFilePublication::Replace,
+                    Some(HeldWriteDestination {
+                        descriptor,
+                        device: opened.st_dev,
+                        inode: opened.st_ino,
+                        mode: opened.st_mode & 0o7777,
+                        size,
+                    }),
+                )
             }
-            let size = u64::try_from(opened.st_size).map_err(|_| {
-                AppError::Io(std::io::Error::other(
-                    "write replacement reported an invalid size",
-                ))
-            })?;
-            (
-                WriteFilePublication::Replace,
-                Some(HeldWriteDestination {
-                    descriptor,
-                    device: opened.st_dev,
-                    inode: opened.st_ino,
-                    mode: opened.st_mode & 0o7777,
-                    size,
-                }),
-            )
-        }
-        Err(error) => return Err(descriptor_error(error)),
-    };
+            Err(error) => return Err(descriptor_error(error)),
+        };
 
     let mut normalized_components = Vec::new();
     for component in anchored.relative_path.components() {
@@ -2685,9 +2669,7 @@ fn hash_exact_file(file: &mut File, expected_size: usize) -> Result<[u8; 32], Ap
             break;
         }
         bytes = bytes.checked_add(read).ok_or_else(|| {
-            AppError::Io(std::io::Error::other(
-                "write staging byte count overflowed",
-            ))
+            AppError::Io(std::io::Error::other("write staging byte count overflowed"))
         })?;
         if bytes > expected_size {
             return Err(AppError::Io(std::io::Error::other(
@@ -2713,31 +2695,19 @@ fn rollback_write_exchange_if_exact(
     staged_size: usize,
     existing: &HeldWriteDestination,
 ) {
-    let Ok(published) = descriptor_fs::statat(parent, file_name, AtFlags::SYMLINK_NOFOLLOW)
-    else {
+    let Ok(published) = descriptor_fs::statat(parent, file_name, AtFlags::SYMLINK_NOFOLLOW) else {
         return;
     };
-    let Ok(displaced) = descriptor_fs::statat(parent, temp_name, AtFlags::SYMLINK_NOFOLLOW)
-    else {
+    let Ok(displaced) = descriptor_fs::statat(parent, temp_name, AtFlags::SYMLINK_NOFOLLOW) else {
         return;
     };
-    if !write_file_identity_and_contract_match(
-        &published,
-        staged_device,
-        staged_inode,
-        staged_size,
-    ) || !held_write_destination_matches(&displaced, existing)
+    if !write_file_identity_and_contract_match(&published, staged_device, staged_inode, staged_size)
+        || !held_write_destination_matches(&displaced, existing)
     {
         return;
     }
-    if descriptor_fs::renameat_with(
-        parent,
-        temp_name,
-        parent,
-        file_name,
-        RenameFlags::EXCHANGE,
-    )
-    .is_ok()
+    if descriptor_fs::renameat_with(parent, temp_name, parent, file_name, RenameFlags::EXCHANGE)
+        .is_ok()
     {
         let _ = descriptor_fs::fsync(parent);
     }
@@ -2748,8 +2718,8 @@ fn unlink_exact_regular(
     name: &OsStr,
     expected: &HeldWriteDestination,
 ) -> Result<(), AppError> {
-    let metadata = descriptor_fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)
-        .map_err(descriptor_error)?;
+    let metadata =
+        descriptor_fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW).map_err(descriptor_error)?;
     if !held_write_destination_matches(&metadata, expected) {
         return Err(AppError::Io(std::io::Error::other(
             "write displaced identity changed",
@@ -3684,8 +3654,7 @@ mod tests {
             descriptor_fs::statat(&root_fd, "armed.tmp", AtFlags::SYMLINK_NOFOLLOW).unwrap();
 
         {
-            let mut cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from("armed.tmp"));
+            let mut cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from("armed.tmp"));
             cleanup.set_expected_identity(metadata.st_dev, metadata.st_ino);
         }
 
@@ -3716,8 +3685,7 @@ mod tests {
         let root_fd = open_root_directory(root.path()).unwrap();
 
         {
-            let _cleanup =
-                DescriptorTempFileCleanup::new(&root_fd, OsString::from("unknown.tmp"));
+            let _cleanup = DescriptorTempFileCleanup::new(&root_fd, OsString::from("unknown.tmp"));
         }
 
         assert_eq!(std::fs::read_to_string(path).unwrap(), "foreign");
@@ -3742,10 +3710,7 @@ mod tests {
         }
 
         assert_eq!(std::fs::read_to_string(original).unwrap(), "foreign");
-        assert_eq!(
-            std::fs::read_to_string(parked).unwrap(),
-            "operation-owned"
-        );
+        assert_eq!(std::fs::read_to_string(parked).unwrap(), "operation-owned");
     }
 
     #[test]
@@ -3966,8 +3931,14 @@ mod tests {
             result,
             Err(AuthorizedWriteFileError::Filesystem(AppError::Io(_)))
         ));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "foreign-identity");
-        assert_eq!(std::fs::read_to_string(&parked).unwrap(), "captured-original");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "foreign-identity"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&parked).unwrap(),
+            "captured-original"
+        );
         assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
             !entry
                 .unwrap()
