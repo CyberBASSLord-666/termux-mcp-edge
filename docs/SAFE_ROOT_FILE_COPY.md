@@ -39,12 +39,12 @@ Before filesystem preparation or grant consumption, the transport constructs a w
 The operation does not invoke a shell, subprocess, platform copy utility, archive tool, or external provider.
 
 1. Anchor source and destination lexically beneath the longest matching configured safe roots.
-2. Open each safe-root directory and traverse every descendant component descriptor-relatively with no-follow semantics.
+2. Duplicate and identity-verify each selected root's lifetime-pinned descriptor, then traverse every descendant component descriptor-relatively with no-follow semantics.
 3. Inspect the source final component without following links and require a regular file at or below the fixed limit.
 4. Open the source with `O_NOFOLLOW`, `O_NONBLOCK`, and close-on-exec; verify that device, inode, type, and size match the pre-open observation.
 5. Read at most 1 MiB plus one byte from that exact held descriptor and verify its type, identity, and size again after the read.
 6. Compute SHA-256 over the exact held bytes and bind it with source device, inode, size, high-resolution change time, one-link count, anchored root identity, and normalized source components.
-7. Open and retain the destination-root and destination-parent descriptors; require the final destination component to be absent without following links and bind both destination root identity and normalized components.
+7. Retain the duplicated destination-root and destination-parent descriptors; require the final destination component to be absent without following links and bind both destination root identity and normalized components.
 8. For preview, return only after all source and destination validation has succeeded.
 9. For explicit mutation, acquire the shared process publication lock, then revalidate both root identities, held and named source identity, exact bytes and SHA-256, destination-parent identity, destination absence, and hidden staging capacity before cancellation ownership and grant consumption.
 10. Create an unpredictable staging file exclusively inside the destination parent's reserved mode-`0700` `.termux-mcp-write-quarantine`, force mode `0600`, write the grant-bound bytes, sync it, and verify its held and named identity, type, mode, link count, and size.

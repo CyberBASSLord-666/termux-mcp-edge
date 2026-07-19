@@ -50,6 +50,10 @@ grep -Fq 'stress_copy_file_disabled_status_invalid' "$GATE" \
   || fail_test 'baseline native gate omits live copy_file disabled denial'
 grep -Fq 'copyFileMutationDisabled: true' "$GATE" \
   || fail_test 'baseline native gate evidence omits copy_file disabled posture'
+grep -Fq 'stress_root_identity_redirected' "$GATE" \
+  || fail_test 'baseline native gate omits safe-root replacement attack'
+grep -Fq 'stress_ancestor_identity_redirected' "$GATE" \
+  || fail_test 'baseline native gate omits safe-root ancestor replacement attack'
 grep -Fq 'write-key-isolation' "$VOLUME_CONTROL_GATE" \
   || fail_test 'shared volume capability key is not isolated from write_file'
 grep -Fq '"${payload:128:2}" == 03' "$VOLUME_CONTROL_GATE" \
@@ -118,14 +122,20 @@ rm -f -- \
   "$ROOT/.termux-inheritance-test.stdout" "$ROOT/.termux-inheritance-test.stderr"
 
 jq -e '
-  .properties.status.const == "pass"
+  .properties.schemaVersion.const == 2
+  and .properties.gateVersion.const == "2"
+  and .properties.status.const == "pass"
+  and .properties.releaseQualificationEligible.const == false
   and .properties.environment.properties.executionMode.const == "official-termux-docker-native-arm64"
   and .properties.environment.properties.androidLinker.const == true
   and .properties.candidate.properties.androidVolumeControlArtifact."$ref" == "#/$defs/artifact"
   and .properties.stress.properties.samples.minimum == 32
   and .properties.stress.properties.highImpactDisabled.const == true
   and .properties.stress.properties.copyFileMutationDisabled.const == true
-' "$ROOT/docs/emulated-release-evidence-schema-v1.json" >/dev/null
+  and .properties.stress.properties.safeRootIdentityPinned.const == true
+  and .properties.stress.properties.safeRootAncestorIdentityPinned.const == true
+  and .properties.stress.properties.longObservationRequired.const == false
+' "$ROOT/docs/emulated-release-evidence-schema-v2.json" >/dev/null
 
 jq -e '
   .properties.schemaVersion.const == 2
@@ -294,8 +304,8 @@ EQUIVALENT_EMULATED="$FIXTURE_ROOT/equivalent-emulated.json"
 jq -n \
   --arg commit "$EQUIVALENT_CANDIDATE" '
   {
-    schemaVersion: 1,
-    gateVersion: "1",
+    schemaVersion: 2,
+    gateVersion: "2",
     status: "pass",
     failureCode: null,
     candidate: {
@@ -311,7 +321,13 @@ jq -n \
       imageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     runtimeValidation: {status: "pass"},
-    stress: {status: "pass", samples: 32}
+    stress: {
+      status: "pass",
+      samples: 32,
+      safeRootIdentityPinned: true,
+      safeRootAncestorIdentityPinned: true,
+      longObservationRequired: false
+    }
   }' >"$EQUIVALENT_EMULATED"
 
 bash "$CLASSIFIER" \

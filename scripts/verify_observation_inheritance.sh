@@ -108,8 +108,8 @@ jq -e \
   --arg candidate "$CANDIDATE_COMMIT" \
   --arg default_sha "$BRIDGE_DEFAULT_SHA" \
   --arg mcp_sha "$BRIDGE_MCP_SHA" '
-    .schemaVersion == 1
-    and .gateVersion == "1"
+    .schemaVersion == 2
+    and .gateVersion == "2"
     and .status == "pass"
     and .failureCode == null
     and .candidate.commit == $candidate
@@ -124,7 +124,10 @@ jq -e \
     and .stress.healthReadyStable == true
     and .stress.sessionLifecycle == true
     and .stress.exactToolAllowlist == true
+    and .stress.safeRootIdentityPinned == true
+    and .stress.safeRootAncestorIdentityPinned == true
     and .stress.highImpactDisabled == true
+    and .stress.longObservationRequired == false
   ' "$EMULATED_REPORT" >/dev/null || fail emulated_report_contract_invalid
 
 git diff --quiet "$SOURCE_COMMIT" "$CANDIDATE_COMMIT" -- \

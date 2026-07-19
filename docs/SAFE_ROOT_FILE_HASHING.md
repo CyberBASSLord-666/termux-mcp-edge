@@ -36,7 +36,7 @@ Successful `structuredContent` contains exactly:
 The implementation does not authorize a pathname and reopen it later.
 
 1. Select the longest matching configured safe root and retain normalized relative components.
-2. Open the safe-root directory and walk every parent component relative to held descriptors with no-follow directory opens.
+2. Duplicate and identity-verify that root's lifetime-pinned descriptor, then walk every parent component relative to held descriptors with no-follow directory opens.
 3. Inspect the final component with no-follow metadata and require a regular file no larger than 16 MiB.
 4. Open that final component relative to the retained parent with read-only, nonblocking, no-follow, and close-on-exec flags. Nonblocking open prevents a concurrent swap to a FIFO from stalling a worker before final-type validation.
 5. Verify that the opened descriptor is regular and that its device and inode match the no-follow path observation. A concurrent replacement therefore fails or leaves the operation attached to the already-open object; it cannot redirect hashing through a replacement link.

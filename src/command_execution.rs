@@ -71,7 +71,7 @@ impl From<BoundedProcessError> for CommandExecutionError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct CommandExecutionClient {
     program: PathBuf,
     working_directory: PathBuf,
@@ -79,9 +79,20 @@ pub(crate) struct CommandExecutionClient {
     concurrency: Arc<Semaphore>,
 }
 
+impl std::fmt::Debug for CommandExecutionClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommandExecutionClient")
+            .field("program", &"<redacted>")
+            .field("working_directory", &"<redacted>")
+            .field("working_directory_guard", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 impl CommandExecutionClient {
     pub(crate) fn current_server(
-        working_directory: PathBuf,
+        working_directory: OwnedFd,
     ) -> Result<Self, CommandClientConfigError> {
         let program = std::env::current_exe()
             .map_err(|_| CommandClientConfigError::CurrentExecutableUnavailable)?;
@@ -90,7 +101,7 @@ impl CommandExecutionClient {
 
     fn exact_server_program(
         program: PathBuf,
-        working_directory: PathBuf,
+        working_directory: OwnedFd,
     ) -> Result<Self, CommandClientConfigError> {
         if !program.is_absolute()
             || program.file_name() != Some(OsStr::new(EXPECTED_SERVER_EXECUTABLE_NAME))
@@ -128,19 +139,13 @@ impl CommandExecutionClient {
         Self::new(PathBuf::from(PINNED_CURRENT_EXECUTABLE), working_directory)
     }
 
-    fn new(program: PathBuf, working_directory: PathBuf) -> Result<Self, CommandClientConfigError> {
+    fn new(
+        program: PathBuf,
+        working_directory_guard: OwnedFd,
+    ) -> Result<Self, CommandClientConfigError> {
         if !program.is_absolute() {
             return Err(CommandClientConfigError::ProgramMustBeAbsolute);
         }
-        if !working_directory.is_absolute() {
-            return Err(CommandClientConfigError::WorkingDirectoryMustBeSafeRooted);
-        }
-        let working_directory_guard = open(
-            &working_directory,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| CommandClientConfigError::WorkingDirectoryMustBeSafeRooted)?;
         let working_directory_identity = fstat(&working_directory_guard)
             .map_err(|_| CommandClientConfigError::WorkingDirectoryMustBeSafeRooted)?;
         let filesystem_root = open(
@@ -238,10 +243,43 @@ impl CommandExecutionClient {
         working_directory: PathBuf,
         concurrency_limit: usize,
     ) -> Result<Self, CommandClientConfigError> {
-        let mut client = Self::new(program, working_directory)?;
+        let mut client = Self::new_for_test(program, working_directory)?;
         client.concurrency = Arc::new(Semaphore::new(concurrency_limit));
         Ok(client)
     }
+
+    #[cfg(test)]
+    fn new_for_test(
+        program: PathBuf,
+        working_directory: PathBuf,
+    ) -> Result<Self, CommandClientConfigError> {
+        let working_directory = open_test_working_directory(&working_directory)?;
+        Self::new(program, working_directory)
+    }
+
+    #[cfg(test)]
+    fn exact_server_program_for_test(
+        program: PathBuf,
+        working_directory: PathBuf,
+    ) -> Result<Self, CommandClientConfigError> {
+        let working_directory = open_test_working_directory(&working_directory)?;
+        Self::exact_server_program(program, working_directory)
+    }
+}
+
+#[cfg(test)]
+fn open_test_working_directory(
+    path: &std::path::Path,
+) -> Result<OwnedFd, CommandClientConfigError> {
+    if !path.is_absolute() {
+        return Err(CommandClientConfigError::WorkingDirectoryMustBeSafeRooted);
+    }
+    open(
+        path,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| CommandClientConfigError::WorkingDirectoryMustBeSafeRooted)
 }
 
 #[cfg(test)]
@@ -259,6 +297,7 @@ mod tests {
         command_policy::{
             command_profile, command_profile_ids, test_command_profile, CommandProfile,
         },
+        tools::FileSystemTools,
     };
 
     fn executable(script: &str) -> (TempDir, PathBuf) {
@@ -286,7 +325,7 @@ mod tests {
         fs::write(&wrong_name, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&wrong_name, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
-            CommandExecutionClient::exact_server_program(
+            CommandExecutionClient::exact_server_program_for_test(
                 wrong_name,
                 safe_root.path().to_path_buf(),
             )
@@ -300,7 +339,7 @@ mod tests {
             .join(EXPECTED_SERVER_EXECUTABLE_NAME);
         fs::create_dir(&exact_directory).unwrap();
         assert_eq!(
-            CommandExecutionClient::exact_server_program(
+            CommandExecutionClient::exact_server_program_for_test(
                 exact_directory,
                 safe_root.path().to_path_buf(),
             )
@@ -315,7 +354,7 @@ mod tests {
         let exact_symlink = symlink_root.path().join(EXPECTED_SERVER_EXECUTABLE_NAME);
         std::os::unix::fs::symlink(&symlink_target, &exact_symlink).unwrap();
         assert_eq!(
-            CommandExecutionClient::exact_server_program(
+            CommandExecutionClient::exact_server_program_for_test(
                 exact_symlink,
                 safe_root.path().to_path_buf(),
             )
@@ -327,7 +366,7 @@ mod tests {
         fs::write(&exact, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&exact, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
-            CommandExecutionClient::exact_server_program(
+            CommandExecutionClient::exact_server_program_for_test(
                 exact.clone(),
                 safe_root.path().to_path_buf(),
             )
@@ -337,8 +376,11 @@ mod tests {
 
         fs::set_permissions(&exact, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
-            CommandExecutionClient::exact_server_program(exact, safe_root.path().to_path_buf(),)
-                .unwrap_err(),
+            CommandExecutionClient::exact_server_program_for_test(
+                exact,
+                safe_root.path().to_path_buf(),
+            )
+            .unwrap_err(),
             CommandClientConfigError::CurrentExecutableIdentityMismatch
         );
 
@@ -346,7 +388,7 @@ mod tests {
         let hard_link_root = tempfile::tempdir_in(current_executable.parent().unwrap()).unwrap();
         let loaded_identity = hard_link_root.path().join(EXPECTED_SERVER_EXECUTABLE_NAME);
         fs::hard_link(&current_executable, &loaded_identity).unwrap();
-        let client = CommandExecutionClient::exact_server_program(
+        let client = CommandExecutionClient::exact_server_program_for_test(
             loaded_identity,
             safe_root.path().to_path_buf(),
         )
@@ -373,7 +415,8 @@ mod tests {
         let marker = safe_root.path().join("must-not-exist");
         let script = format!("touch '{}'", marker.display());
         let (_program_root, program) = executable(&script);
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
 
         for profile in [
             profile_with_bounds(
@@ -407,22 +450,32 @@ mod tests {
     fn client_requires_absolute_program_and_narrow_existing_working_directory() {
         let safe_root = tempfile::tempdir().unwrap();
         assert_eq!(
-            CommandExecutionClient::new(PathBuf::from("relative"), safe_root.path().to_path_buf())
-                .unwrap_err(),
+            CommandExecutionClient::new_for_test(
+                PathBuf::from("relative"),
+                safe_root.path().to_path_buf()
+            )
+            .unwrap_err(),
             CommandClientConfigError::ProgramMustBeAbsolute
         );
         assert_eq!(
-            CommandExecutionClient::new(PathBuf::from("/program"), PathBuf::from("relative"))
+            CommandExecutionClient::new_for_test(
+                PathBuf::from("/program"),
+                PathBuf::from("relative")
+            )
+            .unwrap_err(),
+            CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
+        );
+        assert_eq!(
+            CommandExecutionClient::new_for_test(PathBuf::from("/program"), PathBuf::from("/"))
                 .unwrap_err(),
             CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
         );
         assert_eq!(
-            CommandExecutionClient::new(PathBuf::from("/program"), PathBuf::from("/")).unwrap_err(),
-            CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
-        );
-        assert_eq!(
-            CommandExecutionClient::new(PathBuf::from("/program"), PathBuf::from("/tmp/.."),)
-                .unwrap_err(),
+            CommandExecutionClient::new_for_test(
+                PathBuf::from("/program"),
+                PathBuf::from("/tmp/.."),
+            )
+            .unwrap_err(),
             CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
         );
 
@@ -430,7 +483,8 @@ mod tests {
         let linked_root = link_root.path().join("linked-safe-root");
         std::os::unix::fs::symlink(safe_root.path(), &linked_root).unwrap();
         assert_eq!(
-            CommandExecutionClient::new(PathBuf::from("/program"), linked_root).unwrap_err(),
+            CommandExecutionClient::new_for_test(PathBuf::from("/program"), linked_root)
+                .unwrap_err(),
             CommandClientConfigError::WorkingDirectoryMustBeSafeRooted
         );
     }
@@ -449,7 +503,16 @@ mod tests {
              test ! -e replacement-marker\n\
              printf '%s' 'descriptor-anchored'",
         );
-        let client = CommandExecutionClient::new(program, safe_root.clone()).unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.clone()]).unwrap();
+        let client = CommandExecutionClient::new(
+            program,
+            file_tools.duplicate_safe_root_descriptor(0).unwrap(),
+        )
+        .unwrap();
+        let debug = format!("{client:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(safe_root.to_string_lossy().as_ref()));
+        assert!(!debug.contains("/proc/self/fd/"));
 
         let retained_client = client.clone();
         drop(client);
@@ -481,7 +544,8 @@ mod tests {
         );
         let (_program_root, program) = executable(&script);
         std::env::set_var("TERMUX_MCP_COMMAND_TEST_SECRET", "must-not-be-inherited");
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
         let result = client
             .execute(command_profile("server_version").unwrap())
             .await;
@@ -502,7 +566,8 @@ mod tests {
         let safe_root = tempfile::tempdir().unwrap();
 
         let (_root, program) = executable("/bin/sleep 30");
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
         assert_eq!(
             client
                 .execute(profile_with_bounds(&[], Duration::from_millis(80), 8, 8))
@@ -512,7 +577,8 @@ mod tests {
         );
 
         let (_root, program) = executable("printf '12345'");
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
         assert_eq!(
             client
                 .execute(profile_with_bounds(&[], Duration::from_secs(1), 4, 4))
@@ -522,7 +588,8 @@ mod tests {
         );
 
         let (_root, program) = executable("printf '12345' >&2");
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
         assert_eq!(
             client
                 .execute(profile_with_bounds(&[], Duration::from_secs(1), 4, 4))
@@ -538,7 +605,8 @@ mod tests {
         let safe_root = tempfile::tempdir().unwrap();
 
         let (_root, program) = executable("printf 'private failure' >&2; exit 9");
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
         assert_eq!(
             client
                 .execute(profile_with_bounds(&[], Duration::from_secs(1), 64, 64))
@@ -548,7 +616,8 @@ mod tests {
         );
 
         let (_root, program) = executable("printf '\\377'");
-        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+        let client =
+            CommandExecutionClient::new_for_test(program, safe_root.path().to_path_buf()).unwrap();
         assert_eq!(
             client
                 .execute(profile_with_bounds(&[], Duration::from_secs(1), 64, 64))

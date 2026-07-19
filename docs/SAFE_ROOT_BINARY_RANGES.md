@@ -58,7 +58,7 @@ The largest raw range encodes to 349,528 base64 bytes. The complete JSON-RPC res
 The implementation:
 
 1. validates the fixed numeric contract before filesystem work;
-2. anchors the absolute path to one configured safe-root descriptor;
+2. anchors the absolute path to one configured root label, then duplicates and identity-verifies its lifetime-pinned descriptor;
 3. rejects parent traversal, NUL data, outside-root paths, and symlinked descendant components;
 4. walks parent components descriptor-relatively with no-follow directory opens;
 5. performs a no-follow final-object metadata lookup and requires a regular file no larger than 64 MiB;

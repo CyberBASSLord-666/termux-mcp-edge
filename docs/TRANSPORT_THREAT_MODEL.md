@@ -28,7 +28,7 @@ POST requires JSON content and explicit client support for JSON and SSE response
 - Local-network resources reachable from the Android device.
 - Process, package, service, shell, Shizuku/rish, and Android-control boundaries.
 - MCP client identity, lifecycle state, request integrity, and tool authorization decisions.
-- The shared configured HMAC key plus the independently capability-bound directory, file-write, and volume grants, consumed-JTI state, and target/content/disposition/identity binding integrity.
+- The shared configured HMAC key plus the independently capability-bound directory, file-copy, file-write, and volume grants, consumed-JTI state, and target/content/disposition/identity binding integrity.
 - Mobile memory, CPU, battery, thermal, and process-lifetime budgets.
 
 ## Threats and Current Controls
@@ -106,9 +106,13 @@ An authenticated caller may attempt traversal, symlink escape, race-based path r
 
 Current controls:
 
-- absolute dedicated safe roots with no filesystem-root default;
-- rejection of explicit parent traversal, NUL bytes, unsafe missing parents, and symlink components;
-- safe-root descriptor anchoring and component-by-component no-follow descendant resolution;
+- fallible pre-listener construction of one through 64 configured safe-root entries, with deterministic normalization, sorting, and deduplication;
+- absolute dedicated roots with no filesystem-root default and rejection of explicit parent traversal, NUL bytes, unsafe missing parents, non-directories, and symlinks in a root or any ancestor;
+- lifetime-retained no-follow directory descriptors plus device/inode identities shared by every tools clone; configured path labels select pins but are not authority;
+- per-operation duplication and identity verification of the selected pin followed by component-by-component no-follow descendant resolution, never pathname reopening;
+- root and ancestor rename/replacement resistance: the running process stays attached to the original pinned directory, replacement objects remain untouched, and restart is the explicit repinning boundary;
+- create/copy/write grant issuance, runtime target preparation, and consumption bound to the same pinned root identity, including rejection when issuance sees a later pathname replacement;
+- configured-root path redaction from startup failures, debug output, audit labels, and retained production evidence, plus complete descriptor and device/inode redaction from every public surface;
 - bounded deterministic UTF-8 and canonical base64 reads plus directory traversal;
 - dry-run-by-default directory/file mutation and explicit `dry_run:false`;
 - a separately default-disabled directory-mutation gate plus one 60-second, single-use HMAC grant bound to the static principal, canonical session, exact root identity, normalized target, and mutating posture;
@@ -130,7 +134,7 @@ An authenticated caller may try to reuse a grant for another session, root, targ
 
 Current controls:
 
-- grants are issued only by the local exact binary after it independently anchors the configured safe root and validates the capability-specific target. The file-write issuer additionally reads exact UTF-8 bytes from an absolute stable no-follow private regular file of at most 1 MiB and validates the requested `create`/`replace` target state;
+- grants are issued only by the local exact binary after fallible construction independently lifetime-pins the configured safe root and validates the capability-specific target. The signed binding uses that pin's device/inode identity, and runtime consumption compares it with the identity retained by the running process; a grant issued after pathname replacement cannot authorize the earlier pin. The file-write issuer additionally reads exact UTF-8 bytes from an absolute stable no-follow private regular file of at most 1 MiB and validates the requested `create`/`replace` target state;
 - create-directory grants use their own fixed-shape signed binding. A write grant instead has an opaque 65-byte payload (random JTI, signed write-family byte, keyed domain-separated operation binding, issued/expiry timestamps) plus its outer signature: principal, canonical session, capability, root/target, posture, content digest, disposition, and replacement device/inode/size/high-resolution ctime/link count are binding inputs and are not serialized;
 - a single internal registry assigns stable globally unique family codes—directory `1`, write `2`, volume `3`, and copy `4`. Callers cannot select a code, and exhaustive all-pairs tests with one key/principal/session prove every live grant is privately rejected by every other family without consuming the source grant;
 - route authentication is outermost. Host/Origin, HTTP method, media/header shape, JSON-RPC envelope, session/lifecycle, `tools/call`, exact grant-aware tool name, closed argument schema, runtime gate, complete-response preflight, safe-root/target classification, and grant binding are checked in that order before the first state change;

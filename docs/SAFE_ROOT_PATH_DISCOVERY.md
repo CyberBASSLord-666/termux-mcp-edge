@@ -20,7 +20,7 @@ The query is never interpreted as a regular expression, glob, path, shell fragme
 The runtime:
 
 1. selects the most specific configured safe root that lexically contains `path`;
-2. opens that root as a no-follow directory descriptor;
+2. duplicates the root's lifetime-pinned no-follow descriptor and verifies its device/inode identity;
 3. walks every starting-path component with descriptor-relative no-follow directory opens;
 4. reads descendants through held directory descriptors;
 5. classifies each child with no-follow descriptor-relative metadata;

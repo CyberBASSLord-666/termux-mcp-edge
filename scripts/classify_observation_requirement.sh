@@ -66,8 +66,8 @@ EMULATED_REPORT_SHA="$(sha256sum "$EMULATED_REPORT" | awk '{print $1}')"
 [[ "$EMULATED_REPORT_SHA" =~ ^[0-9a-f]{64}$ ]] || fail emulated_report_digest_invalid
 jq -e \
   --arg candidate "$CANDIDATE_COMMIT" '
-    .schemaVersion == 1
-    and .gateVersion == "1"
+    .schemaVersion == 2
+    and .gateVersion == "2"
     and .status == "pass"
     and .failureCode == null
     and .candidate.commit == $candidate
@@ -80,6 +80,9 @@ jq -e \
     and .runtimeValidation.status == "pass"
     and .stress.status == "pass"
     and .stress.samples >= 32
+    and .stress.safeRootIdentityPinned == true
+    and .stress.safeRootAncestorIdentityPinned == true
+    and .stress.longObservationRequired == false
   ' "$EMULATED_REPORT" >/dev/null || fail emulated_report_contract_invalid
 
 runtime_inputs_unchanged=true
