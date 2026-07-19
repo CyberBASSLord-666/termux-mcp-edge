@@ -242,7 +242,10 @@ fn main() {}
         &probe.path().join("target-command"),
         &["check", "--quiet", "--offline", "--jobs", "1"],
     );
-    assert!(!command.status.success(), "downstream command enablement compiled");
+    assert!(
+        !command.status.success(),
+        "downstream command enablement compiled"
+    );
     assert_symbol_is_closed(
         &String::from_utf8_lossy(&command.stderr),
         "with_command_execution_enabled",
