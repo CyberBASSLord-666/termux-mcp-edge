@@ -349,11 +349,7 @@ async fn transport_and_session_validation_precede_sse_cursor_lookup() {
         header::ORIGIN,
         HeaderValue::from_static("https://attacker.invalid"),
     );
-    let response = router
-        .clone()
-        .oneshot(rejected_origin)
-        .await
-        .unwrap();
+    let response = router.clone().oneshot(rejected_origin).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(
         response_json(response).await["error"],

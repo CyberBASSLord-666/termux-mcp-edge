@@ -1,4 +1,5 @@
 use std::{
+    convert::Infallible,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -11,6 +12,7 @@ use axum::{
     routing::any,
     Json, Router,
 };
+use futures_util::stream;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -991,6 +993,10 @@ async fn maybe_sse_response(
     }
 
     let (mut parts, body) = response.into_parts();
+    // Whole-file binary reads own the largest complete response budget in the
+    // current tool registry. Collecting under that existing bound lets an
+    // oversized SSE event fall back to JSON without introducing an unbounded
+    // second response buffer.
     let body = match to_bytes(body, MAX_BINARY_READ_RESPONSE_BYTES).await {
         Ok(body) => body,
         Err(_) => {
@@ -1017,25 +1023,29 @@ async fn maybe_sse_response(
         }
         Err(error) => return sse_replay_error_response(error),
     };
-    let body = encode_sse_events(&events);
+    let body = sse_events_body(&events);
     parts.headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream; charset=utf-8"),
     );
     parts.headers.remove(header::CONTENT_LENGTH);
-    Response::from_parts(parts, Body::from(body))
+    Response::from_parts(parts, body)
 }
 
-fn encode_sse_events(events: &[SseReplayEvent]) -> Vec<u8> {
-    let mut body = Vec::new();
-    for event in events {
-        event.append_wire_bytes(&mut body);
-    }
-    body
+fn sse_events_body(events: &[SseReplayEvent]) -> Body {
+    let frames = events
+        .iter()
+        .map(|event| {
+            let mut frame = Vec::new();
+            event.append_wire_bytes(&mut frame);
+            Ok::<Bytes, Infallible>(Bytes::from(frame))
+        })
+        .collect::<Vec<_>>();
+    Body::from_stream(stream::iter(frames))
 }
 
 fn sse_events_response(events: &[SseReplayEvent]) -> Response {
-    let mut response = Response::new(Body::from(encode_sse_events(events)));
+    let mut response = Response::new(sse_events_body(events));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream; charset=utf-8"),
