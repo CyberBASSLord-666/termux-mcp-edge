@@ -71,7 +71,7 @@ The harness records and verifies:
 10. health and readiness;
 11. unauthenticated MCP rejection;
 12. stable `2025-11-25` initialization, notification, and session deletion;
-13. the exact sixteen-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, content-free bounded `find_paths`, bounded content-private `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, and bounded `path_metadata` and `search_text`;
+13. the exact seventeen-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, reversible grant-gated `trash_file`, content-free bounded `find_paths`, bounded content-private `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, and bounded `path_metadata` and `search_text`;
 14. volume-control compile-gate rejection by the incompatible `mcp-runtime` artifact, plus disabled-by-default control-artifact discovery, runtime truth, and direct-call rejection without invoking `termux-volume` or changing device audio;
 15. disabled command, Android-control, and high-impact gates;
 16. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, SHA-256 hashing, and UTF-8 read;

@@ -729,12 +729,7 @@ mod tests {
             .unwrap();
         let excessive_lifetime = lifetime_authority.encode_and_sign(&excessive_lifetime);
         assert_eq!(
-            lifetime_authority.consume_at(
-                Some(&excessive_lifetime),
-                SESSION,
-                &binding,
-                NOW + 1,
-            ),
+            lifetime_authority.consume_at(Some(&excessive_lifetime), SESSION, &binding, NOW + 1,),
             Err(TrashFileGrantError::LifetimeExceeded)
         );
 

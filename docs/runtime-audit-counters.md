@@ -12,6 +12,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `project_service_status`
 - `create_directory`
 - `copy_file`
+- `trash_file`
 - `find_paths`
 - `hash_file`
 - `list_directory`
@@ -27,7 +28,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/discovery/copy/hash, and dry-run-by-default mutation. Directory, file-copy, and file-write mutations are independently default-disabled and request-grant gated. Their counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target/content digests, create/replace disposition bindings, filesystem identities, timestamps, artifact names/counts/bytes, or replay state. A shared `capability_*` reason remains unambiguous when read with its `by_tool` bucket; the counter model never emits a grant fingerprint to correlate attempts. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Path-discovery counters retain neither starting/matched path, filename, query, kind, request ID, identity, nor raw error. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Whole-file, binary-range, and UTF-8-range read audit counters retain neither path, filename, offset, requested/returned size, raw/base64/text content, file size/identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
+Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/discovery/copy/hash, and dry-run-by-default mutation. Directory, file-copy, reversible-file-trash, and file-write mutations are independently default-disabled and request-grant gated. Their counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target/content digests, create/replace disposition bindings, filesystem identities, timestamps, artifact names/counts/bytes, or replay state. A shared `capability_*` reason remains unambiguous when read with its `by_tool` bucket; the counter model never emits a grant fingerprint to correlate attempts. Copy and trash audit counters retain neither endpoint/target/recovery path nor bytes, identities, source metadata, request ids, or temporary names. Path-discovery counters retain neither starting/matched path, filename, query, kind, request ID, identity, nor raw error. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Whole-file, binary-range, and UTF-8-range read audit counters retain neither path, filename, offset, requested/returned size, raw/base64/text content, file size/identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 
@@ -147,6 +148,7 @@ Current runtime/status/filesystem examples include:
 - `safe_root_paths_found`
 - `safe_root_directory_created`
 - `safe_root_file_copied`
+- `safe_root_file_trashed_recovery_retained`
 - `safe_root_file_hashed`
 - `safe_root_binary_read`
 - `find_query_invalid`
@@ -157,6 +159,14 @@ Current runtime/status/filesystem examples include:
 - `filesystem_copy_source_type_unsupported`
 - `filesystem_copy_source_too_large`
 - `copy_file_mutation_disabled`
+- `trash_file_mutation_disabled`
+- `filesystem_trash_target_not_found`
+- `filesystem_trash_target_type_unsupported`
+- `filesystem_trash_target_too_large`
+- `filesystem_trash_target_changed`
+- `trash_quarantine_capacity_exceeded`
+- `trash_quarantine_busy`
+- `filesystem_trash_failed`
 - `filesystem_copy_source_changed`
 - `filesystem_copy_destination_changed`
 - `filesystem_copy_failed`
@@ -267,6 +277,10 @@ Capability-token evaluation examples include:
 - `capability_confirmation_required`
 
 New reason codes should be short, snake_case, and tied to a policy decision rather than a caller value.
+
+### `trash_file` counter ordering
+
+The resolved mode is `dry_run` unless the closed schema explicitly supplies `dry_run:false`. Disabled or missing-grant live requests record one private denial before path access. Preview records `dry_run_preview` only after bounded target validation succeeds. The permit-owned worker records exactly one live terminal decision: stale target, response bound, capacity, quarantine lock, cancellation, or grant failure is denied; success records `safe_root_file_trashed_recovery_retained` only after the public name is absent, the exact original inode/content is retained, and durability checks complete. No counter distinguishes targets or artifacts with caller-derived labels.
 
 ### `write_file` counter ordering
 

@@ -258,6 +258,7 @@ do
 done
 for marker in \
   'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
+  'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true' \
   '--issue-write-file-grant' \
   'MCP__CAPABILITY__WRITE_FILE_TARGET="$target"' \
   'MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$content_file"' \

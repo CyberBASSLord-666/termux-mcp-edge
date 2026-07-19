@@ -402,6 +402,10 @@ async fn builder_rejects_every_invalid_safe_root_with_typed_redacted_errors() {
             vec![parent.path().join(".termux-mcp-write-quarantine")],
             SafeRootConfigurationError::ReservedNamespace,
         ),
+        (
+            vec![parent.path().join(".termux-mcp-trash-quarantine")],
+            SafeRootConfigurationError::ReservedNamespace,
+        ),
     ];
 
     for (roots, expected) in invalid {

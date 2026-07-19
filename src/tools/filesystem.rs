@@ -4502,6 +4502,52 @@ mod tests {
         assert!(!moved.join("destination.txt").exists());
     }
 
+    #[test]
+    fn trash_grants_bind_the_target_to_pinned_root_identity() {
+        const TEST_KEY: &str = "33445566778899001122aabbccddeeff33445566778899001122aabbccddeeff";
+
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        let target = root.join("trash-target.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&target, "identity-bound-trash").unwrap();
+        let runtime_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let prepared = runtime_tools
+            .prepare_trash_file_mutation_blocking(target.to_string_lossy().to_string())
+            .unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&target, "identity-bound-trash").unwrap();
+        let issuer_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let issuer_target = issuer_tools
+            .trash_file_grant_target(target.to_string_lossy().as_ref())
+            .unwrap();
+        let authority = crate::trash_file_grant::TrashFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "test-static-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let token = authority.issue(&session_id, &issuer_target).unwrap();
+
+        let result = authority.consume(Some(&token), &session_id, &prepared.grant_target);
+        assert_eq!(
+            result,
+            Err(crate::trash_file_grant::TrashFileGrantError::BindingMismatch)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "identity-bound-trash"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("trash-target.txt")).unwrap(),
+            "identity-bound-trash"
+        );
+    }
+
     #[tokio::test]
     async fn root_replacement_cannot_redirect_any_read_only_filesystem_surface() {
         let parent = tempfile::tempdir().unwrap();
@@ -7103,8 +7149,14 @@ mod tests {
             assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 1);
             if kind == "hardlink" {
                 let alias = outside.path().join("artifact-alias");
-                assert_eq!(std::fs::read_to_string(&entry).unwrap(), "retained-private-content");
-                assert_eq!(std::fs::read_to_string(&alias).unwrap(), "retained-private-content");
+                assert_eq!(
+                    std::fs::read_to_string(&entry).unwrap(),
+                    "retained-private-content"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&alias).unwrap(),
+                    "retained-private-content"
+                );
                 assert_eq!(std::fs::metadata(&entry).unwrap().nlink(), 2);
             }
         }
@@ -7160,7 +7212,9 @@ mod tests {
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
-            tools.read_text_range(artifact_path.clone(), 0, MIN_TEXT_RANGE_BYTES).await,
+            tools
+                .read_text_range(artifact_path.clone(), 0, MIN_TEXT_RANGE_BYTES)
+                .await,
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
@@ -7176,27 +7230,35 @@ mod tests {
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
-            tools.copy_file(
-                artifact_path.clone(),
-                absent.to_string_lossy().to_string(),
-                None,
-            ).await,
+            tools
+                .copy_file(
+                    artifact_path.clone(),
+                    absent.to_string_lossy().to_string(),
+                    None,
+                )
+                .await,
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
-            tools.copy_file(
-                visible.to_string_lossy().to_string(),
-                quarantined_absent_path.clone(),
-                None,
-            ).await,
+            tools
+                .copy_file(
+                    visible.to_string_lossy().to_string(),
+                    quarantined_absent_path.clone(),
+                    None,
+                )
+                .await,
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
-            tools.write_file(artifact_path.clone(), "replacement".to_owned(), None).await,
+            tools
+                .write_file(artifact_path.clone(), "replacement".to_owned(), None)
+                .await,
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
-            tools.create_directory(quarantined_absent_path.clone(), None).await,
+            tools
+                .create_directory(quarantined_absent_path.clone(), None)
+                .await,
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
@@ -7204,10 +7266,7 @@ mod tests {
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
-            tools.copy_file_grant_target(
-                &artifact_path,
-                absent.to_string_lossy().as_ref(),
-            ),
+            tools.copy_file_grant_target(&artifact_path, absent.to_string_lossy().as_ref(),),
             Err(AppError::PathTraversal { .. })
         ));
         assert!(matches!(
@@ -7259,7 +7318,49 @@ mod tests {
         assert_eq!(searched.entries_examined, 1);
         assert_eq!(searched.files_scanned, 1);
         assert_eq!(searched.bytes_scanned, "public".len());
-        assert_eq!(std::fs::read_to_string(&artifact).unwrap(), "trash-quarantine-secret");
+        assert_eq!(
+            std::fs::read_to_string(&artifact).unwrap(),
+            "trash-quarantine-secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_trash_rejects_stale_target_before_authorization_or_quarantine() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("trash-target.txt");
+        let parked = root.path().join("trash-target.parked");
+        std::fs::write(&target, "prepared-trash-content").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let prepared = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        std::fs::rename(&target, &parked).unwrap();
+        std::fs::write(&target, "foreign-current-content").unwrap();
+        let authorization_called = Cell::new(false);
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedTrashFileError::Filesystem(
+                AppError::TrashTargetChanged
+            ))
+        ));
+        assert!(!authorization_called.get());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "foreign-current-content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&parked).unwrap(),
+            "prepared-trash-content"
+        );
+        assert!(!root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY).exists());
     }
 
     #[tokio::test]

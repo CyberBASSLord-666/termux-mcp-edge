@@ -50,7 +50,7 @@ The operation does not invoke a shell, subprocess, platform copy utility, archiv
 10. Create an unpredictable staging file exclusively inside the destination parent's reserved mode-`0700` `.termux-mcp-write-quarantine`, force mode `0600`, write the grant-bound bytes, sync it, and verify its held and named identity, type, mode, link count, and size.
 11. Publish from the hidden quarantine to the held destination parent with atomic `RENAME_NOREPLACE`, verify both the published name and still-held descriptor against the captured staging identity and contract, sync both directories, and revalidate quarantine bounds.
 
-The held source descriptor prevents a later pathname exchange from redirecting reads. The held destination-parent descriptor prevents a later parent exchange from redirecting staging, publication, cleanup, or durability sync. The process lock serializes cooperating create/copy/write instances. Atomic no-replace publication means a concurrently inserted destination wins and is never overwritten.
+The held source descriptor prevents a later pathname exchange from redirecting reads. The held destination-parent descriptor prevents a later parent exchange from redirecting staging, publication, cleanup, or durability sync. The process lock serializes cooperating create/copy/trash/write instances. Atomic no-replace publication means a concurrently inserted destination wins and is never overwritten.
 
 ## Cleanup and failure semantics
 

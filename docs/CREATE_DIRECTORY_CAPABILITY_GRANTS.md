@@ -103,7 +103,7 @@ For mutation, the runtime performs this order:
 4. validate the closed tool schema and preflight the complete 16 KiB response;
 5. acquire the one shared non-queueing filesystem-mutation worker permit or return private HTTP 503 / JSON-RPC `-32007` without consuming the grant;
 6. inside that permit-owned blocking worker, resolve safe-root confinement, open and hold the exact parent descriptor, prove the final target is absent, and compute the target binding;
-7. acquire the poison-fail-closed process-wide publication lock shared by every directory, file-copy, and file-write tool instance, then prove the final target is still absent while holding that lock;
+7. acquire the poison-fail-closed process-wide publication lock shared by every directory, file-copy, file-trash, and file-write tool instance, then prove the final target is still absent while holding that lock;
 8. atomically resolve request cancellation against worker commit ownership. A cancellation winner, including one that arrived while the worker waited for the process lock, stops here without consuming the JTI or changing the filesystem;
 9. if the worker owns commit, verify and atomically consume the JTI under the replay lock;
 10. retain the process lock while immediately attempting the first filesystem mutation using the held descriptor and through publication verification and parent durability sync, completing independently of later request cancellation.

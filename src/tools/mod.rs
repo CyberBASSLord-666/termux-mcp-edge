@@ -274,17 +274,22 @@ mod tests {
 
     #[test]
     fn safe_roots_reject_mixed_case_reserved_components() {
-        let parent = tempfile::tempdir().unwrap();
-        let mixed_case = parent.path().join(".TeRmUx-McP-WrItE-qUaRaNtInE");
-        std::fs::create_dir(&mixed_case).unwrap();
+        for name in [
+            ".TeRmUx-McP-WrItE-qUaRaNtInE",
+            ".TeRmUx-McP-TrAsH-qUaRaNtInE",
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let mixed_case = parent.path().join(name);
+            std::fs::create_dir(&mixed_case).unwrap();
 
-        let direct = construction_error(vec![mixed_case.clone()]);
-        assert_eq!(direct, SafeRootConfigurationError::ReservedNamespace);
+            let direct = construction_error(vec![mixed_case.clone()]);
+            assert_eq!(direct, SafeRootConfigurationError::ReservedNamespace);
 
-        let descendant = mixed_case.join("child");
-        std::fs::create_dir(&descendant).unwrap();
-        let nested = construction_error(vec![descendant]);
-        assert_eq!(nested, SafeRootConfigurationError::ReservedNamespace);
+            let descendant = mixed_case.join("child");
+            std::fs::create_dir(&descendant).unwrap();
+            let nested = construction_error(vec![descendant]);
+            assert_eq!(nested, SafeRootConfigurationError::ReservedNamespace);
+        }
     }
 
     #[test]

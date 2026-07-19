@@ -12,6 +12,7 @@ Enabled staged tools:
 - `project_service_status`
 - `create_directory` preview for exactly one absent safe-rooted directory; mutation additionally requires the default-disabled runtime gate and one request-scoped single-use grant, then uses fixed mode `0700` and atomic no-replace publication
 - `copy_file` preview for exactly one single-link no-follow regular source of at most 1 MiB and one absent safe-rooted destination; mutation is independently default-disabled, exact principal/session/root/path/source-identity/size/SHA-256/destination grant-gated, fixed mode `0600`, path/content-private, hidden-staged, and atomically no-replace published
+- `trash_file` preview for exactly one single-link no-follow regular target of at most 1 MiB; mutation is independently default-disabled, exact principal/session/root/path/target-identity/content/recovery-posture grant-gated, and atomically retains the inode in a bounded private quarantine without exposing either path
 - `find_paths` for case-sensitive literal basename discovery across at most 8,192 descriptor-relative no-follow entries to depth 5, with exact kind filtering, at most 512 ordered content-free matches, and a fixed complete-response ceiling
 - `hash_file` for streaming SHA-256 of exactly one no-follow safe-rooted regular file of at most 16 MiB, with a digest-and-size-only response and content/path-private audit surfaces
 - `list_directory`
@@ -68,11 +69,25 @@ Status: implemented as an independent narrowly scoped Class 2 authorization laye
 - Transport: exactly one bounded ASCII `MCP-Capability-Grant` header, accepted only for an active-session live `copy_file` call. Preview, discovery, initialization, notifications, responses, GET, DELETE, and unrelated tools reject or ignore no grant context and never consume one.
 - Binding: static principal, canonical session, capability code `4`, both anchored root identities and normalized paths, source device/inode/size/high-resolution ctime/one-link identity, SHA-256 of the exact bytes, fixed absent-destination/no-replace posture, format/key ID, JTI, issuance, and expiry. The fixed 65-byte payload serializes only JTI, family byte, keyed opaque operation binding, and timestamps.
 - Ordering: response preflight with the real request id, fail-fast worker admission, descriptor preparation, process-lock acquisition, source/content/destination revalidation, hidden-quarantine capacity, and cancellation ownership all precede atomic grant consumption. Consumption immediately precedes the first staging mutation and survives every later outcome.
-- Transaction: randomized mode-`0600` staging occurs only inside the mode-`0700` MCP-hidden quarantine. Atomic `NOREPLACE`, held/named identity verification, destination-parent and quarantine sync, and identity-safe cleanup run while the create/copy/write process lock remains held.
+- Transaction: randomized mode-`0600` staging occurs only inside the mode-`0700` MCP-hidden quarantine. Atomic `NOREPLACE`, held/named identity verification, destination-parent and quarantine sync, and identity-safe cleanup run while the create/copy/trash/write process lock remains held.
 - Result: only `dryRun`, byte count, fixed mode, and fixed 1 MiB/16 KiB limits; never a source or destination path, content, digest, identity, grant, or staging name.
 - Lifetime/state: 60-second grants, five-second future skew, 120-second hard lifetime ceiling, 4,096 unexpired replay entries, and the shared bounded process-global authority registry.
 
 The complete contract is [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md).
+
+### `trash_file` request grant
+
+Status: implemented as an independent reversible Class 2 authorization layer.
+
+- Runtime gate: `MCP__FILE__TRASH_FILE_MUTATION_ENABLED`, default `false`; no other filesystem or Android gate can enable it.
+- Issuance: local exact-binary `--issue-trash-file-grant` with the active session and private target supplied through `MCP__CAPABILITY__SESSION_ID` and `MCP__CAPABILITY__TRASH_FILE_TARGET`; never an MCP tool.
+- Binding: static principal, canonical session, family code `5`, anchored root identity, normalized target, exact single-link device/inode/size/high-resolution ctime, SHA-256 content, and recovery-retaining posture. The fixed 65-byte payload contains only JTI, family byte, opaque keyed binding, and timestamps.
+- Ordering: gate and missing-grant checks plus complete 16 KiB response preflight precede path access. Worker admission, descriptor preparation, publication/quarantine locks, capacity, stale-target revalidation, and cancellation ownership precede one atomic grant consumption immediately before the move.
+- Transaction: one exact file up to 1 MiB is moved with `NOREPLACE` into a mode-`0700` `.termux-mcp-trash-quarantine` under a randomized canonical UUID name. The public name becomes absent; the exact inode/content/mode is retained; no automatic purge or rollback follows commit.
+- Bounds/privacy: 32 regular artifacts and 32 MiB per parent. Unknown entries, special objects, links, capacity, or advisory-lock contention fail closed. Results and audits expose no target or artifact path, content, digest, identity, grant, session, or principal material.
+- Recovery: the namespace is hidden from every MCP filesystem surface. Operators stop the service and same-UID writers, identify the exact artifact from a trusted private change record, and perform only a reviewed no-clobber local restore or specific removal.
+
+The complete contract is [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md).
 
 ### `write_file` request grant
 

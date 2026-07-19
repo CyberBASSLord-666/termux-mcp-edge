@@ -87,6 +87,7 @@ for protocol_marker in \
   'MCP__CAPABILITY__COPY_FILE_DESTINATION="$destination"' \
   'MCP__FILE__COPY_FILE_MUTATION_ENABLED=true' \
   'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
+  'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true' \
   'MCP__TRANSPORT__MAX_BODY_BYTES=2097152' \
   'mcp_post_file()' \
   'write_file_grant_discovery' \

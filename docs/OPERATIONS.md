@@ -15,7 +15,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Two-MiB request-body ceiling by default.
 - Versioned Termux release directories with atomic `current` and `previous` links.
 - Fixed `mcp_runtime` runit service only.
-- Dedicated safe-root defaults plus independent default-disabled directory, file-copy, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
+- Dedicated safe-root defaults plus independent default-disabled directory, file-copy, reversible-file-trash, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
 ## Secure router construction
 
@@ -140,7 +140,7 @@ curl -sS \
   -H 'MCP-Protocol-Version: 2025-11-25' \
   -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 16'
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 17'
 
 rm -f "$MCP_RESPONSE_HEADERS"
 unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS
@@ -212,6 +212,32 @@ Choose `create` only while the target is absent; choose `replace` only for the e
 
 The transport accepts exactly one bounded ASCII grant header only on an active-session `tools/call` for a grant-aware tool. Authentication, Host/Origin and method/media/header checks, lifecycle, exact tool context, closed schema, gate, complete-response preflight, safe-root/target classification, and grant binding all precede the first state change. Full transaction and rotation details are in [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 
+## Enabling and issuing one `trash_file` mutation
+
+Leave live trashing disabled unless reversible removal is operationally required. Enable only its independent gate alongside static authentication and the complete capability key pair:
+
+```dotenv
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true
+MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
+MCP__CAPABILITY__KEY_ID=primary-1
+MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
+```
+
+After initializing the target MCP session, issue one grant locally with the exact deployed binary:
+
+```bash
+umask 077
+TRASH_GRANT_FILE="$(mktemp "$HOME/.termux-mcp-trash-grant.XXXXXX")"
+chmod 600 "$TRASH_GRANT_FILE"
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
+MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+MCP__CAPABILITY__TRASH_FILE_TARGET="$SAFE_ROOT_TRASH_TARGET" \
+  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  --issue-trash-file-grant >"$TRASH_GRANT_FILE"
+```
+
+Send that line exactly once as `MCP-Capability-Grant` on the matching `trash_file` request with explicit `dry_run:false`, then remove it. The issuer and runtime independently bind the exact single-link regular-file identity and SHA-256 content. Success moves the inode into a private, MCP-hidden recovery quarantine and returns no target or artifact path. Stop the service and same-UID writers before local restore or retention maintenance; see [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md).
+
 ## Request limits
 
 The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65535`. Port `0`, malformed numbers, and present non-Unicode security/network configuration values fail before the listener starts. Only absent variables use defaults.
@@ -245,24 +271,25 @@ Authenticated discovery currently exposes:
 4. `project_service_status` — read-only allowlisted project service metadata for `mcp_runtime`.
 5. `create_directory` — safe-rooted preview by default; one mode-`0700` atomic no-replace mutation only after the dedicated gate and a target-bound single-use grant authorize it.
 6. `copy_file` — one binary-safe regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run first.
-7. `find_paths` — case-sensitive literal basename discovery with exact kind/depth filters, descriptor-relative no-follow traversal, and content-free bounded results.
-8. `hash_file` — streaming SHA-256 for one no-follow regular file up to 16 MiB, returning only digest and byte count.
-9. `list_directory` — bounded safe-rooted listing.
-10. `path_metadata` — bounded safe-rooted regular-file or directory metadata without content or host identifiers.
-11. `read_binary_file` — one no-follow regular file up to 1 MiB as canonical padded base64, without path or host metadata.
-12. `read_binary_range` — one byte range up to 256 KiB from a no-follow regular file up to 64 MiB as canonical padded base64, with explicit EOF metadata and no path or host metadata.
-13. `read_file` — bounded safe-rooted UTF-8 reads.
-14. `read_text_range` — one code-point-safe UTF-8 byte range up to 256 KiB from a no-follow regular file up to 64 MiB, with explicit continuation and EOF metadata and no path or host metadata.
-15. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
-16. `write_file` — safe-rooted, 1 MiB UTF-8 preview by default; live mode-`0600` create/replace is independently disabled and exact-request-grant gated, with a content/path-free 16 KiB result that reports `recoveryArtifactRetained`.
+7. `trash_file` — reversible preview-first removal of one single-link regular file up to 1 MiB; live mode atomically retains the exact inode in a private bounded recovery quarantine after an identity/content-bound single-use grant.
+8. `find_paths` — case-sensitive literal basename discovery with exact kind/depth filters, descriptor-relative no-follow traversal, and content-free bounded results.
+9. `hash_file` — streaming SHA-256 for one no-follow regular file up to 16 MiB, returning only digest and byte count.
+10. `list_directory` — bounded safe-rooted listing.
+11. `path_metadata` — bounded safe-rooted regular-file or directory metadata without content or host identifiers.
+12. `read_binary_file` — one no-follow regular file up to 1 MiB as canonical padded base64, without path or host metadata.
+13. `read_binary_range` — one byte range up to 256 KiB from a no-follow regular file up to 64 MiB as canonical padded base64, with explicit EOF metadata and no path or host metadata.
+14. `read_file` — bounded safe-rooted UTF-8 reads.
+15. `read_text_range` — one code-point-safe UTF-8 byte range up to 256 KiB from a no-follow regular file up to 64 MiB, with explicit continuation and EOF metadata and no path or host metadata.
+16. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
+17. `write_file` — safe-rooted, 1 MiB UTF-8 preview by default; live mode-`0600` create/replace is independently disabled and exact-request-grant gated, with a content/path-free 16 KiB result that reports `recoveryArtifactRetained`.
 
-An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the seventeenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
+An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the eighteenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
 
-An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the seventeenth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
+An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the eighteenth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
 
 An `android-volume-control` binary with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and the capability key pair exposes `set_android_volume`. It defaults to fresh validated preview. Explicit mutation requires one exact request grant and performs fixed execution, verification, and restoration on failure; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. Command enablement is a crate-private method available only to the package binary; the single public builder defaults disabled and exposes no enabling method. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the seventeen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. Command enablement is a crate-private method available only to the package binary; the single public builder defaults disabled and exposes no enabling method. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty-one tools only when all four optional runtime flags are explicitly enabled.
 
 The runtime does not expose Android platform control beyond exact request-authorized volume, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or unrelated high-impact controls.
 
@@ -271,6 +298,7 @@ Filesystem responses have explicit mobile-oriented ceilings:
 - `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
 - `write_file` validates at most 1 MiB of UTF-8 and classifies an absent target as `create` or an existing no-follow regular file as `replace`. Explicit `dry_run:false` succeeds only when `MCP__FILE__WRITE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, root, normalized target, exact content, disposition, and exact old identity for replace. It creates a mode-`0600` randomized staging entry in the target parent's reserved private quarantine. Create publishes with atomic `NOREPLACE` and retains no artifact. Replace accepts only a single-link regular target of at most 1 MiB, performs one irreversible `EXCHANGE`, verifies the exact staged inode at the target, and preserves the displaced prior inode/content as recovery material. The complete 16 KiB result exposes no path, content, or artifact name and includes `recoveryArtifactRetained`; see [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 - `copy_file` validates one regular source and absent destination by default. Explicit `dry_run:false` succeeds only when `MCP__FILE__COPY_FILE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, both roots and normalized paths, exact source identity/size/high-resolution ctime/SHA-256, absent destination, and no-replace posture. It copies at most 1 MiB from the exact held source descriptor, stages fixed mode `0600` in the hidden quarantine, publishes atomically without replacement, verifies exact bytes and identities, syncs file and parent descriptors, returns neither endpoint path nor content, and caps the complete response at 16 KiB; see [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
+- `trash_file` validates one exact single-link regular file up to 1 MiB by default. Explicit `dry_run:false` requires its independent gate and an exact principal/session/root/path/identity/content/recovery-posture grant, then atomically moves the inode with `NOREPLACE` into the parent-local mode-`0700` trash quarantine. The complete 16 KiB result returns only bounded size and recovery-retention posture; see [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md).
 - `find_paths` accepts one case-sensitive literal basename query of at most 256 UTF-8 bytes, traverses no-follow descriptors to depth 5, examines at most 8,192 entries, returns at most 512 lexicographically ordered file/directory matches, and caps the complete response at 262,144 bytes; see [`SAFE_ROOT_PATH_DISCOVERY.md`](SAFE_ROOT_PATH_DISCOVERY.md).
 - `hash_file` streams at most 16 MiB from one exact held no-follow regular-file descriptor through SHA-256, rejects growth past the limit, returns only lowercase digest and byte count, and caps the complete response at 16 KiB before the file read; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
 - `read_binary_file` reads at most 1 MiB from one exact held no-follow regular-file descriptor, rejects runtime growth, returns canonical padded RFC 4648 base64 without path or host metadata, and preflights the complete 1,507,328-byte response ceiling before file access; see [`SAFE_ROOT_BINARY_READS.md`](SAFE_ROOT_BINARY_READS.md).

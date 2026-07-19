@@ -27,8 +27,8 @@ use termux_mcp_server::{
         MAX_TRASH_FILE_QUARANTINE_BYTES, MAX_TRASH_FILE_RESPONSE_BYTES,
     },
     trash_file_grant::{
-        TrashFileGrantAuthority, TrashFileGrantError, TRASH_FILE_GRANT_HEADER,
-        TRASH_FILE_GRANT_TTL_SECONDS, MAX_TRASH_FILE_GRANT_HEADER_BYTES,
+        TrashFileGrantAuthority, TrashFileGrantError, MAX_TRASH_FILE_GRANT_HEADER_BYTES,
+        TRASH_FILE_GRANT_HEADER, TRASH_FILE_GRANT_TTL_SECONDS,
     },
     write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
 };
@@ -153,7 +153,11 @@ async fn enabled_discovery_status_and_missing_grant_are_exact_and_fail_closed() 
         &session_id,
         trash_call(
             "missing",
-            outside.path().join("private-missing").to_string_lossy().as_ref(),
+            outside
+                .path()
+                .join("private-missing")
+                .to_string_lossy()
+                .as_ref(),
             Some(false),
         ),
     )
@@ -169,7 +173,10 @@ async fn enabled_discovery_status_and_missing_grant_are_exact_and_fail_closed() 
     assert_eq!(runtime["trashFileMutationEnabled"], true);
     assert_eq!(runtime["trashFileGrantRequired"], true);
     assert_eq!(runtime["trashFileGrantHeader"], TRASH_FILE_GRANT_HEADER);
-    assert_eq!(runtime["trashFileGrantTtlSeconds"], TRASH_FILE_GRANT_TTL_SECONDS);
+    assert_eq!(
+        runtime["trashFileGrantTtlSeconds"],
+        TRASH_FILE_GRANT_TTL_SECONDS
+    );
     assert_eq!(
         runtime["trashFileMode"],
         "dry_run_or_identity_content_scoped_single_use_grant_with_recovery_retained"
@@ -179,7 +186,10 @@ async fn enabled_discovery_status_and_missing_grant_are_exact_and_fail_closed() 
         "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
     );
     assert_eq!(runtime["trashFileMaxBytes"], MAX_TRASH_FILE_BYTES);
-    assert_eq!(runtime["trashFileMaxResponseBytes"], MAX_TRASH_FILE_RESPONSE_BYTES);
+    assert_eq!(
+        runtime["trashFileMaxResponseBytes"],
+        MAX_TRASH_FILE_RESPONSE_BYTES
+    );
     assert_eq!(
         runtime["trashFileQuarantineMaxArtifacts"],
         MAX_TRASH_FILE_QUARANTINE_ARTIFACTS
@@ -246,11 +256,7 @@ async fn exact_grant_survives_preview_and_preflight_then_retains_one_private_art
     let preflight = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        trash_call(
-            oversized_id,
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call(oversized_id, target.to_string_lossy().as_ref(), Some(false)),
         &grant,
     )
     .await;
@@ -267,11 +273,7 @@ async fn exact_grant_survives_preview_and_preflight_then_retains_one_private_art
     let trashed = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        trash_call(
-            "trash",
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call("trash", target.to_string_lossy().as_ref(), Some(false)),
         &grant,
     )
     .await;
@@ -291,7 +293,13 @@ async fn exact_grant_survives_preview_and_preflight_then_retains_one_private_art
     let artifact = artifacts[0].path();
     let name = artifact.file_name().unwrap().to_string_lossy();
     let uuid = name.strip_prefix(TRASH_ARTIFACT_PREFIX).unwrap();
-    assert_eq!(uuid::Uuid::parse_str(uuid).unwrap().hyphenated().to_string(), uuid);
+    assert_eq!(
+        uuid::Uuid::parse_str(uuid)
+            .unwrap()
+            .hyphenated()
+            .to_string(),
+        uuid
+    );
     assert_eq!(std::fs::read(&artifact).unwrap(), content);
     let retained = std::fs::metadata(&artifact).unwrap();
     assert_eq!(retained.dev(), target_before.dev());
@@ -302,11 +310,7 @@ async fn exact_grant_survives_preview_and_preflight_then_retains_one_private_art
     let replay = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        trash_call(
-            "replay",
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call("replay", target.to_string_lossy().as_ref(), Some(false)),
         &grant,
     )
     .await;
@@ -362,7 +366,11 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
     let valid = authority.issue(&session_id, &exact_target).unwrap();
 
     for (label, grant, expected_reason) in [
-        ("malformed", "v1.too.short".to_owned(), "capability_grant_malformed"),
+        (
+            "malformed",
+            "v1.too.short".to_owned(),
+            "capability_grant_malformed",
+        ),
         (
             "signature",
             corrupt_signature(&valid),
@@ -384,11 +392,7 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
     let wrong_session = post_json_to_session_with_grant(
         router.clone(),
         &other_session_id,
-        trash_call(
-            "session",
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call("session", target.to_string_lossy().as_ref(), Some(false)),
         &wrong_session_grant,
     )
     .await;
@@ -408,11 +412,7 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
     let wrong_principal = post_json_to_session_with_grant(
         router.clone(),
         &session_id,
-        trash_call(
-            "principal",
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call("principal", target.to_string_lossy().as_ref(), Some(false)),
         &other_principal_grant,
     )
     .await;
@@ -484,11 +484,7 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
     let wrong_family = post_json_to_session_with_grant(
         router,
         &session_id,
-        trash_call(
-            "family",
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call("family", target.to_string_lossy().as_ref(), Some(false)),
         &wrong_family_grant,
     )
     .await;
@@ -591,7 +587,10 @@ async fn exact_limit_succeeds_and_plus_one_or_unsupported_targets_preserve_other
     assert_eq!(retry.status(), StatusCode::OK);
     assert!(!small.exists());
     assert_eq!(std::fs::read_to_string(&linked).unwrap(), "linked-content");
-    assert_eq!(std::fs::read_to_string(&linked_alias).unwrap(), "linked-content");
+    assert_eq!(
+        std::fs::read_to_string(&linked_alias).unwrap(),
+        "linked-content"
+    );
 }
 
 #[tokio::test]
@@ -660,11 +659,7 @@ async fn capability_header_rejects_wrong_context_duplicate_oversized_non_ascii_a
     assert!(!response_json(smuggled).await.to_string().contains(&grant));
 
     let mut duplicate = session_request(
-        trash_call(
-            "duplicate",
-            target.to_string_lossy().as_ref(),
-            Some(false),
-        ),
+        trash_call("duplicate", target.to_string_lossy().as_ref(), Some(false)),
         &session_id,
     );
     duplicate.headers_mut().append(
@@ -768,7 +763,12 @@ async fn two_distinct_grants_racing_one_target_consume_exactly_one() {
     let winner = winner.expect("one grant must win the exact target");
     let loser = 1 - winner;
     assert!(!target.exists());
-    assert_eq!(std::fs::read_dir(root.path().join(TRASH_QUARANTINE)).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_dir(root.path().join(TRASH_QUARANTINE))
+            .unwrap()
+            .count(),
+        1
+    );
     assert_eq!(
         authority
             .consume(Some(&grants[winner]), &session_id, &binding)

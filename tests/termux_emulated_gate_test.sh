@@ -37,6 +37,8 @@ grep -Fq '"read_text_range","search_text"' "$VOLUME_CONTROL_GATE" \
   || fail_test 'volume-control native gate UTF-8 range allowlist parity missing'
 
 for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$COMMAND_GATE"; do
+  grep -Fq 'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false' "$script" \
+    || fail_test "native gate does not pin trash_file mutation disabled for $(basename "$script")"
   grep -Fq 'fileWriteMutationEnabled == false' "$script" \
     || fail_test "default-disabled write status missing for $(basename "$script")"
   grep -Fq 'write_file_mutation_disabled' "$script" \
