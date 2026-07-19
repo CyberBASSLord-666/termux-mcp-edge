@@ -76,9 +76,10 @@ use crate::{
     android_volume_control::AndroidVolumeStreamName,
     android_volume_grant::{AndroidVolumeGrantAuthority, AndroidVolumeGrantTarget},
 };
+use crate::auth::McpConnectionInfo;
 #[cfg(feature = "mcp-runtime")]
 use crate::{
-    auth::{McpAuthPolicy, McpConnectionInfo},
+    auth::McpAuthPolicy,
     copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::CreateDirectoryGrantAuthority,
     mcp_transport::McpRouterBuilder,
