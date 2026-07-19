@@ -795,6 +795,29 @@ impl FilesystemMutationAuthorities {
     }
 }
 
+/// Opaque authority for the primary package's server-owned command lane.
+///
+/// Cargo omits `CARGO_PRIMARY_PACKAGE` when this package is compiled as a
+/// dependency. Consequently, downstream embedding builds cannot obtain this
+/// value through safe Rust and cannot select command execution in a public
+/// router. The primary package binary consumes the value exactly once while
+/// building its protected transport.
+pub struct ServerCommandAuthority {
+    _private: std::num::NonZeroU8,
+}
+
+impl ServerCommandAuthority {
+    /// Acquire the server-only authority when Cargo is compiling this package as
+    /// a selected primary package, never when it is merely a dependency.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_primary_package() -> Option<Self> {
+        option_env!("CARGO_PRIMARY_PACKAGE").map(|_| Self {
+            _private: std::num::NonZeroU8::MIN,
+        })
+    }
+}
+
 /// Mandatory authentication and resource-limit boundary for public MCP routers.
 ///
 /// Construction requires the host that the embedding application intends to
@@ -921,7 +944,7 @@ struct McpTransportState {
     #[cfg(feature = "android-volume-control")]
     android_volume_control_client: AndroidVolumeControlClient,
     #[cfg(feature = "command-execution")]
-    command_execution_client: CommandExecutionClient,
+    command_execution_client: Option<CommandExecutionClient>,
 }
 
 impl McpTransportState {
@@ -935,14 +958,13 @@ impl McpTransportState {
         write_file_authority: Option<WriteFileGrantAuthority>,
     ) -> Self {
         #[cfg(feature = "command-execution")]
-        let command_execution_client = CommandExecutionClient::current_server(
-            file_tools
-                .safe_roots()
-                .first()
-                .cloned()
-                .expect("validated MCP filesystem tools own at least one safe root"),
-        )
-        .expect("current server executable and anchored command safe root must be usable");
+        let command_execution_client = command_execution_enabled
+            .then(|| file_tools.safe_roots().first().cloned())
+            .flatten()
+            .and_then(|safe_root| CommandExecutionClient::current_server(safe_root).ok());
+        #[cfg(feature = "command-execution")]
+        let command_execution_enabled =
+            command_execution_enabled && command_execution_client.is_some();
 
         Self {
             security_policy,
@@ -995,16 +1017,6 @@ impl McpTransportState {
         android_battery_status_enabled: bool,
         android_battery_client: AndroidBatteryClient,
     ) -> Self {
-        #[cfg(feature = "command-execution")]
-        let command_execution_client = CommandExecutionClient::current_server(
-            file_tools
-                .safe_roots()
-                .first()
-                .cloned()
-                .expect("test filesystem tools own a safe root"),
-        )
-        .expect("test command client construction must succeed");
-
         Self {
             security_policy,
             file_tools,
@@ -1026,7 +1038,7 @@ impl McpTransportState {
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
-            command_execution_client,
+            command_execution_client: None,
         }
     }
 
@@ -1037,16 +1049,6 @@ impl McpTransportState {
         android_volume_status_enabled: bool,
         android_volume_client: AndroidVolumeClient,
     ) -> Self {
-        #[cfg(feature = "command-execution")]
-        let command_execution_client = CommandExecutionClient::current_server(
-            file_tools
-                .safe_roots()
-                .first()
-                .cloned()
-                .expect("test filesystem tools own a safe root"),
-        )
-        .expect("test command client construction must succeed");
-
         Self {
             security_policy,
             file_tools,
@@ -1068,7 +1070,7 @@ impl McpTransportState {
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
-            command_execution_client,
+            command_execution_client: None,
         }
     }
 
@@ -1100,7 +1102,7 @@ impl McpTransportState {
             android_volume_control_authority: None,
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
-            command_execution_client,
+            command_execution_client: Some(command_execution_client),
         }
     }
 
@@ -1296,8 +1298,88 @@ struct SetAndroidVolumeArguments {
     dry_run: Option<bool>,
 }
 
+/// Build the primary package server's protected MCP router with filesystem
+/// authorities and the opaque command authority.
+///
+/// This entry point is public only because Cargo compiles the package binary as a
+/// separate crate. Dependency builds cannot obtain `ServerCommandAuthority`.
+#[doc(hidden)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the primary server constructor carries explicit protection boundaries"
+)]
+#[rustfmt::skip]
+pub fn protected_primary_server_router_with_filesystem_authorities_and_options(
+    command_authority: ServerCommandAuthority,
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+    options: McpTransportOptions,
+) -> Router {
+    let ServerCommandAuthority { _private: _ } = command_authority;
+    protect_router(
+        router_with_filesystem_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            FilesystemMutationAuthorities::new(
+                create_directory_authority,
+                write_file_authority,
+            ),
+            options,
+        ),
+        protection,
+    )
+}
+
+/// Build the primary package server's protected MCP router with every optional
+/// mutation authority and the opaque command authority.
+#[cfg(feature = "android-volume-control")]
+#[doc(hidden)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the primary server constructor carries explicit protection boundaries"
+)]
+#[rustfmt::skip]
+pub fn protected_primary_server_router_with_capability_authorities_and_options(
+    command_authority: ServerCommandAuthority,
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    authorities: McpCapabilityAuthorities,
+    options: McpTransportOptions,
+) -> Router {
+    let ServerCommandAuthority { _private: _ } = command_authority;
+    protect_router(
+        router_with_capability_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            authorities,
+            options,
+        ),
+        protection,
+    )
+}
+
 /// Build a publicly embeddable MCP router with mandatory authentication and
 /// request-resource protections.
+///
+/// Public embeddings cannot enable the process-execution lane. Command
+/// diagnostics are initialized only by this package's crate-owned server startup,
+/// which prevents a downstream binary from substituting its own `current_exe`.
 #[rustfmt::skip]
 pub fn protected_router(
     protection: McpRouterProtection,
@@ -1305,7 +1387,6 @@ pub fn protected_router(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
 ) -> Router {
     protect_router(
         router(
@@ -1313,7 +1394,7 @@ pub fn protected_router(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
         ),
         protection,
     )
@@ -1327,7 +1408,6 @@ pub fn protected_router_with_options(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     options: McpTransportOptions,
 ) -> Router {
     protect_router(
@@ -1336,7 +1416,7 @@ pub fn protected_router_with_options(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             options,
         ),
         protection,
@@ -1352,7 +1432,6 @@ pub fn protected_router_with_create_directory_authority(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     create_directory_authority: CreateDirectoryGrantAuthority,
 ) -> Router {
     protect_router(
@@ -1361,7 +1440,7 @@ pub fn protected_router_with_create_directory_authority(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             create_directory_authority,
         ),
         protection,
@@ -1381,7 +1460,6 @@ pub fn protected_router_with_create_directory_authority_and_options(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     create_directory_authority: CreateDirectoryGrantAuthority,
     options: McpTransportOptions,
 ) -> Router {
@@ -1391,7 +1469,7 @@ pub fn protected_router_with_create_directory_authority_and_options(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             create_directory_authority,
             options,
         ),
@@ -1412,7 +1490,6 @@ pub fn protected_router_with_filesystem_authorities(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     write_file_authority: Option<WriteFileGrantAuthority>,
 ) -> Router {
@@ -1422,7 +1499,7 @@ pub fn protected_router_with_filesystem_authorities(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             create_directory_authority,
             write_file_authority,
         ),
@@ -1443,7 +1520,6 @@ pub fn protected_router_with_filesystem_authorities_and_options(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     write_file_authority: Option<WriteFileGrantAuthority>,
     options: McpTransportOptions,
@@ -1454,7 +1530,7 @@ pub fn protected_router_with_filesystem_authorities_and_options(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             FilesystemMutationAuthorities::new(
                 create_directory_authority,
                 write_file_authority,
@@ -1479,7 +1555,6 @@ pub fn protected_router_with_capability_authorities(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
 ) -> Router {
@@ -1489,7 +1564,7 @@ pub fn protected_router_with_capability_authorities(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             create_directory_authority,
             android_volume_control_authority,
         ),
@@ -1511,7 +1586,6 @@ pub fn protected_router_with_capability_authorities_and_options(
     file_tools: FileSystemTools,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
     authorities: McpCapabilityAuthorities,
     options: McpTransportOptions,
 ) -> Router {
@@ -1521,7 +1595,7 @@ pub fn protected_router_with_capability_authorities_and_options(
             file_tools,
             android_battery_status_enabled,
             android_volume_status_enabled,
-            command_execution_enabled,
+            false,
             authorities,
             options,
         ),
@@ -3766,14 +3840,28 @@ async fn handle_run_command_profile_call(
         let profile = decision
             .profile
             .expect("allowed command policy decisions own a fixed profile");
-        match state.command_execution_client.execute(profile).await {
+        let Some(command_execution_client) = state.command_execution_client.as_ref() else {
+            let failure = CommandPolicyDecision {
+                allowed: false,
+                reason_code: COMMAND_PROGRAM_UNAVAILABLE_REASON,
+                profile: Some(profile),
+            };
+            record_command_policy_decision(&state.audit_counters, &failure);
+            return tool_error_result(
+                id,
+                RUN_COMMAND_PROFILE_TOOL,
+                COMMAND_EXECUTION_ERROR,
+                COMMAND_PROGRAM_UNAVAILABLE_REASON,
+            );
+        };
+        match command_execution_client.execute(profile).await {
             Ok(result) => {
                 record_command_policy_decision(&state.audit_counters, &decision);
                 ok_result(
                     id,
                     format!(
                         "run_command_profile: fixed read-only profile {} completed within all bounds.",
-                        profile.id,
+                        profile.id(),
                     ),
                     json!(result),
                 )
@@ -6909,7 +6997,6 @@ mod tests {
             FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).expect("test safe root must validate"),
             false,
             false,
-            false,
         );
 
         let unauthenticated = app
@@ -8643,6 +8730,8 @@ printf '%s\n' "$2" >"$level"
     #[cfg(feature = "command-execution")]
     #[tokio::test]
     async fn raw_command_override_fields_are_rejected_before_spawn() {
+        use axum::body::to_bytes;
+
         let safe_root = tempfile::tempdir().unwrap();
         let marker = safe_root.path().join("must-not-exist");
         let script = format!("touch '{}'", marker.display());
@@ -8656,11 +8745,14 @@ printf '%s\n' "$2" >"$level"
 
         for arguments in [
             json!({"profile": "server_version", "command": "sh -c id"}),
-            json!({"profile": "server_version", "argv": ["--help"]}),
-            json!({"profile": "server_version", "workingDirectory": "/"}),
-            json!({"profile": "server_version", "environment": {"TOKEN": "secret"}}),
-            json!({"profile": "server_version", "timeout": 999}),
-            json!({"profile": "server_version", "stdoutLimit": 999999}),
+            json!({"profile": "server_version", "program": "/private/program"}),
+            json!({"profile": "server_version", "argv": ["--private-argument"]}),
+            json!({"profile": "server_version", "workingDirectory": "/private/cwd"}),
+            json!({"profile": "server_version", "environment": {"TOKEN": "secret-token-value"}}),
+            json!({"profile": "server_version", "stdin": "private-stdin"}),
+            json!({"profile": "server_version", "timeout": 998877}),
+            json!({"profile": "server_version", "stdoutLimit": 998878}),
+            json!({"profile": "server_version", "stderrLimit": 998879}),
         ] {
             let response = handle_run_command_profile_call(
                 Some(json!("command-invalid")),
@@ -8669,12 +8761,77 @@ printf '%s\n' "$2" >"$level"
             )
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+            let response = String::from_utf8(response.to_vec()).unwrap();
+            for private in [
+                "sh -c id",
+                "/private/program",
+                "--private-argument",
+                "/private/cwd",
+                "secret-token-value",
+                "private-stdin",
+                "998877",
+                "998878",
+                "998879",
+            ] {
+                assert!(!response.contains(private), "response reflected {private}");
+            }
         }
         assert!(!marker.exists());
         let counters = state.audit_counters.lock().unwrap().clone();
         assert_eq!(
             counters.by_reason_code[COMMAND_INVALID_ARGUMENTS_REASON].denied,
-            6
+            9
+        );
+        let audit = serde_json::to_string(&counters).unwrap();
+        for private in [
+            "sh -c id",
+            "/private/program",
+            "--private-argument",
+            "/private/cwd",
+            "secret-token-value",
+            "private-stdin",
+            "998877",
+            "998878",
+            "998879",
+        ] {
+            assert!(!audit.contains(private), "audit reflected {private}");
+        }
+    }
+
+    #[cfg(feature = "command-execution")]
+    #[tokio::test]
+    async fn unapproved_profile_is_rejected_before_spawn() {
+        use axum::body::to_bytes;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let marker = safe_root.path().join("must-not-exist");
+        let script = format!("touch '{}'", marker.display());
+        let (_program_root, client) = test_command_client(safe_root.path(), &script);
+        let state = McpTransportState::with_command_execution_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).expect("test safe root must validate"),
+            true,
+            client,
+        );
+
+        let response = handle_run_command_profile_call(
+            Some(json!("command-unapproved")),
+            Some(json!({"profile": "sh -c private-command"})),
+            &state,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        assert!(!String::from_utf8(response.to_vec())
+            .unwrap()
+            .contains("private-command"));
+        assert!(!marker.exists());
+        assert_eq!(
+            state.audit_counters.lock().unwrap().by_reason_code
+                [COMMAND_PROFILE_NOT_ALLOWLISTED_REASON]
+                .denied,
+            1
         );
     }
 }
