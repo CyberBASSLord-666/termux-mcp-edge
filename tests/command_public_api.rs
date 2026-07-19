@@ -33,6 +33,16 @@ fn copy_source_tree(source: &Path, destination: &Path) {
     }
 }
 
+fn assert_symbol_is_closed(stderr: &str, symbol: &str, context: &str) {
+    assert!(
+        stderr.contains(symbol)
+            && (stderr.contains("private")
+                || stderr.contains("unresolved import")
+                || stderr.contains("no ")),
+        "{context} failed for the wrong reason:\n{stderr}"
+    );
+}
+
 #[test]
 fn dependency_consumers_cannot_forge_command_execution_authority() {
     let probe = tempfile::tempdir().unwrap();
@@ -125,79 +135,119 @@ fn main() {
             "{name} unexpectedly compiled as a dependency consumer"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(expected_symbol) && stderr.contains("private"),
-            "{name} failed for the wrong reason:\n{stderr}"
-        );
+        assert_symbol_is_closed(&stderr, expected_symbol, name);
     }
 }
 
 #[test]
-fn public_router_constructors_reject_removed_command_enablement_argument() {
+fn one_public_builder_compiles_and_every_legacy_router_entry_is_closed() {
     let probe = tempfile::tempdir().unwrap();
     fs::create_dir(probe.path().join("src")).unwrap();
     let package_path = Path::new(env!("CARGO_MANIFEST_DIR"));
     fs::write(
         probe.path().join("Cargo.toml"),
         format!(
-            "[package]\nname = \"command-router-arity-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = {{ path = {package_path:?}, features = [\"command-execution\", \"android-volume-control\"] }}\n\n[workspace]\n"
+            "[package]\nname = \"secure-router-api-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = {{ path = {package_path:?}, features = [\"command-execution\", \"android-volume-control\"] }}\n\n[workspace]\n"
         ),
     )
     .unwrap();
 
-    // Each count is the former vulnerable public signature, including the
-    // removed command_execution_enabled argument. A regression that restores
-    // that argument makes its probe compile and fails this test.
+    write_probe_source(
+        probe.path(),
+        r#"
+use std::path::PathBuf;
+use termux_mcp_server::{
+    auth::McpAuthPolicy,
+    mcp_transport::McpRouterBuilder,
+    request_limits::McpRequestLimits,
+    transport_security::TransportSecurityPolicy,
+};
+
+fn main() {
+    let _ = McpRouterBuilder::new(
+        "127.0.0.1",
+        McpAuthPolicy::static_bearer("compile-probe-token").unwrap(),
+        McpRequestLimits::from_seconds(1, 1, 1024).unwrap(),
+        TransportSecurityPolicy::localhost(8000, false).unwrap(),
+        vec![PathBuf::from("/compile-only-safe-root")],
+    );
+}
+"#,
+    );
+    let valid = run_cargo(
+        probe.path(),
+        &probe.path().join("target-valid"),
+        &["check", "--quiet", "--offline", "--jobs", "1"],
+    );
+    assert!(
+        valid.status.success(),
+        "the one public MCP builder failed to compile for a dependency consumer:\n{}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+
     let rejected = [
-        ("protected_router", 6),
-        ("protected_router_with_options", 7),
-        ("protected_router_with_create_directory_authority", 7),
-        (
-            "protected_router_with_create_directory_authority_and_options",
-            8,
-        ),
-        ("protected_router_with_copy_file_authority", 7),
-        ("protected_router_with_copy_file_authority_and_options", 8),
-        ("protected_router_with_filesystem_authorities", 8),
-        (
-            "protected_router_with_filesystem_authorities_and_options",
-            9,
-        ),
-        ("protected_router_with_all_filesystem_authorities", 9),
-        (
-            "protected_router_with_all_filesystem_authorities_and_options",
-            10,
-        ),
-        ("protected_router_with_capability_authorities", 8),
-        (
-            "protected_router_with_capability_authorities_and_options",
-            8,
-        ),
+        "McpRouterProtection",
+        "McpCapabilityAuthorities",
+        "protected_router",
+        "protected_router_with_options",
+        "protected_router_with_create_directory_authority",
+        "protected_router_with_create_directory_authority_and_options",
+        "protected_router_with_copy_file_authority",
+        "protected_router_with_copy_file_authority_and_options",
+        "protected_router_with_filesystem_authorities",
+        "protected_router_with_filesystem_authorities_and_options",
+        "protected_router_with_all_filesystem_authorities",
+        "protected_router_with_all_filesystem_authorities_and_options",
+        "protected_router_with_capability_authorities",
+        "protected_router_with_capability_authorities_and_options",
     ];
 
-    for (function, former_argument_count) in rejected {
-        let arguments = vec!["todo!()"; former_argument_count].join(", ");
+    for symbol in rejected {
         write_probe_source(
             probe.path(),
             &format!(
-                "use termux_mcp_server::mcp_transport::{function};\n\nfn main() {{\n    let _ = {function}({arguments});\n}}\n"
+                "use termux_mcp_server::mcp_transport::{symbol};\n\nfn main() {{ let _ = {symbol}; }}\n"
             ),
         );
         let output = run_cargo(
             probe.path(),
-            &probe.path().join("target"),
+            &probe.path().join("target-closed"),
             &["check", "--quiet", "--offline", "--jobs", "1"],
         );
         assert!(
             !output.status.success(),
-            "{function} unexpectedly accepted the removed command-enable argument"
+            "{symbol} unexpectedly remained public"
         );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(function) && stderr.contains("arguments"),
-            "{function} failed for the wrong reason:\n{stderr}"
+        assert_symbol_is_closed(
+            &String::from_utf8_lossy(&output.stderr),
+            symbol,
+            "legacy router constructor",
         );
     }
+
+    write_probe_source(
+        probe.path(),
+        r#"
+use termux_mcp_server::mcp_transport::McpRouterBuilder;
+
+fn cannot_enable_command(builder: McpRouterBuilder) {
+    let _ = builder.with_command_execution_enabled(true);
+}
+
+fn main() {}
+"#,
+    );
+    let command = run_cargo(
+        probe.path(),
+        &probe.path().join("target-command"),
+        &["check", "--quiet", "--offline", "--jobs", "1"],
+    );
+    assert!(!command.status.success(), "downstream command enablement compiled");
+    assert_symbol_is_closed(
+        &String::from_utf8_lossy(&command.stderr),
+        "with_command_execution_enabled",
+        "builder command enablement",
+    );
 }
 
 #[test]
@@ -290,11 +340,15 @@ fn main() {
         "a selected-workspace consumer unexpectedly reached the binary command router"
     );
     let stderr = String::from_utf8_lossy(&rejected.stderr);
-    assert!(
-        stderr.contains("consumer/src/main.rs")
-            && stderr.contains("binary_server_router_with_filesystem_authorities_and_options")
-            && stderr.contains("binary_server_router_with_capability_authorities_and_options")
-            && stderr.contains("private"),
-        "selected-workspace probe failed for the wrong reason:\n{stderr}"
+    assert!(stderr.contains("consumer/src/main.rs"));
+    assert_symbol_is_closed(
+        &stderr,
+        "binary_server_router_with_filesystem_authorities_and_options",
+        "selected-workspace filesystem router",
+    );
+    assert_symbol_is_closed(
+        &stderr,
+        "binary_server_router_with_capability_authorities_and_options",
+        "selected-workspace capability router",
     );
 }
