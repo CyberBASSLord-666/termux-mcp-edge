@@ -45,7 +45,6 @@ fn protected_router(policy: McpAuthPolicy, file_tools: FileSystemTools) -> Route
         file_tools,
         false,
         false,
-        false,
     )
 }
 
