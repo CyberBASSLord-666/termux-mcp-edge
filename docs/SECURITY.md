@@ -17,6 +17,8 @@ In static-token mode, the complete `/mcp` route requires `Authorization: Bearer 
 
 [`McpRouterBuilder`](EMBEDDING.md) is the only public router construction path and is also used by the package binary. Its fixed outer-to-inner order is authentication; early `Content-Length`, fail-fast concurrency, and total timeout enforcement; streaming body limiting and extraction; exact `Host`/`Origin`; method/media/protocol/session/grant validation; then JSON-RPC lifecycle, discovery, tool dispatch, and authorized mutation. Raw state and router constructors are crate-private or test-only.
 
+The builder also closes authentication posture over authority configuration: attaching a create-directory, file-copy, file-write, or Android-volume mutation authority while using unauthenticated localhost policy returns a typed construction error. Only sealed static-bearer policy can produce a mutation-capable router.
+
 The optional runtime is not a broad host-control surface. Only requests that cross the complete boundary above can reach the currently documented staged tools:
 
 - `runtime_status`
