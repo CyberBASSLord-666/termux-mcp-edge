@@ -750,14 +750,12 @@ impl FileSystemTools {
                 OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                 Mode::empty(),
             )
-            .map_err(|error| {
-                match error {
-                    rustix::io::Errno::NOENT => AppError::PathNotFound,
-                    rustix::io::Errno::LOOP => {
-                        path_rejected(anchored.display_path.to_string_lossy().as_ref())
-                    }
-                    _ => descriptor_error(error),
+            .map_err(|error| match error {
+                rustix::io::Errno::NOENT => AppError::PathNotFound,
+                rustix::io::Errno::LOOP => {
+                    path_rejected(anchored.display_path.to_string_lossy().as_ref())
                 }
+                _ => descriptor_error(error),
             })?;
             let opened_metadata = descriptor_fs::fstat(&file_fd).map_err(descriptor_error)?;
             if !FileType::from_raw_mode(opened_metadata.st_mode).is_file() {
