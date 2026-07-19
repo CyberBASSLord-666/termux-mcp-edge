@@ -23,16 +23,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::request_grant_capability::RequestGrantCapability;
+use crate::request_grant_capability::{
+    RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const WRITE_FILE_GRANT_HEADER: &str = "mcp-capability-grant";
+pub const WRITE_FILE_GRANT_HEADER: &str = REQUEST_GRANT_HEADER;
 pub const WRITE_FILE_GRANT_VERSION: &str = "v1";
 pub const WRITE_FILE_GRANT_TTL_SECONDS: u64 = 60;
 pub const MAX_WRITE_FILE_GRANT_LIFETIME_SECONDS: u64 = 120;
 pub const MAX_WRITE_FILE_GRANT_FUTURE_SKEW_SECONDS: u64 = 5;
-pub const MAX_WRITE_FILE_GRANT_HEADER_BYTES: usize = 512;
+pub const MAX_WRITE_FILE_GRANT_HEADER_BYTES: usize = MAX_REQUEST_GRANT_HEADER_BYTES;
 pub const MAX_WRITE_FILE_GRANT_KEY_ID_BYTES: usize = 32;
 pub const WRITE_FILE_GRANT_KEY_BYTES: usize = 32;
 pub const WRITE_FILE_GRANT_KEY_HEX_BYTES: usize = WRITE_FILE_GRANT_KEY_BYTES * 2;
