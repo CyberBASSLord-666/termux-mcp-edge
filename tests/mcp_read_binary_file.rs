@@ -260,7 +260,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
     assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
 
     std::fs::remove_file(&path).unwrap();
-    let oversized_id = "x".repeat(MAX_BINARY_READ_RESPONSE_BYTES);
+    let oversized_id = "x".repeat(MAX_BINARY_READ_BYTES / 4);
     let oversized_missing = post_json_to_session(
         router.clone(),
         &session_id,

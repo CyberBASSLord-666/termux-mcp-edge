@@ -454,7 +454,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
     assert!(expanded_body.len() <= MAX_TEXT_RANGE_RESPONSE_BYTES);
 
     std::fs::remove_file(&path).unwrap();
-    let oversized_id = "x".repeat(MAX_TEXT_RANGE_RESPONSE_BYTES);
+    let oversized_id = "x".repeat(MAX_TEXT_RANGE_BYTES);
     for payload in [
         json!({
             "jsonrpc": "2.0",
