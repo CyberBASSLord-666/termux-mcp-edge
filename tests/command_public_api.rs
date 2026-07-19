@@ -1,10 +1,6 @@
 #![cfg(feature = "command-execution")]
 
-use std::{
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
 
 fn write_probe_source(root: &Path, source: &str) {
     fs::write(root.join("src/main.rs"), source).unwrap();
