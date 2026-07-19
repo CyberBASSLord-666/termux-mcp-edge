@@ -294,10 +294,7 @@ mod tests {
     fn safe_roots_are_normalized_deduplicated_and_sorted() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
-        let mut expected = vec![
-            first.path().to_path_buf(),
-            second.path().to_path_buf(),
-        ];
+        let mut expected = vec![first.path().to_path_buf(), second.path().to_path_buf()];
         expected.sort_unstable();
 
         let tools = FileSystemTools::try_new(vec![
