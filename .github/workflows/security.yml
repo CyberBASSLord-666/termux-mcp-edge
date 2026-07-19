@@ -21,8 +21,7 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
-      - ".github/workflows/android-cross-compile.yml"
-      - ".github/workflows/security.yml"
+      - ".github/workflows/*.yml"
   pull_request:
     branches: [ main ]
     paths:
@@ -43,8 +42,7 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
-      - ".github/workflows/android-cross-compile.yml"
-      - ".github/workflows/security.yml"
+      - ".github/workflows/*.yml"
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
