@@ -10,7 +10,7 @@ This runbook governs changes to the implemented `run_command_profile` registry. 
 | `server_help` | Server-owned running image | `--help` | None |
 | `execution_boundary` | Server-owned running image | `--self-check-command-boundary` | None |
 
-These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Public embedding routers are command-disabled, while only the package binary can invoke the two crate-private protected-router builders that accept command enablement.
+These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Command enablement is structurally confined to the binary target: `src/main.rs` compiles the module graph in the binary crate and calls two crate-private command-capable router builders, while all twelve public library routers—including copy-file and all-filesystem variants—hard-code the lane disabled. No mintable command-authority token exists.
 
 ## Review record
 
@@ -55,17 +55,17 @@ Such work belongs in a separate threat-modeled capability gate. It must not be d
 
 Profile identifiers must be short stable ASCII-style names no longer than 64 bytes. They must not contain path syntax, whitespace, NUL, shell tokens, or command text. The public schema remains a one-property closed object whose enum is derived from the canonical registry.
 
-Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must also prove that downstream dependency code cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, or call either crate-private binary protected-router builder. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
+Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must first build a valid safe public consumer and then prove that ordinary dependencies and selected workspace members cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, recover removed authority symbols, call binary-private builders, or use former public copy/all-filesystem command-flag signatures. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
 
 ## Executable and argv review
 
-At initialization, the production client resolves `std::env::current_exe()` and requires an exact `termux-mcp-server` basename, a regular file, and executable mode. Any mismatch makes the effective command posture unavailable before spawn. The client then discards that reopenable installation path and launches only `/proc/self/exe`, binding execution to the already-running inode across later rename or replacement. A proposal to launch any other executable, or to weaken either check, is outside this gate.
+At initialization, the production client resolves an absolute `std::env::current_exe()` path with exact basename `termux-mcp-server`. It opens the candidate without following its final component, opens `/proc/self/exe` independently, and requires an executable regular candidate, a regular loaded image, and equal device/inode identity. Any failure makes the effective command posture unavailable before spawn. The client discards the reopenable installation path and launches only `/proc/self/exe`, binding execution to the already-running inode across later rename or replacement. A proposal to launch any other executable, or to weaken any identity check, is outside this gate.
 
 Argv must be a complete immutable slice. Reject shell metacharacters, command substitution, redirection, pipes, globs, path expansion, configuration-file arguments, dynamic verbosity, and any option that can load or execute external content. Tests must assert the exact argv observed by a fixture executable.
 
 ## Working-directory review
 
-The command client receives the first safe root only after startup has canonicalized it and verified that it is an existing directory. It rejects relative paths, `/`, and nonexistent directories. Callers cannot select or see the working directory.
+The command client opens the first canonical safe root once with a no-follow directory descriptor. It rejects relative paths, final-component symlinks, nonexistent/non-directory paths, and every filesystem-root alias by comparing device/inode identity with an independently opened `/`. The descriptor remains owned for the client lifetime, and each child uses `/proc/self/fd/<fd>` while a cloned guard stays alive through execution. Renaming the directory and replacing its former pathname therefore cannot redirect cwd. Callers cannot select or see the working directory.
 
 Any profile whose behavior can escape the directory through its own fixed arguments or implicit config discovery is ineligible even though the child cwd is safe-rooted.
 
@@ -120,7 +120,8 @@ The exact PR head must also pass:
 - six Android artifact builds;
 - native ARM64 official-Termux execution of `termux_command_emulated_gate.sh`;
 - evidence validation against `command-emulated-evidence-schema-v2.json`;
-- dependency-mode API compile failures, primary-authority non-acquisition, and runtime pre-spawn rejection for wrong executable identity, forged/raw input shapes, and every hard-limit maximum-plus-one case;
-- post-initialization path-replacement evidence proving `/proc/self/exe` continues to execute the already-running image.
+- ordinary-dependency and selected-workspace API compile failures for removed authority symbols, private builders, raw types, and former public copy/all-filesystem command-flag signatures;
+- runtime pre-spawn rejection for wrong name, wrong inode, symlink/non-regular/non-executable candidates, forged/raw input shapes, root/cwd aliases, and every hard-limit maximum-plus-one case;
+- exact 34-request native v2 evidence whose combined phase proves `/proc/self/exe` continues to execute the already-running image and the retained safe-root descriptor survives pathname rename/replacement.
 
 Do not substitute a long idle observation for these deterministic boundary tests. Physical observation, when release governance requires it for changed runtime inputs, is a separate release-qualification decision and does not replace command-policy evidence.

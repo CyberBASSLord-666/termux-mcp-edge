@@ -217,14 +217,15 @@ Implemented scope:
 - Separate `command-execution` feature, including `mcp-runtime`
 - Separate `MCP__COMMAND__ENABLED=true` runtime opt-in, defaulting to disabled
 - `run_command_profile` with a one-property closed schema and exact profile enum
-- Exact current server executable only; no `PATH` lookup
+- Binary-crate-only command enablement; all public library routers hard-code disabled, with dependency and selected-workspace compile probes
+- Exact-name candidate opened no-follow and matched by device/inode to an independently opened `/proc/self/exe`; later launches use only `/proc/self/exe`
 - Fixed complete argv for `server_version`, `server_help`, and `execution_boundary`
-- First canonical configured safe root as cwd, empty environment, and null stdin
-- Five-second deadlines, profile-specific stdout/stderr ceilings, and two non-queueing concurrency permits
+- First canonical configured safe root retained by no-follow directory descriptor, filesystem-root aliases rejected by device/inode, and child cwd selected through `/proc/self/fd/<fd>`
+- Empty environment, null stdin, immutable 5-second/16 KiB stdout/4 KiB stderr maxima, and two non-queueing concurrency permits
 - The cancellation-safe shared process supervisor with process-group isolation, immediate termination, cleanup reserve, and authoritative direct-child reaping
 - UTF-8 and zero-exit success requirements; stable non-sensitive failures with no partial output
 - Hidden disabled discovery, runtime-disabled direct-call denial, and aggregate audit counters using only reason codes and numeric profile ordinals
-- Exact-source fifth Android artifact and native ARM64 official-Termux validation of the compile/runtime truth table and fixed boundary
+- Exact-source sixth Android artifact and strict-v2 native ARM64 official-Termux validation with exactly 34 requests, executable/cwd pathname replacement, and complete provenance/artifact/environment checks
 
 Denied:
 

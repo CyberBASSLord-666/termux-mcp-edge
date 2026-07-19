@@ -225,13 +225,15 @@ Expected enabled evidence:
 
 - Startup uses the `command-execution` build and `MCP__COMMAND__ENABLED=true`.
 - Discovery advertises only the closed `profile` enum `server_version`, `server_help`, and `execution_boundary`.
-- Version and help return bounded output from the exact server executable.
-- Boundary self-check returns exactly `termux-mcp-command-boundary ok`, proving empty environment, null stdin, and non-root safe-root cwd without reflecting their values.
+- Version and help return bounded output from the exact-name executable whose device/inode matches the independently opened `/proc/self/exe`; later launches use only `/proc/self/exe`.
+- Boundary self-check returns exactly `termux-mcp-command-boundary ok`, proving empty environment, null stdin, and descriptor-pinned non-root safe-root cwd without reflecting their values.
+- The first safe root is opened no-follow, root aliases are rejected by device/inode, and renaming/replacing its pathname after initialization cannot redirect the child.
+- Every profile remains within the immutable 5-second, 16 KiB stdout, and 4 KiB stderr supervisor maxima; maximum-plus-one configurations fail before spawn and output allocation grows fallibly only as bytes arrive.
 - Missing/unknown profiles and every attempted `command`, `program`, `argv`, `workingDirectory`, `environment`, `stdin`, `timeout`, `stdoutLimit`, or `stderrLimit` field fail before spawn.
 - Runtime status reports `fixed_read_only_server_diagnostics` while arbitrary execution and high-impact controls remain false.
 - Audit counters record three allowed fixed profiles and stable denied reasons without profile text, argv, cwd, environment, or output.
 
-The native ARM64 official-Termux command gate automates these deterministic checks and publishes strict v1 evidence. It does not run or require a long monitoring window.
+The native ARM64 official-Termux command gate automates these deterministic checks and publishes strict v2 evidence with exactly 34 MCP requests. Its combined phase starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and calls `execution_boundary` to prove both retained identities. Command schema v1 is historical-only. The deterministic gate does not run or require a long monitoring window.
 
 ## Capability-token boundary checks
 
