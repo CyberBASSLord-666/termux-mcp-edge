@@ -116,6 +116,9 @@ fi
 if [[ "\${1:-}" == --issue-copy-file-grant ]]; then
   exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-copy
 fi
+if [[ "\${1:-}" == --issue-trash-file-grant ]]; then
+  exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-trash
+fi
 if [[ "\${1:-}" == --issue-write-file-grant ]]; then
   exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-write
 fi
@@ -235,6 +238,7 @@ grep -Fq 'valid_capability_grant()' "$SCRIPT"
 grep -Fq 'capability_grant_has_signed_byte "$grant" 260 64 01' "$SCRIPT"
 grep -Fq 'capability_grant_has_signed_byte "$grant" 130 16 02' "$SCRIPT"
 grep -Fq 'capability_grant_has_signed_byte "$grant" 130 16 04' "$SCRIPT"
+grep -Fq 'capability_grant_has_signed_byte "$grant" 130 16 05' "$SCRIPT"
 for marker in \
   'MCP__FILE__COPY_FILE_MUTATION_ENABLED=true' \
   '--issue-copy-file-grant' \
@@ -257,8 +261,28 @@ do
   grep -Fq -- "$marker" "$SCRIPT" || fail_test "release validator omitted copy capability marker: $marker"
 done
 for marker in \
-  'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
   'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true' \
+  '--issue-trash-file-grant' \
+  'MCP__CAPABILITY__TRASH_FILE_TARGET="$target"' \
+  'trash_file_missing_grant_rejected' \
+  'trash_file_grant_preview_rejected' \
+  'trash_file_grant_binding_rejected' \
+  'trash_file_oversized_rejected' \
+  'bounded_trash_file_response_preflight_verified' \
+  'safe_root_file_trash_verified' \
+  'request_scoped_trash_grant_enforced' \
+  'trash_identity_content_binding_enforced' \
+  'exact_trash_file_byte_limit_verified' \
+  'trash_recovery_quarantine_verified' \
+  'trash_file_private_audit_verified' \
+  'trash_file_disabled_posture_verified' \
+  '.termux-mcp-trash-quarantine' \
+  '.termux-mcp-trash-artifact-'
+do
+  grep -Fq -- "$marker" "$SCRIPT" || fail_test "release validator omitted trash capability marker: $marker"
+done
+for marker in \
+  'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
   '--issue-write-file-grant' \
   'MCP__CAPABILITY__WRITE_FILE_TARGET="$target"' \
   'MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$content_file"' \
@@ -342,7 +366,7 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "9"
+  and .validatorVersion == "10"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
@@ -643,6 +667,14 @@ jq -e '
   and ([.results[].code] | index("copy_file_boundary_denials_verified") != null)
   and ([.results[].code] | index("copy_file_private_audit_verified") != null)
   and ([.results[].code] | index("copy_file_disabled_posture_verified") != null)
+  and ([.results[].code] | index("safe_root_file_trash_verified") != null)
+  and ([.results[].code] | index("request_scoped_trash_grant_enforced") != null)
+  and ([.results[].code] | index("trash_identity_content_binding_enforced") != null)
+  and ([.results[].code] | index("bounded_trash_file_response_preflight_verified") != null)
+  and ([.results[].code] | index("exact_trash_file_byte_limit_verified") != null)
+  and ([.results[].code] | index("trash_recovery_quarantine_verified") != null)
+  and ([.results[].code] | index("trash_file_private_audit_verified") != null)
+  and ([.results[].code] | index("trash_file_disabled_posture_verified") != null)
   and ([.results[].code] | index("safe_root_file_hash_verified") != null)
   and ([.results[].code] | index("safe_root_binary_read_verified") != null)
   and ([.results[].code] | index("safe_root_binary_range_read_verified") != null)

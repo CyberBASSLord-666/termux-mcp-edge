@@ -92,7 +92,7 @@ pub const MAX_TRASH_FILE_QUARANTINE_BYTES: u64 =
     MAX_TRASH_FILE_QUARANTINE_ARTIFACTS as u64 * MAX_TRASH_FILE_BYTES as u64;
 
 /// One process-wide serialization boundary for every authorized directory,
-/// file-copy, and file-write publication.
+/// file-copy, file-trash, and file-write publication.
 ///
 /// The transport's fail-fast worker permit remains a per-state admission
 /// boundary. This mutex is the narrower correctness boundary shared by every
@@ -793,29 +793,41 @@ impl PreparedTrashFileMutation {
         let publication_lock =
             acquire_filesystem_publication_lock_with_contention_hook(on_lock_contention)
                 .map_err(AuthorizedTrashFileError::Filesystem)?;
-        preflight_trash_quarantine_capacity(&self.parent_fd, self.target_identity.size)
+        // Retain an existing quarantine descriptor and its nonblocking lock
+        // through authorization and publication. An absent quarantine is only
+        // classified here; creating it is the first post-consumption mutation.
+        let existing_quarantine = open_existing_trash_file_quarantine(&self.parent_fd)
             .map_err(AuthorizedTrashFileError::Filesystem)?;
+        if let Some(quarantine) = existing_quarantine.as_ref() {
+            ensure_trash_quarantine_capacity(quarantine, self.target_identity.size)
+                .map_err(AuthorizedTrashFileError::Filesystem)?;
+        }
         lock_trash_target(&self.target_file).map_err(AuthorizedTrashFileError::Filesystem)?;
-        self.revalidate_target()
-            .map_err(AuthorizedTrashFileError::Filesystem)?;
-
-        // Creating this fixed private directory is idempotent internal
-        // preparation. The target remains untouched, and invalid grants are
-        // consumed only in the callback immediately before the one rename.
-        let quarantine = open_trash_file_quarantine(&self.parent_fd)
-            .map_err(AuthorizedTrashFileError::Filesystem)?;
-        ensure_trash_quarantine_capacity(&quarantine, self.target_identity.size)
-            .map_err(AuthorizedTrashFileError::Filesystem)?;
         self.revalidate_target()
             .map_err(AuthorizedTrashFileError::Filesystem)?;
         self.target_file
             .sync_all()
             .map_err(AppError::from)
             .map_err(AuthorizedTrashFileError::Filesystem)?;
-        let artifact_name = allocate_trash_artifact_name(&quarantine)
+        let reserved_artifact_name = existing_quarantine
+            .as_ref()
+            .map(allocate_trash_artifact_name)
+            .transpose()
             .map_err(AuthorizedTrashFileError::Filesystem)?;
 
         authorize_and_commit(&self.grant_target)?;
+        let quarantine = match existing_quarantine {
+            Some(quarantine) => quarantine,
+            None => open_trash_file_quarantine(&self.parent_fd)
+                .map_err(AuthorizedTrashFileError::Filesystem)?,
+        };
+        ensure_trash_quarantine_capacity(&quarantine, self.target_identity.size)
+            .map_err(AuthorizedTrashFileError::Filesystem)?;
+        let artifact_name = match reserved_artifact_name {
+            Some(name) => name,
+            None => allocate_trash_artifact_name(&quarantine)
+                .map_err(AuthorizedTrashFileError::Filesystem)?,
+        };
         let started = self.started;
         let result = self
             .execute_after_authorization(quarantine, artifact_name)
@@ -3243,34 +3255,56 @@ fn open_trash_file_quarantine(parent: &OwnedFd) -> Result<OwnedFd, AppError> {
         Err(rustix::io::Errno::EXIST) => false,
         Err(error) => return Err(descriptor_error(error)),
     };
+    let quarantine =
+        open_existing_trash_file_quarantine(parent)?.ok_or(AppError::TrashTargetChanged)?;
+    if created {
+        descriptor_fs::fsync(&quarantine).map_err(descriptor_error)?;
+        descriptor_fs::fsync(parent).map_err(descriptor_error)?;
+    }
+    Ok(quarantine)
+}
+
+fn open_existing_trash_file_quarantine(parent: &OwnedFd) -> Result<Option<OwnedFd>, AppError> {
+    let named_before = match descriptor_fs::statat(
+        parent,
+        TRASH_FILE_QUARANTINE_DIRECTORY,
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(_) => return Err(AppError::TrashQuarantineCapacityExceeded),
+        Ok(metadata) => metadata,
+    };
     let quarantine = descriptor_fs::openat(
         parent,
         TRASH_FILE_QUARANTINE_DIRECTORY,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|_| AppError::TrashTargetChanged)?;
-    let held = descriptor_fs::fstat(&quarantine).map_err(descriptor_error)?;
-    let named = descriptor_fs::statat(
+    .map_err(|_| AppError::TrashQuarantineCapacityExceeded)?;
+    let held =
+        descriptor_fs::fstat(&quarantine).map_err(|_| AppError::TrashQuarantineCapacityExceeded)?;
+    if !FileType::from_raw_mode(held.st_mode).is_dir()
+        || !FileType::from_raw_mode(named_before.st_mode).is_dir()
+        || (held.st_dev, held.st_ino) != (named_before.st_dev, named_before.st_ino)
+        || (held.st_mode & 0o7777) != 0o700
+        || (named_before.st_mode & 0o7777) != 0o700
+    {
+        return Err(AppError::TrashQuarantineCapacityExceeded);
+    }
+    lock_trash_quarantine(&quarantine)?;
+    let named_after = descriptor_fs::statat(
         parent,
         TRASH_FILE_QUARANTINE_DIRECTORY,
         AtFlags::SYMLINK_NOFOLLOW,
     )
-    .map_err(|_| AppError::TrashTargetChanged)?;
-    if !FileType::from_raw_mode(held.st_mode).is_dir()
-        || !FileType::from_raw_mode(named.st_mode).is_dir()
-        || (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
-        || (held.st_mode & 0o7777) != 0o700
-        || (named.st_mode & 0o7777) != 0o700
+    .map_err(|_| AppError::TrashQuarantineCapacityExceeded)?;
+    if !FileType::from_raw_mode(named_after.st_mode).is_dir()
+        || (held.st_dev, held.st_ino) != (named_after.st_dev, named_after.st_ino)
+        || (named_after.st_mode & 0o7777) != 0o700
     {
-        return Err(AppError::TrashTargetChanged);
+        return Err(AppError::TrashQuarantineCapacityExceeded);
     }
-    lock_trash_quarantine(&quarantine)?;
-    if created {
-        descriptor_fs::fsync(&quarantine).map_err(descriptor_error)?;
-        descriptor_fs::fsync(parent).map_err(descriptor_error)?;
-    }
-    Ok(quarantine)
+    Ok(Some(quarantine))
 }
 
 fn lock_trash_quarantine(quarantine: &OwnedFd) -> Result<(), AppError> {
@@ -3338,46 +3372,6 @@ fn validate_trash_quarantine_bounds(quarantine: &OwnedFd) -> Result<(), AppError
         return Err(AppError::TrashQuarantineCapacityExceeded);
     }
     Ok(())
-}
-
-fn preflight_trash_quarantine_capacity(
-    parent: &OwnedFd,
-    required_bytes: u64,
-) -> Result<(), AppError> {
-    let expected = match descriptor_fs::statat(
-        parent,
-        TRASH_FILE_QUARANTINE_DIRECTORY,
-        AtFlags::SYMLINK_NOFOLLOW,
-    ) {
-        Err(rustix::io::Errno::NOENT) => {
-            return if required_bytes <= MAX_TRASH_FILE_QUARANTINE_BYTES {
-                Ok(())
-            } else {
-                Err(AppError::TrashQuarantineCapacityExceeded)
-            };
-        }
-        Err(_) => return Err(AppError::TrashQuarantineCapacityExceeded),
-        Ok(metadata) if !FileType::from_raw_mode(metadata.st_mode).is_dir() => {
-            return Err(AppError::TrashQuarantineCapacityExceeded);
-        }
-        Ok(metadata) => metadata,
-    };
-    let quarantine = descriptor_fs::openat(
-        parent,
-        TRASH_FILE_QUARANTINE_DIRECTORY,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| AppError::TrashQuarantineCapacityExceeded)?;
-    let held = descriptor_fs::fstat(&quarantine).map_err(descriptor_error)?;
-    if (held.st_dev, held.st_ino) != (expected.st_dev, expected.st_ino)
-        || (held.st_mode & 0o7777) != 0o700
-        || (expected.st_mode & 0o7777) != 0o700
-    {
-        return Err(AppError::TrashQuarantineCapacityExceeded);
-    }
-    lock_trash_quarantine(&quarantine)?;
-    ensure_trash_quarantine_capacity(&quarantine, required_bytes)
 }
 
 fn is_canonical_trash_artifact_name(name: &[u8]) -> bool {
@@ -7024,6 +7018,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn trash_grant_stays_consumed_after_post_authorization_quarantine_failure() {
+        const TEST_KEY: &str = "5566778899aabbccddeeff00112233445566778899aabbccddeeff0011223344";
+
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("post-authorization-target.bin");
+        let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
+        std::fs::write(&target, "post-authorization-target-content").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let authority = crate::trash_file_grant::TrashFileGrantAuthority::from_hex_key(
+            "trash-post-authorization-test-1",
+            TEST_KEY,
+            "trash-post-authorization-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let grant_target = tools
+            .trash_file_grant_target(target.to_string_lossy().as_ref())
+            .unwrap();
+        let grant = authority.issue(&session_id, &grant_target).unwrap();
+        let prepared = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+
+        let result = prepared.execute_authorized(|prepared_target| {
+            authority.consume(Some(&grant), &session_id, prepared_target)?;
+            std::fs::write(&quarantine, "preserved-collision").unwrap();
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(AuthorizedTrashFileError::Filesystem(
+                AppError::TrashQuarantineCapacityExceeded
+            ))
+        ));
+        assert_eq!(
+            authority
+                .consume(Some(&grant), &session_id, &grant_target)
+                .unwrap_err(),
+            crate::trash_file_grant::TrashFileGrantError::Replayed
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "post-authorization-target-content"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&quarantine).unwrap(),
+            "preserved-collision"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_prepared_trash_mutations_serialize_before_authorization_and_publish_once() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("two-prepared-target.bin");
+        std::fs::write(&target, "two-prepared-target-content").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let first = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let second = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let publication_lock = acquire_filesystem_publication_lock_for_test();
+        let authorization_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (contended_tx, contended_rx) = std::sync::mpsc::channel();
+
+        let spawn = |prepared: PreparedTrashFileMutation| {
+            let authorization_calls = std::sync::Arc::clone(&authorization_calls);
+            let contended_tx = contended_tx.clone();
+            std::thread::spawn(move || {
+                prepared.execute_authorized_with_commit_and_lock_contention_hook(
+                    |_| {
+                        authorization_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    },
+                    || contended_tx.send(()).unwrap(),
+                )
+            })
+        };
+        let first = spawn(first);
+        let second = spawn(second);
+        for _ in 0..2 {
+            contended_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("both prepared trash mutations must contend before authorization");
+        }
+        assert!(target.exists());
+        assert!(!root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY).exists());
+        drop(publication_lock);
+
+        let mut successes = 0;
+        for result in [first.join().unwrap(), second.join().unwrap()] {
+            match result {
+                Ok(_) => successes += 1,
+                Err(AuthorizedTrashFileError::Filesystem(AppError::TrashTargetChanged)) => {}
+                Err(other) => panic!("unexpected losing trash mutation outcome: {other:?}"),
+            }
+        }
+        assert_eq!(successes, 1);
+        assert_eq!(
+            authorization_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::read_dir(root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn trash_quarantine_capacity_is_derived_from_disk_before_authorization() {
         let root = tempfile::tempdir().unwrap();
         let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
@@ -7110,8 +7223,8 @@ mod tests {
         assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 0);
     }
 
-    #[test]
-    fn trash_quarantine_preserves_every_foreign_or_malformed_entry() {
+    #[tokio::test]
+    async fn trash_quarantine_preserves_every_foreign_or_malformed_entry() {
         for (index, kind) in ["unknown", "directory", "symlink", "hardlink"]
             .into_iter()
             .enumerate()
@@ -7139,12 +7252,26 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            let root_fd = open_root_directory(root.path()).unwrap();
-
+            let target = root.path().join("still-present.bin");
+            std::fs::write(&target, "target-content").unwrap();
+            let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+                .expect("test safe root must validate");
+            let prepared = tools
+                .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+                .await
+                .unwrap();
+            let authorization_called = Cell::new(false);
             assert!(matches!(
-                preflight_trash_quarantine_capacity(&root_fd, 1),
-                Err(AppError::TrashQuarantineCapacityExceeded)
+                prepared.execute_authorized(|_| {
+                    authorization_called.set(true);
+                    Ok(())
+                }),
+                Err(AuthorizedTrashFileError::Filesystem(
+                    AppError::TrashQuarantineCapacityExceeded
+                ))
             ));
+            assert!(!authorization_called.get());
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "target-content");
             assert!(std::fs::symlink_metadata(&entry).is_ok());
             assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 1);
             if kind == "hardlink" {
@@ -7160,6 +7287,40 @@ mod tests {
                 assert_eq!(std::fs::metadata(&entry).unwrap().nlink(), 2);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_trash_quarantine_mode_is_stable_and_pre_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let quarantine = root.path().join(TRASH_FILE_QUARANTINE_DIRECTORY);
+        std::fs::create_dir(&quarantine).unwrap();
+        std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let target = root.path().join("still-present.bin");
+        std::fs::write(&target, "target-content").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let prepared = tools
+            .prepare_trash_file_mutation(target.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        let authorization_called = Cell::new(false);
+
+        assert!(matches!(
+            prepared.execute_authorized(|_| {
+                authorization_called.set(true);
+                Ok(())
+            }),
+            Err(AuthorizedTrashFileError::Filesystem(
+                AppError::TrashQuarantineCapacityExceeded
+            ))
+        ));
+        assert!(!authorization_called.get());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "target-content");
+        assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::metadata(&quarantine).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
     }
 
     #[test]

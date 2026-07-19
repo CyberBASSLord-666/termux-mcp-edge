@@ -15,7 +15,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Two-MiB request-body ceiling by default.
 - Versioned Termux release directories with atomic `current` and `previous` links.
 - Fixed `mcp_runtime` runit service only.
-- Dedicated safe-root defaults plus independent default-disabled directory, file-copy, reversible-file-trash, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
+- Dedicated safe-root defaults plus independent default-disabled directory, file-copy, file-trash, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
 ## Secure router construction
 
@@ -177,6 +177,32 @@ MCP__CAPABILITY__COPY_FILE_DESTINATION="$HOME/mcp-files/destination.bin" \
 
 Read the single grant line only while constructing the matching active-session `copy_file` mutation request, send it exactly once as `MCP-Capability-Grant`, and remove `COPY_GRANT_FILE` immediately after the attempt. The issuer independently opens and hashes the exact single-link source; the grant is invalid if either endpoint or the source identity/bytes changes. Never print, log, retain, or attach a grant. See [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md) for the full issuance, rotation, denial, and replay contract.
 
+## Enabling and issuing one `trash_file` mutation
+
+Live trashing is independent and default-disabled. Enable it only for a service-owned safe root with a reviewed recovery procedure:
+
+```dotenv
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true
+MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
+MCP__CAPABILITY__KEY_ID=primary-1
+MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
+```
+
+Issue one target-bound grant with the exact deployed binary:
+
+```bash
+umask 077
+TRASH_GRANT_FILE="$(mktemp "$HOME/.termux-mcp-trash-grant.XXXXXX")"
+chmod 600 "$TRASH_GRANT_FILE"
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
+MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+MCP__CAPABILITY__TRASH_FILE_TARGET="$SAFE_ROOT_TRASH_TARGET" \
+  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  --issue-trash-file-grant >"$TRASH_GRANT_FILE"
+```
+
+Send the grant once as `MCP-Capability-Grant` on the matching explicit `trash_file` call, then remove the private file. The issuer derives exact root/path/identity/content bindings itself. A changed target, other principal/session, or other grant family is denied without consumption. Success moves the exact inode into the target parent's hidden mode-`0700` trash quarantine and returns no path or recovery name. No MCP restore or purge is available. Stop the service and all same-UID writers before local recovery maintenance; never use recursive deletion or broad globs. See [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_TRASHING.md`](SAFE_ROOT_FILE_TRASHING.md).
+
 ## Enabling and issuing one `write_file` mutation
 
 Leave live writing disabled unless it is operationally required. Its private `runtime.env` posture is independent from directory creation and Android volume control:
@@ -212,32 +238,6 @@ Choose `create` only while the target is absent; choose `replace` only for the e
 
 The transport accepts exactly one bounded ASCII grant header only on an active-session `tools/call` for a grant-aware tool. Authentication, Host/Origin and method/media/header checks, lifecycle, exact tool context, closed schema, gate, complete-response preflight, safe-root/target classification, and grant binding all precede the first state change. Full transaction and rotation details are in [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 
-## Enabling and issuing one `trash_file` mutation
-
-Leave live trashing disabled unless reversible removal is operationally required. Enable only its independent gate alongside static authentication and the complete capability key pair:
-
-```dotenv
-MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true
-MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
-MCP__CAPABILITY__KEY_ID=primary-1
-MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
-```
-
-After initializing the target MCP session, issue one grant locally with the exact deployed binary:
-
-```bash
-umask 077
-TRASH_GRANT_FILE="$(mktemp "$HOME/.termux-mcp-trash-grant.XXXXXX")"
-chmod 600 "$TRASH_GRANT_FILE"
-MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
-MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
-MCP__CAPABILITY__TRASH_FILE_TARGET="$SAFE_ROOT_TRASH_TARGET" \
-  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
-  --issue-trash-file-grant >"$TRASH_GRANT_FILE"
-```
-
-Send that line exactly once as `MCP-Capability-Grant` on the matching `trash_file` request with explicit `dry_run:false`, then remove it. The issuer and runtime independently bind the exact single-link regular-file identity and SHA-256 content. Success moves the inode into a private, MCP-hidden recovery quarantine and returns no target or artifact path. Stop the service and same-UID writers before local restore or retention maintenance; see [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md).
-
 ## Request limits
 
 The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65535`. Port `0`, malformed numbers, and present non-Unicode security/network configuration values fail before the listener starts. Only absent variables use defaults.
@@ -271,7 +271,7 @@ Authenticated discovery currently exposes:
 4. `project_service_status` — read-only allowlisted project service metadata for `mcp_runtime`.
 5. `create_directory` — safe-rooted preview by default; one mode-`0700` atomic no-replace mutation only after the dedicated gate and a target-bound single-use grant authorize it.
 6. `copy_file` — one binary-safe regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run first.
-7. `trash_file` — reversible preview-first removal of one single-link regular file up to 1 MiB; live mode atomically retains the exact inode in a private bounded recovery quarantine after an identity/content-bound single-use grant.
+7. `trash_file` — one single-link regular file up to 1 MiB, preview first; live mode atomically retains the exact inode in a private bounded recovery quarantine after an identity/content-bound grant.
 8. `find_paths` — case-sensitive literal basename discovery with exact kind/depth filters, descriptor-relative no-follow traversal, and content-free bounded results.
 9. `hash_file` — streaming SHA-256 for one no-follow regular file up to 16 MiB, returning only digest and byte count.
 10. `list_directory` — bounded safe-rooted listing.
@@ -298,7 +298,7 @@ Filesystem responses have explicit mobile-oriented ceilings:
 - `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
 - `write_file` validates at most 1 MiB of UTF-8 and classifies an absent target as `create` or an existing no-follow regular file as `replace`. Explicit `dry_run:false` succeeds only when `MCP__FILE__WRITE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, root, normalized target, exact content, disposition, and exact old identity for replace. It creates a mode-`0600` randomized staging entry in the target parent's reserved private quarantine. Create publishes with atomic `NOREPLACE` and retains no artifact. Replace accepts only a single-link regular target of at most 1 MiB, performs one irreversible `EXCHANGE`, verifies the exact staged inode at the target, and preserves the displaced prior inode/content as recovery material. The complete 16 KiB result exposes no path, content, or artifact name and includes `recoveryArtifactRetained`; see [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
 - `copy_file` validates one regular source and absent destination by default. Explicit `dry_run:false` succeeds only when `MCP__FILE__COPY_FILE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, both roots and normalized paths, exact source identity/size/high-resolution ctime/SHA-256, absent destination, and no-replace posture. It copies at most 1 MiB from the exact held source descriptor, stages fixed mode `0600` in the hidden quarantine, publishes atomically without replacement, verifies exact bytes and identities, syncs file and parent descriptors, returns neither endpoint path nor content, and caps the complete response at 16 KiB; see [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
-- `trash_file` validates one exact single-link regular file up to 1 MiB by default. Explicit `dry_run:false` requires its independent gate and an exact principal/session/root/path/identity/content/recovery-posture grant, then atomically moves the inode with `NOREPLACE` into the parent-local mode-`0700` trash quarantine. The complete 16 KiB result returns only bounded size and recovery-retention posture; see [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md).
+- `trash_file` validates one single-link regular target at or below 1 MiB. Explicit `dry_run:false` additionally requires its independent gate and one principal/session/root/path/identity/content/recovery-bound grant. Pre-consumption work is read-only; after worker ownership and atomic consumption, it creates an absent mode-`0700` quarantine if needed and moves the exact inode with descriptor-relative `NOREPLACE` into a randomized name. The 32-artifact/32-MiB per-parent quarantine is invisible to every MCP filesystem surface, success requires identity/content verification and directory sync, and the 16 KiB result returns no path, content, digest, or recovery name; see [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_TRASHING.md`](SAFE_ROOT_FILE_TRASHING.md).
 - `find_paths` accepts one case-sensitive literal basename query of at most 256 UTF-8 bytes, traverses no-follow descriptors to depth 5, examines at most 8,192 entries, returns at most 512 lexicographically ordered file/directory matches, and caps the complete response at 262,144 bytes; see [`SAFE_ROOT_PATH_DISCOVERY.md`](SAFE_ROOT_PATH_DISCOVERY.md).
 - `hash_file` streams at most 16 MiB from one exact held no-follow regular-file descriptor through SHA-256, rejects growth past the limit, returns only lowercase digest and byte count, and caps the complete response at 16 KiB before the file read; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
 - `read_binary_file` reads at most 1 MiB from one exact held no-follow regular-file descriptor, rejects runtime growth, returns canonical padded RFC 4648 base64 without path or host metadata, and preflights the complete 1,507,328-byte response ceiling before file access; see [`SAFE_ROOT_BINARY_READS.md`](SAFE_ROOT_BINARY_READS.md).

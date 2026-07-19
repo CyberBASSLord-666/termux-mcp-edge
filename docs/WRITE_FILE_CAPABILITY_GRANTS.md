@@ -123,7 +123,7 @@ authorization input, not a claim about their serialization in the payload:
   ctime seconds, ctime nanoseconds, and link count (which must be one).
 
 The code is allocated by the same internal registry that assigns directory
-creation `1`, Android volume `3`, and reserves file copy `4`. Pairwise
+creation `1`, Android volume `3`, file copy `4`, and file trash `5`. Pairwise
 uniqueness is an invariant test and callers cannot supply or alter the family
 identifier.
 
@@ -152,7 +152,7 @@ For a live write it:
 8. verifies that the final entry is the exact staged file with the expected type, identity, size, and mode; and
 9. synchronizes the held target parent and quarantine directories, revalidates the quarantine bounds, and only then releases the process lock.
 
-The process-global publication lock prevents separately embedded cooperating routers from consuming competing grants against one stale prepared target. The quarantine retains at most 32 regular artifacts and 32 MiB per target parent. These are per-parent limits, not a global disk bound. Unknown names, links, directories, special objects, capacity exhaustion, or nonblocking lock contention fail closed. The per-parent advisory lock adds quarantine-local serialization; a separate process under the same Unix UID can ignore it, alter names, or cause denial of service. A production mutation safe root must therefore be under this service's exclusive operational ownership; do not run independent writers against it while live create, copy, or write gates are enabled.
+The process-global publication lock prevents separately embedded cooperating routers from consuming competing grants against one stale prepared target. The quarantine retains at most 32 regular artifacts and 32 MiB per target parent. These are per-parent limits, not a global disk bound. Unknown names, links, directories, special objects, capacity exhaustion, or nonblocking lock contention fail closed. The per-parent advisory lock adds quarantine-local serialization; a separate process under the same Unix UID can ignore it, alter names, or cause denial of service. A production mutation safe root must therefore be under this service's exclusive operational ownership; do not run independent writers against it while live create, copy, trash, or write gates are enabled.
 
 Replacement has one commit point: the `EXCHANGE`. There is no automatic rollback after it and no later unlink, truncation, or metadata mutation of the captured object. The staging entry is created at mode `0600`, but after exchange the recovery artifact is the displaced prior inode and keeps its prior mode and other metadata. This avoids mutating the live target before commit or altering captured recovery metadata afterward; confidentiality therefore depends on the enclosing mode-`0700` quarantine. A failure after that commit can leave the authorized new inode at the public target while the displaced object remains quarantined; the request still fails and its grant remains consumed. This preservation rule avoids deleting an unrelated object during a hostile same-UID namespace race, but POSIX pathname operations cannot provide an inode-conditional rollback against such a peer.
 

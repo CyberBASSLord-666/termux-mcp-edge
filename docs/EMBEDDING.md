@@ -113,7 +113,7 @@ disabled. SSE is likewise explicit and defaults off.
 
 Mutation authorities are added with the fallible
 `try_with_create_directory_authority`, `try_with_copy_file_authority`,
-`try_with_write_file_authority`, and—when compiled—
+`try_with_trash_file_authority`, `try_with_write_file_authority`, and—when compiled—
 `try_with_android_volume_control_authority` methods. Each authority must be
 cryptographically bound to the exact static-bearer principal used by the
 builder. A mismatched principal, or any mutation authority in unauthenticated
@@ -129,8 +129,11 @@ command lane.
 
 `filesystem_tools()` returns a clone of the exact pinned filesystem authority
 owned by the future router. Use it only where an embedding must share that
-identity with other read-only project code. Do not independently reconstruct
-safe-root tools and assume their authority identity is interchangeable.
+identity with other project code or offline grant issuance. Public mutation
+methods, including `trash_file`, remain preview-only; live preparation and
+execution are crate-private to the grant-aware transport. Do not independently
+reconstruct safe-root tools and assume their authority identity is
+interchangeable.
 
 ## Composition rules
 

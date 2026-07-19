@@ -104,7 +104,7 @@ Release evidence must cover:
 - quarantine mode, naming, visibility, capacity, lock contention, and malformed-entry denial; create `NOREPLACE`; irreversible replace `EXCHANGE`; exact retained displaced identity, content, and mode; and every post-consumption failure state without automatic rollback or destructive cleanup;
 - oversized actual JSON-RPC ID preflight followed by successful reuse of the same unconsumed grant;
 - private responses and aggregate audits;
-- default and all-feature Rust suites, fixture parity, validator v8, device harness v8, every optional emulated posture, Android cross-builds, native official-Termux ARM64 execution, exact-head CI/Security, and direct physical observation when required by release classification.
+- default and all-feature Rust suites, fixture parity, validator v10, device harness v10, every optional emulated posture, Android cross-builds, native official-Termux ARM64 execution, exact-head CI/Security, and direct physical observation when required by release classification.
 
 ## Non-goals
 

@@ -2,7 +2,7 @@
 
 This document defines validation evidence for the stable MCP transport around the current staged tool surface and for future protocol or capability expansion.
 
-The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented allowlisted tool set. It uses bounded session-backed lifecycle state, declines optional SSE with HTTP 405 by default, and offers a separately configured finite SSE response/resumption posture.
+The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented 17-tool baseline, including independently grant-gated reversible `trash_file`. It uses bounded session-backed lifecycle state, declines optional SSE with HTTP 405 by default, and offers a separately configured finite SSE response/resumption posture.
 
 ## Required PR shape
 

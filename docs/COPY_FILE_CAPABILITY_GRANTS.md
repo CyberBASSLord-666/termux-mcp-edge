@@ -75,7 +75,7 @@ The payload does not serialize the private binding inputs. The operation binding
 - signed format version and key identifier; and
 - random grant identifier, issuance, and expiry.
 
-Directory code `1`, write code `2`, volume code `3`, and copy code `4` come from one internal wire registry. All ordered cross-family uses are rejected without consuming the source grant.
+Directory code `1`, write code `2`, volume code `3`, copy code `4`, and trash code `5` come from one internal wire registry. All ordered cross-family uses are rejected without consuming the source grant.
 
 The normal lifetime is 60 seconds. Validation permits at most five seconds of future clock skew and rejects zero or greater-than-120-second lifetimes. One process retains at most 4,096 unexpired consumed copy identifiers. Equivalent independently constructed copy authorities with the same key identifier, HMAC key, and static principal share replay, last-observed-clock, and capacity state through the bounded process-global registry. Other families, keys, key identifiers, and principals remain isolated. Full, poisoned, unavailable, capacity-mismatched, or namespace-exhausted state fails closed.
 
@@ -92,7 +92,7 @@ For `dry_run:false`, the runtime performs this order:
 5. preflight the complete 16 KiB success response with the caller's real JSON-RPC id;
 6. acquire the single fail-fast filesystem-mutation worker permit, or deny without preparation or consumption;
 7. inside the permit-owned blocking worker, anchor both roots, hold source/root/parent and destination/root/parent descriptors, read and hash the bounded source, require the destination absent, and build the exact grant target;
-8. acquire the poison-fail-closed process-wide publication lock shared by create, copy, and write;
+8. acquire the poison-fail-closed process-wide publication lock shared by create, copy, trash, and write;
 9. revalidate both root identities, the held and named source identity/content/size/SHA-256, the destination parent identity and absence, and hidden staging capacity;
 10. atomically resolve request cancellation against worker ownership. A cancellation winner stops without consuming the grant or mutating the filesystem;
 11. validate and atomically consume the exact grant; and

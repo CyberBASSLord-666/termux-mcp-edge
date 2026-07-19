@@ -31,8 +31,8 @@ The runtime should count:
 - denied directory creation, including invalid arguments, disabled mutation, stable grant authorization failures, safe-root rejection, missing parents, existing destinations, response bounds, and internal failures
 - allowed bounded file-copy previews and explicit fixed-mode mutations
 - denied file copy, including invalid arguments, safe-root rejection, missing source/parent, same path, existing destination, unsupported source, size/response bounds, and internal failures
-- allowed bounded `trash_file` previews and exact request-authorized recovery-retaining moves only after identity/content verification and durability confirmation
-- denied trash requests, including invalid arguments, disabled mutation, safe-root/type/link/size/response rejection, every stable grant failure, target change, quarantine capacity/shape/lock failure, and internal failure
+- allowed bounded `trash_file` previews and explicit exact-inode recovery-retained mutations
+- denied file trash, including invalid arguments, disabled mutation, response/target bounds, safe-root rejection, unsupported or changed targets, every stable grant failure, recovery-quarantine capacity/lock/shape failure, cancellation, and internal failure
 - allowed bounded SHA-256 hashing of one safe-rooted regular file
 - denied file hashing, including invalid arguments, safe-root rejection, missing or unsupported targets, size/response bounds, and internal failures
 - allowed bounded content-free literal basename discovery
@@ -114,9 +114,9 @@ A directory or file mutation call is a dry-run preview unless `dry_run=false` re
 
 For `create_directory`, mutating mode is only the requested posture. It does not imply authorization: the dedicated runtime gate and exact request grant are checked separately. A denied grant records the mutating mode and one stable `capability_*` reason only; successful grant consumption adds no secret or caller-derived label.
 
-The same rule applies independently to `write_file`. `MCP__FILE__WRITE_MUTATION_ENABLED` is default-disabled and unrelated to the directory gate. A mutating event does not imply that static authentication, content/disposition/old-identity binding, or the single-use grant succeeded. The event source records one stable `write_file_mutation_disabled`, `capability_*`, target-state, size/response, quarantine-capacity, or transaction reason; it never records which content, disposition, inode, target, session, JTI, or artifact produced that decision. `explicit_write_allowed` is emitted only after the exact staged mode-`0600` inode is verified at the final name, required parent/quarantine synchronization succeeds, and create has retained no artifact or replace has preserved the displaced object in the bounded recovery quarantine.
+The same rule applies independently to `trash_file`. `MCP__FILE__TRASH_FILE_MUTATION_ENABLED` is default-disabled and unrelated to every other filesystem gate. A mutating event does not imply that static authentication, exact single-link identity/content/recovery-posture binding, or the single-use grant succeeded. `safe_root_file_trashed_recovery_retained` is emitted only after the exact inode has moved with no replacement into the private trash quarantine, the public name is absent, retained identity/content and bounds are verified, and both directories are synchronized.
 
-`trash_file` follows the same requested-mode rule under its independent gate. The worker owns its exactly-once terminal audit: pre-consumption cancellation, target change, capacity, and lock failures are denials without grant consumption; success records `safe_root_file_trashed_recovery_retained` only after the public name is absent, the exact inode/content is retained, and both parent and quarantine synchronization succeed. No event records the target or artifact path, identity, digest, bytes, grant, session, or recovery usage.
+The same rule applies independently to `write_file`. `MCP__FILE__WRITE_MUTATION_ENABLED` is default-disabled and unrelated to the directory gate. A mutating event does not imply that static authentication, content/disposition/old-identity binding, or the single-use grant succeeded. The event source records one stable `write_file_mutation_disabled`, `capability_*`, target-state, size/response, quarantine-capacity, or transaction reason; it never records which content, disposition, inode, target, session, JTI, or artifact produced that decision. `explicit_write_allowed` is emitted only after the exact staged mode-`0600` inode is verified at the final name, required parent/quarantine synchronization succeeds, and create has retained no artifact or replace has preserved the displaced object in the bounded recovery quarantine.
 
 ## Stable reason-code guidance
 
@@ -155,13 +155,6 @@ Recommended denied reason codes:
 - `trash_file_mutation_disabled`
 - `write_file_mutation_disabled`
 - stable `capability_*` authorization reasons defined independently by [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md), [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md), and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md)
-- `filesystem_trash_target_not_found`
-- `filesystem_trash_target_type_unsupported`
-- `filesystem_trash_target_too_large`
-- `filesystem_trash_target_changed`
-- `trash_quarantine_capacity_exceeded`
-- `trash_quarantine_busy`
-- `filesystem_trash_failed`
 - `filesystem_write_target_changed`
 - `filesystem_write_target_not_found`
 - `filesystem_write_target_type_unsupported`
@@ -175,6 +168,13 @@ Recommended denied reason codes:
 - `filesystem_copy_source_changed`
 - `filesystem_copy_destination_changed`
 - `filesystem_copy_failed`
+- `filesystem_trash_target_not_found`
+- `filesystem_trash_target_type_unsupported`
+- `filesystem_trash_target_too_large`
+- `filesystem_trash_target_changed`
+- `trash_quarantine_capacity_exceeded`
+- `trash_quarantine_busy`
+- `filesystem_trash_failed`
 - `filesystem_binary_read_target_not_found`
 - `filesystem_binary_read_type_unsupported`
 - `filesystem_binary_read_size_limit_exceeded`
@@ -204,7 +204,7 @@ The final runtime implementation may consolidate equivalent failures under fewer
 
 ## Response-contract preservation
 
-Audit counter wiring must not independently change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, or `write_file`. The request-authorization changes define the current trash and write success contracts below; later audit work must preserve them.
+Audit counter wiring must not independently change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, or `write_file`. The request-authorization changes define the current `trash_file` and `write_file` success contracts below; later audit work must preserve them.
 
 In particular, runtime wiring must preserve:
 
@@ -214,9 +214,9 @@ In particular, runtime wiring must preserve:
 - current safe-root rejection message
 - current default-dry-run directory and file mutation behavior
 
-The `write_file` result is content- and path-free and bounded to a 16 KiB complete JSON-RPC response. Its structured fields are only `dryRun`, `sizeBytes`, `disposition` (`create` or `replace`), `recoveryArtifactRetained` (true only for successful live replacement), `mode` (`0600`), `maxFileBytes` (1 MiB), and `maxResponseBytes` (16 KiB). Neither the result nor its audit counter may expose the requested path, UTF-8 content, content digest, old identity, artifact name, retained bytes/count, or other recovery detail.
+The `trash_file` result is path/content/artifact-free and bounded to a 16 KiB complete JSON-RPC response. Its structured fields are only `dryRun`, `sizeBytes`, `recoveryArtifactRetained` (true only for successful live retention), `maxFileBytes` (1 MiB), and `maxResponseBytes` (16 KiB). Neither the result nor its audit counter may expose the requested path, bytes, SHA-256, identity, grant, quarantine path/identity, recovery name, retained counts/bytes, or other recovery detail.
 
-The `trash_file` result is path-, artifact-, content-, and digest-free under the same 16 KiB ceiling. Its fields are only `dryRun`, `sizeBytes`, `recoveryArtifactRetained`, `maxFileBytes`, and `maxResponseBytes`; preview reports no retained artifact and successful live mutation reports retention.
+The `write_file` result is content- and path-free and bounded to a 16 KiB complete JSON-RPC response. Its structured fields are only `dryRun`, `sizeBytes`, `disposition` (`create` or `replace`), `recoveryArtifactRetained` (true only for successful live replacement), `mode` (`0600`), `maxFileBytes` (1 MiB), and `maxResponseBytes` (16 KiB). Neither the result nor its audit counter may expose the requested path, UTF-8 content, content digest, old identity, artifact name, retained bytes/count, or other recovery detail.
 
 `runtime_status` may continue exposing the additive `auditCounters` snapshot already present in the staged runtime.
 
@@ -226,7 +226,7 @@ A focused runtime wiring PR should verify all of the following:
 
 1. `create_directory` records allowed dry-run and authorized mutating decisions and denied gate/grant/missing/existing/boundary/failure decisions without retaining keys, grants, principal/session/root/target bindings, replay state, paths, or temporary-name data.
 2. `copy_file` records allowed preview and grant-authorized detached-worker terminal decisions plus disabled/header/grant/source/destination/scheduling/publication denials without retaining paths, bytes, request ids, source identities, SHA-256, principal/session/JTI state, grants, or temporary names. Preview and every pre-commit failure consume no grant; each worker records exactly one terminal decision after ownership.
-3. `trash_file` records an allowed preview only after bounded validation, one allowed live terminal decision only after exact recovery retention and durability, and stable disabled/grant/target/capacity/lock/cancellation failures without retaining target or artifact material.
+3. `trash_file` records allowed preview and grant-authorized recovery-retained terminal decisions plus disabled/header/grant/target/response/capacity/lock/cancellation/retention denials without retaining paths, bytes, digests, identities, principal/session/JTI state, grants, quarantine data, or recovery names. Preview and every pre-consumption failure create no namespace state and consume no grant; each owned worker records exactly one terminal decision.
 4. `find_paths` records allowed and denied read-only decisions without retaining its root, matched paths, filenames, query, kind, request ID, filesystem identities, or raw errors.
 5. `hash_file` records allowed and denied read-only decisions without retaining its path, filename, content, digest, byte count, file identity, partial state, or raw error.
 6. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.
@@ -242,7 +242,7 @@ A focused runtime wiring PR should verify all of the following:
 16. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
 17. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
 18. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content/digests/base64/text data.
-19. Exact release-validator and native Termux device-smoke tests prove the trash and write gates, grant reason buckets, recovery-retention results, and bounded quarantine denials without serializing keys, grants, principal/session/JTI bindings, paths, content, digests, filesystem identities, or artifact names.
+19. Exact release-validator and native Termux device-smoke tests prove trash gate/issuance/binding/recovery truth and the trash reason buckets they directly exercise (excluding replay), plus the documented write gate/grant/recovery evidence, without serializing keys, grants, principal/session/JTI bindings, paths, content, digests, filesystem identities, or artifact names. Automated core/integration tests separately prove trash replay and concurrent-replay denial.
 
 ## Security invariant
 

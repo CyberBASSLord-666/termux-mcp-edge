@@ -387,6 +387,7 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
         assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{label}");
         assert_capability_denial(&response_json(denied).await, expected_reason);
     }
+    assert!(!first_root.path().join(TRASH_QUARANTINE).exists());
 
     let wrong_session_grant = authority.issue(&session_id, &exact_target).unwrap();
     let wrong_session = post_json_to_session_with_grant(
@@ -464,6 +465,7 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
     authority
         .consume(Some(&stale_grant), &session_id, &exact_target)
         .expect("stale target must be rejected before grant consumption");
+    assert!(!first_root.path().join(TRASH_QUARANTINE).exists());
 
     let write_authority = WriteFileGrantAuthority::from_hex_key(
         "test-trash-key-1",
@@ -503,6 +505,7 @@ async fn malformed_signature_session_principal_path_root_content_and_family_bind
         assert!(!reflected.contains(private));
     }
     assert!(target.exists());
+    assert!(!first_root.path().join(TRASH_QUARANTINE).exists());
 }
 
 #[tokio::test]

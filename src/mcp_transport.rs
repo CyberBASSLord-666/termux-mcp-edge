@@ -7824,6 +7824,10 @@ mod tests {
             FilesystemMutationWorkerOutcome::Cancelled
         ));
         assert!(target.exists());
+        assert!(!safe_root
+            .path()
+            .join(crate::tools::TRASH_FILE_QUARANTINE_DIRECTORY)
+            .exists());
 
         let (retry_waiter, retry_commit) = filesystem_mutation_commit_guards();
         let retry = run_trash_file_mutation_worker(TrashFileMutationWorker {
