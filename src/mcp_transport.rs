@@ -971,6 +971,9 @@ pub enum McpRouterBuildError {
     #[error("requested MCP capability was not compiled: {capability}")]
     CapabilityNotCompiled { capability: &'static str },
 
+    #[error("requested MCP capability requires static bearer authentication: {capability}")]
+    CapabilityRequiresStaticAuthentication { capability: &'static str },
+
     #[error("requested MCP optional client is unavailable: {client}")]
     OptionalClientUnavailable { client: &'static str },
 }
@@ -1169,7 +1172,51 @@ impl McpRouterBuilder {
         self
     }
 
+    fn validate_mutation_authentication(&self) -> Result<(), McpRouterBuildError> {
+        if !self
+            .protection
+            .auth_policy
+            .is_unauthenticated_localhost_only()
+        {
+            return Ok(());
+        }
+
+        if self.create_directory_authority.is_some() {
+            return Err(
+                McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+                    capability: "create_directory",
+                },
+            );
+        }
+        if self.copy_file_authority.is_some() {
+            return Err(
+                McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+                    capability: "copy_file",
+                },
+            );
+        }
+        if self.write_file_authority.is_some() {
+            return Err(
+                McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+                    capability: "write_file",
+                },
+            );
+        }
+        #[cfg(feature = "android-volume-control")]
+        if self.android_volume_control_authority.is_some() {
+            return Err(
+                McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+                    capability: "set_android_volume",
+                },
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn build(self) -> Result<Router, McpRouterBuildError> {
+        self.validate_mutation_authentication()?;
+
         let Self {
             protection,
             security_policy,
