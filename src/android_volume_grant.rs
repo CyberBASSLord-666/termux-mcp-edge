@@ -5,11 +5,7 @@
 //! and the mutating posture. Only keyed digests and random identifiers are
 //! retained; raw credentials and grant strings are never serialized.
 
-use std::{
-    collections::BTreeMap,
-    fmt,
-    sync::{Arc, Mutex},
-};
+use std::{fmt, sync::Arc};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -17,6 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     android_volume_control::AndroidVolumeStreamName,
+    grant_replay::{shared_replay_state, SharedReplayError, SharedReplayState},
     request_grant_capability::{
         RequestGrantCapability, MAX_REQUEST_GRANT_HEADER_BYTES, REQUEST_GRANT_HEADER,
     },
@@ -128,14 +125,7 @@ pub struct AndroidVolumeGrantAuthority {
     key_id: Arc<str>,
     key: Arc<[u8; ANDROID_VOLUME_GRANT_KEY_BYTES]>,
     principal_digest: [u8; DIGEST_BYTES],
-    replay: Arc<Mutex<ReplayState>>,
-    replay_capacity: usize,
-}
-
-#[derive(Default)]
-struct ReplayState {
-    consumed: BTreeMap<[u8; GRANT_ID_BYTES], u64>,
-    last_observed_unix_seconds: Option<u64>,
+    replay: SharedReplayState,
 }
 
 struct ParsedGrant {
@@ -185,13 +175,20 @@ impl AndroidVolumeGrantAuthority {
         principal.update(PRINCIPAL_BINDING_DOMAIN);
         principal.update(static_principal_secret.as_bytes());
         let principal_digest = principal.finalize().into_bytes().into();
+        let replay = shared_replay_state(
+            RequestGrantCapability::AndroidVolume,
+            &key_id,
+            &key,
+            &principal_digest,
+            replay_capacity,
+        )
+        .map_err(|_| AndroidVolumeGrantError::StateUnavailable)?;
 
         Ok(Self {
             key_id: Arc::from(key_id),
             key: Arc::new(key),
             principal_digest,
-            replay: Arc::new(Mutex::new(ReplayState::default())),
-            replay_capacity,
+            replay,
         })
     }
 
@@ -238,47 +235,16 @@ impl AndroidVolumeGrantAuthority {
             return Err(AndroidVolumeGrantError::BindingMismatch);
         }
 
-        let mut replay = self
-            .replay
-            .lock()
-            .map_err(|_| AndroidVolumeGrantError::StateUnavailable)?;
-        if replay
-            .last_observed_unix_seconds
-            .is_some_and(|last| now_unix_seconds < last)
-        {
-            return Err(AndroidVolumeGrantError::ClockRollback);
-        }
-        replay.last_observed_unix_seconds = Some(now_unix_seconds);
-
-        let lifetime = grant
-            .expires_unix_seconds
-            .checked_sub(grant.issued_unix_seconds)
-            .ok_or(AndroidVolumeGrantError::LifetimeExceeded)?;
-        if lifetime == 0 || lifetime > MAX_ANDROID_VOLUME_GRANT_LIFETIME_SECONDS {
-            return Err(AndroidVolumeGrantError::LifetimeExceeded);
-        }
-        if grant.issued_unix_seconds
-            > now_unix_seconds.saturating_add(MAX_ANDROID_VOLUME_GRANT_FUTURE_SKEW_SECONDS)
-        {
-            return Err(AndroidVolumeGrantError::FutureIssued);
-        }
-        if now_unix_seconds >= grant.expires_unix_seconds {
-            return Err(AndroidVolumeGrantError::Expired);
-        }
-
-        replay
-            .consumed
-            .retain(|_, expiry| *expiry > now_unix_seconds);
-        if replay.consumed.contains_key(&grant.grant_id) {
-            return Err(AndroidVolumeGrantError::Replayed);
-        }
-        if replay.consumed.len() >= self.replay_capacity {
-            return Err(AndroidVolumeGrantError::ReplayCapacityExhausted);
-        }
-        replay
-            .consumed
-            .insert(grant.grant_id, grant.expires_unix_seconds);
-        Ok(())
+        self.replay
+            .consume(
+                grant.grant_id,
+                grant.issued_unix_seconds,
+                grant.expires_unix_seconds,
+                now_unix_seconds,
+                MAX_ANDROID_VOLUME_GRANT_LIFETIME_SECONDS,
+                MAX_ANDROID_VOLUME_GRANT_FUTURE_SKEW_SECONDS,
+            )
+            .map_err(map_replay_error)
     }
 
     fn encode_and_sign(&self, grant: &ParsedGrant) -> String {
@@ -338,8 +304,20 @@ impl fmt::Debug for AndroidVolumeGrantAuthority {
             .field("key_id", &self.key_id)
             .field("key", &"<redacted>")
             .field("principal", &"<redacted>")
-            .field("replay_capacity", &self.replay_capacity)
+            .field("replay", &"<process-global>")
             .finish()
+    }
+}
+
+const fn map_replay_error(error: SharedReplayError) -> AndroidVolumeGrantError {
+    match error {
+        SharedReplayError::Expired => AndroidVolumeGrantError::Expired,
+        SharedReplayError::FutureIssued => AndroidVolumeGrantError::FutureIssued,
+        SharedReplayError::LifetimeExceeded => AndroidVolumeGrantError::LifetimeExceeded,
+        SharedReplayError::Replayed => AndroidVolumeGrantError::Replayed,
+        SharedReplayError::ClockRollback => AndroidVolumeGrantError::ClockRollback,
+        SharedReplayError::CapacityExhausted => AndroidVolumeGrantError::ReplayCapacityExhausted,
+        SharedReplayError::StateUnavailable => AndroidVolumeGrantError::StateUnavailable,
     }
 }
 
@@ -470,8 +448,8 @@ mod tests {
     const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
     const NOW: u64 = 1_725_000_000;
 
-    fn authority() -> AndroidVolumeGrantAuthority {
-        AndroidVolumeGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap()
+    fn test_authority(test_principal: &str) -> AndroidVolumeGrantAuthority {
+        AndroidVolumeGrantAuthority::from_hex_key("primary-1", KEY, test_principal).unwrap()
     }
 
     fn target() -> AndroidVolumeGrantTarget {
@@ -499,7 +477,7 @@ mod tests {
 
     #[test]
     fn one_grant_is_exactly_bound_and_single_use() {
-        let authority = authority();
+        let authority = test_authority("volume-single-use");
         let token = authority.issue_at(SESSION, target(), NOW).unwrap();
         assert!(token.len() <= MAX_ANDROID_VOLUME_GRANT_HEADER_BYTES);
         authority
@@ -517,7 +495,7 @@ mod tests {
     fn rejects_legacy_volume_code_two_without_consuming_the_grant() {
         const CAPABILITY_OFFSET: usize = GRANT_ID_BYTES + DIGEST_BYTES + SESSION_BYTES;
 
-        let authority = authority();
+        let authority = test_authority("volume-legacy-code");
         let token = authority.issue_at(SESSION, target(), NOW).unwrap();
         let payload_hex = token.split('.').nth(2).unwrap();
         let payload = decode_hex_array::<PAYLOAD_BYTES>(payload_hex).unwrap();
@@ -542,7 +520,7 @@ mod tests {
 
     #[test]
     fn every_principal_session_stream_and_level_mismatch_collapses() {
-        let authority = authority();
+        let authority = test_authority("volume-binding");
         let token = authority.issue_at(SESSION, target(), NOW).unwrap();
         let other_principal =
             AndroidVolumeGrantAuthority::from_hex_key("primary-1", KEY, "other").unwrap();
@@ -576,7 +554,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_malformed_expired_future_and_invalid_signature() {
-        let authority = authority();
+        let authority = test_authority("volume-malformed-temporal");
         assert_eq!(
             authority
                 .consume_at(None, SESSION, target(), NOW)
@@ -619,8 +597,136 @@ mod tests {
     }
 
     #[test]
+    fn independently_constructed_authorities_share_clock_rollback_state() {
+        let first = test_authority("volume-shared-clock");
+        let reconstructed = test_authority("volume-shared-clock");
+        let accepted = first.issue_at(SESSION, target(), NOW).unwrap();
+        first
+            .consume_at(Some(&accepted), SESSION, target(), NOW + 1)
+            .unwrap();
+        let rollback = reconstructed.issue_at(SESSION, target(), NOW).unwrap();
+        assert_eq!(
+            reconstructed
+                .consume_at(Some(&rollback), SESSION, target(), NOW)
+                .unwrap_err(),
+            AndroidVolumeGrantError::ClockRollback
+        );
+    }
+
+    #[test]
+    fn independently_constructed_authorities_reject_sequential_replay() {
+        let issuer = test_authority("volume-shared-sequential");
+        let consumer = test_authority("volume-shared-sequential");
+        let token = issuer.issue_at(SESSION, target(), NOW).unwrap();
+        consumer
+            .consume_at(Some(&token), SESSION, target(), NOW)
+            .unwrap();
+        assert_eq!(
+            issuer
+                .consume_at(Some(&token), SESSION, target(), NOW)
+                .unwrap_err(),
+            AndroidVolumeGrantError::Replayed
+        );
+    }
+
+    #[test]
+    fn independent_concurrent_authorities_allow_exactly_one_consumer() {
+        let first = test_authority("volume-shared-concurrent");
+        let second = test_authority("volume-shared-concurrent");
+        let token = Arc::new(first.issue_at(SESSION, target(), NOW).unwrap());
+        let barrier = Arc::new(Barrier::new(3));
+        let threads = [first, second].map(|authority| {
+            let token = Arc::clone(&token);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                authority.consume_at(Some(&token), SESSION, target(), NOW)
+            })
+        });
+        barrier.wait();
+        let results = threads.map(|thread| thread.join().unwrap());
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(AndroidVolumeGrantError::Replayed)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn independently_constructed_authorities_share_capacity_and_pruning() {
+        let first = AndroidVolumeGrantAuthority::from_hex_key_with_capacity(
+            "primary-1",
+            KEY,
+            "volume-capacity",
+            1,
+        )
+        .unwrap();
+        let second = AndroidVolumeGrantAuthority::from_hex_key_with_capacity(
+            "primary-1",
+            KEY,
+            "volume-capacity",
+            1,
+        )
+        .unwrap();
+        let consumed = first.issue_at(SESSION, target(), NOW).unwrap();
+        first
+            .consume_at(Some(&consumed), SESSION, target(), NOW)
+            .unwrap();
+        let exhausted = second.issue_at(SESSION, target(), NOW + 1).unwrap();
+        assert_eq!(
+            second
+                .consume_at(Some(&exhausted), SESSION, target(), NOW + 1)
+                .unwrap_err(),
+            AndroidVolumeGrantError::ReplayCapacityExhausted
+        );
+        let after_expiry = second
+            .issue_at(SESSION, target(), NOW + ANDROID_VOLUME_GRANT_TTL_SECONDS)
+            .unwrap();
+        second
+            .consume_at(
+                Some(&after_expiry),
+                SESSION,
+                target(),
+                NOW + ANDROID_VOLUME_GRANT_TTL_SECONDS,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn different_keys_and_principals_keep_clock_and_replay_state_isolated() {
+        let baseline = test_authority("volume-isolation-baseline");
+        let baseline_token = baseline.issue_at(SESSION, target(), NOW).unwrap();
+        baseline
+            .consume_at(Some(&baseline_token), SESSION, target(), NOW + 1)
+            .unwrap();
+
+        let other_principal = test_authority("volume-isolation-other");
+        let other_principal_token = other_principal.issue_at(SESSION, target(), NOW).unwrap();
+        other_principal
+            .consume_at(Some(&other_principal_token), SESSION, target(), NOW)
+            .unwrap();
+
+        let other_key = "11".repeat(ANDROID_VOLUME_GRANT_KEY_BYTES);
+        let other_key_authority = AndroidVolumeGrantAuthority::from_hex_key(
+            "primary-1",
+            &other_key,
+            "volume-isolation-baseline",
+        )
+        .unwrap();
+        let other_key_token = other_key_authority
+            .issue_at(SESSION, target(), NOW)
+            .unwrap();
+        other_key_authority
+            .consume_at(Some(&other_key_token), SESSION, target(), NOW)
+            .unwrap();
+    }
+
+    #[test]
     fn concurrent_replay_has_exactly_one_winner() {
-        let authority = Arc::new(authority());
+        let authority = Arc::new(test_authority("volume-concurrent-clones"));
         let token = Arc::new(authority.issue_at(SESSION, target(), NOW).unwrap());
         let barrier = Arc::new(Barrier::new(9));
         let mut threads = Vec::new();
@@ -650,7 +756,7 @@ mod tests {
 
     #[test]
     fn debug_output_redacts_key_principal_stream_and_level() {
-        let authority_debug = format!("{:?}", authority());
+        let authority_debug = format!("{:?}", test_authority(PRINCIPAL));
         let target_debug = format!("{:?}", target());
         assert!(!authority_debug.contains(KEY));
         assert!(!authority_debug.contains(PRINCIPAL));
