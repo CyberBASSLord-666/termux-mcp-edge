@@ -175,7 +175,6 @@ async fn live_initialize_response(listener: tokio::net::TcpListener, app: Router
         .await
         .unwrap();
     connection.write_all(request.as_bytes()).await.unwrap();
-    connection.shutdown().await.unwrap();
     let mut response = Vec::new();
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
