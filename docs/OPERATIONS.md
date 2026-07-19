@@ -15,7 +15,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Two-MiB request-body ceiling by default.
 - Versioned Termux release directories with atomic `current` and `previous` links.
 - Fixed `mcp_runtime` runit service only.
-- Dedicated safe-root defaults plus independent default-disabled directory and file-write mutation gates, with request-scoped authorization for each exact live mutation.
+- Dedicated safe-root defaults plus independent default-disabled directory, file-copy, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
 ## Android hardening
 
@@ -131,6 +131,33 @@ Do not enable shell tracing, echo token variables, or include credential-bearing
 
 Each process holds at most 64 sessions and expires them after 30 idle minutes. Missing required post-initialize protocol/session headers return HTTP 400; expired, terminated, malformed, or unknown sessions return HTTP 404; capacity exhaustion returns HTTP 503. A client should DELETE a finished session and initialize a new session after HTTP 404 or a server restart. Session IDs do not replace the bearer token. SSE is disabled by default. If enabled, only finite request-response streams enter replay state, bounded to 8 streams and 256 KiB per session; terminate unused sessions promptly so their replay budget is released immediately.
 
+## Enabling and issuing one `copy_file` mutation
+
+Leave live copying disabled unless it is operationally required. Its private `runtime.env` posture is independent from directory creation, file writing, and Android volume control:
+
+```dotenv
+MCP__FILE__COPY_FILE_MUTATION_ENABLED=true
+MCP__AUTH__STATIC_TOKEN=replace-with-a-strong-random-token
+MCP__CAPABILITY__KEY_ID=primary-1
+MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
+```
+
+The gate defaults to `false`. Enabling it without `mcp-runtime`, static-token authentication, or the complete valid key pair fails startup. After initializing the target MCP session, issue a grant locally with the exact deployed binary; do not transmit the key or private inputs to MCP:
+
+```bash
+umask 077
+COPY_GRANT_FILE="$(mktemp "$HOME/.termux-mcp-copy-grant.XXXXXX")"
+chmod 600 "$COPY_GRANT_FILE"
+MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
+MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+MCP__CAPABILITY__COPY_FILE_SOURCE="$HOME/mcp-files/source.bin" \
+MCP__CAPABILITY__COPY_FILE_DESTINATION="$HOME/mcp-files/destination.bin" \
+  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  --issue-copy-file-grant >"$COPY_GRANT_FILE"
+```
+
+Read the single grant line only while constructing the matching active-session `copy_file` mutation request, send it exactly once as `MCP-Capability-Grant`, and remove `COPY_GRANT_FILE` immediately after the attempt. The issuer independently opens and hashes the exact single-link source; the grant is invalid if either endpoint or the source identity/bytes changes. Never print, log, retain, or attach a grant. See [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md) for the full issuance, rotation, denial, and replay contract.
+
 ## Enabling and issuing one `write_file` mutation
 
 Leave live writing disabled unless it is operationally required. Its private `runtime.env` posture is independent from directory creation and Android volume control:
@@ -224,7 +251,7 @@ Filesystem responses have explicit mobile-oriented ceilings:
 
 - `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
 - `write_file` validates at most 1 MiB of UTF-8 and classifies an absent target as `create` or an existing no-follow regular file as `replace`. Explicit `dry_run:false` succeeds only when `MCP__FILE__WRITE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, root, normalized target, exact content, disposition, and exact old identity for replace. It creates a mode-`0600` randomized staging entry in the target parent's reserved private quarantine. Create publishes with atomic `NOREPLACE` and retains no artifact. Replace accepts only a single-link regular target of at most 1 MiB, performs one irreversible `EXCHANGE`, verifies the exact staged inode at the target, and preserves the displaced prior inode/content as recovery material. The complete 16 KiB result exposes no path, content, or artifact name and includes `recoveryArtifactRetained`; see [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
-- `copy_file` validates one regular source and absent destination by default and mutates only with explicit `dry_run:false`. It copies at most 1 MiB from the exact held source descriptor, publishes fixed mode `0600` atomically without replacement, verifies identities and sizes, syncs file and parent descriptors, returns no content, and caps the complete response at 16 KiB; see [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
+- `copy_file` validates one regular source and absent destination by default. Explicit `dry_run:false` succeeds only when `MCP__FILE__COPY_FILE_MUTATION_ENABLED=true`, static authentication and the capability key pair are active, and one unexpired single-use grant matches the principal, session, both roots and normalized paths, exact source identity/size/high-resolution ctime/SHA-256, absent destination, and no-replace posture. It copies at most 1 MiB from the exact held source descriptor, stages fixed mode `0600` in the hidden quarantine, publishes atomically without replacement, verifies exact bytes and identities, syncs file and parent descriptors, returns neither endpoint path nor content, and caps the complete response at 16 KiB; see [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
 - `find_paths` accepts one case-sensitive literal basename query of at most 256 UTF-8 bytes, traverses no-follow descriptors to depth 5, examines at most 8,192 entries, returns at most 512 lexicographically ordered file/directory matches, and caps the complete response at 262,144 bytes; see [`SAFE_ROOT_PATH_DISCOVERY.md`](SAFE_ROOT_PATH_DISCOVERY.md).
 - `hash_file` streams at most 16 MiB from one exact held no-follow regular-file descriptor through SHA-256, rejects growth past the limit, returns only lowercase digest and byte count, and caps the complete response at 16 KiB before the file read; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
 - `read_binary_file` reads at most 1 MiB from one exact held no-follow regular-file descriptor, rejects runtime growth, returns canonical padded RFC 4648 base64 without path or host metadata, and preflights the complete 1,507,328-byte response ceiling before file access; see [`SAFE_ROOT_BINARY_READS.md`](SAFE_ROOT_BINARY_READS.md).

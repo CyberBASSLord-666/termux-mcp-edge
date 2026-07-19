@@ -11,7 +11,7 @@ Enabled staged tools:
 - `android_status`
 - `project_service_status`
 - `create_directory` preview for exactly one absent safe-rooted directory; mutation additionally requires the default-disabled runtime gate and one request-scoped single-use grant, then uses fixed mode `0700` and atomic no-replace publication
-- `copy_file` for exactly one no-follow regular source of at most 1 MiB and one absent safe-rooted destination, dry-run by default, fixed mode `0600`, content-private response/audit surfaces, and atomic no-replace publication
+- `copy_file` preview for exactly one single-link no-follow regular source of at most 1 MiB and one absent safe-rooted destination; mutation is independently default-disabled, exact principal/session/root/path/source-identity/size/SHA-256/destination grant-gated, fixed mode `0600`, path/content-private, hidden-staged, and atomically no-replace published
 - `find_paths` for case-sensitive literal basename discovery across at most 8,192 descriptor-relative no-follow entries to depth 5, with exact kind filtering, at most 512 ordered content-free matches, and a fixed complete-response ceiling
 - `hash_file` for streaming SHA-256 of exactly one no-follow safe-rooted regular file of at most 16 MiB, with a digest-and-size-only response and content/path-private audit surfaces
 - `list_directory`
@@ -58,11 +58,27 @@ Status: implemented as a narrowly scoped Class 2 authorization layer.
 
 The complete contract is [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 
+### `copy_file` request grant
+
+Status: implemented as an independent narrowly scoped Class 2 authorization layer.
+
+- Runtime gate: `MCP__FILE__COPY_FILE_MUTATION_ENABLED`, default `false`; it does not inherit create, write, or Android-volume enablement.
+- Startup posture: an `mcp-runtime` binary, static-token authentication, and the exact paired lowercase key ID plus 32-byte HMAC key are mandatory.
+- Issuance: local exact-binary `--issue-copy-file-grant`, never an MCP tool. The issuer receives the active session and private source/destination paths through `MCP__CAPABILITY__SESSION_ID`, `MCP__CAPABILITY__COPY_FILE_SOURCE`, and `MCP__CAPABILITY__COPY_FILE_DESTINATION`, then independently inspects and hashes the source.
+- Transport: exactly one bounded ASCII `MCP-Capability-Grant` header, accepted only for an active-session live `copy_file` call. Preview, discovery, initialization, notifications, responses, GET, DELETE, and unrelated tools reject or ignore no grant context and never consume one.
+- Binding: static principal, canonical session, capability code `4`, both anchored root identities and normalized paths, source device/inode/size/high-resolution ctime/one-link identity, SHA-256 of the exact bytes, fixed absent-destination/no-replace posture, format/key ID, JTI, issuance, and expiry. The fixed 65-byte payload serializes only JTI, family byte, keyed opaque operation binding, and timestamps.
+- Ordering: response preflight with the real request id, fail-fast worker admission, descriptor preparation, process-lock acquisition, source/content/destination revalidation, hidden-quarantine capacity, and cancellation ownership all precede atomic grant consumption. Consumption immediately precedes the first staging mutation and survives every later outcome.
+- Transaction: randomized mode-`0600` staging occurs only inside the mode-`0700` MCP-hidden quarantine. Atomic `NOREPLACE`, held/named identity verification, destination-parent and quarantine sync, and identity-safe cleanup run while the create/copy/write process lock remains held.
+- Result: only `dryRun`, byte count, fixed mode, and fixed 1 MiB/16 KiB limits; never a source or destination path, content, digest, identity, grant, or staging name.
+- Lifetime/state: 60-second grants, five-second future skew, 120-second hard lifetime ceiling, 4,096 unexpired replay entries, and the shared bounded process-global authority registry.
+
+The complete contract is [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md).
+
 ### `write_file` request grant
 
 Status: implemented as an independent narrowly scoped Class 2 authorization layer.
 
-- Runtime gate: `MCP__FILE__WRITE_MUTATION_ENABLED`, default `false`; it does not inherit the directory-creation or Android-volume gate.
+- Runtime gate: `MCP__FILE__WRITE_MUTATION_ENABLED`, default `false`; it does not inherit the directory-creation, file-copy, or Android-volume gate.
 - Startup posture: an `mcp-runtime` binary, static-token authentication, and one paired lowercase key ID plus 32-byte HMAC-SHA-256 key are mandatory; partial or malformed key configuration fails closed.
 - Issuance: local exact-binary `--issue-write-file-grant`, never an MCP tool. The issuer receives the active session, safe-root target, a private stable no-follow content file of at most 1 MiB, and exact `create` or `replace` disposition through `MCP__CAPABILITY__SESSION_ID`, `MCP__CAPABILITY__WRITE_FILE_TARGET`, `MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE`, and `MCP__CAPABILITY__WRITE_FILE_DISPOSITION`.
 - Transport: exactly one bounded ASCII `MCP-Capability-Grant` header, accepted only on an active-session `tools/call` for `write_file` or another explicitly grant-aware tool; it is rejected on initialization, notifications, responses, discovery, GET, DELETE, and unrelated tools.
@@ -75,6 +91,12 @@ Status: implemented as an independent narrowly scoped Class 2 authorization laye
 - Privacy: responses and aggregate audits contain only stable tool/gate/mode/decision/reason labels. They never retain the key, header, principal fingerprint, session, JTI, target/content digest, disposition-specific identity, path, content, artifact name, retained counts/bytes, or timestamp.
 
 The complete contract is [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md).
+
+### Process-local request-grant state
+
+Every live request-grant family resolves replay, clock-rollback, and replay-capacity state through one bounded process-global registry. Independently constructed authorities share that state only when their capability family, key identifier, HMAC key, and static authenticated principal are all identical. A token consumed through one equivalent router or authority is therefore replayed through every other equivalent authority in the same server process, including under concurrent use. Different families, keys, key identifiers, and principals remain isolated. Registry or namespace lock poisoning, an invalid zero capacity, and exhaustion of the bounded namespace registry fail closed without exposing a key, principal fingerprint, or namespace identifier.
+
+This is a process boundary, not a distributed replay service. Separate operating-system processes do not share consumed grant identifiers or last-observed clocks even when configured with the same key material. Production deployments must run one grant-consuming service process for a capability-key/principal domain, or provide an external atomic one-use coordinator before introducing multiple consumers. Restart clears the in-memory state; rotate the key during restart when immediate invalidation of outstanding grants is required.
 
 ## Gate 1: non-sensitive platform metadata
 

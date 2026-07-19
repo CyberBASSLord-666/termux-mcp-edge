@@ -46,6 +46,7 @@ MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=2097152
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false
+MCP__FILE__COPY_FILE_MUTATION_ENABLED=false
 MCP__FILE__WRITE_MUTATION_ENABLED=false
 RUST_LOG=termux_mcp_server=info
 EOF
@@ -88,13 +89,16 @@ Do not add this setting to a build without the matching feature; startup fails c
 
 Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
 
-Directory and file-write preview remain available while their mutation gates are false, and volume control remains hidden while `MCP__ANDROID__VOLUME_CONTROL_ENABLED=false`. If any request-authorized mutation is operationally required, generate a separate 32-byte HMAC key, keep it private, and atomically add the complete paired configuration. Enable only the exact gate needed; this example enables both filesystem mutations:
+Directory, file-copy, and file-write preview remain available while their mutation gates are false, and volume control remains hidden while `MCP__ANDROID__VOLUME_CONTROL_ENABLED=false`. If any request-authorized mutation is operationally required, generate a separate 32-byte HMAC key, keep it private, and atomically add the complete paired configuration. Enable only the exact gate needed; this example enables all three filesystem mutations:
 
 ```bash
 umask 077
 CAPABILITY_KEY_HEX="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
 sed -i \
   's/^MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false$/MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true/' \
+  "$HOME/.config/termux-mcp-edge/runtime.env"
+sed -i \
+  's/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=false$/MCP__FILE__COPY_FILE_MUTATION_ENABLED=true/' \
   "$HOME/.config/termux-mcp-edge/runtime.env"
 sed -i \
   's/^MCP__FILE__WRITE_MUTATION_ENABLED=false$/MCP__FILE__WRITE_MUTATION_ENABLED=true/' \
@@ -107,7 +111,7 @@ unset CAPABILITY_KEY_HEX
 chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 ```
 
-Replace an existing `false` gate line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and any enabled request-authorized mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, operation-bound `MCP-Capability-Grant`; the write issuer additionally binds exact content, disposition, and replacement identity. See [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md), and [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md). Never print, commit, or attach either the HMAC key or issued grants.
+Replace an existing `false` gate line instead of retaining both values: duplicate variable names are rejected. The deployment manager also rejects malformed or half-configured key pairs and any enabled request-authorized mutation gate without static-token authentication. Every mutation still needs one offline-issued, active-session, operation-bound `MCP-Capability-Grant`; the copy issuer independently opens and hashes the exact source, while the write issuer additionally binds exact content, disposition, and replacement identity. See [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md), [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md), and [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md). Never print, commit, or attach either the HMAC key or issued grants.
 
 For issuance, set `MCP__CAPABILITY__CONFIG_FILE` to this private `runtime.env`. The exact binary opens it without following the final component, enforces the same private mode and a 64 KiB ceiling, rejects duplicate or non-allowlisted records, and parses literal values without shell evaluation.
 

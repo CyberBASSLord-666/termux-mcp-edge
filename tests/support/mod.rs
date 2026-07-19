@@ -15,9 +15,11 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use termux_mcp_server::{
     auth::McpAuthPolicy,
+    copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
     mcp_transport::{
-        protected_router, protected_router_with_create_directory_authority,
+        protected_router, protected_router_with_copy_file_authority,
+        protected_router_with_create_directory_authority,
         protected_router_with_filesystem_authorities, protected_router_with_options,
         McpRouterProtection, McpTransportOptions, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
         MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
@@ -153,6 +155,35 @@ pub(super) fn write_file_authorized_test_router(
     (router, authority)
 }
 
+pub(super) fn copy_file_authorized_test_router(
+    file_tools: FileSystemTools,
+) -> (Router, CopyFileGrantAuthority) {
+    let authority = CopyFileGrantAuthority::from_hex_key(
+        "test-copy-key-1",
+        TEST_CAPABILITY_KEY,
+        TEST_STATIC_PRINCIPAL,
+    )
+    .unwrap();
+    let protection = McpRouterProtection::new(
+        "127.0.0.1",
+        McpAuthPolicy::unauthenticated_localhost_only(),
+        McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
+            .expect("copy authorization tests require bounded parallel replay attempts"),
+    )
+    .expect("unauthenticated test routers declare an exact loopback listener");
+    let router = with_loopback_test_peer(protected_router_with_copy_file_authority(
+        protection,
+        TransportSecurityPolicy::localhost(8000, false)
+            .expect("test localhost policy must be valid"),
+        file_tools,
+        false,
+        false,
+        false,
+        authority.clone(),
+    ));
+    (router, authority)
+}
+
 pub(super) fn issue_create_directory_grant(
     authority: &CreateDirectoryGrantAuthority,
     file_tools: &FileSystemTools,
@@ -180,6 +211,19 @@ pub(super) fn issue_write_file_grant(
     let target = file_tools
         .write_file_grant_target(target_path, content, disposition)
         .expect("test grant target must be valid");
+    authority.issue(session_id, &target).unwrap()
+}
+
+pub(super) fn issue_copy_file_grant(
+    authority: &CopyFileGrantAuthority,
+    file_tools: &FileSystemTools,
+    session_id: &str,
+    source_path: &str,
+    destination_path: &str,
+) -> String {
+    let target = file_tools
+        .copy_file_grant_target(source_path, destination_path)
+        .expect("test copy grant target must be valid");
     authority.issue(session_id, &target).unwrap()
 }
 

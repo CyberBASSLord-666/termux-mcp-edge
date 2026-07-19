@@ -1,6 +1,6 @@
 # Safe-root file copy contract
 
-`copy_file` copies one bounded regular file between configured filesystem safe roots without returning file contents. It is a Class 2 safe-rooted mutation only when the caller explicitly supplies `dry_run: false`; omitted `dry_run` and `dry_run: true` perform the same fully validated preview without publishing a destination.
+`copy_file` copies one bounded regular file between configured filesystem safe roots without returning file contents or paths. Omitted `dry_run` and explicit `dry_run:true` perform the same fully validated preview without publishing a destination. Class 2 mutation additionally requires the independent default-false copy gate and one exact request-scoped grant; explicit `dry_run:false` alone is denied. The complete authorization and issuance contract is [copy-file capability grants](COPY_FILE_CAPABILITY_GRANTS.md).
 
 ## Closed request schema
 
@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | `source_path` | string | yes | Absolute path to one regular file inside a configured safe root. |
 | `destination_path` | string | yes | Absolute path to one absent destination whose parent already exists inside a configured safe root. |
-| `dry_run` | boolean | no | Defaults to `true`; only explicit `false` authorizes mutation. |
+| `dry_run` | boolean | no | Defaults to `true`; explicit `false` requests the separately gated and grant-authorized mutation path. |
 
 Unknown fields, missing required fields, wrong JSON types, relative paths, NUL bytes, parent traversal, the safe-root directory itself, and equal normalized source/destination paths are rejected. Source and destination may be under different configured safe roots; both are authorized independently.
 
@@ -18,14 +18,12 @@ Unknown fields, missing required fields, wrong JSON types, relative paths, NUL b
 - accepted data: arbitrary bytes, including empty files and non-UTF-8 content;
 - destination mode: fixed `0600`, independent of source mode and process umask;
 - complete JSON-RPC success response: at most 16,384 bytes;
-- response content: normalized paths, mode, byte count, and fixed limits only; file bytes are never returned.
+- response content: dry-run posture, mode, byte count, and fixed limits only; paths and file bytes are never returned.
 
 The successful `structuredContent` object is exactly:
 
 ```json
 {
-  "sourcePath": "/configured/root/source.bin",
-  "destinationPath": "/configured/root/destination.bin",
   "dryRun": false,
   "sizeBytes": 123,
   "mode": "0600",
@@ -34,7 +32,7 @@ The successful `structuredContent` object is exactly:
 }
 ```
 
-Before any mutation, the transport constructs a worst-case success result using the fixed maximum byte count and verifies that the complete caller-specific JSON-RPC envelope—including the request id—fits the 16 KiB ceiling. A response that cannot fit is rejected before a staging object is created.
+Before filesystem preparation or grant consumption, the transport constructs a worst-case success result using the fixed maximum byte count and verifies that the complete caller-specific JSON-RPC envelope—including the request id—fits the 16 KiB ceiling. A response that cannot fit is rejected before source access, grant consumption, or staging.
 
 ## Descriptor-relative execution
 
@@ -45,20 +43,22 @@ The operation does not invoke a shell, subprocess, platform copy utility, archiv
 3. Inspect the source final component without following links and require a regular file at or below the fixed limit.
 4. Open the source with `O_NOFOLLOW`, `O_NONBLOCK`, and close-on-exec; verify that device, inode, type, and size match the pre-open observation.
 5. Read at most 1 MiB plus one byte from that exact held descriptor and verify its type, identity, and size again after the read.
-6. Open and retain the destination-parent descriptor; require the final destination component to be absent without following links.
-7. For preview, return only after all source and destination validation has succeeded.
-8. For explicit mutation, create an unpredictable same-directory staging file with exclusive no-follow creation, force mode `0600`, write the bounded bytes, sync it, and verify its held identity, type, mode, and size.
-9. Publish with atomic `RENAME_NOREPLACE`, verify both the published path and still-held descriptor against the captured staging identity and contract, then sync the destination parent.
+6. Compute SHA-256 over the exact held bytes and bind it with source device, inode, size, high-resolution change time, one-link count, anchored root identity, and normalized source components.
+7. Open and retain the destination-root and destination-parent descriptors; require the final destination component to be absent without following links and bind both destination root identity and normalized components.
+8. For preview, return only after all source and destination validation has succeeded.
+9. For explicit mutation, acquire the shared process publication lock, then revalidate both root identities, held and named source identity, exact bytes and SHA-256, destination-parent identity, destination absence, and hidden staging capacity before cancellation ownership and grant consumption.
+10. Create an unpredictable staging file exclusively inside the destination parent's reserved mode-`0700` `.termux-mcp-write-quarantine`, force mode `0600`, write the grant-bound bytes, sync it, and verify its held and named identity, type, mode, link count, and size.
+11. Publish from the hidden quarantine to the held destination parent with atomic `RENAME_NOREPLACE`, verify both the published name and still-held descriptor against the captured staging identity and contract, sync both directories, and revalidate quarantine bounds.
 
-The held source descriptor prevents a later pathname exchange from redirecting reads. The held destination-parent descriptor prevents a later parent exchange from redirecting staging, publication, cleanup, or durability sync. Atomic no-replace publication means a concurrently inserted destination wins and is never overwritten.
+The held source descriptor prevents a later pathname exchange from redirecting reads. The held destination-parent descriptor prevents a later parent exchange from redirecting staging, publication, cleanup, or durability sync. The process lock serializes cooperating create/copy/write instances. Atomic no-replace publication means a concurrently inserted destination wins and is never overwritten.
 
 ## Cleanup and failure semantics
 
-Staging cleanup is armed only after the newly created file identity is captured. Cleanup stats the current name without following links and removes it only when it is still a regular file with the captured device and inode. After publication, cleanup follows the final name under the same held parent descriptor. A replacement object is preserved. Successful cleanup syncs the parent best-effort; successful publication requires parent sync.
+Staging cleanup is armed only after the newly created file identity is captured. Cleanup uses the authoritative quarantine or destination-parent descriptor, stats the current name without following links, and removes it only when it is still the captured single-link regular file. After publication, cleanup follows the final name under the held destination parent. A replacement object or unknown identity/type is preserved. Successful cleanup syncs its parent best-effort; successful publication requires destination-parent and quarantine sync.
 
 Any failed explicit copy leaves the source untouched and must not replace an existing destination. If failure occurs after publication but before the durability boundary, identity-checked cleanup removes only this operation's published file when it is still the captured object.
 
-The operation verifies a stable source identity and size around its bounded read. It cannot detect an in-place writer that changes bytes without changing file identity or final size. Operators requiring an application-level snapshot must quiesce source writers or provide an immutable source file before calling `copy_file`.
+The operation verifies source identity, high-resolution change time, link count, exact bytes, size, and SHA-256 during initial preparation and again under the publication lock. The copied bytes are the in-memory bytes covered by the grant, so a source change after the final revalidation cannot redirect or alter the authorized destination content. A same-UID external writer can still force bounded denial by racing namespace or metadata checks; operators must give the service exclusive operational ownership of live-mutation safe roots.
 
 ## Stable audit surface
 
@@ -80,6 +80,12 @@ Denied reasons:
 - `filesystem_destination_exists`;
 - `filesystem_copy_source_type_unsupported`;
 - `filesystem_copy_source_too_large`;
+- `copy_file_mutation_disabled`;
+- `filesystem_copy_source_changed`;
+- `filesystem_copy_destination_changed`;
+- the stable `capability_*` authorization reasons;
+- `filesystem_mutation_worker_capacity_exceeded`;
+- `filesystem_mutation_request_cancelled`;
 - `response_size_limit_exceeded`;
 - `filesystem_copy_failed`.
 
@@ -89,4 +95,4 @@ Denied reasons:
 
 ## Required release evidence
 
-Release validation must prove default preview and explicit binary copy, exact 1 MiB acceptance, one-byte-over rejection, fixed `0600` mode, absent-destination/no-replace behavior, same/missing/outside/symlink/directory denials, cross-root operation, descriptor exchange resistance, identity-safe cleanup, pre-mutation response bounding, content-private responses and audit counters, official Android cross-builds, and native Termux execution.
+Release validation must prove default-disabled discovery and denial, enabled exact-binary grant issuance, preview non-consumption, binding and replay denial, explicit binary copy, exact 1 MiB acceptance, one-byte-over rejection, hidden staging, fixed `0600` mode, absent-destination/no-replace behavior, stale source/destination non-consumption, same/missing/outside/symlink/directory denials, cross-root operation, descriptor exchange resistance, identity-safe foreign-object preservation, pre-access actual-id response bounding, path/content/digest/grant-private responses and audit counters, official Android cross-builds, emulated gates, and native Termux execution.

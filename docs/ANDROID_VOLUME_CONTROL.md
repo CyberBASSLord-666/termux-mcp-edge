@@ -159,6 +159,15 @@ records the verified or recovery result itself, and task drop records only the
 stable worker-failed denial. Every provider subprocess remains under the bounded,
 process-group-aware supervisor.
 
+Replay, last-observed-clock, and bounded-capacity state is shared by every
+equivalent volume authority in this server process, including independently
+constructed routers with the same key identifier, HMAC key, and static
+principal. Other grant families, keys, and principals remain isolated, and
+unavailable or poisoned state fails closed. Separate operating-system
+processes do not share this registry; do not run multiple grant consumers for
+one capability-key/principal domain without an external atomic one-use
+coordinator.
+
 A verified success returns `outcome:"mutation_verified"`, the captured and
 requested levels, live maximum, whether the numerical value changed, and
 `rollback:"not_required"`. Failures return stable redacted reason codes:

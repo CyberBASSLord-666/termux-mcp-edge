@@ -15,6 +15,7 @@ use super::{
     WRITE_FILE_QUARANTINE_DIRECTORY,
 };
 use crate::audit::AuditEvent;
+use crate::copy_file_grant::{CopyFileGrantError, CopyFileGrantTarget, CopyFileSourceIdentity};
 use crate::create_directory_grant::{CreateDirectoryGrantError, CreateDirectoryGrantTarget};
 use crate::error::AppError;
 use crate::write_file_grant::{
@@ -83,8 +84,8 @@ pub const MAX_WRITE_FILE_QUARANTINE_ARTIFACTS: usize = 32;
 pub const MAX_WRITE_FILE_QUARANTINE_BYTES: u64 =
     MAX_WRITE_FILE_QUARANTINE_ARTIFACTS as u64 * 1_048_576;
 
-/// One process-wide serialization boundary for every authorized directory and
-/// file-write publication.
+/// One process-wide serialization boundary for every authorized directory,
+/// file-copy, and file-write publication.
 ///
 /// The transport's fail-fast worker permit remains a per-state admission
 /// boundary. This mutex is the narrower correctness boundary shared by every
@@ -142,7 +143,9 @@ struct DescriptorDirectoryCleanup<'a> {
 }
 
 struct DescriptorCopiedFileCleanup<'a> {
-    parent: &'a OwnedFd,
+    staging_parent: &'a OwnedFd,
+    publication_parent: &'a OwnedFd,
+    published: bool,
     name: OsString,
     expected_identity: Option<(u64, u64)>,
     armed: bool,
@@ -151,7 +154,24 @@ struct DescriptorCopiedFileCleanup<'a> {
 impl<'a> DescriptorCopiedFileCleanup<'a> {
     fn new(parent: &'a OwnedFd, name: OsString) -> Self {
         Self {
-            parent,
+            staging_parent: parent,
+            publication_parent: parent,
+            published: false,
+            name,
+            expected_identity: None,
+            armed: true,
+        }
+    }
+
+    fn with_publication_parent(
+        staging_parent: &'a OwnedFd,
+        publication_parent: &'a OwnedFd,
+        name: OsString,
+    ) -> Self {
+        Self {
+            staging_parent,
+            publication_parent,
+            published: false,
             name,
             expected_identity: None,
             armed: true,
@@ -163,6 +183,7 @@ impl<'a> DescriptorCopiedFileCleanup<'a> {
     }
 
     fn published_as(&mut self, name: OsString) {
+        self.published = true;
         self.name = name;
     }
 
@@ -180,8 +201,12 @@ impl Drop for DescriptorCopiedFileCleanup<'_> {
         let Some((expected_device, expected_inode)) = self.expected_identity else {
             return;
         };
-        let Ok(metadata) =
-            descriptor_fs::statat(self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
+        let parent = if self.published {
+            self.publication_parent
+        } else {
+            self.staging_parent
+        };
+        let Ok(metadata) = descriptor_fs::statat(parent, &self.name, AtFlags::SYMLINK_NOFOLLOW)
         else {
             return;
         };
@@ -192,8 +217,8 @@ impl Drop for DescriptorCopiedFileCleanup<'_> {
         {
             return;
         }
-        if descriptor_fs::unlinkat(self.parent, &self.name, AtFlags::empty()).is_ok() {
-            let _ = descriptor_fs::fsync(self.parent);
+        if descriptor_fs::unlinkat(parent, &self.name, AtFlags::empty()).is_ok() {
+            let _ = descriptor_fs::fsync(parent);
         }
     }
 }
@@ -266,6 +291,44 @@ pub(crate) enum AuthorizedCreateDirectoryError {
     Authorization(CreateDirectoryGrantError),
     Filesystem(AppError),
     Cancelled,
+}
+
+pub(crate) struct PreparedCopyFileMutation {
+    result: CopyFileResult,
+    source_root_fd: OwnedFd,
+    source_root_identity: (u64, u64),
+    source_parent_fd: OwnedFd,
+    source_name: OsString,
+    source_file: File,
+    source_identity: CopyFileSourceIdentity,
+    source_sha256: [u8; 32],
+    content: Vec<u8>,
+    destination_root_fd: OwnedFd,
+    destination_root_identity: (u64, u64),
+    destination_parent_fd: OwnedFd,
+    destination_parent_identity: (u64, u64),
+    destination_name: OsString,
+    grant_target: CopyFileGrantTarget,
+    started: Instant,
+}
+
+pub(crate) enum AuthorizedCopyFileError {
+    Authorization(CopyFileGrantError),
+    Filesystem(AppError),
+    Cancelled,
+}
+
+impl std::fmt::Debug for AuthorizedCopyFileError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Authorization(error) => formatter
+                .debug_tuple("Authorization")
+                .field(&error.reason_code())
+                .finish(),
+            Self::Filesystem(_) => formatter.write_str("Filesystem(<redacted>)"),
+            Self::Cancelled => formatter.write_str("Cancelled"),
+        }
+    }
 }
 
 pub(crate) struct PreparedWriteFileMutation {
@@ -417,6 +480,201 @@ impl PreparedCreateDirectoryMutation {
             )));
         }
         descriptor_fs::fsync(&self.parent_fd).map_err(descriptor_error)?;
+        cleanup.disarm();
+        Ok(self.result)
+    }
+}
+
+impl PreparedCopyFileMutation {
+    pub(crate) fn preview(self) -> CopyFileResult {
+        histogram!("mcp.fs.copy_file.latency_seconds").record(self.started.elapsed().as_secs_f64());
+        counter!("mcp.fs.copy_file.dry_runs_total").increment(1);
+        self.result
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execute_authorized(
+        self,
+        authorize: impl FnOnce(&CopyFileGrantTarget) -> Result<(), CopyFileGrantError>,
+    ) -> Result<CopyFileResult, AuthorizedCopyFileError> {
+        self.execute_authorized_with_commit(|target| {
+            authorize(target).map_err(AuthorizedCopyFileError::Authorization)
+        })
+    }
+
+    /// Execute after one lock-held authorization-and-commit decision.
+    ///
+    /// The callback claims cancellation ownership and consumes the exact copy
+    /// grant only after both the descriptor-bound source and absent destination
+    /// have been revalidated under the process-wide publication lock.
+    pub(crate) fn execute_authorized_with_commit(
+        self,
+        authorize_and_commit: impl FnOnce(&CopyFileGrantTarget) -> Result<(), AuthorizedCopyFileError>,
+    ) -> Result<CopyFileResult, AuthorizedCopyFileError> {
+        self.execute_authorized_with_commit_and_lock_contention_hook(authorize_and_commit, || {})
+    }
+
+    pub(crate) fn execute_authorized_with_commit_and_lock_contention_hook(
+        mut self,
+        authorize_and_commit: impl FnOnce(&CopyFileGrantTarget) -> Result<(), AuthorizedCopyFileError>,
+        on_lock_contention: impl FnOnce(),
+    ) -> Result<CopyFileResult, AuthorizedCopyFileError> {
+        let publication_lock =
+            acquire_filesystem_publication_lock_with_contention_hook(on_lock_contention)
+                .map_err(AuthorizedCopyFileError::Filesystem)?;
+        self.revalidate_source()
+            .map_err(AuthorizedCopyFileError::Filesystem)?;
+        self.revalidate_absent_destination()
+            .map_err(AuthorizedCopyFileError::Filesystem)?;
+        preflight_write_quarantine_capacity(&self.destination_parent_fd, self.content.len() as u64)
+            .map_err(AuthorizedCopyFileError::Filesystem)?;
+        authorize_and_commit(&self.grant_target)?;
+
+        let started = self.started;
+        let result = self
+            .execute_after_authorization()
+            .map_err(AuthorizedCopyFileError::Filesystem)?;
+        drop(publication_lock);
+        histogram!("mcp.fs.copy_file.latency_seconds").record(started.elapsed().as_secs_f64());
+        counter!("mcp.fs.copy_file.copied_total").increment(1);
+        counter!("mcp.fs.copy_file.bytes_total").increment(result.size_bytes as u64);
+        Ok(result)
+    }
+
+    fn revalidate_source(&mut self) -> Result<(), AppError> {
+        let root = descriptor_fs::fstat(&self.source_root_fd).map_err(descriptor_error)?;
+        if !FileType::from_raw_mode(root.st_mode).is_dir()
+            || (root.st_dev, root.st_ino) != self.source_root_identity
+        {
+            return Err(AppError::CopySourceChanged);
+        }
+
+        let held_before = descriptor_fs::fstat(&self.source_file).map_err(descriptor_error)?;
+        if !copy_file_source_identity_matches(&held_before, self.source_identity) {
+            return Err(AppError::CopySourceChanged);
+        }
+        let named_before = descriptor_fs::statat(
+            &self.source_parent_fd,
+            &self.source_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(|_| AppError::CopySourceChanged)?;
+        if !copy_file_source_identity_matches(&named_before, self.source_identity) {
+            return Err(AppError::CopySourceChanged);
+        }
+
+        self.source_file.seek(SeekFrom::Start(0))?;
+        let current = read_bounded_bytes(&mut self.source_file, MAX_COPY_FILE_BYTES)?;
+        let held_after = descriptor_fs::fstat(&self.source_file).map_err(descriptor_error)?;
+        let named_after = descriptor_fs::statat(
+            &self.source_parent_fd,
+            &self.source_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(|_| AppError::CopySourceChanged)?;
+        if current != self.content
+            || <[u8; 32]>::from(Sha256::digest(&current)) != self.source_sha256
+            || !copy_file_source_identity_matches(&held_after, self.source_identity)
+            || !copy_file_source_identity_matches(&named_after, self.source_identity)
+        {
+            return Err(AppError::CopySourceChanged);
+        }
+        Ok(())
+    }
+
+    fn revalidate_absent_destination(&self) -> Result<(), AppError> {
+        let root = descriptor_fs::fstat(&self.destination_root_fd).map_err(descriptor_error)?;
+        let parent = descriptor_fs::fstat(&self.destination_parent_fd).map_err(descriptor_error)?;
+        if !FileType::from_raw_mode(root.st_mode).is_dir()
+            || (root.st_dev, root.st_ino) != self.destination_root_identity
+            || !FileType::from_raw_mode(parent.st_mode).is_dir()
+            || (parent.st_dev, parent.st_ino) != self.destination_parent_identity
+        {
+            return Err(AppError::CopyDestinationChanged);
+        }
+        match descriptor_fs::statat(
+            &self.destination_parent_fd,
+            &self.destination_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ) {
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Ok(_) => Err(AppError::PathAlreadyExists),
+            Err(_) => Err(AppError::CopyDestinationChanged),
+        }
+    }
+
+    fn execute_after_authorization(self) -> Result<CopyFileResult, AppError> {
+        let quarantine = open_write_file_quarantine(&self.destination_parent_fd)?;
+        ensure_write_quarantine_capacity(&quarantine, self.content.len() as u64)?;
+        let (temp_name, mut destination_file, staged_identity) =
+            create_write_artifact(&quarantine)?;
+        let mut cleanup = DescriptorCopiedFileCleanup::with_publication_parent(
+            &quarantine,
+            &self.destination_parent_fd,
+            temp_name.clone(),
+        );
+        let created_metadata = descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
+        if !FileType::from_raw_mode(created_metadata.st_mode).is_file()
+            || created_metadata.st_nlink != 1
+            || (created_metadata.st_dev, created_metadata.st_ino) != staged_identity
+        {
+            return Err(AppError::Io(std::io::Error::other(
+                "copy destination staging verification failed",
+            )));
+        }
+        cleanup.set_expected_identity(created_metadata.st_dev, created_metadata.st_ino);
+        descriptor_fs::fchmod(&destination_file, Mode::RUSR | Mode::WUSR)
+            .map_err(descriptor_error)?;
+        destination_file.write_all(&self.content)?;
+        destination_file.sync_all()?;
+        let staged_metadata = descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
+        if !copy_file_identity_and_contract_match(
+            &staged_metadata,
+            created_metadata.st_dev,
+            created_metadata.st_ino,
+            self.content.len(),
+        ) {
+            return Err(AppError::Io(std::io::Error::other(
+                "copy destination staging verification failed",
+            )));
+        }
+
+        match descriptor_fs::renameat_with(
+            &quarantine,
+            &temp_name,
+            &self.destination_parent_fd,
+            &self.destination_name,
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => cleanup.published_as(self.destination_name),
+            Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
+            Err(error) => return Err(descriptor_error(error)),
+        }
+        let published_metadata = descriptor_fs::statat(
+            &self.destination_parent_fd,
+            &cleanup.name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(descriptor_error)?;
+        let held_metadata = descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
+        if !copy_file_identity_and_contract_match(
+            &published_metadata,
+            created_metadata.st_dev,
+            created_metadata.st_ino,
+            self.content.len(),
+        ) || !copy_file_identity_and_contract_match(
+            &held_metadata,
+            created_metadata.st_dev,
+            created_metadata.st_ino,
+            self.content.len(),
+        ) {
+            return Err(AppError::Io(std::io::Error::other(
+                "published copy destination verification failed",
+            )));
+        }
+        descriptor_fs::fsync(&self.destination_parent_fd).map_err(descriptor_error)?;
+        descriptor_fs::fsync(&quarantine).map_err(descriptor_error)?;
+        validate_write_quarantine_bounds(&quarantine)?;
         cleanup.disarm();
         Ok(self.result)
     }
@@ -1463,210 +1721,51 @@ impl FileSystemTools {
         destination_path: String,
         dry_run: Option<bool>,
     ) -> Result<CopyFileResult, AppError> {
-        let start = Instant::now();
+        let dry_run = dry_run.unwrap_or(true);
+        if !dry_run {
+            return Err(AppError::CopyMutationAuthorizationRequired);
+        }
+        Ok(self
+            .prepare_copy_file(source_path, destination_path, true)
+            .await?
+            .preview())
+    }
+
+    /// Perform blocking descriptor preparation for one live copy mutation.
+    /// The transport calls this only inside its permit-owned mutation worker.
+    pub(crate) fn prepare_copy_file_mutation_blocking(
+        &self,
+        source_path: String,
+        destination_path: String,
+    ) -> Result<PreparedCopyFileMutation, AppError> {
         let source = self.anchor(&source_path)?;
         let destination = self.anchor(&destination_path)?;
-        if source.display_path == destination.display_path {
-            return Err(AppError::CopySourceDestinationSame);
-        }
-        let dry_run = dry_run.unwrap_or(true);
+        prepare_copy_file(source, destination, false)
+    }
 
-        let result = tokio::task::spawn_blocking(move || {
-            let (source_parent_relative, source_name) =
-                split_parent_and_name(&source.relative_path)?;
-            let source_root_fd = open_root_directory(&source.root_path)?;
-            let source_parent_fd =
-                open_metadata_parent_directory(source_root_fd, &source_parent_relative)
-                    .map_err(copy_source_parent_error)?;
-            let source_before = match descriptor_fs::statat(
-                &source_parent_fd,
-                &source_name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            ) {
-                Ok(metadata) => metadata,
-                Err(rustix::io::Errno::NOENT) => return Err(AppError::CopySourceNotFound),
-                Err(error) => return Err(descriptor_error(error)),
-            };
-            let source_type = FileType::from_raw_mode(source_before.st_mode);
-            if source_type.is_symlink() {
-                return Err(path_rejected(
-                    source.display_path.to_string_lossy().as_ref(),
-                ));
-            }
-            if !source_type.is_file() {
-                return Err(AppError::UnsupportedPathType);
-            }
-            let source_size = copy_source_size(&source_before)?;
-            if source_size > MAX_COPY_FILE_BYTES as u64 {
-                return Err(AppError::FileTooLarge {
-                    size: source_size,
-                    max_size: MAX_COPY_FILE_BYTES as u64,
-                });
-            }
+    /// Inspect one confined source/destination pair and return the exact
+    /// non-mutating authorization target used by an offline grant issuer.
+    pub fn copy_file_grant_target(
+        &self,
+        source_path: &str,
+        destination_path: &str,
+    ) -> Result<CopyFileGrantTarget, AppError> {
+        let source = self.anchor(source_path)?;
+        let destination = self.anchor(destination_path)?;
+        Ok(prepare_copy_file(source, destination, false)?.grant_target)
+    }
 
-            let source_fd = descriptor_fs::openat(
-                &source_parent_fd,
-                &source_name,
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .map_err(|error| match error {
-                rustix::io::Errno::NOENT => AppError::CopySourceNotFound,
-                rustix::io::Errno::LOOP => {
-                    path_rejected(source.display_path.to_string_lossy().as_ref())
-                }
-                _ => descriptor_error(error),
-            })?;
-            let source_opened = descriptor_fs::fstat(&source_fd).map_err(descriptor_error)?;
-            if !FileType::from_raw_mode(source_opened.st_mode).is_file() {
-                return Err(AppError::UnsupportedPathType);
-            }
-            if source_opened.st_dev != source_before.st_dev
-                || source_opened.st_ino != source_before.st_ino
-                || source_opened.st_size != source_before.st_size
-            {
-                return Err(AppError::Io(std::io::Error::other(
-                    "copy source changed before it was opened",
-                )));
-            }
-
-            let mut source_file = File::from(source_fd);
-            let mut bytes = Vec::with_capacity(MAX_COPY_FILE_BYTES.min(64 * 1_024));
-            (&mut source_file)
-                .take((MAX_COPY_FILE_BYTES + 1) as u64)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() > MAX_COPY_FILE_BYTES {
-                return Err(AppError::FileTooLarge {
-                    size: bytes.len() as u64,
-                    max_size: MAX_COPY_FILE_BYTES as u64,
-                });
-            }
-            let source_after = descriptor_fs::fstat(&source_file).map_err(descriptor_error)?;
-            if !FileType::from_raw_mode(source_after.st_mode).is_file()
-                || source_after.st_dev != source_opened.st_dev
-                || source_after.st_ino != source_opened.st_ino
-                || source_after.st_size != source_opened.st_size
-                || copy_source_size(&source_after)? != bytes.len() as u64
-            {
-                return Err(AppError::Io(std::io::Error::other(
-                    "copy source changed while it was read",
-                )));
-            }
-
-            let (destination_parent_relative, destination_name) =
-                split_parent_and_name(&destination.relative_path)?;
-            let destination_root_fd = open_root_directory(&destination.root_path)?;
-            let destination_parent_fd =
-                open_mutation_parent_directory(destination_root_fd, &destination_parent_relative)
-                    .map_err(copy_destination_parent_error)?;
-            match descriptor_fs::statat(
-                &destination_parent_fd,
-                &destination_name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            ) {
-                Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
-                    return Err(path_rejected(
-                        destination.display_path.to_string_lossy().as_ref(),
-                    ));
-                }
-                Ok(_) => return Err(AppError::PathAlreadyExists),
-                Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(descriptor_error(error)),
-            }
-
-            let result = copy_file_result(&source, &destination, dry_run, bytes.len());
-            if dry_run {
-                return Ok(result);
-            }
-
-            let temp_name = OsString::from(format!(
-                ".termux-mcp-copy-file-{}.tmp",
-                uuid::Uuid::new_v4()
-            ));
-            let temp_fd = descriptor_fs::openat(
-                &destination_parent_fd,
-                &temp_name,
-                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(descriptor_error)?;
-            let mut cleanup =
-                DescriptorCopiedFileCleanup::new(&destination_parent_fd, temp_name.clone());
-            let created_metadata = descriptor_fs::fstat(&temp_fd).map_err(descriptor_error)?;
-            if !FileType::from_raw_mode(created_metadata.st_mode).is_file() {
-                return Err(AppError::Io(std::io::Error::other(
-                    "copy destination staging verification failed",
-                )));
-            }
-            cleanup.set_expected_identity(created_metadata.st_dev, created_metadata.st_ino);
-            descriptor_fs::fchmod(&temp_fd, Mode::RUSR | Mode::WUSR).map_err(descriptor_error)?;
-
-            let mut destination_file = File::from(temp_fd);
-            destination_file.write_all(&bytes)?;
-            destination_file.sync_all()?;
-            let staged_metadata =
-                descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
-            if !copy_file_identity_and_contract_match(
-                &staged_metadata,
-                created_metadata.st_dev,
-                created_metadata.st_ino,
-                bytes.len(),
-            ) {
-                return Err(AppError::Io(std::io::Error::other(
-                    "copy destination staging verification failed",
-                )));
-            }
-
-            match descriptor_fs::renameat_with(
-                &destination_parent_fd,
-                &temp_name,
-                &destination_parent_fd,
-                &destination_name,
-                RenameFlags::NOREPLACE,
-            ) {
-                Ok(()) => cleanup.published_as(destination_name),
-                Err(rustix::io::Errno::EXIST) => return Err(AppError::PathAlreadyExists),
-                Err(error) => return Err(descriptor_error(error)),
-            }
-            let published_metadata = descriptor_fs::statat(
-                &destination_parent_fd,
-                &cleanup.name,
-                AtFlags::SYMLINK_NOFOLLOW,
-            )
-            .map_err(descriptor_error)?;
-            let held_metadata =
-                descriptor_fs::fstat(&destination_file).map_err(descriptor_error)?;
-            if !copy_file_identity_and_contract_match(
-                &published_metadata,
-                created_metadata.st_dev,
-                created_metadata.st_ino,
-                bytes.len(),
-            ) || !copy_file_identity_and_contract_match(
-                &held_metadata,
-                created_metadata.st_dev,
-                created_metadata.st_ino,
-                bytes.len(),
-            ) {
-                return Err(AppError::Io(std::io::Error::other(
-                    "published copy destination verification failed",
-                )));
-            }
-            descriptor_fs::fsync(&destination_parent_fd).map_err(descriptor_error)?;
-            cleanup.disarm();
-            Ok(result)
-        })
-        .await
-        .map_err(filesystem_worker_error)??;
-
-        histogram!("mcp.fs.copy_file.latency_seconds").record(start.elapsed().as_secs_f64());
-        if result.dry_run {
-            counter!("mcp.fs.copy_file.dry_runs_total").increment(1);
-        } else {
-            counter!("mcp.fs.copy_file.copied_total").increment(1);
-            counter!("mcp.fs.copy_file.bytes_total").increment(result.size_bytes as u64);
-        }
-
-        Ok(result)
+    async fn prepare_copy_file(
+        &self,
+        source_path: String,
+        destination_path: String,
+        dry_run: bool,
+    ) -> Result<PreparedCopyFileMutation, AppError> {
+        let source = self.anchor(&source_path)?;
+        let destination = self.anchor(&destination_path)?;
+        tokio::task::spawn_blocking(move || prepare_copy_file(source, destination, dry_run))
+            .await
+            .map_err(filesystem_worker_error)?
     }
 
     pub(crate) fn copy_file_response_preview(
@@ -1680,12 +1779,7 @@ impl FileSystemTools {
         if source.display_path == destination.display_path {
             return Err(AppError::CopySourceDestinationSame);
         }
-        Ok(copy_file_result(
-            &source,
-            &destination,
-            dry_run,
-            MAX_COPY_FILE_BYTES,
-        ))
+        Ok(copy_file_result(dry_run, MAX_COPY_FILE_BYTES))
     }
 
     pub async fn find_paths(
@@ -2488,6 +2582,16 @@ fn open_root_directory(root: &Path) -> Result<OwnedFd, AppError> {
     .map_err(descriptor_error)
 }
 
+fn duplicate_directory_descriptor(directory: &OwnedFd) -> Result<OwnedFd, AppError> {
+    descriptor_fs::openat(
+        directory,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(descriptor_error)
+}
+
 fn open_child_directory(parent: &OwnedFd, name: &OsStr) -> Result<OwnedFd, AppError> {
     if is_write_quarantine_name(name) {
         return Err(path_rejected(name.to_string_lossy().as_ref()));
@@ -2804,15 +2908,21 @@ fn create_write_artifact(quarantine: &OwnedFd) -> Result<(OsString, File, (u64, 
             Err(error) => return Err(descriptor_error(error)),
         };
         let held = descriptor_fs::fstat(&fd).map_err(descriptor_error)?;
+        let mut failed_creation_cleanup =
+            DescriptorCopiedFileCleanup::new(quarantine, name.clone());
+        failed_creation_cleanup.set_expected_identity(held.st_dev, held.st_ino);
         let named = descriptor_fs::statat(quarantine, &name, AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|_| AppError::WriteTargetChanged)?;
         if !FileType::from_raw_mode(held.st_mode).is_file()
             || (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+            || held.st_nlink != 1
+            || named.st_nlink != 1
             || (held.st_mode & 0o7777) != WRITE_FILE_MODE
             || (named.st_mode & 0o7777) != WRITE_FILE_MODE
         {
             return Err(AppError::WriteTargetChanged);
         }
+        failed_creation_cleanup.disarm();
         return Ok((name, File::from(fd), (held.st_dev, held.st_ino)));
     }
     Err(AppError::Io(std::io::Error::other(
@@ -3067,15 +3177,180 @@ fn prepare_create_directory(
     })
 }
 
-fn copy_file_result(
-    source: &AnchoredPath,
-    destination: &AnchoredPath,
+fn prepare_copy_file(
+    source: AnchoredPath,
+    destination: AnchoredPath,
     dry_run: bool,
-    size_bytes: usize,
-) -> CopyFileResult {
+) -> Result<PreparedCopyFileMutation, AppError> {
+    let started = Instant::now();
+    if source.display_path == destination.display_path {
+        return Err(AppError::CopySourceDestinationSame);
+    }
+
+    let (source_parent_relative, source_name) = split_parent_and_name(&source.relative_path)?;
+    let source_root_fd = open_root_directory(&source.root_path)?;
+    let source_root_metadata = descriptor_fs::fstat(&source_root_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(source_root_metadata.st_mode).is_dir() {
+        return Err(path_rejected(
+            source.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    let source_parent_fd = open_metadata_parent_directory(
+        duplicate_directory_descriptor(&source_root_fd)?,
+        &source_parent_relative,
+    )
+    .map_err(copy_source_parent_error)?;
+    let source_before =
+        match descriptor_fs::statat(&source_parent_fd, &source_name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(metadata) => metadata,
+            Err(rustix::io::Errno::NOENT) => return Err(AppError::CopySourceNotFound),
+            Err(error) => return Err(descriptor_error(error)),
+        };
+    let source_type = FileType::from_raw_mode(source_before.st_mode);
+    if source_type.is_symlink() {
+        return Err(path_rejected(
+            source.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    if !source_type.is_file() {
+        return Err(AppError::UnsupportedPathType);
+    }
+    let source_size = copy_source_size(&source_before)?;
+    if source_size > MAX_COPY_FILE_BYTES as u64 {
+        return Err(AppError::FileTooLarge {
+            size: source_size,
+            max_size: MAX_COPY_FILE_BYTES as u64,
+        });
+    }
+    let source_identity = copy_file_source_identity(&source_before)?;
+
+    let source_fd = descriptor_fs::openat(
+        &source_parent_fd,
+        &source_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| match error {
+        rustix::io::Errno::NOENT => AppError::CopySourceNotFound,
+        rustix::io::Errno::LOOP => path_rejected(source.display_path.to_string_lossy().as_ref()),
+        _ => descriptor_error(error),
+    })?;
+    let source_opened = descriptor_fs::fstat(&source_fd).map_err(descriptor_error)?;
+    if !copy_file_source_identity_matches(&source_opened, source_identity) {
+        return Err(AppError::CopySourceChanged);
+    }
+
+    let mut source_file = File::from(source_fd);
+    let content = read_bounded_bytes(&mut source_file, MAX_COPY_FILE_BYTES)?;
+    let source_after = descriptor_fs::fstat(&source_file).map_err(descriptor_error)?;
+    let source_named_after =
+        descriptor_fs::statat(&source_parent_fd, &source_name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| AppError::CopySourceChanged)?;
+    if content.len() as u64 != source_size
+        || !copy_file_source_identity_matches(&source_after, source_identity)
+        || !copy_file_source_identity_matches(&source_named_after, source_identity)
+    {
+        return Err(AppError::CopySourceChanged);
+    }
+    let source_sha256: [u8; 32] = Sha256::digest(&content).into();
+
+    let (destination_parent_relative, destination_name) =
+        split_parent_and_name(&destination.relative_path)?;
+    let destination_root_fd = open_root_directory(&destination.root_path)?;
+    let destination_root_metadata =
+        descriptor_fs::fstat(&destination_root_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(destination_root_metadata.st_mode).is_dir() {
+        return Err(path_rejected(
+            destination.display_path.to_string_lossy().as_ref(),
+        ));
+    }
+    let destination_parent_fd = open_mutation_parent_directory(
+        duplicate_directory_descriptor(&destination_root_fd)?,
+        &destination_parent_relative,
+    )
+    .map_err(copy_destination_parent_error)?;
+    let destination_parent_metadata =
+        descriptor_fs::fstat(&destination_parent_fd).map_err(descriptor_error)?;
+    if !FileType::from_raw_mode(destination_parent_metadata.st_mode).is_dir() {
+        return Err(AppError::CopyDestinationChanged);
+    }
+    match descriptor_fs::statat(
+        &destination_parent_fd,
+        &destination_name,
+        AtFlags::SYMLINK_NOFOLLOW,
+    ) {
+        Ok(metadata) if FileType::from_raw_mode(metadata.st_mode).is_symlink() => {
+            return Err(path_rejected(
+                destination.display_path.to_string_lossy().as_ref(),
+            ));
+        }
+        Ok(_) => return Err(AppError::PathAlreadyExists),
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(descriptor_error(error)),
+    }
+
+    let mut source_components = Vec::new();
+    for component in source.relative_path.components() {
+        let Component::Normal(component) = component else {
+            return Err(path_rejected(
+                source.display_path.to_string_lossy().as_ref(),
+            ));
+        };
+        source_components.push(component.as_bytes());
+    }
+    let mut destination_components = Vec::new();
+    for component in destination.relative_path.components() {
+        let Component::Normal(component) = component else {
+            return Err(path_rejected(
+                destination.display_path.to_string_lossy().as_ref(),
+            ));
+        };
+        destination_components.push(component.as_bytes());
+    }
+    let grant_target = CopyFileGrantTarget::from_normalized_components(
+        source_root_metadata.st_dev,
+        source_root_metadata.st_ino,
+        source_components,
+        source_identity,
+        source_sha256,
+        destination_root_metadata.st_dev,
+        destination_root_metadata.st_ino,
+        destination_components,
+    )
+    .map_err(|_| {
+        AppError::Io(std::io::Error::other(
+            "copy file authorization target is invalid",
+        ))
+    })?;
+
+    Ok(PreparedCopyFileMutation {
+        result: copy_file_result(dry_run, content.len()),
+        source_root_fd,
+        source_root_identity: (source_root_metadata.st_dev, source_root_metadata.st_ino),
+        source_parent_fd,
+        source_name,
+        source_file,
+        source_identity,
+        source_sha256,
+        content,
+        destination_root_fd,
+        destination_root_identity: (
+            destination_root_metadata.st_dev,
+            destination_root_metadata.st_ino,
+        ),
+        destination_parent_fd,
+        destination_parent_identity: (
+            destination_parent_metadata.st_dev,
+            destination_parent_metadata.st_ino,
+        ),
+        destination_name,
+        grant_target,
+        started,
+    })
+}
+
+fn copy_file_result(dry_run: bool, size_bytes: usize) -> CopyFileResult {
     CopyFileResult {
-        source_path: source.display_path.to_string_lossy().to_string(),
-        destination_path: destination.display_path.to_string_lossy().to_string(),
         dry_run,
         size_bytes,
         mode: "0600".to_owned(),
@@ -3106,6 +3381,30 @@ fn copy_source_size(metadata: &descriptor_fs::Stat) -> Result<u64, AppError> {
     })
 }
 
+fn copy_file_source_identity(
+    metadata: &descriptor_fs::Stat,
+) -> Result<CopyFileSourceIdentity, AppError> {
+    if !FileType::from_raw_mode(metadata.st_mode).is_file() {
+        return Err(AppError::CopySourceChanged);
+    }
+    CopyFileSourceIdentity::new(
+        metadata.st_dev,
+        metadata.st_ino,
+        copy_source_size(metadata)?,
+        metadata.st_ctime,
+        i64::try_from(metadata.st_ctime_nsec).map_err(|_| AppError::CopySourceChanged)?,
+        normalized_link_count(metadata.st_nlink),
+    )
+    .map_err(|_| AppError::CopySourceChanged)
+}
+
+fn copy_file_source_identity_matches(
+    metadata: &descriptor_fs::Stat,
+    expected: CopyFileSourceIdentity,
+) -> bool {
+    copy_file_source_identity(metadata).ok() == Some(expected)
+}
+
 fn copy_file_identity_and_contract_match(
     metadata: &descriptor_fs::Stat,
     expected_device: u64,
@@ -3115,6 +3414,7 @@ fn copy_file_identity_and_contract_match(
     FileType::from_raw_mode(metadata.st_mode).is_file()
         && metadata.st_dev == expected_device
         && metadata.st_ino == expected_inode
+        && metadata.st_nlink == 1
         && (metadata.st_mode & 0o7777) == COPY_FILE_MODE
         && u64::try_from(metadata.st_size).ok() == Some(expected_size as u64)
 }
@@ -3245,8 +3545,6 @@ pub struct CreateDirectoryResult {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CopyFileResult {
-    pub source_path: String,
-    pub destination_path: String,
     pub dry_run: bool,
     pub size_bytes: usize,
     pub mode: String,
@@ -3365,6 +3663,20 @@ mod tests {
         );
     }
 
+    fn execute_prepared_copy(
+        tools: &FileSystemTools,
+        source: &Path,
+        destination: &Path,
+    ) -> Result<CopyFileResult, AuthorizedCopyFileError> {
+        tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+            )
+            .map_err(AuthorizedCopyFileError::Filesystem)?
+            .execute_authorized(|_| Ok(()))
+    }
+
     #[test]
     fn poisoned_publication_lock_fails_closed_without_recovery() {
         let lock = std::sync::Arc::new(Mutex::new(()));
@@ -3444,6 +3756,178 @@ mod tests {
         assert!(file_worker.join().unwrap().is_ok());
         assert!(directory.is_dir());
         assert_eq!(std::fs::read_to_string(file).unwrap(), "serialized-content");
+    }
+
+    #[test]
+    fn process_publication_lock_serializes_copy_across_tool_instances() {
+        let root = tempfile::tempdir().unwrap();
+        let create_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+        let copy_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+        let directory = root.path().join("copy-lock-holder");
+        let source = root.path().join("copy-source");
+        let destination = root.path().join("copy-destination");
+        std::fs::write(&source, "serialized-copy").unwrap();
+        let prepared_directory = create_tools
+            .prepare_create_directory_mutation_blocking(directory.to_string_lossy().to_string())
+            .unwrap();
+        let prepared_copy = copy_tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+            )
+            .unwrap();
+
+        let (directory_locked_tx, directory_locked_rx) = std::sync::mpsc::channel();
+        let (release_directory_tx, release_directory_rx) = std::sync::mpsc::channel();
+        let directory_worker = std::thread::spawn(move || {
+            prepared_directory.execute_authorized(|_| {
+                directory_locked_tx.send(()).unwrap();
+                release_directory_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        directory_locked_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("directory worker did not acquire the publication lock");
+
+        let (copy_authorized_tx, copy_authorized_rx) = std::sync::mpsc::channel();
+        let (copy_contended_tx, copy_contended_rx) = std::sync::mpsc::channel();
+        let copy_worker = std::thread::spawn(move || {
+            prepared_copy.execute_authorized_with_commit_and_lock_contention_hook(
+                |_| {
+                    copy_authorized_tx.send(()).unwrap();
+                    Ok(())
+                },
+                || copy_contended_tx.send(()).unwrap(),
+            )
+        });
+        copy_contended_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("copy worker did not contend on the held publication lock");
+        assert!(matches!(
+            copy_authorized_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        release_directory_tx.send(()).unwrap();
+        assert!(directory_worker.join().unwrap().is_ok());
+        copy_authorized_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("copy worker did not continue after publication-lock release");
+        assert!(copy_worker.join().unwrap().is_ok());
+        assert_eq!(
+            std::fs::read_to_string(destination).unwrap(),
+            "serialized-copy"
+        );
+    }
+
+    #[test]
+    fn stale_copy_source_and_destination_fail_before_authorization() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+        let source = root.path().join("stale-copy-source");
+        let first_destination = root.path().join("first-copy-destination");
+        let second_destination = root.path().join("second-copy-destination");
+        std::fs::write(&source, "original-source").unwrap();
+
+        let stale_source = tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                first_destination.to_string_lossy().to_string(),
+            )
+            .unwrap();
+        std::fs::write(&source, "changed-source!").unwrap();
+        let source_authorized = Cell::new(false);
+        let source_result = stale_source.execute_authorized(|_| {
+            source_authorized.set(true);
+            Ok(())
+        });
+        assert!(matches!(
+            source_result,
+            Err(AuthorizedCopyFileError::Filesystem(
+                AppError::CopySourceChanged
+            ))
+        ));
+        assert!(!source_authorized.get());
+        assert!(!first_destination.exists());
+
+        let stale_destination = tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                second_destination.to_string_lossy().to_string(),
+            )
+            .unwrap();
+        std::fs::write(&second_destination, "concurrent-destination").unwrap();
+        let destination_authorized = Cell::new(false);
+        let destination_result = stale_destination.execute_authorized(|_| {
+            destination_authorized.set(true);
+            Ok(())
+        });
+        assert!(matches!(
+            destination_result,
+            Err(AuthorizedCopyFileError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!destination_authorized.get());
+        assert_eq!(
+            std::fs::read_to_string(second_destination).unwrap(),
+            "concurrent-destination"
+        );
+    }
+
+    #[test]
+    fn stale_copy_destination_preserves_grant_for_fresh_preparation() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+        let source = root.path().join("grant-copy-source");
+        let destination = root.path().join("grant-copy-destination");
+        std::fs::write(&source, "authorized-copy-content").unwrap();
+        let stale = tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+            )
+            .unwrap();
+        let authority = crate::copy_file_grant::CopyFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "stale-copy-test-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let grant = authority.issue(&session_id, &stale.grant_target).unwrap();
+
+        std::fs::write(&destination, "concurrent-destination").unwrap();
+        let authorization_called = Cell::new(false);
+        let stale_result = stale.execute_authorized(|target| {
+            authorization_called.set(true);
+            authority.consume(Some(&grant), &session_id, target)
+        });
+        assert!(matches!(
+            stale_result,
+            Err(AuthorizedCopyFileError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!authorization_called.get());
+
+        std::fs::remove_file(&destination).unwrap();
+        let copied = tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+            )
+            .unwrap()
+            .execute_authorized(|target| authority.consume(Some(&grant), &session_id, target))
+            .unwrap();
+        assert!(!copied.dry_run);
+        assert_eq!(
+            std::fs::read_to_string(destination).unwrap(),
+            "authorized-copy-content"
+        );
     }
 
     #[test]
@@ -5189,7 +5673,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_file_defaults_to_dry_run_and_explicit_copy_is_binary_exact_and_private() {
+    async fn copy_file_public_surface_is_preview_only_and_authorized_copy_is_private() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source.bin");
         let preview = root.path().join("preview.bin");
@@ -5216,19 +5700,28 @@ mod tests {
         assert_eq!(dry_run.mode, "0600");
         assert_eq!(dry_run.max_file_bytes, MAX_COPY_FILE_BYTES);
         assert_eq!(dry_run.max_response_bytes, MAX_COPY_FILE_RESPONSE_BYTES);
+        let serialized = serde_json::to_string(&dry_run).unwrap();
+        assert!(!serialized.contains(source.to_string_lossy().as_ref()));
+        assert!(!serialized.contains(preview.to_string_lossy().as_ref()));
+        assert!(!serialized.contains("sourcePath"));
+        assert!(!serialized.contains("destinationPath"));
         assert!(!preview.exists());
 
-        let copied = tools
+        let denied = tools
             .copy_file(
                 source.to_string_lossy().to_string(),
                 destination.to_string_lossy().to_string(),
                 Some(false),
             )
-            .await
-            .unwrap();
+            .await;
+        assert!(matches!(
+            denied,
+            Err(AppError::CopyMutationAuthorizationRequired)
+        ));
+        assert!(!destination.exists());
+
+        let copied = execute_prepared_copy(&tools, &source, &destination).unwrap();
         assert!(!copied.dry_run);
-        assert_eq!(copied.source_path, source.to_string_lossy());
-        assert_eq!(copied.destination_path, destination.to_string_lossy());
         assert_eq!(std::fs::read(&destination).unwrap(), bytes);
         assert_eq!(
             std::fs::symlink_metadata(&destination)
@@ -5239,16 +5732,12 @@ mod tests {
             COPY_FILE_MODE
         );
 
-        let empty = tools
-            .copy_file(
-                empty_source.to_string_lossy().to_string(),
-                empty_destination.to_string_lossy().to_string(),
-                Some(false),
-            )
-            .await
-            .unwrap();
+        let empty = execute_prepared_copy(&tools, &empty_source, &empty_destination).unwrap();
         assert_eq!(empty.size_bytes, 0);
         assert_eq!(std::fs::read(&empty_destination).unwrap(), Vec::<u8>::new());
+        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
+        assert!(quarantine.is_dir());
+        assert_eq!(std::fs::read_dir(quarantine).unwrap().count(), 0);
     }
 
     #[tokio::test]
@@ -5263,14 +5752,7 @@ mod tests {
         let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
             .expect("test safe root must validate");
 
-        let result = tools
-            .copy_file(
-                exact.to_string_lossy().to_string(),
-                exact_destination.to_string_lossy().to_string(),
-                Some(false),
-            )
-            .await
-            .unwrap();
+        let result = execute_prepared_copy(&tools, &exact, &exact_destination).unwrap();
         assert_eq!(result.size_bytes, MAX_COPY_FILE_BYTES);
         assert_eq!(
             std::fs::metadata(exact_destination).unwrap().len(),
@@ -5281,7 +5763,7 @@ mod tests {
             .copy_file(
                 oversized.to_string_lossy().to_string(),
                 oversized_destination.to_string_lossy().to_string(),
-                Some(false),
+                None,
             )
             .await;
         assert!(matches!(
@@ -5309,7 +5791,7 @@ mod tests {
             .copy_file(
                 root.path().join("missing").to_string_lossy().to_string(),
                 root.path().join("unused").to_string_lossy().to_string(),
-                Some(false),
+                None,
             )
             .await;
         assert!(matches!(missing_source, Err(AppError::CopySourceNotFound)));
@@ -5322,7 +5804,7 @@ mod tests {
                     .join("copy")
                     .to_string_lossy()
                     .to_string(),
-                Some(false),
+                None,
             )
             .await;
         assert!(matches!(
@@ -5334,7 +5816,7 @@ mod tests {
             .copy_file(
                 source.to_string_lossy().to_string(),
                 source.to_string_lossy().to_string(),
-                Some(false),
+                None,
             )
             .await;
         assert!(matches!(same, Err(AppError::CopySourceDestinationSame)));
@@ -5343,7 +5825,7 @@ mod tests {
             .copy_file(
                 source.to_string_lossy().to_string(),
                 existing.to_string_lossy().to_string(),
-                Some(false),
+                None,
             )
             .await;
         assert!(matches!(existing_result, Err(AppError::PathAlreadyExists)));
@@ -5356,7 +5838,7 @@ mod tests {
                     .join("directory-copy")
                     .to_string_lossy()
                     .to_string(),
-                Some(false),
+                None,
             )
             .await;
         assert!(matches!(
@@ -5399,20 +5881,13 @@ mod tests {
                 .copy_file(
                     copy_source.to_string_lossy().to_string(),
                     copy_destination.to_string_lossy().to_string(),
-                    Some(false),
+                    None,
                 )
                 .await;
             assert!(matches!(result, Err(AppError::PathTraversal { .. })));
         }
 
-        let result = tools
-            .copy_file(
-                source.to_string_lossy().to_string(),
-                cross_root_destination.to_string_lossy().to_string(),
-                Some(false),
-            )
-            .await
-            .unwrap();
+        let result = execute_prepared_copy(&tools, &source, &cross_root_destination).unwrap();
         assert!(!result.dry_run);
         assert_eq!(
             std::fs::read_to_string(cross_root_destination).unwrap(),

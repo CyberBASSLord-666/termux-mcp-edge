@@ -50,6 +50,15 @@ pub enum AppError {
     #[error("Copy source and destination must be different paths")]
     CopySourceDestinationSame,
 
+    #[error("Copy source changed after validation")]
+    CopySourceChanged,
+
+    #[error("Copy destination changed after validation")]
+    CopyDestinationChanged,
+
+    #[error("Copy mutation requires request-scoped authorization")]
+    CopyMutationAuthorizationRequired,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -136,6 +145,17 @@ impl AppError {
                 StatusCode::BAD_REQUEST,
                 "Copy source and destination must be different paths",
             ),
+            AppError::CopySourceChanged => {
+                (StatusCode::CONFLICT, "Copy source changed after validation")
+            }
+            AppError::CopyDestinationChanged => (
+                StatusCode::CONFLICT,
+                "Copy destination changed after validation",
+            ),
+            AppError::CopyMutationAuthorizationRequired => (
+                StatusCode::FORBIDDEN,
+                "Copy mutation requires request-scoped authorization",
+            ),
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
@@ -212,6 +232,17 @@ mod tests {
             (
                 StatusCode::FORBIDDEN,
                 "Write mutation requires request-scoped authorization",
+            )
+        );
+    }
+
+    #[test]
+    fn direct_copy_mutation_denial_has_a_stable_non_sensitive_response() {
+        assert_eq!(
+            AppError::CopyMutationAuthorizationRequired.public_response(),
+            (
+                StatusCode::FORBIDDEN,
+                "Copy mutation requires request-scoped authorization",
             )
         );
     }

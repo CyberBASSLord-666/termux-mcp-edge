@@ -73,7 +73,7 @@
     "stress": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "samples", "requests", "servicePidStable", "healthReadyStable", "sessionLifecycle", "exactToolAllowlist", "highImpactDisabled"],
+      "required": ["status", "samples", "requests", "servicePidStable", "healthReadyStable", "sessionLifecycle", "exactToolAllowlist", "copyFileMutationDisabled", "highImpactDisabled"],
       "properties": {
         "status": {"const": "pass"},
         "samples": {"type": "integer", "minimum": 32, "maximum": 4096},
@@ -82,6 +82,7 @@
         "healthReadyStable": {"const": true},
         "sessionLifecycle": {"const": true},
         "exactToolAllowlist": {"const": true},
+        "copyFileMutationDisabled": {"const": true},
         "highImpactDisabled": {"const": true}
       }
     }

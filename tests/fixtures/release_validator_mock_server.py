@@ -102,6 +102,9 @@ SESSION_ID = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee"
 CREATE_DIRECTORY_CAPABILITY_ENABLED = (
     runtime_value("MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED", "false") == "true"
 )
+COPY_FILE_CAPABILITY_ENABLED = (
+    runtime_value("MCP__FILE__COPY_FILE_MUTATION_ENABLED", "false") == "true"
+)
 WRITE_FILE_CAPABILITY_ENABLED = (
     runtime_value("MCP__FILE__WRITE_MUTATION_ENABLED", "false") == "true"
 )
@@ -129,6 +132,20 @@ TOOLS = [
 ]
 MAX_WRITE_FILE_BYTES = 1_048_576
 MAX_WRITE_FILE_RESPONSE_BYTES = 16_384
+MAX_COPY_FILE_BYTES = 1_048_576
+MAX_COPY_FILE_RESPONSE_BYTES = 16_384
+COPY_AUDIT: dict[str, dict[str, dict[str, int]]] = {
+    "by_tool": {"copy_file": {"allowed": 0, "denied": 0}},
+    "by_reason_code": {},
+}
+
+
+def record_copy_audit(outcome: str, reason: str) -> None:
+    COPY_AUDIT["by_tool"]["copy_file"][outcome] += 1
+    counters = COPY_AUDIT["by_reason_code"].setdefault(
+        reason, {"allowed": 0, "denied": 0}
+    )
+    counters[outcome] += 1
 
 
 def payload_bytes(value: Any) -> bytes:
@@ -435,6 +452,78 @@ def write_grant_binding(
     return hmac.new(key, operation, hashlib.sha256).digest()
 
 
+def copy_path_digest(path: pathlib.Path) -> bytes:
+    relative = path.relative_to(SAFE_ROOT)
+    digest = hashlib.sha256()
+    digest.update(b"termux-mcp:copy-file-path:v1\0")
+    count = 0
+    for component in relative.parts:
+        encoded = os.fsencode(component)
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+        count += 1
+    if count == 0:
+        raise ValueError("empty copy path")
+    digest.update(struct.pack(">I", count))
+    return digest.digest()
+
+
+def copy_grant_binding(
+    grant_id: bytes,
+    session_id: str,
+    source: pathlib.Path,
+    destination: pathlib.Path,
+) -> bytes:
+    key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    principal = hmac.new(
+        key,
+        b"termux-mcp:copy-file-principal:v1\0" + TOKEN.encode(),
+        hashlib.sha256,
+    ).digest()
+    parsed_session = uuid.UUID(session_id)
+    if str(parsed_session) != session_id:
+        raise ValueError("invalid canonical session")
+    source_metadata = source.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(source_metadata.st_mode)
+        or source_metadata.st_nlink != 1
+        or source_metadata.st_size > MAX_COPY_FILE_BYTES
+        or destination.exists()
+        or destination.is_symlink()
+    ):
+        raise ValueError("invalid copy target")
+    source_content = source.read_bytes()
+    if len(source_content) != source_metadata.st_size:
+        raise ValueError("copy source changed")
+    source_root_metadata = SAFE_ROOT.stat(follow_symlinks=False)
+    destination_root_metadata = SAFE_ROOT.stat(follow_symlinks=False)
+    ctime_seconds, ctime_nanoseconds = divmod(
+        source_metadata.st_ctime_ns, 1_000_000_000
+    )
+    operation = (
+        b"termux-mcp:copy-file-operation-binding:v1\0"
+        + grant_id
+        + principal
+        + parsed_session.bytes
+        + bytes([4, 1])
+        + struct.pack(">QQ", source_root_metadata.st_dev, source_root_metadata.st_ino)
+        + copy_path_digest(source)
+        + struct.pack(
+            ">QQQqqQ",
+            source_metadata.st_dev,
+            source_metadata.st_ino,
+            source_metadata.st_size,
+            ctime_seconds,
+            ctime_nanoseconds,
+            source_metadata.st_nlink,
+        )
+        + hashlib.sha256(source_content).digest()
+        + struct.pack(">QQ", destination_root_metadata.st_dev, destination_root_metadata.st_ino)
+        + copy_path_digest(destination)
+    )
+    return hmac.new(key, operation, hashlib.sha256).digest()
+
+
 def read_private_write_content() -> tuple[bytes, os.stat_result]:
     raw_path = os.environ.get("MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE", "")
     path = pathlib.Path(raw_path)
@@ -492,11 +581,11 @@ def read_private_write_content() -> tuple[bytes, os.stat_result]:
 
 
 def issue_fixture_grant(purpose: str) -> str:
-    enabled = (
-        CREATE_DIRECTORY_CAPABILITY_ENABLED
-        if purpose == "create_directory"
-        else WRITE_FILE_CAPABILITY_ENABLED
-    )
+    enabled = {
+        "create_directory": CREATE_DIRECTORY_CAPABILITY_ENABLED,
+        "copy_file": COPY_FILE_CAPABILITY_ENABLED,
+        "write_file": WRITE_FILE_CAPABILITY_ENABLED,
+    }.get(purpose, False)
     if not enabled:
         raise SystemExit(2)
     try:
@@ -512,6 +601,18 @@ def issue_fixture_grant(purpose: str) -> str:
         disposition = None
         payload_size = 130
         content_identity = None
+        source = None
+        destination = None
+    elif purpose == "copy_file":
+        source = safe_path(os.environ.get("MCP__CAPABILITY__COPY_FILE_SOURCE", ""))
+        destination = safe_path(
+            os.environ.get("MCP__CAPABILITY__COPY_FILE_DESTINATION", "")
+        )
+        target = destination
+        content = None
+        disposition = None
+        payload_size = 65
+        content_identity = None
     elif purpose == "write_file":
         target = safe_path(os.environ.get("MCP__CAPABILITY__WRITE_FILE_TARGET", ""))
         content, content_identity = read_private_write_content()
@@ -523,6 +624,21 @@ def issue_fixture_grant(purpose: str) -> str:
         raise SystemExit(2)
     if purpose == "create_directory" and (target.exists() or target.is_symlink()):
         raise SystemExit(2)
+    if purpose == "copy_file":
+        if (
+            source is None
+            or destination is None
+            or source == SAFE_ROOT
+            or destination == SAFE_ROOT
+            or source == destination
+            or source.is_symlink()
+            or not source.is_file()
+            or source.stat(follow_symlinks=False).st_nlink != 1
+            or source.stat(follow_symlinks=False).st_size > MAX_COPY_FILE_BYTES
+            or destination.exists()
+            or destination.is_symlink()
+        ):
+            raise SystemExit(2)
     if purpose == "write_file":
         if disposition == "create" and (target.exists() or target.is_symlink()):
             raise SystemExit(2)
@@ -558,6 +674,9 @@ def issue_fixture_grant(purpose: str) -> str:
             grant_id, session_id, target, content, disposition
         )
         payload = grant_id + bytes([2]) + binding + timestamps
+    elif purpose == "copy_file":
+        binding = copy_grant_binding(grant_id, session_id, source, destination)
+        payload = grant_id + bytes([4]) + binding + timestamps
     else:
         binding = grant_binding(purpose, session_id, target, content, disposition)
         payload = grant_id + binding + timestamps
@@ -576,7 +695,7 @@ def consume_fixture_grant(
     session_id: str,
     target: pathlib.Path,
     content: bytes | None = None,
-    disposition: str | None = None,
+    disposition: str | pathlib.Path | None = None,
 ) -> str | None:
     if raw is None:
         return "capability_grant_missing"
@@ -602,11 +721,11 @@ def consume_fixture_grant(
     if not hmac.compare_digest(signature, expected):
         return "capability_grant_signature_invalid"
     grant_id = payload[:16]
-    if purpose == "write_file":
+    if purpose in {"write_file", "copy_file"}:
         capability = payload[16]
         binding = payload[17:49]
         issued, expires = struct.unpack(">QQ", payload[49:65])
-        expected_capability = 2
+        expected_capability = 2 if purpose == "write_file" else 4
     else:
         capability = payload[64]
         binding = payload[16:48]
@@ -616,11 +735,22 @@ def consume_fixture_grant(
         return "capability_grant_binding_mismatch"
     current = int(time.time())
     try:
-        expected_binding = (
-            write_grant_binding(grant_id, session_id, target, content, disposition)
-            if purpose == "write_file" and content is not None and disposition is not None
-            else grant_binding(purpose, session_id, target, content, disposition)
-        )
+        if purpose == "write_file" and content is not None and isinstance(disposition, str):
+            expected_binding = write_grant_binding(
+                grant_id, session_id, target, content, disposition
+            )
+        elif purpose == "copy_file" and isinstance(disposition, pathlib.Path):
+            expected_binding = copy_grant_binding(
+                grant_id, session_id, target, disposition
+            )
+        else:
+            expected_binding = grant_binding(
+                purpose,
+                session_id,
+                target,
+                content,
+                disposition if isinstance(disposition, str) else None,
+            )
     except (OSError, ValueError):
         return "capability_grant_binding_mismatch"
     if not hmac.compare_digest(binding, expected_binding):
@@ -865,6 +995,30 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "copy_file":
+                    copy_dry_run: dict[str, Any] = {"type": "boolean"}
+                    if not COPY_FILE_CAPABILITY_ENABLED:
+                        copy_dry_run["const"] = True
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": (
+                                "Fixture copy_file requires a source-identity/content/destination-bound MCP-Capability-Grant for explicit mutation."
+                                if COPY_FILE_CAPABILITY_ENABLED
+                                else "Fixture dedicated copy mutation gate is disabled."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "source_path": {"type": "string"},
+                                    "destination_path": {"type": "string"},
+                                    "dry_run": copy_dry_run,
+                                },
+                                "required": ["source_path", "destination_path"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 elif name == "find_paths":
                     tools.append(
                         {
@@ -1025,7 +1179,7 @@ class Handler(BaseHTTPRequestHandler):
         params = request.get("params") or {}
         name = params.get("name")
         arguments = params.get("arguments") or {}
-        if grant is not None and name not in {"create_directory", "write_file"}:
+        if grant is not None and name not in {"create_directory", "copy_file", "write_file"}:
             self.send_json(
                 400,
                 rpc_error(
@@ -1037,6 +1191,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if name == "runtime_status":
+            if grant is not None:
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32600,
+                        "Invalid Request",
+                        "Capability context is not allowed.",
+                    ),
+                )
+                return
             self.send_json(
                 200,
                 result(
@@ -1094,6 +1259,19 @@ class Handler(BaseHTTPRequestHandler):
                             if CREATE_DIRECTORY_CAPABILITY_ENABLED
                             else "dry_run_only_mutation_disabled"
                         ),
+                        "copyFileMutationEnabled": COPY_FILE_CAPABILITY_ENABLED,
+                        "copyFileMode": (
+                            "dry_run_or_source_content_destination_scoped_single_use_grant"
+                            if COPY_FILE_CAPABILITY_ENABLED
+                            else "dry_run_only_mutation_disabled"
+                        ),
+                        "copyFileGrantRequired": COPY_FILE_CAPABILITY_ENABLED,
+                        "copyFileGrantHeader": "mcp-capability-grant",
+                        "copyFileGrantTtlSeconds": 60,
+                        "copyFileGrantBinding": "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace",
+                        "copyFileMaxBytes": MAX_COPY_FILE_BYTES,
+                        "copyFileMaxResponseBytes": MAX_COPY_FILE_RESPONSE_BYTES,
+                        "copyFileResponsePosture": "path_free_bounded_metadata_only",
                         "fileWrites": True,
                         "fileWriteMode": (
                             "dry_run_or_target_content_disposition_scoped_single_use_grant"
@@ -1106,6 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
                         "fileWriteGrantTtlSeconds": 60,
                         "fileWriteMaxBytes": 1048576,
                         "fileWriteMaxResponseBytes": 16384,
+                        "auditCounters": COPY_AUDIT,
                     },
                 ),
             )
@@ -1229,51 +1408,107 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if name == "copy_file":
-            source = safe_path(str(arguments.get("source_path", "")))
-            destination = safe_path(str(arguments.get("destination_path", "")))
+            raw_source = arguments.get("source_path")
+            raw_destination = arguments.get("destination_path")
             dry_run = arguments.get("dry_run", True)
+            if (
+                not isinstance(raw_source, str)
+                or not isinstance(raw_destination, str)
+                or not isinstance(dry_run, bool)
+            ):
+                record_copy_audit("denied", "invalid_arguments")
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Tool arguments are invalid."),
+                )
+                return
+            if grant is not None and dry_run:
+                record_copy_audit("denied", "invalid_arguments")
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32600,
+                        "Invalid Request",
+                        "Capability context is not allowed.",
+                    ),
+                )
+                return
+            if not dry_run and not COPY_FILE_CAPABILITY_ENABLED:
+                record_copy_audit("denied", "copy_file_mutation_disabled")
+                self.send_json(
+                    403,
+                    capability_error(identifier, "copy_file_mutation_disabled"),
+                )
+                return
+            if not dry_run and grant is None:
+                record_copy_audit("denied", "capability_grant_missing")
+                self.send_json(403, capability_error(identifier, "capability_grant_missing"))
+                return
+            source = safe_path(raw_source)
+            destination = safe_path(raw_destination)
             if (
                 source is None
                 or destination is None
-                or not isinstance(dry_run, bool)
                 or source == destination
                 or source.is_symlink()
                 or not source.is_file()
+                or source.stat(follow_symlinks=False).st_nlink != 1
                 or not destination.parent.is_dir()
-                or destination.exists()
                 or destination.is_symlink()
             ):
+                record_copy_audit("denied", "safe_root_rejected")
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "File copy invalid."),
+                )
+                return
+            if destination.exists():
+                record_copy_audit("denied", "filesystem_destination_exists")
                 self.send_json(
                     400,
                     rpc_error(identifier, -32602, "Invalid params", "File copy invalid."),
                 )
                 return
             content = source.read_bytes()
-            if len(content) > 1048576:
+            if len(content) > MAX_COPY_FILE_BYTES:
+                record_copy_audit("denied", "filesystem_copy_source_too_large")
                 self.send_json(
                     413,
                     rpc_error(identifier, -32001, "Payload too large", "File copy too large."),
                 )
                 return
             if not dry_run:
+                denial = consume_fixture_grant(
+                    grant,
+                    "copy_file",
+                    SESSION_ID,
+                    source,
+                    disposition=destination,
+                )
+                if denial is not None:
+                    record_copy_audit("denied", denial)
+                    self.send_json(403, capability_error(identifier, denial))
+                    return
                 descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 with os.fdopen(descriptor, "wb") as stream:
                     stream.write(content)
                     stream.flush()
                     os.fsync(stream.fileno())
                 destination.chmod(0o600)
+                record_copy_audit("allowed", "safe_root_file_copied")
+            else:
+                record_copy_audit("allowed", "dry_run_preview")
             self.send_json(
                 200,
                 result(
                     identifier,
                     {
-                        "sourcePath": str(source),
-                        "destinationPath": str(destination),
                         "dryRun": dry_run,
                         "sizeBytes": len(content),
                         "mode": "0600",
-                        "maxFileBytes": 1048576,
-                        "maxResponseBytes": 16384,
+                        "maxFileBytes": MAX_COPY_FILE_BYTES,
+                        "maxResponseBytes": MAX_COPY_FILE_RESPONSE_BYTES,
                     },
                 ),
             )
@@ -2010,6 +2245,10 @@ class Handler(BaseHTTPRequestHandler):
 
 if POSTURE == "issue-create":
     print(issue_fixture_grant("create_directory"))
+    raise SystemExit(0)
+
+if POSTURE == "issue-copy":
+    print(issue_fixture_grant("copy_file"))
     raise SystemExit(0)
 
 if POSTURE == "issue-write":

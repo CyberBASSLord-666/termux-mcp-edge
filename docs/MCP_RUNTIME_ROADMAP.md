@@ -28,6 +28,8 @@ Add reusable `Host` and `Origin` validation primitives with unit coverage. No ro
 
 Status: complete.
 
+File-copy mutation is independently default-disabled by `MCP__FILE__COPY_FILE_MUTATION_ENABLED` and requires its own 60-second single-use grant. The exact-binary issuer independently opens and hashes the single-link source; the grant binds principal, session, both anchored roots and normalized paths, source identity/size/high-resolution ctime/SHA-256, absent destination, and no-replace posture. Create, copy, and write share the same process-global publication lock and fixed fail-fast worker capacity, while equivalent authorities share replay and monotonic-clock state inside one process.
+
 Required gates:
 
 - Exact-head CI success.
@@ -88,7 +90,7 @@ Required gates:
 - Safe-root traversal tests.
 - Symlink escape tests.
 - Default-disabled, missing/malformed/mismatched/expired/future/replay/concurrent grant tests plus dry-run non-consumption and explicit one-directory creation tests with fixed mode, existing-target denial, atomic no-replace publication, post-consumption failure semantics, and identity-checked cleanup.
-- Dry-run and explicit binary file-copy tests with exact-limit enforcement, fixed mode, absent-destination/no-replace behavior, descriptor exchange resistance, response preflight, identity-safe cleanup, and content-private audit counters.
+- Default-disabled, missing/malformed/mismatched/expired/future/replay/concurrent copy-grant tests plus preview non-consumption, exact-limit enforcement, fixed mode, absent-destination/no-replace behavior, lock-held source/destination revalidation, hidden staging, response preflight, identity-safe cleanup, and path/content-private results and audit counters.
 - Binary and empty-file SHA-256 tests with exact 16 MiB acceptance, one-byte-over rejection, descriptor exchange resistance, response preflight, runtime growth enforcement, and digest/path/content-private audit counters.
 - Read-only directory listing test.
 - Literal basename discovery tests for exact kind/depth/query bounds, deterministic ordered results, traversal/match/response ceilings, unsafe and invalid-UTF-8 skips, and response preflight.

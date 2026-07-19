@@ -304,6 +304,7 @@ jq -e \
   --arg android "$ANDROID_RUN_ID" '
     .status == "pass"
     and .failureCode == null
+    and .validatorVersion == "9"
     and .releaseEligible == false
     and .repository == {commit:$commit,version:$version,ciRunId:$ci,securityRunId:$security,androidRunId:$android}
     and .phases == {preflight:"pass",runtime:"pass",deployment:"not_run"}
@@ -315,6 +316,12 @@ jq -e \
     and ([.results[].code] | index("volume_control_disabled_call_rejected") != null)
     and ([.results[].code] | index("exact_tool_allowlist") != null)
     and ([.results[].code] | index("request_scoped_single_use_grant_enforced") != null)
+    and ([.results[].code] | index("request_scoped_single_use_copy_grant_enforced") != null)
+    and ([.results[].code] | index("source_content_destination_binding_enforced") != null)
+    and ([.results[].code] | index("exact_binary_copy_verified") != null)
+    and ([.results[].code] | index("copy_file_boundary_denials_verified") != null)
+    and ([.results[].code] | index("copy_file_private_audit_verified") != null)
+    and ([.results[].code] | index("copy_file_disabled_posture_verified") != null)
     and ([.results[].code] | index("expanded_body_posture_verified") != null)
     and ([.results[].code] | index("safe_root_file_create_replace_verified") != null)
     and ([.results[].code] | index("request_scoped_single_use_write_grant_enforced") != null)
@@ -343,6 +350,8 @@ start_stress_server() {
   MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
   MCP__TRANSPORT__MAX_BODY_BYTES=1024 \
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+  MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false \
+  MCP__FILE__COPY_FILE_MUTATION_ENABLED=false \
   MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$MCP_ARTIFACT" >"$STRESS_LOG" 2>&1 &
@@ -418,6 +427,12 @@ for sample in $(seq 1 "$SAMPLES"); do
   ' "$BODY_FILE" >/dev/null || fail stress_create_directory_disabled_posture_invalid
   jq -e '
     .result.tools
+    | map(select(.name == "copy_file"))[0] as $tool
+    | $tool.inputSchema.properties.dry_run.const == true
+      and ($tool.description | contains("copy mutation gate is disabled"))
+  ' "$BODY_FILE" >/dev/null || fail stress_copy_file_disabled_posture_invalid
+  jq -e '
+    .result.tools
     | map(select(.name == "write_file"))[0] as $tool
     | $tool.inputSchema.properties.dry_run.const == true
       and ($tool.description | contains("mutation gate is disabled"))
@@ -437,6 +452,15 @@ for sample in $(seq 1 "$SAMPLES"); do
       and .result.structuredContent.createDirectoryMutationEnabled == false
       and .result.structuredContent.createDirectoryGrantRequired == false
       and .result.structuredContent.createDirectoryMutationMode == "dry_run_only_mutation_disabled"
+      and .result.structuredContent.copyFileMutationEnabled == false
+      and .result.structuredContent.copyFileMode == "dry_run_only_mutation_disabled"
+      and .result.structuredContent.copyFileGrantRequired == false
+      and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant"
+      and .result.structuredContent.copyFileGrantTtlSeconds == 60
+      and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace"
+      and .result.structuredContent.copyFileMaxBytes == 1048576
+      and .result.structuredContent.copyFileMaxResponseBytes == 16384
+      and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only"
       and .result.structuredContent.fileWrites == true
       and .result.structuredContent.fileWriteMutationEnabled == false
       and .result.structuredContent.fileWriteGrantRequired == false
@@ -450,6 +474,11 @@ for sample in $(seq 1 "$SAMPLES"); do
   fi
 
   if ((sample == 1)); then
+    post_mcp "$(jq -cn --arg source "$SAFE_ROOT/visible.txt" --arg destination "$SAFE_ROOT/copy-disabled.txt" '{jsonrpc:"2.0",id:"copy-disabled",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')" "$SESSION_ID"
+    [[ "$MCP_STATUS" == 403 ]] || fail stress_copy_file_disabled_status_invalid
+    jq -e '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_copy_file_disabled_contract_invalid
+    [[ ! -e "$SAFE_ROOT/copy-disabled.txt" && ! -L "$SAFE_ROOT/copy-disabled.txt" ]] || fail stress_copy_file_disabled_mutated
+
     post_mcp "$(jq -cn --arg path "$SAFE_ROOT/write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
     [[ "$MCP_STATUS" == 403 ]] || fail stress_write_file_disabled_status_invalid
     jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_write_file_disabled_contract_invalid
@@ -548,6 +577,7 @@ jq -n \
       healthReadyStable: true,
       sessionLifecycle: true,
       exactToolAllowlist: true,
+      copyFileMutationDisabled: true,
       highImpactDisabled: true
     }
   }' >"$REPORT_NEXT"
@@ -565,6 +595,7 @@ jq -e '
   and .stress.status == "pass" and .stress.samples >= 32 and .stress.requests >= (.stress.samples * 3)
   and .stress.servicePidStable == true and .stress.healthReadyStable == true
   and .stress.sessionLifecycle == true and .stress.exactToolAllowlist == true
+  and .stress.copyFileMutationDisabled == true
   and .stress.highImpactDisabled == true
 ' "$REPORT_NEXT" >/dev/null || fail generated_report_invalid
 

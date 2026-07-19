@@ -28,6 +28,8 @@ pub mod command_execution;
 pub mod command_policy;
 pub mod config;
 #[cfg(feature = "mcp-runtime")]
+pub mod copy_file_grant;
+#[cfg(feature = "mcp-runtime")]
 pub mod create_directory_grant;
 pub mod error;
 #[cfg(feature = "mcp-runtime")]
