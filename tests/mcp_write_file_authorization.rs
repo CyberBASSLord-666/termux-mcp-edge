@@ -31,9 +31,9 @@ type HmacSha256 = Hmac<Sha256>;
 const DRY_RUN_SUMMARY: &str =
     "Validated one bounded safe-rooted UTF-8 file write without mutation.";
 const MUTATION_SUMMARY: &str = "Wrote one bounded safe-rooted UTF-8 file with fixed mode 0600.";
-const PAYLOAD_BYTES: usize = 64;
-const ISSUED_OFFSET: usize = 48;
-const EXPIRES_OFFSET: usize = 56;
+const PAYLOAD_BYTES: usize = 65;
+const ISSUED_OFFSET: usize = 49;
+const EXPIRES_OFFSET: usize = 57;
 
 fn write_call(id: impl Into<Value>, path: &str, content: &str, dry_run: bool) -> Value {
     json!({
