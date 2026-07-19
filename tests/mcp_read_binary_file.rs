@@ -261,6 +261,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
 
     std::fs::remove_file(&path).unwrap();
     let oversized_id = "x".repeat(MAX_BINARY_READ_BYTES / 4);
+    let expected_id = json!(oversized_id.clone());
     let oversized_missing = post_json_to_session(
         router.clone(),
         &session_id,
@@ -281,7 +282,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
     .unwrap();
     assert!(body.len() <= MAX_BINARY_READ_RESPONSE_BYTES);
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
+    assert_eq!(payload["id"], expected_id);
     assert_eq!(payload["error"]["code"], -32001);
 
     let oversized = post_json_to_session(
@@ -296,7 +297,7 @@ async fn binary_read_transport_errors_and_audits_are_bounded_and_private() {
         .unwrap();
     assert!(body.len() <= MAX_BINARY_READ_RESPONSE_BYTES);
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
+    assert_eq!(payload["id"], expected_id);
     assert_eq!(payload["error"]["code"], -32001);
 
     let status = post_json_to_session(

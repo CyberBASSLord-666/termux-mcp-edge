@@ -455,6 +455,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
 
     std::fs::remove_file(&path).unwrap();
     let oversized_id = "x".repeat(MAX_TEXT_RANGE_BYTES);
+    let expected_id = json!(oversized_id.clone());
     for payload in [
         json!({
             "jsonrpc": "2.0",
@@ -463,7 +464,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
             "params": {"name": "read_text_range"}
         }),
         range_call(
-            json!(oversized_id.clone()),
+            json!(oversized_id),
             path.to_string_lossy().as_ref(),
             0,
             MIN_TEXT_RANGE_BYTES,
@@ -471,13 +472,12 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
     ] {
         let response = post_json_to_session(router.clone(), &session_id, payload).await;
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let payload: Value = serde_json::from_slice(
-            &to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES + 1)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
+        let body = to_bytes(response.into_body(), MAX_TEXT_RANGE_RESPONSE_BYTES + 1)
+            .await
+            .unwrap();
+        assert!(body.len() <= MAX_TEXT_RANGE_RESPONSE_BYTES);
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["id"], expected_id);
         assert_eq!(payload["error"]["code"], -32001);
     }
 
