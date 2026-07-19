@@ -49,8 +49,9 @@ use crate::{
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
     mcp_session::{
         McpSessionStore, SessionPhase, SessionStoreError, SseReplayError, SseReplayEvent,
-        MAX_MCP_SSE_EVENT_DATA_BYTES, MAX_MCP_SSE_EVENTS_PER_STREAM,
+        MAX_MCP_SSE_EVENTS_PER_STREAM, MAX_MCP_SSE_EVENT_DATA_BYTES,
         MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION, MAX_MCP_SSE_STREAMS_PER_SESSION,
+        SSE_RETRY_MILLISECONDS,
     },
     platform_info::collect_platform_info,
     service_status::{
@@ -86,6 +87,7 @@ pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 pub const MCP_LAST_EVENT_ID_HEADER: &str = "last-event-id";
 pub const MCP_POST_ACCEPT: &str = "application/json, text/event-stream";
 pub const MAX_MCP_LAST_EVENT_ID_BYTES: usize = 64;
+pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
@@ -980,17 +982,16 @@ async fn maybe_sse_response(
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case(APPLICATION_JSON))
+                value.split(';').next().is_some_and(|media_type| {
+                    media_type.trim().eq_ignore_ascii_case(APPLICATION_JSON)
+                })
             })
     {
         return response;
     }
 
     let (mut parts, body) = response.into_parts();
-    let body = match to_bytes(body, MAX_BINARY_RANGE_RESPONSE_BYTES).await {
+    let body = match to_bytes(body, MAX_BINARY_READ_RESPONSE_BYTES).await {
         Ok(body) => body,
         Err(_) => {
             return transport_error(
@@ -2855,6 +2856,7 @@ fn runtime_status_response(
                     "sseMaxEventDataBytes": MAX_MCP_SSE_EVENT_DATA_BYTES,
                     "sseMaxReplayBytesPerSession": MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION,
                     "sseMaxLastEventIdBytes": MAX_MCP_LAST_EVENT_ID_BYTES,
+                    "sseRetryMilliseconds": MCP_SSE_RETRY_MILLISECONDS,
                     "availableTools": available_tools,
                     "platformInfo": true,
                     "platformInfoMode": "read_only_non_sensitive_metadata",

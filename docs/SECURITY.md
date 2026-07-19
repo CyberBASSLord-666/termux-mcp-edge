@@ -11,7 +11,7 @@ Termux MCP Edge has six deliberate compile-time postures:
 - The optional `android-volume-control` feature permits only separately runtime-gated, preview-first, exact-stream volume mutation with a fresh live bound and one exact single-use request grant.
 - The optional `command-execution` feature includes `mcp-runtime` and permits a separately runtime-gated fixed-profile server diagnostic tool.
 
-The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 because optional server-initiated SSE, replay, and resumption are not implemented.
+The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 by default; a separate default-disabled setting permits finite SSE response replay under fixed session-owned limits.
 
 In static-token mode, the complete `/mcp` route requires `Authorization: Bearer <configured-token>` before request resource limits, transport validation, JSON-RPC parsing, tool discovery, or tool invocation. Missing, malformed, oversized, or incorrect credentials are rejected with HTTP 401 and a non-sensitive response. The only authentication bypass is explicit unauthenticated localhost-only development mode, which startup validation restricts to a loopback bind.
 
@@ -76,7 +76,7 @@ The bearer scheme is case-insensitive, but the token value is an exact match. Au
 |---|---:|---:|
 | `GET /health` | Enabled, unauthenticated | Enabled, unauthenticated |
 | `GET /ready` | Enabled, unauthenticated | Enabled, unauthenticated with non-sensitive limit metadata |
-| `POST`, `GET`, `DELETE /mcp` stable transport | Disabled | Bearer-authenticated, resource-bounded, except explicit loopback development mode; GET returns 405 without SSE |
+| `POST`, `GET`, `DELETE /mcp` stable transport | Disabled | Bearer-authenticated and resource-bounded except explicit loopback development mode; JSON/GET-405 default with bounded SSE opt-in |
 | `runtime_status` / `platform_info` | Disabled | Read-only |
 | `android_status` | Disabled | Read-only allowlisted metadata |
 | `android_battery_status` | Disabled | Available only in the `android-battery-status` build with explicit runtime opt-in; bounded read-only telemetry |
@@ -114,6 +114,8 @@ Authentication occurs before request-limit accounting, transport validation, and
 
 Every POST must use `Content-Type: application/json` and explicitly accept both `application/json` and `text/event-stream`. After initialize returns `MCP-Session-Id`, every subsequent POST, GET, or DELETE must send that identifier and `MCP-Protocol-Version: 2025-11-25`. Duplicate, malformed, missing, unknown, expired, and mismatched header states fail closed. Accepted notifications and client responses return HTTP 202 without bodies.
 
+SSE is separately default-disabled. When enabled, each eligible request gets an unguessable stream ID, an empty primer, and one terminal JSON-RPC event. `Last-Event-ID` is accepted only after normal authentication and session validation, is limited to one canonical 64-byte server-issued value, and can access only later events from its exact originating stream. Eight streams, two events per stream, 128 KiB per event, and 256 KiB total replay per session are hard ceilings. Eligible tool results remain in process memory until oldest-first eviction, DELETE, idle expiry, or restart; operators handling sensitive safe-root output should retain the JSON default unless resumability is necessary. Cross-session, cross-stream, unknown, and evicted cursors share one non-reflective 404.
+
 Session identifiers are UUID v4 values, but they are not authentication credentials. The server re-runs bearer authentication for every request before session lookup. The in-memory store retains no client-provided identity or capability metadata, holds at most 64 sessions, expires idle records after 30 minutes, and supports explicit DELETE termination. Protect session identifiers from disclosure anyway: a caller possessing both the shared operator bearer token and an active session ID can act within that session. All `/mcp` handler responses use `Cache-Control: no-store`.
 
 ## Request Resource Limits
@@ -123,6 +125,7 @@ The MCP transport uses explicit limits intended for a supervised mobile process:
 - `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS`: default `4`, valid `1–64`.
 - `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS`: default `30`, valid `1–300`.
 - `MCP__TRANSPORT__MAX_BODY_BYTES`: default `2097152`, valid `1024–8388608`.
+- `MCP__TRANSPORT__SSE_ENABLED`: default `false`, strict boolean opt-in.
 
 Values outside these ranges fail startup validation. Concurrency saturation fails fast with HTTP 503 and `Retry-After: 1`. Request timeout returns HTTP 504. Request bodies over the configured ceiling return HTTP 413. All limit responses use non-sensitive JSON and `Cache-Control: no-store`.
 

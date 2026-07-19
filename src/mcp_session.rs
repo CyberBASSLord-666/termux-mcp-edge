@@ -1,8 +1,9 @@
 //! Bounded in-memory lifecycle state for Streamable HTTP MCP sessions.
 //!
-//! Session records intentionally retain only a random identifier, lifecycle
-//! phase, and last-activity timestamp. Client-provided initialization metadata
-//! is validated by the transport but is never stored here.
+//! Session records retain a random identifier, lifecycle phase, last-activity
+//! timestamp, and—only when used—fixed-size server-generated SSE replay state.
+//! Raw client initialization metadata and presented cursors are never retained;
+//! replay stores only bounded serialized server responses.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -18,6 +19,7 @@ pub(crate) const MAX_MCP_SSE_STREAMS_PER_SESSION: usize = 8;
 pub(crate) const MAX_MCP_SSE_EVENTS_PER_STREAM: usize = 2;
 pub(crate) const MAX_MCP_SSE_EVENT_DATA_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION: usize = 256 * 1024;
+pub(crate) const SSE_RETRY_MILLISECONDS: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionPhase {
@@ -44,6 +46,7 @@ pub(crate) enum SseReplayError {
 pub(crate) struct SseReplayEvent {
     id: String,
     data: Vec<u8>,
+    retry: bool,
 }
 
 impl SseReplayEvent {
@@ -54,13 +57,25 @@ impl SseReplayEvent {
     pub(crate) fn append_wire_bytes(&self, output: &mut Vec<u8>) {
         output.extend_from_slice(b"id: ");
         output.extend_from_slice(self.id.as_bytes());
+        if self.retry {
+            output.extend_from_slice(b"\nretry: 1000");
+        }
         output.extend_from_slice(b"\ndata: ");
         output.extend_from_slice(&self.data);
         output.extend_from_slice(b"\n\n");
     }
 
     fn wire_len(&self) -> usize {
-        b"id: ".len() + self.id.len() + b"\ndata: ".len() + self.data.len() + b"\n\n".len()
+        b"id: ".len()
+            + self.id.len()
+            + if self.retry {
+                b"\nretry: 1000".len()
+            } else {
+                0
+            }
+            + b"\ndata: ".len()
+            + self.data.len()
+            + b"\n\n".len()
     }
 }
 
@@ -216,7 +231,8 @@ impl McpSessionStore {
                 stream
                     .events
                     .first()
-                    .is_none_or(|event| !event.id.starts_with(&candidate))
+                    .and_then(|event| event.id.split_once(':'))
+                    .is_none_or(|(existing, _)| existing != candidate.as_str())
             }) {
                 break candidate;
             }
@@ -225,10 +241,12 @@ impl McpSessionStore {
             SseReplayEvent {
                 id: format!("{stream_id}:0"),
                 data: Vec::new(),
+                retry: true,
             },
             SseReplayEvent {
                 id: format!("{stream_id}:1"),
                 data,
+                retry: false,
             },
         ];
         debug_assert_eq!(events.len(), MAX_MCP_SSE_EVENTS_PER_STREAM);
@@ -238,8 +256,7 @@ impl McpSessionStore {
         }
 
         while session.sse_streams.len() >= MAX_MCP_SSE_STREAMS_PER_SESSION
-            || session.sse_replay_bytes + retained_bytes
-                > MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION
+            || session.sse_replay_bytes + retained_bytes > MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION
         {
             let evicted = session
                 .sse_streams
@@ -403,6 +420,8 @@ mod tests {
 
         assert_eq!(events.len(), MAX_MCP_SSE_EVENTS_PER_STREAM);
         assert!(events[0].data.is_empty());
+        assert!(events[0].retry);
+        assert!(!events[1].retry);
         assert_eq!(events[1].data, br#"{"jsonrpc":"2.0","id":1}"#);
         assert_eq!(
             events[0].id.split_once(':').unwrap().0,
@@ -424,7 +443,9 @@ mod tests {
         let store = McpSessionStore::new();
         let first = store.create().unwrap();
         let second = store.create().unwrap();
-        let first_events = store.record_sse_response(&first, b"first".to_vec()).unwrap();
+        let first_events = store
+            .record_sse_response(&first, b"first".to_vec())
+            .unwrap();
         let second_events = store
             .record_sse_response(&second, b"second".to_vec())
             .unwrap();
@@ -463,23 +484,15 @@ mod tests {
             SseReplayError::CursorNotFound
         );
         assert_eq!(
-            store
-                .replay_sse_after(&session_id, newest[0].id())
-                .unwrap(),
+            store.replay_sse_after(&session_id, newest[0].id()).unwrap(),
             vec![newest[1].clone()]
         );
 
         let large_first = store
-            .record_sse_response(
-                &session_id,
-                vec![b'a'; MAX_MCP_SSE_EVENT_DATA_BYTES],
-            )
+            .record_sse_response(&session_id, vec![b'a'; MAX_MCP_SSE_EVENT_DATA_BYTES])
             .unwrap();
         let large_second = store
-            .record_sse_response(
-                &session_id,
-                vec![b'b'; MAX_MCP_SSE_EVENT_DATA_BYTES],
-            )
+            .record_sse_response(&session_id, vec![b'b'; MAX_MCP_SSE_EVENT_DATA_BYTES])
             .unwrap();
         assert_eq!(
             store
@@ -505,10 +518,7 @@ mod tests {
 
         assert_eq!(
             store
-                .record_sse_response(
-                    &session_id,
-                    vec![0; MAX_MCP_SSE_EVENT_DATA_BYTES + 1],
-                )
+                .record_sse_response(&session_id, vec![0; MAX_MCP_SSE_EVENT_DATA_BYTES + 1],)
                 .unwrap_err(),
             SseReplayError::EventDataTooLarge
         );

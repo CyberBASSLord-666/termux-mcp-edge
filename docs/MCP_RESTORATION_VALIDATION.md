@@ -2,7 +2,7 @@
 
 This document defines validation evidence for the stable MCP transport around the current staged tool surface and for future protocol or capability expansion.
 
-The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented allowlisted tool set. It uses bounded session-backed lifecycle state and deliberately declines optional SSE streams with HTTP 405.
+The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented allowlisted tool set. It uses bounded session-backed lifecycle state, declines optional SSE with HTTP 405 by default, and offers a separately configured finite SSE response/resumption posture.
 
 ## Required PR shape
 
@@ -83,7 +83,7 @@ The adopted 2025-11-25 schema defines a single JSON-RPC message rather than a ba
 
 ## Stable protocol and transport regression gate
 
-The implemented non-SSE MCP 2025-11-25 posture must continue to prove:
+The implemented MCP 2025-11-25 postures must continue to prove:
 
 - initialization as the first client/server interaction;
 - protocol-version and capability negotiation;
@@ -96,7 +96,10 @@ The implemented non-SSE MCP 2025-11-25 posture must continue to prove:
 - cryptographically random visible-ASCII UUID sessions, bounded to 64 records with 30-minute idle expiry, explicit DELETE termination, and no retained client initialize metadata;
 - independent pending/active state across concurrent sessions;
 - ping before activation, request timeout/cancellation-safe cleanup, process-shutdown state reset, HTTP 404 reinitialization behavior, and multiple-client isolation;
-- GET with `Accept: text/event-stream` returning HTTP 405 because optional SSE, replay, and resumption are not offered;
+- GET with `Accept: text/event-stream` returning HTTP 405 in the default posture without creating replay state;
+- opt-in finite SSE responses contain an empty primer plus one terminal response, use globally unique stream-derived event IDs, and fall back to JSON above the 128 KiB event ceiling;
+- cursor-bearing GET replays only later events from the exact session and originating stream; malformed/duplicate/oversized cursors, unknown/cross-session cursors, oldest-first eviction, terminal cursors, termination, and expiry are covered;
+- replay remains bounded to 8 streams, 2 events per stream, and 256 KiB per session, with no broadcast or long-lived server queue;
 - rejection of batch arrays, consistent with the selected stable schema's single-message transport body.
 
 The target contracts are the official [MCP 2025-11-25 specification](https://modelcontextprotocol.io/specification/2025-11-25), [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle), and [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) documents.

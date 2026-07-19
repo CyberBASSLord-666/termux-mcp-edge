@@ -26,8 +26,9 @@ Before validating behavior, confirm the operator configuration is deliberately n
 3. Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600`; do not echo the token or use shell tracing while it is loaded.
 4. Use localhost-only unauthenticated mode only when the server is bound to a loopback address and not exposed through a tunnel, LAN listener, or reverse proxy.
 5. Keep `MCP__TRANSPORT__ALLOWED_HOSTS` and `MCP__TRANSPORT__ALLOWED_ORIGINS` exact and minimal.
-6. Keep filesystem safe roots limited to a dedicated project directory, not broad shared storage such as `/storage/emulated/0` or `/sdcard`.
-7. Leave `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false` and `MCP__ANDROID__VOLUME_CONTROL_ENABLED=false` unless their exact mutations are operationally required. Either enabled gate requires static-token auth and a paired lowercase `MCP__CAPABILITY__KEY_ID` plus 64-lowercase-hex `MCP__CAPABILITY__HMAC_KEY_HEX`; keep both secrets owner-readable and out of transcripts.
+6. Leave `MCP__TRANSPORT__SSE_ENABLED=false` unless finite response replay is required; enabling it does not permit broadcast or long-lived server queues.
+7. Keep filesystem safe roots limited to a dedicated project directory, not broad shared storage such as `/storage/emulated/0` or `/sdcard`.
+8. Leave `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false` and `MCP__ANDROID__VOLUME_CONTROL_ENABLED=false` unless their exact mutations are operationally required. Either enabled gate requires static-token auth and a paired lowercase `MCP__CAPABILITY__KEY_ID` plus 64-lowercase-hex `MCP__CAPABILITY__HMAC_KEY_HEX`; keep both secrets owner-readable and out of transcripts.
 
 ## Authentication checks
 
@@ -56,7 +57,8 @@ Use the initialization sequence in [`VALIDATION.md`](VALIDATION.md) and prove al
 - Subsequent requests require the returned session ID and `MCP-Protocol-Version: 2025-11-25` in addition to normal bearer authentication.
 - Ping works while the session is pending, but discovery and invocation remain blocked until `notifications/initialized` receives HTTP 202 with no body.
 - Separate sessions do not share pending/active state.
-- A valid GET with `Accept: text/event-stream` returns the documented HTTP 405 and does not open an SSE stream.
+- With SSE disabled, a valid GET with `Accept: text/event-stream` returns the documented HTTP 405 and creates no replay state.
+- With SSE enabled in a controlled run, eligible POST responses contain one empty primer and one terminal response; GET plus the exact primer `Last-Event-ID` replays only the terminal event, while malformed, evicted, and cross-session cursors fail closed.
 - DELETE returns HTTP 204, and later use of that identifier returns HTTP 404.
 - Missing lifecycle headers fail with HTTP 400; unknown, expired, terminated, malformed, or duplicate session headers fail without reflecting the presented value.
 - A process restart clears in-memory sessions; clients reconnect by sending initialize without a prior session header.

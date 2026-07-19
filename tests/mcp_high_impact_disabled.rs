@@ -97,6 +97,14 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert_eq!(structured["androidDeviceControl"], false);
     assert_eq!(structured["commandExecution"], false);
     assert_eq!(structured["highImpactTools"], false);
+    assert_eq!(structured["serverSentEvents"], false);
+    assert_eq!(structured["serverSentEventsMode"], "disabled");
+    assert_eq!(structured["sseMaxStreamsPerSession"], 8);
+    assert_eq!(structured["sseMaxEventsPerStream"], 2);
+    assert_eq!(structured["sseMaxEventDataBytes"], 128 * 1024);
+    assert_eq!(structured["sseMaxReplayBytesPerSession"], 256 * 1024);
+    assert_eq!(structured["sseMaxLastEventIdBytes"], 64);
+    assert_eq!(structured["sseRetryMilliseconds"], 1_000);
 
     let text = payload["result"]["content"][0]["text"]
         .as_str()

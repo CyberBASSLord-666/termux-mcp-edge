@@ -9,7 +9,9 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use support::{empty_test_file_tools, json_request, response_json, session_request, sse_test_router};
+use support::{
+    empty_test_file_tools, json_request, response_json, session_request, sse_test_router,
+};
 use termux_mcp_server::mcp_transport::{
     MAX_MCP_LAST_EVENT_ID_BYTES, MCP_LAST_EVENT_ID_HEADER, MCP_PROTOCOL_VERSION,
     MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
@@ -21,6 +23,7 @@ use uuid::Uuid;
 struct SseEvent {
     id: String,
     data: String,
+    retry: Option<u64>,
 }
 
 fn initialize_body() -> Value {
@@ -55,13 +58,21 @@ fn parse_sse(body: &[u8]) -> Vec<SseEvent> {
                 .and_then(|line| line.strip_prefix("id: "))
                 .expect("SSE frame missing id")
                 .to_owned();
-            let data = lines
-                .next()
-                .and_then(|line| line.strip_prefix("data: "))
+            let next = lines.next().expect("SSE frame missing data");
+            let (retry, data_line) = if let Some(retry) = next.strip_prefix("retry: ") {
+                (
+                    Some(retry.parse().expect("SSE retry must be an integer")),
+                    lines.next().expect("SSE frame missing data after retry"),
+                )
+            } else {
+                (None, next)
+            };
+            let data = data_line
+                .strip_prefix("data: ")
                 .expect("SSE frame missing data")
                 .to_owned();
             assert!(lines.next().is_none());
-            SseEvent { id, data }
+            SseEvent { id, data, retry }
         })
         .collect()
 }
@@ -149,14 +160,16 @@ async fn opt_in_sse_primes_then_delivers_one_terminal_json_rpc_response() {
 
     assert_eq!(initialize_events.len(), 2);
     assert!(initialize_events[0].data.is_empty());
+    assert_eq!(initialize_events[0].retry, Some(1_000));
+    assert_eq!(initialize_events[1].retry, None);
     let (initialize_stream, initialize_sequence) =
         initialize_events[0].id.rsplit_once(':').unwrap();
     assert_eq!(initialize_sequence, "0");
-    assert_eq!(Uuid::parse_str(initialize_stream).unwrap().to_string(), initialize_stream);
     assert_eq!(
-        initialize_events[1].id,
-        format!("{initialize_stream}:1")
+        Uuid::parse_str(initialize_stream).unwrap().to_string(),
+        initialize_stream
     );
+    assert_eq!(initialize_events[1].id, format!("{initialize_stream}:1"));
     assert_eq!(
         serde_json::from_str::<Value>(&initialize_events[1].data).unwrap()["id"],
         "initialize-sse"
@@ -173,6 +186,27 @@ async fn opt_in_sse_primes_then_delivers_one_terminal_json_rpc_response() {
         ping_events[0].id.rsplit_once(':').unwrap().0,
         initialize_stream
     );
+
+    let runtime = router
+        .oneshot(session_request(
+            json!({
+                "jsonrpc":"2.0",
+                "id":"sse-runtime",
+                "method":"tools/call",
+                "params":{"name":"runtime_status","arguments":{}}
+            }),
+            &session_id,
+        ))
+        .await
+        .unwrap();
+    let runtime = sse_events(runtime).await;
+    let runtime: Value = serde_json::from_str(&runtime[1].data).unwrap();
+    let structured = &runtime["result"]["structuredContent"];
+    assert_eq!(structured["serverSentEvents"], true);
+    assert_eq!(
+        structured["serverSentEventsMode"],
+        "finite_request_response_with_origin_stream_replay"
+    );
 }
 
 #[tokio::test]
@@ -187,10 +221,14 @@ async fn get_replays_only_events_after_the_exact_originating_cursor() {
         .oneshot(resume_request(&session_id, &ping_events[0].id))
         .await
         .unwrap();
-    assert_eq!(sse_events(replay).await, vec![SseEvent {
-        id: ping_events[1].id.clone(),
-        data: ping_events[1].data.clone(),
-    }]);
+    assert_eq!(
+        sse_events(replay).await,
+        vec![SseEvent {
+            id: ping_events[1].id.clone(),
+            data: ping_events[1].data.clone(),
+            retry: None,
+        }]
+    );
 
     let completed = router
         .clone()
@@ -227,7 +265,10 @@ async fn replay_cursors_fail_closed_across_sessions_and_after_eviction() {
         .await
         .unwrap();
     assert_eq!(crossed.status(), StatusCode::NOT_FOUND);
-    assert_eq!(response_json(crossed).await["error"], "sse_cursor_not_found");
+    assert_eq!(
+        response_json(crossed).await["error"],
+        "sse_cursor_not_found"
+    );
 
     let mut oldest = Vec::new();
     for id in 10..19 {
@@ -241,7 +282,10 @@ async fn replay_cursors_fail_closed_across_sessions_and_after_eviction() {
         .await
         .unwrap();
     assert_eq!(evicted.status(), StatusCode::NOT_FOUND);
-    assert_eq!(response_json(evicted).await["error"], "sse_cursor_not_found");
+    assert_eq!(
+        response_json(evicted).await["error"],
+        "sse_cursor_not_found"
+    );
 }
 
 #[tokio::test]
@@ -262,7 +306,10 @@ async fn malformed_duplicate_oversized_and_unknown_cursors_are_rejected() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(response_json(response).await["error"], "invalid_last_event_id");
+        assert_eq!(
+            response_json(response).await["error"],
+            "invalid_last_event_id"
+        );
     }
 
     let unknown = format!("{}:0", Uuid::new_v4());
@@ -272,7 +319,10 @@ async fn malformed_duplicate_oversized_and_unknown_cursors_are_rejected() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    assert_eq!(response_json(response).await["error"], "sse_cursor_not_found");
+    assert_eq!(
+        response_json(response).await["error"],
+        "sse_cursor_not_found"
+    );
 
     let mut duplicate = resume_request(&session_id, &unknown);
     duplicate.headers_mut().append(
@@ -281,7 +331,55 @@ async fn malformed_duplicate_oversized_and_unknown_cursors_are_rejected() {
     );
     let response = router.oneshot(duplicate).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(response_json(response).await["error"], "invalid_last_event_id");
+    assert_eq!(
+        response_json(response).await["error"],
+        "invalid_last_event_id"
+    );
+}
+
+#[tokio::test]
+async fn transport_and_session_validation_precede_sse_cursor_lookup() {
+    let (_root, file_tools) = empty_test_file_tools();
+    let router = sse_test_router(file_tools);
+    let (session_id, _) = initialize_active_sse(&router).await;
+    let events = post_ping(&router, &session_id, 12).await;
+
+    let mut rejected_origin = resume_request(&session_id, &events[0].id);
+    rejected_origin.headers_mut().insert(
+        header::ORIGIN,
+        HeaderValue::from_static("https://attacker.invalid"),
+    );
+    let response = router
+        .clone()
+        .oneshot(rejected_origin)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response_json(response).await["error"],
+        "transport_security_rejected"
+    );
+
+    let unknown_session = "00000000-0000-4000-8000-000000000000";
+    let response = router
+        .clone()
+        .oneshot(resume_request(unknown_session, "not-an-event"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_json(response).await["error"], "session_not_found");
+
+    let mut wrong_protocol = resume_request(&session_id, &events[0].id);
+    wrong_protocol.headers_mut().insert(
+        MCP_PROTOCOL_VERSION_HEADER,
+        HeaderValue::from_static("2025-03-26"),
+    );
+    let response = router.oneshot(wrong_protocol).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(response).await["error"],
+        "unsupported_protocol_version"
+    );
 }
 
 #[tokio::test]

@@ -287,11 +287,7 @@ impl AppConfig {
                     "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
                     false,
                 )?,
-                sse_enabled: env_bool(
-                    &read_variable,
-                    "MCP__TRANSPORT__SSE_ENABLED",
-                    false,
-                )?,
+                sse_enabled: env_bool(&read_variable, "MCP__TRANSPORT__SSE_ENABLED", false)?,
                 max_concurrent_requests: env_usize(
                     &read_variable,
                     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
@@ -838,18 +834,13 @@ mod tests {
 
     #[test]
     fn sse_transport_requires_explicit_boolean_opt_in() {
-        let enabled = load_from_os_values([(
-            "MCP__TRANSPORT__SSE_ENABLED",
-            OsString::from("true"),
-        )])
-        .unwrap();
+        let enabled =
+            load_from_os_values([("MCP__TRANSPORT__SSE_ENABLED", OsString::from("true"))]).unwrap();
         assert!(enabled.transport.sse_enabled);
 
-        let error = load_from_os_values([(
-            "MCP__TRANSPORT__SSE_ENABLED",
-            OsString::from("sometimes"),
-        )])
-        .expect_err("invalid SSE transport booleans must fail closed");
+        let error =
+            load_from_os_values([("MCP__TRANSPORT__SSE_ENABLED", OsString::from("sometimes"))])
+                .expect_err("invalid SSE transport booleans must fail closed");
         assert!(error.to_string().contains("MCP__TRANSPORT__SSE_ENABLED"));
     }
 

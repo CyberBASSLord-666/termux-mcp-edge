@@ -816,6 +816,7 @@ start_server() {
     "MCP__TRANSPORT__ALLOWED_HOSTS=localhost:$PORT,127.0.0.1:$PORT"
     "MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:$PORT,http://127.0.0.1:$PORT"
     "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false"
+    "MCP__TRANSPORT__SSE_ENABLED=false"
     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4"
     "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30"
     "MCP__TRANSPORT__MAX_BODY_BYTES=1024"
@@ -909,6 +910,7 @@ run_mcp_runtime_checks() {
     and .mcp_request_limits.max_concurrent_requests == 4
     and .mcp_request_limits.request_timeout_seconds == 30
     and .mcp_request_limits.max_body_bytes == 1024
+    and .mcp_request_limits.sse_enabled == false
   ' "$body" >/dev/null 2>&1 || fail mcp_feature_posture_mismatch
   record_result runtime mcp_readiness pass mcp_posture_verified
 
@@ -1049,6 +1051,14 @@ run_mcp_runtime_checks() {
     .result.structuredContent.commandExecution == false
     and .result.structuredContent.androidPlatformTools == false
     and .result.structuredContent.highImpactTools == false
+    and .result.structuredContent.serverSentEvents == false
+    and .result.structuredContent.serverSentEventsMode == "disabled"
+    and .result.structuredContent.sseMaxStreamsPerSession == 8
+    and .result.structuredContent.sseMaxEventsPerStream == 2
+    and .result.structuredContent.sseMaxEventDataBytes == 131072
+    and .result.structuredContent.sseMaxReplayBytesPerSession == 262144
+    and .result.structuredContent.sseMaxLastEventIdBytes == 64
+    and .result.structuredContent.sseRetryMilliseconds == 1000
     and .result.structuredContent.createDirectoryMutationEnabled == true
     and .result.structuredContent.createDirectoryGrantRequired == true
     and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
@@ -1559,6 +1569,7 @@ run_volume_control_runtime_checks() {
     and .mcp_request_limits.max_concurrent_requests == 4
     and .mcp_request_limits.request_timeout_seconds == 30
     and .mcp_request_limits.max_body_bytes == 1024
+    and .mcp_request_limits.sse_enabled == false
   ' "$body" >/dev/null 2>&1 || fail volume_control_feature_posture_mismatch
   record_result runtime volume_control_readiness pass volume_control_posture_verified
 
@@ -1674,6 +1685,7 @@ MCP__SERVER__PORT=$PORT
 MCP__TRANSPORT__ALLOWED_HOSTS=localhost:$PORT,127.0.0.1:$PORT
 MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:$PORT,http://127.0.0.1:$PORT
 MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false
+MCP__TRANSPORT__SSE_ENABLED=false
 MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=1024
