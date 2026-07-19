@@ -73,15 +73,14 @@ use crate::{
     tools::{
         AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedWriteFileError,
         FileSystemTools, FindPathFilter, PreparedCopyFileMutation, PreparedCreateDirectoryMutation,
-        SafeRootConfigurationError,
-        COPY_FILE_MODE, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
-        MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
-        MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_BYTES,
-        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH,
-        MAX_FIND_ENTRIES, MAX_FIND_MATCHES, MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES,
-        MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES,
-        MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
-        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES,
+        SafeRootConfigurationError, COPY_FILE_MODE, MAX_BINARY_RANGE_BASE64_BYTES,
+        MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES,
+        MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES,
+        MAX_COPY_FILE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
+        MAX_FIND_DEPTH, MAX_FIND_ENTRIES, MAX_FIND_MATCHES, MAX_FIND_QUERY_BYTES,
+        MAX_FIND_RESPONSE_BYTES, MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES,
+        MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES,
+        MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES,
         MAX_TEXT_RANGE_ESCAPED_BYTES, MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES,
         MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
@@ -1033,9 +1032,7 @@ impl McpRouterProtection {
     }
 }
 
-fn validate_declared_listener_host(
-    listener_host: &str,
-) -> Result<(), McpRouterBuildError> {
+fn validate_declared_listener_host(listener_host: &str) -> Result<(), McpRouterBuildError> {
     if listener_host.is_empty()
         || listener_host != listener_host.trim()
         || listener_host
@@ -1221,8 +1218,7 @@ impl McpRouterBuilder {
         .with_copy_file_authority(copy_file_authority)
         .with_options(options);
         #[cfg(feature = "android-volume-control")]
-        let state =
-            state.with_android_volume_control_authority(android_volume_control_authority);
+        let state = state.with_android_volume_control_authority(android_volume_control_authority);
 
         Ok(protect_router(router_from_state(state), protection))
     }
@@ -1337,16 +1333,18 @@ impl McpTransportState {
 
         #[cfg(feature = "command-execution")]
         let command_execution_client = if command_execution_enabled {
-            let safe_root = file_tools
-                .duplicate_safe_root_descriptor(0)
-                .map_err(|_| McpRouterBuildError::OptionalClientUnavailable {
-                    client: "command_execution",
-                })?;
-            Some(CommandExecutionClient::current_server(safe_root).map_err(|_| {
+            let safe_root = file_tools.duplicate_safe_root_descriptor(0).map_err(|_| {
                 McpRouterBuildError::OptionalClientUnavailable {
                     client: "command_execution",
                 }
-            })?)
+            })?;
+            Some(
+                CommandExecutionClient::current_server(safe_root).map_err(|_| {
+                    McpRouterBuildError::OptionalClientUnavailable {
+                        client: "command_execution",
+                    }
+                })?,
+            )
         } else {
             None
         };
