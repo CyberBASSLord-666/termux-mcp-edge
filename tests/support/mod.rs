@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use axum::{
     body::{to_bytes, Body},
     extract::{ConnectInfo, Request as AxumRequest},
-    http::{header, Request},
+    http::{header, HeaderValue, Request},
     middleware::{self, Next},
     response::Response,
     Router,
@@ -34,6 +34,8 @@ use tower::ServiceExt;
 pub(super) const TEST_CAPABILITY_KEY: &str =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 pub(super) const TEST_STATIC_PRINCIPAL: &str = "test-static-principal";
+const TEST_STATIC_TOKEN: &str = "test-static-token";
+const TEST_STATIC_AUTHORIZATION: &str = "Bearer test-static-token";
 
 fn default_test_request_limits() -> McpRequestLimits {
     McpRequestLimits::from_seconds(
@@ -44,19 +46,43 @@ fn default_test_request_limits() -> McpRequestLimits {
     .expect("default test request limits must be valid")
 }
 
-fn test_router_builder(
+fn test_router_builder_with_auth(
     file_tools: &FileSystemTools,
     request_limits: McpRequestLimits,
+    auth_policy: McpAuthPolicy,
 ) -> McpRouterBuilder {
     McpRouterBuilder::new(
         "127.0.0.1",
-        McpAuthPolicy::unauthenticated_localhost_only(),
+        auth_policy,
         request_limits,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools.safe_roots().to_vec(),
     )
     .expect("test MCP router builder configuration must be valid")
+}
+
+fn unauthenticated_test_router_builder(
+    file_tools: &FileSystemTools,
+    request_limits: McpRequestLimits,
+) -> McpRouterBuilder {
+    test_router_builder_with_auth(
+        file_tools,
+        request_limits,
+        McpAuthPolicy::unauthenticated_localhost_only(),
+    )
+}
+
+fn static_test_router_builder(
+    file_tools: &FileSystemTools,
+    request_limits: McpRequestLimits,
+) -> McpRouterBuilder {
+    test_router_builder_with_auth(
+        file_tools,
+        request_limits,
+        McpAuthPolicy::static_bearer(TEST_STATIC_TOKEN)
+            .expect("test static bearer token must be valid"),
+    )
 }
 
 async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Response {
@@ -68,6 +94,20 @@ async fn attach_loopback_test_peer(mut request: AxumRequest, next: Next) -> Resp
 
 fn with_loopback_test_peer(router: Router) -> Router {
     router.route_layer(middleware::from_fn(attach_loopback_test_peer))
+}
+
+async fn attach_static_test_auth(mut request: AxumRequest, next: Next) -> Response {
+    if !request.headers().contains_key(header::AUTHORIZATION) {
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static(TEST_STATIC_AUTHORIZATION),
+        );
+    }
+    next.run(request).await
+}
+
+fn with_static_test_auth(router: Router) -> Router {
+    router.route_layer(middleware::from_fn(attach_static_test_auth))
 }
 
 pub(super) fn test_file_tools() -> (TempDir, FileSystemTools) {
@@ -86,14 +126,14 @@ pub(super) fn empty_test_file_tools() -> (TempDir, FileSystemTools) {
 }
 
 pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
-    let router = test_router_builder(&file_tools, default_test_request_limits())
+    let router = unauthenticated_test_router_builder(&file_tools, default_test_request_limits())
         .build()
         .expect("test MCP router must build");
     with_loopback_test_peer(router)
 }
 
 pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
-    let router = test_router_builder(&file_tools, default_test_request_limits())
+    let router = unauthenticated_test_router_builder(&file_tools, default_test_request_limits())
         .with_transport_options(McpTransportOptions::default().with_sse_enabled(true))
         .build()
         .expect("test SSE MCP router must build");
@@ -109,11 +149,11 @@ pub(super) fn create_directory_authorized_test_router(
         TEST_STATIC_PRINCIPAL,
     )
     .unwrap();
-    let router = test_router_builder(&file_tools, default_test_request_limits())
+    let router = static_test_router_builder(&file_tools, default_test_request_limits())
         .with_create_directory_authority(authority.clone())
         .build()
         .expect("test create-authorized MCP router must build");
-    (with_loopback_test_peer(router), authority)
+    (with_static_test_auth(router), authority)
 }
 
 pub(super) fn write_file_authorized_test_router(
@@ -128,11 +168,11 @@ pub(super) fn write_file_authorized_test_router(
     let limits =
         McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
             .expect("write authorization tests require bounded parallel replay attempts");
-    let router = test_router_builder(&file_tools, limits)
+    let router = static_test_router_builder(&file_tools, limits)
         .with_write_file_authority(authority.clone())
         .build()
         .expect("test write-authorized MCP router must build");
-    (with_loopback_test_peer(router), authority)
+    (with_static_test_auth(router), authority)
 }
 
 pub(super) fn copy_file_authorized_test_router(
@@ -147,11 +187,11 @@ pub(super) fn copy_file_authorized_test_router(
     let limits =
         McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
             .expect("copy authorization tests require bounded parallel replay attempts");
-    let router = test_router_builder(&file_tools, limits)
+    let router = static_test_router_builder(&file_tools, limits)
         .with_copy_file_authority(authority.clone())
         .build()
         .expect("test copy-authorized MCP router must build");
-    (with_loopback_test_peer(router), authority)
+    (with_static_test_auth(router), authority)
 }
 
 pub(super) fn issue_create_directory_grant(
@@ -199,7 +239,7 @@ pub(super) fn issue_copy_file_grant(
 
 #[cfg(feature = "command-execution")]
 pub(super) fn public_command_embedding_test_router(file_tools: FileSystemTools) -> Router {
-    let router = test_router_builder(&file_tools, default_test_request_limits())
+    let router = unauthenticated_test_router_builder(&file_tools, default_test_request_limits())
         .build()
         .expect("public command-feature embedding router must build");
     with_loopback_test_peer(router)
