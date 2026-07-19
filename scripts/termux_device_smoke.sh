@@ -55,7 +55,7 @@ if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPOSITORY_URL="https://github.com/CyberBASSLord-666/termux-mcp-edge.git"
-HARNESS_VERSION="8"
+HARNESS_VERSION="9"
 HEAD_LABEL="${EXPECTED_HEAD:0:12}"
 SMOKE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_ROOT="$HOME/termux-mcp-device-smoke-$HEAD_LABEL-$SMOKE_ID"
@@ -85,6 +85,7 @@ MCP_SESSION_ID=""
 CAPABILITY_KEY_ID="device-smoke-1"
 CAPABILITY_KEY_HEX=""
 CAPABILITY_GRANT_FILE=""
+COPY_CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_CONTENT_FILE=""
 SMOKE_SUCCEEDED=0
@@ -396,6 +397,25 @@ issue_create_directory_grant() {
   unset grant
 }
 
+issue_copy_file_grant() {
+  local source="$1" destination="$2" grant=""
+  : >"$COPY_CAPABILITY_GRANT_FILE"
+  chmod 600 "$COPY_CAPABILITY_GRANT_FILE"
+  if ! MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env" \
+    MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+    MCP__CAPABILITY__COPY_FILE_SOURCE="$source" \
+    MCP__CAPABILITY__COPY_FILE_DESTINATION="$destination" \
+      "$CANDIDATE_ARTIFACT" --issue-copy-file-grant >"$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null
+  then
+    fail "exact candidate could not issue a copy_file grant"
+  fi
+  [[ "$(wc -l <"$COPY_CAPABILITY_GRANT_FILE")" == 1 ]] || fail "candidate emitted an invalid copy_file capability grant"
+  grant="$(<"$COPY_CAPABILITY_GRANT_FILE")"
+  valid_capability_grant "$grant" || fail "candidate emitted an invalid copy_file capability grant"
+  capability_grant_has_signed_byte "$grant" 130 16 04 || fail "candidate emitted an invalid copy_file capability byte"
+  unset grant
+}
+
 issue_write_file_grant() {
   local target="$1" content_file="$2" disposition="$3" grant=""
   [[ -f "$content_file" && ! -L "$content_file" && "$(stat -c '%a' "$content_file")" == 600 ]] || fail "write_file capability content staging is invalid"
@@ -458,7 +478,8 @@ inspect_write_file_recovery() {
 
 protocol_smoke() {
   local label="$1"
-  local body headers status payload target outside oversized copy_source copy_target copy_bytes directory_target hash_digest binary_read_target binary_read_expected
+  local body headers status payload target outside oversized copy_source copy_target copy_mismatch_target copy_bytes directory_target hash_digest binary_read_target binary_read_expected
+  local copy_stale_source copy_stale_target copy_oversized copy_retry_target copy_grant
   local replacement_content old_identity new_identity preflight_identity substitute_identity preserved_target
   local recovery_count_before recovery_count_after
   local write_large_content write_large_request write_exact_target
@@ -503,6 +524,7 @@ protocol_smoke() {
   assert_eq "${label}_tools_list_http" "$status" 200
   assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
   assert_json "${label}_create_directory_grant_discovery" "$body" '.result.tools | map(select(.name == "create_directory"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant"))'
+  assert_json "${label}_copy_file_grant_discovery" "$body" '.result.tools | map(select(.name == "copy_file"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.inputSchema.additionalProperties == false) and ($tool.description | contains("MCP-Capability-Grant")) and ($tool.description | contains("source-identity/content/destination-bound"))'
   assert_json "${label}_write_file_grant_discovery" "$body" '.result.tools | map(select(.name == "write_file"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.inputSchema.additionalProperties == false) and ($tool.description | contains("MCP-Capability-Grant")) and ($tool.description | contains("target/content/disposition-bound"))'
   assert_json "${label}_find_paths_schema" "$body" '.result.tools | map(select(.name == "find_paths"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["kind","max_depth","path","query"] and $schema.properties.path.type == "string" and $schema.properties.query.type == "string" and $schema.properties.query.minLength == 1 and $schema.properties.query.maxLength == 256 and $schema.properties.query."x-maxBytes" == 256 and $schema.properties.kind.enum == ["any","regular_file","directory"] and $schema.properties.max_depth.minimum == 1 and $schema.properties.max_depth.maximum == 5 and $schema.required == ["path","query"] and $schema.additionalProperties == false'
   assert_json "${label}_hash_file_schema" "$body" '.result.tools | map(select(.name == "hash_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
@@ -513,7 +535,7 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_runtime_status_http" "$status" 200
-  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_or_target_content_disposition_scoped_single_use_grant" and .result.structuredContent.fileWriteMutationEnabled == true and .result.structuredContent.fileWriteGrantRequired == true and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.fileWriteMaxBytes == 1048576 and .result.structuredContent.fileWriteMaxResponseBytes == 16384 and .result.structuredContent.pathDiscovery == true and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename" and .result.structuredContent.pathDiscoveryMaxDepth == 5 and .result.structuredContent.pathDiscoveryMaxEntries == 8192 and .result.structuredContent.pathDiscoveryMaxMatches == 512 and .result.structuredContent.pathDiscoveryMaxQueryBytes == 256 and .result.structuredContent.pathDiscoveryMaxResponseBytes == 262144 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadEncoding == "base64" and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.copyFileMutationEnabled == true and .result.structuredContent.copyFileMode == "dry_run_or_source_content_destination_scoped_single_use_grant" and .result.structuredContent.copyFileGrantRequired == true and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant" and .result.structuredContent.copyFileGrantTtlSeconds == 60 and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace" and .result.structuredContent.copyFileMaxBytes == 1048576 and .result.structuredContent.copyFileMaxResponseBytes == 16384 and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only" and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_or_target_content_disposition_scoped_single_use_grant" and .result.structuredContent.fileWriteMutationEnabled == true and .result.structuredContent.fileWriteGrantRequired == true and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.fileWriteMaxBytes == 1048576 and .result.structuredContent.fileWriteMaxResponseBytes == 16384 and .result.structuredContent.pathDiscovery == true and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename" and .result.structuredContent.pathDiscoveryMaxDepth == 5 and .result.structuredContent.pathDiscoveryMaxEntries == 8192 and .result.structuredContent.pathDiscoveryMaxMatches == 512 and .result.structuredContent.pathDiscoveryMaxQueryBytes == 256 and .result.structuredContent.pathDiscoveryMaxResponseBytes == 262144 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadEncoding == "base64" and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
 
   payload="$(jq -cn --arg path "$SAFE_ROOT" '{"jsonrpc":"2.0","id":"list-directory","method":"tools/call","params":{"name":"list_directory","arguments":{"path":$path,"max_depth":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -689,30 +711,102 @@ protocol_smoke() {
 
   copy_source="$SAFE_ROOT/copy-source.bin"
   copy_target="$SAFE_ROOT/copy-target.bin"
+  copy_mismatch_target="$SAFE_ROOT/copy-mismatch.bin"
   printf 'device-smoke-copy\000\377binary' >"$copy_source"
   chmod 777 "$copy_source"
   copy_bytes="$(wc -c <"$copy_source")"
   payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-dry-run","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_copy_dry_run_http" "$status" 200
-  assert_json "${label}_copy_dry_run_body" "$body" ".result.structuredContent.dryRun == true and .result.structuredContent.sizeBytes == $copy_bytes and .result.structuredContent.mode == \"0600\" and .result.structuredContent.maxFileBytes == 1048576 and .result.structuredContent.maxResponseBytes == 16384"
-  grep -Fq device-smoke-copy "$body" && fail "copy_file dry-run response reflected file content"
+  assert_json "${label}_copy_dry_run_body" "$body" ".result.structuredContent == {dryRun:true,sizeBytes:$copy_bytes,mode:\"0600\",maxFileBytes:1048576,maxResponseBytes:16384}"
+  if grep -Eq 'device-smoke-copy|copy-source\.bin|copy-target\.bin|mcp-files-device-smoke-' "$body"; then
+    fail "copy_file dry-run response reflected private source, destination, or content"
+  fi
   assert_absent "${label}_copy_dry_run_target" "$copy_target"
 
-  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-explicit","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-missing-grant","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  assert_eq "${label}_copy_explicit_http" "$status" 200
-  assert_json "${label}_copy_explicit_body" "$body" ".result.structuredContent.dryRun == false and .result.structuredContent.sizeBytes == $copy_bytes and .result.structuredContent.mode == \"0600\""
-  grep -Fq device-smoke-copy "$body" && fail "copy_file response reflected file content"
+  assert_eq "${label}_copy_missing_grant_http" "$status" 403
+  assert_json "${label}_copy_missing_grant_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_missing"'
+  assert_absent "${label}_copy_missing_grant_target" "$copy_target"
+
+  issue_copy_file_grant "$copy_source" "$copy_target"
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-grant-preview","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_grant_preview_http" "$status" 400
+  assert_json "${label}_copy_grant_preview_body" "$body" '.error.code == -32600'
+  assert_absent "${label}_copy_grant_preview_target" "$copy_target"
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_mismatch_target" '{"jsonrpc":"2.0","id":"copy-grant-mismatch","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_grant_mismatch_http" "$status" 403
+  assert_json "${label}_copy_grant_mismatch_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
+  assert_absent "${label}_copy_grant_mismatch_target" "$copy_mismatch_target"
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-authorized","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_authorized_http" "$status" 200
+  assert_json "${label}_copy_authorized_body" "$body" ".result.structuredContent == {dryRun:false,sizeBytes:$copy_bytes,mode:\"0600\",maxFileBytes:1048576,maxResponseBytes:16384}"
+  if grep -Eq 'device-smoke-copy|copy-source\.bin|copy-target\.bin|mcp-files-device-smoke-' "$body"; then
+    fail "copy_file response reflected private source, destination, or content"
+  fi
   cmp -s "$copy_source" "$copy_target" || fail "copy_file did not preserve exact binary content"
   log "PASS ${label}_copy_content=exact"
   assert_eq "${label}_copy_mode" "$(stat -c '%a' "$copy_target")" 600
 
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
   assert_eq "${label}_copy_existing_http" "$status" 400
   assert_json "${label}_copy_existing_body" "$body" '.error.code == -32602'
   cmp -s "$copy_source" "$copy_target" || fail "copy_file existing-destination denial modified content"
   log "PASS ${label}_copy_existing=unchanged"
+
+  rm -f -- "$copy_target" || fail "could not prepare the copy_file replay check"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_grant_replay_http" "$status" 403
+  assert_json "${label}_copy_grant_replay_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"'
+  assert_absent "${label}_copy_grant_replay_target" "$copy_target"
+
+  copy_stale_source="$SAFE_ROOT/copy-stale-source.bin"
+  copy_stale_target="$SAFE_ROOT/copy-stale-target.bin"
+  printf '%s' stale-original >"$copy_stale_source"
+  issue_copy_file_grant "$copy_stale_source" "$copy_stale_target"
+  printf '%s' stale-mutated! >"$copy_stale_source"
+  payload="$(jq -cn --arg source "$copy_stale_source" --arg destination "$copy_stale_target" '{jsonrpc:"2.0",id:"copy-stale-source",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_stale_source_http" "$status" 403
+  assert_json "${label}_copy_stale_source_body" "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"'
+  assert_absent "${label}_copy_stale_source_target" "$copy_stale_target"
+
+  copy_oversized="$SAFE_ROOT/copy-oversized.bin"
+  copy_retry_target="$SAFE_ROOT/copy-oversized-grant-retry.bin"
+  dd if=/dev/zero of="$copy_oversized" bs=1048577 count=1 status=none 2>/dev/null \
+    || fail "could not create the oversized copy_file fixture"
+  issue_copy_file_grant "$copy_source" "$copy_retry_target"
+  payload="$(jq -cn --arg source "$copy_oversized" --arg destination "$copy_retry_target" '{jsonrpc:"2.0",id:"copy-oversized",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_oversized_http" "$status" 413
+  assert_json "${label}_copy_oversized_body" "$body" '.error.code == -32001'
+  assert_absent "${label}_copy_oversized_target" "$copy_retry_target"
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_retry_target" '{jsonrpc:"2.0",id:"copy-oversized-grant-retry",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" "$COPY_CAPABILITY_GRANT_FILE")"
+  assert_eq "${label}_copy_oversized_grant_retry_http" "$status" 200
+  cmp -s "$copy_source" "$copy_retry_target" || fail "copy_file oversized preflight consumed its grant"
+  assert_eq "${label}_copy_oversized_grant_retry_mode" "$(stat -c '%a' "$copy_retry_target")" 600
+
+  payload='{"jsonrpc":"2.0","id":"copy-audit","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_copy_audit_http" "$status" 200
+  assert_json "${label}_copy_audit" "$body" '.result.structuredContent.auditCounters as $audit | $audit.by_tool.copy_file.allowed >= 3 and $audit.by_tool.copy_file.denied >= 6 and $audit.by_reason_code.dry_run_preview.allowed >= 1 and $audit.by_reason_code.safe_root_file_copied.allowed >= 2 and $audit.by_reason_code.capability_grant_missing.denied >= 1 and $audit.by_reason_code.capability_grant_binding_mismatch.denied >= 2 and $audit.by_reason_code.capability_grant_replayed.denied >= 1 and $audit.by_reason_code.filesystem_destination_exists.denied >= 1 and $audit.by_reason_code.filesystem_copy_source_too_large.denied >= 1'
+  copy_grant="$(<"$COPY_CAPABILITY_GRANT_FILE")"
+  if grep -Eq 'device-smoke-copy|stale-mutated|copy-(source|stale|oversized)|mcp-files-device-smoke-' "$body" \
+    || grep -Fq "$copy_grant" "$body"; then
+    fail "copy_file audit evidence reflected private data"
+  fi
+  unset copy_grant
+  log "PASS ${label}_copy_grant=exact-binding-single-use"
+  log "PASS ${label}_copy_audit=private"
 
   target="$SAFE_ROOT/write-target.txt"
   payload="$(jq -cn --arg path "$target" --arg content 'device-smoke-write' '{"jsonrpc":"2.0","id":"write-dry-run","method":"tools/call","params":{"name":"write_file","arguments":{"path":$path,"content":$content}}}')"
@@ -987,6 +1081,9 @@ volume_control_disabled_smoke() {
     MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
     MCP__TRANSPORT__MAX_BODY_BYTES=1024 \
     "MCP__FILE__SAFE_ROOTS=$SAFE_ROOT" \
+    MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false \
+    MCP__FILE__COPY_FILE_MUTATION_ENABLED=false \
+    MCP__FILE__WRITE_MUTATION_ENABLED=false \
     "$VOLUME_CONTROL_ARTIFACT" >"$server_log" 2>&1 &
   DIRECT_SERVER_PID=$!
   for attempt in $(seq 1 40); do
@@ -1018,12 +1115,19 @@ volume_control_disabled_smoke() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_tools_http "$status" 200
   assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
+  assert_json volume_control_disabled_copy_discovery "$body" '.result.tools | map(select(.name == "copy_file"))[0] as $tool | $tool.inputSchema.properties.dry_run.const == true and ($tool.description | contains("copy mutation gate is disabled"))'
   assert_json volume_control_disabled_write_discovery "$body" '.result.tools | map(select(.name == "write_file"))[0] as $tool | $tool.inputSchema.properties.dry_run.const == true and ($tool.description | contains("mutation gate is disabled"))'
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_status_http "$status" 200
-  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.copyFileMutationEnabled == false and .result.structuredContent.copyFileMode == "dry_run_only_mutation_disabled" and .result.structuredContent.copyFileGrantRequired == false and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant" and .result.structuredContent.copyFileGrantTtlSeconds == 60 and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace" and .result.structuredContent.copyFileMaxBytes == 1048576 and .result.structuredContent.copyFileMaxResponseBytes == 16384 and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only" and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+
+  payload="$(jq -cn --arg source "$SAFE_ROOT/visible.txt" --arg destination "$SAFE_ROOT/volume-copy-disabled.txt" '{jsonrpc:"2.0",id:"volume-copy-disabled",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq volume_control_disabled_copy_http "$status" 403
+  assert_json volume_control_disabled_copy_body "$body" '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"'
+  assert_absent volume_control_disabled_copy_target "$SAFE_ROOT/volume-copy-disabled.txt"
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1235,11 +1339,13 @@ MCP_TOKEN="$(head -c 48 /dev/urandom | base64 | tr -d '\n')"
 CAPABILITY_KEY_HEX="$(head -c 32 /dev/urandom | sha256sum | awk '{print $1}')"
 [[ "$CAPABILITY_KEY_HEX" =~ ^[0-9a-f]{64}$ ]] || fail "could not generate a private capability key"
 CAPABILITY_GRANT_FILE="$CONFIG_ROOT/create-directory-grant"
+COPY_CAPABILITY_GRANT_FILE="$CONFIG_ROOT/copy-file-grant"
 WRITE_CAPABILITY_GRANT_FILE="$CONFIG_ROOT/write-file-grant"
 WRITE_CAPABILITY_CONTENT_FILE="$CONFIG_ROOT/write-file-content"
+: >"$COPY_CAPABILITY_GRANT_FILE"
 : >"$WRITE_CAPABILITY_GRANT_FILE"
 : >"$WRITE_CAPABILITY_CONTENT_FILE"
-chmod 600 "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE"
+chmod 600 "$COPY_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE"
 cat >"$CONFIG_ROOT/runtime.env" <<EOF
 MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN
 MCP__SERVER__HOST=127.0.0.1
@@ -1252,6 +1358,7 @@ MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=2097152
 MCP__FILE__SAFE_ROOTS=$SAFE_ROOT
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
+MCP__FILE__COPY_FILE_MUTATION_ENABLED=true
 MCP__FILE__WRITE_MUTATION_ENABLED=true
 MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID
 MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX

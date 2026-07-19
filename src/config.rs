@@ -77,6 +77,8 @@ pub struct FileConfig {
     pub create_directory_mutation_enabled: bool,
     /// Dedicated default-disabled runtime gate for `write_file` mutation.
     pub write_file_mutation_enabled: bool,
+    /// Dedicated default-disabled runtime gate for `copy_file` mutation.
+    pub copy_file_mutation_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -273,6 +275,11 @@ impl AppConfig {
                     "MCP__FILE__WRITE_MUTATION_ENABLED",
                     false,
                 )?,
+                copy_file_mutation_enabled: env_bool(
+                    &read_variable,
+                    "MCP__FILE__COPY_FILE_MUTATION_ENABLED",
+                    false,
+                )?,
             },
             transport: TransportConfig {
                 allowed_hosts: env_exact_string_list(
@@ -317,6 +324,7 @@ impl AppConfig {
         validate_capability_key_configuration(&config.capability)?;
         validate_create_directory_mutation_capability(&config)?;
         validate_write_file_mutation_capability(&config)?;
+        validate_copy_file_mutation_capability(&config)?;
         validate_android_capabilities(&config.android)?;
         validate_android_volume_control_capability(&config)?;
         validate_command_capability(&config.command)?;
@@ -596,6 +604,27 @@ fn validate_write_file_mutation_capability(config: &AppConfig) -> anyhow::Result
     Ok(())
 }
 
+fn validate_copy_file_mutation_capability(config: &AppConfig) -> anyhow::Result<()> {
+    if !config.file.copy_file_mutation_enabled {
+        return Ok(());
+    }
+    if !cfg!(feature = "mcp-runtime") {
+        bail!(
+            "MCP__FILE__COPY_FILE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+        );
+    }
+    validate_mutation_static_token(
+        config,
+        "MCP__FILE__COPY_FILE_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN",
+    )?;
+    if config.capability.key_id.is_none() {
+        bail!(
+            "MCP__FILE__COPY_FILE_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+        );
+    }
+    Ok(())
+}
+
 fn validate_android_capabilities(android: &AndroidConfig) -> anyhow::Result<()> {
     if android.battery_status_enabled && !cfg!(feature = "android-battery-status") {
         bail!(
@@ -741,6 +770,7 @@ mod tests {
                 safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
                 create_directory_mutation_enabled: false,
                 write_file_mutation_enabled: false,
+                copy_file_mutation_enabled: false,
             },
             transport: transport_config(),
         }
@@ -783,6 +813,22 @@ mod tests {
         assert!(!debug.contains(&"a".repeat(64)));
     }
 
+    #[test]
+    fn copy_mutation_config_debug_output_redacts_principal_and_signing_key() {
+        let mut config = app_config("127.0.0.1", Some("copy-mutation-static-principal"), false);
+        config.capability.key_id = Some("copy-primary-1".to_owned());
+        config.capability.hmac_key_hex = Some("b".repeat(64));
+        config.file.copy_file_mutation_enabled = true;
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("copy_file_mutation_enabled: true"));
+        assert!(debug.contains("copy-primary-1"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("copy-mutation-static-principal"));
+        assert!(!debug.contains(&"b".repeat(64)));
+    }
+
     #[cfg(all(feature = "mcp-runtime", unix))]
     #[test]
     fn offline_issuer_literal_config_is_private_bounded_and_never_evaluated() {
@@ -797,6 +843,7 @@ mod tests {
              MCP__FILE__SAFE_ROOTS={}\n\
              MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true\n\
              MCP__FILE__WRITE_MUTATION_ENABLED=true\n\
+             MCP__FILE__COPY_FILE_MUTATION_ENABLED=true\n\
              MCP__CAPABILITY__KEY_ID=offline-1\n\
              MCP__CAPABILITY__HMAC_KEY_HEX={}\n\
              RUST_LOG=termux_mcp_server=info\n",
@@ -814,6 +861,7 @@ mod tests {
         assert_eq!(config.capability.key_id.as_deref(), Some("offline-1"));
         assert!(config.file.create_directory_mutation_enabled);
         assert!(config.file.write_file_mutation_enabled);
+        assert!(config.file.copy_file_mutation_enabled);
         assert_eq!(config.file.safe_roots, vec![safe_root]);
 
         std::fs::write(
@@ -845,6 +893,7 @@ mod tests {
             safe_roots: vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)],
             create_directory_mutation_enabled: false,
             write_file_mutation_enabled: false,
+            copy_file_mutation_enabled: false,
         };
         let broad_storage = PathBuf::from("/storage/emulated/0");
         let sdcard = PathBuf::from("/sdcard");
@@ -870,6 +919,7 @@ mod tests {
         assert!(!config.command.enabled);
         assert!(!config.file.create_directory_mutation_enabled);
         assert!(!config.file.write_file_mutation_enabled);
+        assert!(!config.file.copy_file_mutation_enabled);
         assert!(!config.transport.sse_enabled);
         assert_eq!(
             config.file.safe_roots,
@@ -1202,6 +1252,128 @@ mod tests {
     }
 
     #[test]
+    fn copy_mutation_requires_compile_gate_static_auth_and_exact_key_pair() {
+        let entries = [
+            (
+                "MCP__FILE__COPY_FILE_MUTATION_ENABLED",
+                OsString::from("true"),
+            ),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("static-principal-secret"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ];
+        let configured = load_from_os_values(entries);
+        if cfg!(feature = "mcp-runtime") {
+            let configured = configured.unwrap();
+            assert!(configured.file.copy_file_mutation_enabled);
+            assert_eq!(configured.capability.key_id.as_deref(), Some("primary-1"));
+            assert_eq!(
+                configured.capability.hmac_key_hex(),
+                Some("a".repeat(64).as_str())
+            );
+        } else {
+            assert_eq!(
+                configured.unwrap_err().to_string(),
+                "MCP__FILE__COPY_FILE_MUTATION_ENABLED requires a binary built with the mcp-runtime feature"
+            );
+        }
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    #[test]
+    fn copy_mutation_dependency_truth_table_fails_closed() {
+        for has_principal in [false, true] {
+            for has_key_id in [false, true] {
+                for has_hmac_key in [false, true] {
+                    let mut entries = vec![(
+                        "MCP__FILE__COPY_FILE_MUTATION_ENABLED",
+                        OsString::from("true"),
+                    )];
+                    if has_principal {
+                        entries.push((
+                            "MCP__AUTH__STATIC_TOKEN",
+                            OsString::from("static-principal-secret"),
+                        ));
+                    }
+                    if has_key_id {
+                        entries.push(("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")));
+                    }
+                    if has_hmac_key {
+                        entries.push((
+                            "MCP__CAPABILITY__HMAC_KEY_HEX",
+                            OsString::from("a".repeat(64)),
+                        ));
+                    }
+
+                    let configured = load_from_os_values(entries);
+                    match (has_principal, has_key_id, has_hmac_key) {
+                        (true, true, true) => {
+                            assert!(configured.unwrap().file.copy_file_mutation_enabled);
+                        }
+                        (_, key_id, hmac_key) if key_id != hmac_key => assert_eq!(
+                            configured.unwrap_err().to_string(),
+                            "MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX must be configured together"
+                        ),
+                        (false, _, _) => assert_eq!(
+                            configured.unwrap_err().to_string(),
+                            "MCP__FILE__COPY_FILE_MUTATION_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+                        ),
+                        (true, false, false) => assert_eq!(
+                            configured.unwrap_err().to_string(),
+                            "MCP__FILE__COPY_FILE_MUTATION_ENABLED requires MCP__CAPABILITY__KEY_ID and MCP__CAPABILITY__HMAC_KEY_HEX"
+                        ),
+                        _ => unreachable!("all capability dependency states are covered"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    #[test]
+    fn copy_mutation_rejects_invalid_static_principal() {
+        let error = load_from_os_values([
+            (
+                "MCP__FILE__COPY_FILE_MUTATION_ENABLED",
+                OsString::from("true"),
+            ),
+            (
+                "MCP__AUTH__STATIC_TOKEN",
+                OsString::from("principal contains spaces"),
+            ),
+            ("MCP__CAPABILITY__KEY_ID", OsString::from("primary-1")),
+            (
+                "MCP__CAPABILITY__HMAC_KEY_HEX",
+                OsString::from("a".repeat(64)),
+            ),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "configured bearer token must contain only ASCII graphic bytes"
+        );
+    }
+
+    #[test]
+    fn copy_mutation_rejects_invalid_runtime_flag() {
+        let error = load_from_os_values([(
+            "MCP__FILE__COPY_FILE_MUTATION_ENABLED",
+            OsString::from("sometimes"),
+        )])
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("MCP__FILE__COPY_FILE_MUTATION_ENABLED must be a boolean value"));
+    }
+
+    #[test]
     fn capability_key_configuration_is_exact_and_fail_closed_even_while_gate_is_disabled() {
         for key_id in ["", "Upper", "bad.key", &"a".repeat(33)] {
             let error = load_from_os_values([
@@ -1253,6 +1425,7 @@ mod tests {
             "MCP__CAPABILITY__HMAC_KEY_HEX",
             "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED",
             "MCP__FILE__WRITE_MUTATION_ENABLED",
+            "MCP__FILE__COPY_FILE_MUTATION_ENABLED",
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
@@ -1342,6 +1515,7 @@ mod tests {
             safe_roots: vec![],
             create_directory_mutation_enabled: false,
             write_file_mutation_enabled: false,
+            copy_file_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("empty safe roots must fail closed");
@@ -1354,6 +1528,7 @@ mod tests {
             safe_roots: vec![PathBuf::from("relative/path")],
             create_directory_mutation_enabled: false,
             write_file_mutation_enabled: false,
+            copy_file_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("relative safe roots must fail");
@@ -1366,6 +1541,7 @@ mod tests {
             safe_roots: vec![PathBuf::from("/")],
             create_directory_mutation_enabled: false,
             write_file_mutation_enabled: false,
+            copy_file_mutation_enabled: false,
         };
 
         let err = validate_file_safe_roots(&file).expect_err("filesystem root must fail");

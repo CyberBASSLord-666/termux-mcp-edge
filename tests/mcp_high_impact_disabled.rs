@@ -6,8 +6,9 @@ use axum::http::StatusCode;
 use serde_json::json;
 use support::{post_json_with_empty_root, response_json};
 use termux_mcp_server::{
+    copy_file_grant::{COPY_FILE_GRANT_HEADER, COPY_FILE_GRANT_TTL_SECONDS},
     mcp_transport::MAX_MCP_JSON_RPC_ID_BYTES,
-    tools::MAX_WRITE_FILE_RESPONSE_BYTES,
+    tools::{MAX_COPY_FILE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES},
     write_file_grant::{WRITE_FILE_GRANT_HEADER, WRITE_FILE_GRANT_TTL_SECONDS},
     write_policy::DEFAULT_MAX_WRITE_BYTES,
 };
@@ -102,6 +103,23 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert_eq!(structured["androidVolumeControlMode"], "disabled");
     assert_eq!(structured["androidVolumeGrantRequired"], false);
     assert_eq!(structured["fileWrites"], true);
+    assert_eq!(structured["copyFileMutationEnabled"], false);
+    assert_eq!(structured["copyFileGrantRequired"], false);
+    assert_eq!(structured["copyFileMode"], "dry_run_only_mutation_disabled");
+    assert_eq!(structured["copyFileGrantHeader"], COPY_FILE_GRANT_HEADER);
+    assert_eq!(
+        structured["copyFileGrantTtlSeconds"],
+        COPY_FILE_GRANT_TTL_SECONDS
+    );
+    assert_eq!(structured["copyFileMaxBytes"], MAX_COPY_FILE_BYTES);
+    assert_eq!(
+        structured["copyFileMaxResponseBytes"],
+        MAX_COPY_FILE_RESPONSE_BYTES
+    );
+    assert_eq!(
+        structured["copyFileResponsePosture"],
+        "path_free_bounded_metadata_only"
+    );
     assert_eq!(structured["fileWriteMutationEnabled"], false);
     assert_eq!(structured["fileWriteGrantRequired"], false);
     assert_eq!(
@@ -139,6 +157,7 @@ async fn runtime_status_keeps_command_and_high_impact_gates_disabled() {
     assert!(text.contains("android_battery_status=disabled"));
     assert!(text.contains("android_volume_status=disabled"));
     assert!(text.contains("android_volume_control=disabled"));
+    assert!(text.contains("copy_file_mutation=dry_run_only_mutation_disabled"));
     assert!(text.contains("write_file_mutation=dry_run_only_mutation_disabled"));
     assert!(text.contains("command_execution=disabled"));
 }

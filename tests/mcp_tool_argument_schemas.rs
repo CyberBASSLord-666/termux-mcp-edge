@@ -195,7 +195,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     let directory_preview = root.path().join("directory-preview");
     let directory_full_preview = root.path().join("directory-full-preview");
     let copy_preview = root.path().join("copy-preview.txt");
-    let copy_mutation = root.path().join("copy-mutation.txt");
+    let copy_full_preview = root.path().join("copy-full-preview.txt");
     let dry_run_target = root.path().join("dry-run-target.txt");
     let mutation_target = root.path().join("mutation-target.txt");
     tokio::fs::write(&source, "safe content").await.unwrap();
@@ -229,8 +229,8 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
             "copy_file",
             json!({
                 "source_path": source.to_string_lossy(),
-                "destination_path": copy_mutation.to_string_lossy(),
-                "dry_run": false
+                "destination_path": copy_full_preview.to_string_lossy(),
+                "dry_run": true
             }),
         ),
         (
@@ -335,10 +335,7 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
     assert!(!directory_preview.exists());
     assert!(!directory_full_preview.exists());
     assert!(!copy_preview.exists());
-    assert_eq!(
-        tokio::fs::read_to_string(&copy_mutation).await.unwrap(),
-        "safe content"
-    );
+    assert!(!copy_full_preview.exists());
     assert!(!mutation_target.exists());
 }
 

@@ -7,7 +7,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
 use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
-use termux_mcp_server::tools::{COPY_FILE_MODE, MAX_COPY_FILE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES};
+use termux_mcp_server::tools::{MAX_COPY_FILE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES};
 
 fn copy_call(id: Value, source_path: &str, destination_path: &str, dry_run: Option<bool>) -> Value {
     let mut arguments = json!({
@@ -46,12 +46,12 @@ async fn runtime_status(router: axum::Router, session_id: &str) -> Value {
 }
 
 #[tokio::test]
-async fn discovery_advertises_one_closed_copy_file_schema() {
+async fn disabled_discovery_advertises_one_closed_preview_only_copy_schema() {
     let (_root, file_tools) = empty_test_file_tools();
     let router = test_router(file_tools);
     let session_id = initialize_session(&router).await;
     let response = post_json_to_session(
-        router,
+        router.clone(),
         &session_id,
         json!({
             "jsonrpc": "2.0",
@@ -87,14 +87,21 @@ async fn discovery_advertises_one_closed_copy_file_schema() {
         assert_eq!(schema["properties"][field]["type"], "string");
     }
     assert_eq!(schema["properties"]["dry_run"]["type"], "boolean");
+    assert_eq!(schema["properties"]["dry_run"]["const"], true);
+    assert!(tools
+        .iter()
+        .find(|tool| tool["name"] == "copy_file")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap()
+        .contains("mutation gate is disabled"));
 }
 
 #[tokio::test]
-async fn copy_file_is_dry_run_first_and_explicit_binary_copy_is_exact() {
+async fn public_copy_file_is_preview_only_and_live_denial_precedes_path_access() {
     let (root, file_tools) = empty_test_file_tools();
     let source = root.path().join("private-source.bin");
     let preview = root.path().join("preview.bin");
-    let destination = root.path().join("destination.bin");
     let private_content = b"private-copy-content\0\xff\x80";
     std::fs::write(&source, private_content).unwrap();
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o777)).unwrap();
@@ -121,11 +128,8 @@ async fn copy_file_is_dry_run_first_and_explicit_binary_copy_is_exact() {
         assert!(!String::from_utf8_lossy(&body).contains("private-copy-content"));
         let payload: Value = serde_json::from_slice(&body).unwrap();
         let result = &payload["result"]["structuredContent"];
-        assert_eq!(result["sourcePath"], source.to_string_lossy().as_ref());
-        assert_eq!(
-            result["destinationPath"],
-            preview.to_string_lossy().as_ref()
-        );
+        assert!(result.get("sourcePath").is_none());
+        assert!(result.get("destinationPath").is_none());
         assert_eq!(result["dryRun"], true);
         assert_eq!(result["sizeBytes"], private_content.len());
         assert_eq!(result["mode"], "0600");
@@ -134,37 +138,38 @@ async fn copy_file_is_dry_run_first_and_explicit_binary_copy_is_exact() {
         assert!(!preview.exists());
     }
 
+    let outside = tempfile::tempdir().unwrap();
+    let denied_destination = outside.path().join("must-not-exist.bin");
     let response = post_json_to_session(
         router,
         &session_id,
         copy_call(
-            json!("explicit-copy"),
-            source.to_string_lossy().as_ref(),
-            destination.to_string_lossy().as_ref(),
+            json!("disabled-explicit-copy"),
+            outside
+                .path()
+                .join("unreadable-source")
+                .to_string_lossy()
+                .as_ref(),
+            denied_destination.to_string_lossy().as_ref(),
             Some(false),
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body = to_bytes(response.into_body(), MAX_COPY_FILE_RESPONSE_BYTES + 1)
         .await
         .unwrap();
-    assert!(!String::from_utf8_lossy(&body).contains("private-copy-content"));
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["result"]["structuredContent"]["dryRun"], false);
-    assert_eq!(std::fs::read(&destination).unwrap(), private_content);
+    assert_eq!(payload["error"]["code"], -32003);
     assert_eq!(
-        std::fs::symlink_metadata(destination)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        COPY_FILE_MODE
+        payload["error"]["data"]["reason"],
+        "copy_file_mutation_disabled"
     );
+    assert!(!denied_destination.exists());
 }
 
 #[tokio::test]
-async fn copy_file_transport_accepts_the_exact_one_mib_limit() {
+async fn copy_file_preview_accepts_the_exact_one_mib_limit_and_rejects_plus_one() {
     let (root, file_tools) = empty_test_file_tools();
     let source = root.path().join("exact-limit.bin");
     let destination = root.path().join("exact-limit-copy.bin");
@@ -173,13 +178,13 @@ async fn copy_file_transport_accepts_the_exact_one_mib_limit() {
     let session_id = initialize_session(&router).await;
 
     let response = post_json_to_session(
-        router,
+        router.clone(),
         &session_id,
         copy_call(
             json!("exact-limit"),
             source.to_string_lossy().as_ref(),
             destination.to_string_lossy().as_ref(),
-            Some(false),
+            Some(true),
         ),
     )
     .await;
@@ -193,11 +198,24 @@ async fn copy_file_transport_accepts_the_exact_one_mib_limit() {
         payload["result"]["structuredContent"]["sizeBytes"],
         MAX_COPY_FILE_BYTES
     );
-    assert_eq!(std::fs::metadata(&destination).unwrap().len(), 1_048_576);
-    assert_eq!(
-        std::fs::read(&destination).unwrap(),
-        vec![0x5a; MAX_COPY_FILE_BYTES]
-    );
+    assert!(!destination.exists());
+
+    let oversized = root.path().join("oversized.bin");
+    let oversized_destination = root.path().join("oversized-copy.bin");
+    std::fs::write(&oversized, vec![0x5a; MAX_COPY_FILE_BYTES + 1]).unwrap();
+    let response = post_json_to_session(
+        router,
+        &session_id,
+        copy_call(
+            json!("plus-one"),
+            oversized.to_string_lossy().as_ref(),
+            oversized_destination.to_string_lossy().as_ref(),
+            Some(true),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(!oversized_destination.exists());
 }
 
 #[tokio::test]
@@ -235,27 +253,27 @@ async fn copy_file_rejects_invalid_existing_missing_and_unsupported_requests() {
         Some(json!({
             "source_path": root.path().join("missing-source").to_string_lossy(),
             "destination_path": root.path().join("unused-a").to_string_lossy(),
-            "dry_run": false
+            "dry_run": true
         })),
         Some(json!({
             "source_path": source.to_string_lossy(),
             "destination_path": root.path().join("missing-parent").join("copy").to_string_lossy(),
-            "dry_run": false
+            "dry_run": true
         })),
         Some(json!({
             "source_path": source.to_string_lossy(),
             "destination_path": source.to_string_lossy(),
-            "dry_run": false
+            "dry_run": true
         })),
         Some(json!({
             "source_path": source.to_string_lossy(),
             "destination_path": existing.to_string_lossy(),
-            "dry_run": false
+            "dry_run": true
         })),
         Some(json!({
             "source_path": directory.to_string_lossy(),
             "destination_path": root.path().join("directory-copy").to_string_lossy(),
-            "dry_run": false
+            "dry_run": true
         })),
     ];
 
@@ -351,7 +369,7 @@ async fn copy_file_rejects_outside_symlink_and_oversized_sources_without_leaks()
                 json!(format!("copy-boundary-{index}")),
                 copy_source.to_string_lossy().as_ref(),
                 copy_destination.to_string_lossy().as_ref(),
-                Some(false),
+                Some(true),
             ),
         )
         .await;
@@ -370,7 +388,7 @@ async fn copy_file_rejects_outside_symlink_and_oversized_sources_without_leaks()
             json!("copy-oversized"),
             oversized.to_string_lossy().as_ref(),
             oversized_destination.to_string_lossy().as_ref(),
-            Some(false),
+            Some(true),
         ),
     )
     .await;
@@ -397,7 +415,7 @@ async fn copy_file_rejects_outside_symlink_and_oversized_sources_without_leaks()
 }
 
 #[tokio::test]
-async fn copy_file_preflights_full_response_before_mutation_and_audit_stays_private() {
+async fn copy_file_preflights_full_response_before_preview_and_audit_stays_private() {
     let (root, file_tools) = empty_test_file_tools();
     let source = root.path().join("private-preflight-source.txt");
     let blocked = root.path().join("blocked-by-response-bound.txt");
@@ -414,7 +432,7 @@ async fn copy_file_preflights_full_response_before_mutation_and_audit_stays_priv
             json!("x".repeat(MAX_COPY_FILE_RESPONSE_BYTES)),
             source.to_string_lossy().as_ref(),
             blocked.to_string_lossy().as_ref(),
-            Some(false),
+            Some(true),
         ),
     )
     .await;
@@ -430,7 +448,7 @@ async fn copy_file_preflights_full_response_before_mutation_and_audit_stays_priv
 
     for (id, destination, dry_run) in [
         ("private-preview", &preview, None),
-        ("private-copy", &copied, Some(false)),
+        ("private-copy", &copied, Some(true)),
     ] {
         let response = post_json_to_session(
             router.clone(),
@@ -446,10 +464,7 @@ async fn copy_file_preflights_full_response_before_mutation_and_audit_stays_priv
         assert_eq!(response.status(), StatusCode::OK);
     }
     assert!(!preview.exists());
-    assert_eq!(
-        std::fs::read_to_string(copied).unwrap(),
-        "private-preflight-content"
-    );
+    assert!(!copied.exists());
 
     let status = runtime_status(router, &session_id).await;
     let serialized = serde_json::to_string(&status).unwrap();
@@ -465,11 +480,7 @@ async fn copy_file_preflights_full_response_before_mutation_and_audit_stays_priv
     let counters = &status["result"]["structuredContent"]["auditCounters"];
     assert_eq!(counters["by_tool"]["copy_file"]["allowed"], 2);
     assert_eq!(counters["by_tool"]["copy_file"]["denied"], 1);
-    assert_eq!(counters["by_reason_code"]["dry_run_preview"]["allowed"], 1);
-    assert_eq!(
-        counters["by_reason_code"]["safe_root_file_copied"]["allowed"],
-        1
-    );
+    assert_eq!(counters["by_reason_code"]["dry_run_preview"]["allowed"], 2);
     assert_eq!(
         counters["by_reason_code"]["response_size_limit_exceeded"]["denied"],
         1

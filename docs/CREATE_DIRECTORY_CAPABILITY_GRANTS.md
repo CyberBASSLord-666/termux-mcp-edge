@@ -92,7 +92,7 @@ All request-grant codes come from one internal registry: directory creation is
 future independently gated design. The codes are wire commitments, are
 pairwise unique by invariant test, and are not caller-selectable.
 
-The normal lifetime is 60 seconds. The validator rejects zero or greater-than-120-second lifetimes, issuance more than 5 seconds in the future, expiry at the current second, an unknown version or key, and any signature or binding mismatch. One process retains at most 4,096 unexpired consumed JTIs. A full replay set fails closed; expired entries are pruned before a new valid grant is recorded.
+The normal lifetime is 60 seconds. The validator rejects zero or greater-than-120-second lifetimes, issuance more than 5 seconds in the future, expiry at the current second, an unknown version or key, and any signature or binding mismatch. One process retains at most 4,096 unexpired consumed JTIs. Equivalent independently constructed directory authorities with the same key identifier, HMAC key, and static principal share that replay set, last-observed clock, and capacity through a bounded process-global registry. Different families, keys, and principals remain isolated. A full, poisoned, or unavailable registry or replay state fails closed; expired entries are pruned before a new valid grant is recorded. Separate operating-system processes do not share this state and must not consume grants from one key/principal domain concurrently without an external atomic one-use coordinator.
 
 ## Validation and consumption order
 
@@ -104,12 +104,12 @@ For mutation, the runtime performs this order:
 4. validate the closed tool schema and preflight the complete 16 KiB response;
 5. acquire the one shared non-queueing filesystem-mutation worker permit or return private HTTP 503 / JSON-RPC `-32007` without consuming the grant;
 6. inside that permit-owned blocking worker, resolve safe-root confinement, open and hold the exact parent descriptor, prove the final target is absent, and compute the target binding;
-7. acquire the poison-fail-closed process-wide publication lock shared by every directory and file-write tool instance, then prove the final target is still absent while holding that lock;
+7. acquire the poison-fail-closed process-wide publication lock shared by every directory, file-copy, and file-write tool instance, then prove the final target is still absent while holding that lock;
 8. atomically resolve request cancellation against worker commit ownership. A cancellation winner, including one that arrived while the worker waited for the process lock, stops here without consuming the JTI or changing the filesystem;
 9. if the worker owns commit, verify and atomically consume the JTI under the replay lock;
 10. retain the process lock while immediately attempting the first filesystem mutation using the held descriptor and through publication verification and parent durability sync, completing independently of later request cancellation.
 
-A target mismatch, malformed grant, wrong request context, worker-capacity denial, poisoned process lock, stale absent-target revalidation, dry run, or cancellation that wins before commit does not consume a valid grant. A stale loser can therefore retry the same unconsumed grant after fresh matching preparation. Once step 9 succeeds, the grant remains consumed even if directory staging, verification, sync, publication, response serialization, timeout, disconnect, or cleanup later fails. Concurrent replay permits at most one mutation attempt. The publication lock and descriptor checks coordinate this process only; an independent same-UID namespace writer can still race the final name and force a bounded failure. Production mutation safe roots therefore require exclusive operational ownership by this service while live create or write gates are enabled.
+A target mismatch, malformed grant, wrong request context, worker-capacity denial, poisoned process lock, stale absent-target revalidation, dry run, or cancellation that wins before commit does not consume a valid grant. A stale loser can therefore retry the same unconsumed grant after fresh matching preparation. Once step 9 succeeds, the grant remains consumed even if directory staging, verification, sync, publication, response serialization, timeout, disconnect, or cleanup later fails. Concurrent replay permits at most one mutation attempt. The publication lock and descriptor checks coordinate this process only; an independent same-UID namespace writer can still race the final name and force a bounded failure. Production mutation safe roots therefore require exclusive operational ownership by this service while live create, copy, or write gates are enabled.
 
 ## Stable denials
 
@@ -136,6 +136,6 @@ Audit counters retain only the stable reason, tool, gate, dry-run/mutating mode,
 
 ## Rotation and restart
 
-Only one key identifier is active in a process. Rotate by replacing both capability key settings atomically and restarting the service; all grants signed under the old key then fail as unknown-key grants. Changing the static bearer token also changes the principal binding. A restart clears the in-memory replay set, but pre-restart grants still expire within their short lifetime; operators that require immediate invalidation should rotate the key during restart.
+Only one key identifier is active in a process. Rotate by replacing both capability key settings atomically and restarting the service; all grants signed under the old key then fail as unknown-key grants. Changing the static bearer token also changes the principal binding. A restart clears the in-memory replay set, but pre-restart grants still expire within their short lifetime; operators that require immediate invalidation should rotate the key during restart. Run one grant-consuming service process for a capability-key/principal domain unless a separate atomic replay coordinator is added.
 
 The grant is deliberately narrower than a general capability-token framework. It authorizes only one already-confined, absent directory target and does not authorize copy, write, delete, rename, permissions, recursive creation, shell, service, package, process, network, or Android control.

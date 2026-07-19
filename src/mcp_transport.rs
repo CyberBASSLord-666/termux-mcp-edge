@@ -50,6 +50,7 @@ use crate::{
         command_profile_ids, COMMAND_EXECUTION_GATE, COMMAND_INVALID_ARGUMENTS_REASON,
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
     },
+    copy_file_grant::{CopyFileGrantAuthority, CopyFileGrantError, COPY_FILE_GRANT_TTL_SECONDS},
     create_directory_grant::{
         CreateDirectoryGrantAuthority, CreateDirectoryGrantError,
         CREATE_DIRECTORY_GRANT_TTL_SECONDS,
@@ -69,17 +70,18 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        AuthorizedCreateDirectoryError, AuthorizedWriteFileError, FileSystemTools, FindPathFilter,
-        PreparedCreateDirectoryMutation, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
+        AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedWriteFileError,
+        FileSystemTools, FindPathFilter, PreparedCopyFileMutation, PreparedCreateDirectoryMutation,
+        COPY_FILE_MODE, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
         MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
-        MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
-        MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH, MAX_FIND_ENTRIES, MAX_FIND_MATCHES,
-        MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
-        MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
-        MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
-        MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_ESCAPED_BYTES,
-        MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES,
-        MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
+        MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_BYTES,
+        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH,
+        MAX_FIND_ENTRIES, MAX_FIND_MATCHES, MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES,
+        MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES,
+        MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
+        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES,
+        MAX_TEXT_RANGE_ESCAPED_BYTES, MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES,
+        MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
     transport_security::TransportSecurityPolicy,
     write_file_grant::{
@@ -106,8 +108,7 @@ pub const MAX_MCP_LAST_EVENT_ID_BYTES: usize = 64;
 /// Maximum canonical serialized byte length of one non-null JSON-RPC request id.
 pub const MAX_MCP_JSON_RPC_ID_BYTES: usize = 1_048_576;
 pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
-/// Fixed service-wide ceiling shared by live `create_directory` and
-/// `write_file` blocking mutation workers.
+/// Fixed service-wide ceiling shared by all live filesystem mutation workers.
 pub const MAX_CONCURRENT_FILESYSTEM_MUTATION_WORKERS: usize = 1;
 
 const APPLICATION_JSON: &str = "application/json";
@@ -283,6 +284,11 @@ const FILESYSTEM_COPY_PARENT_NOT_FOUND: &str = "filesystem_copy_parent_not_found
 const FILESYSTEM_COPY_SAME_PATH: &str = "filesystem_copy_same_path";
 const FILESYSTEM_COPY_SOURCE_UNSUPPORTED: &str = "filesystem_copy_source_type_unsupported";
 const FILESYSTEM_COPY_SOURCE_TOO_LARGE: &str = "filesystem_copy_source_too_large";
+const FILESYSTEM_COPY_SOURCE_CHANGED: &str = "filesystem_copy_source_changed";
+const FILESYSTEM_COPY_DESTINATION_CHANGED: &str = "filesystem_copy_destination_changed";
+const FILESYSTEM_COPY_MUTATION_DISABLED: &str = "copy_file_mutation_disabled";
+const FILESYSTEM_COPY_QUARANTINE_FULL: &str = "filesystem_copy_quarantine_capacity_exceeded";
+const FILESYSTEM_COPY_QUARANTINE_BUSY: &str = "filesystem_copy_quarantine_busy";
 const FILESYSTEM_COPY_FAILED: &str = "filesystem_copy_failed";
 const FILESYSTEM_FIND_ALLOWED: &str = "safe_root_paths_found";
 const FILESYSTEM_FIND_INVALID_QUERY: &str = "find_query_invalid";
@@ -382,6 +388,85 @@ impl Drop for CreateDirectoryMutationAuditGuard {
                 FILESYSTEM_WRITE_GATE,
                 AuditMode::Mutating,
                 FILESYSTEM_CREATE_FAILED,
+            );
+            self.recorded = true;
+        }
+    }
+}
+
+/// Owns the single aggregate audit decision for an authorized copy worker.
+///
+/// Only stable reason labels cross this boundary. Source and destination paths,
+/// file identity, content digests, and grant material remain confined to the
+/// detached blocking worker and are never retained by audit state.
+struct CopyFileMutationAuditGuard {
+    counters: SharedAuditCounters,
+    recorded: bool,
+}
+
+impl CopyFileMutationAuditGuard {
+    fn new(counters: SharedAuditCounters) -> Self {
+        Self {
+            counters,
+            recorded: false,
+        }
+    }
+
+    fn finish<T>(mut self, outcome: &Result<T, AuthorizedCopyFileError>) {
+        match outcome {
+            Ok(_) => record_filesystem_allowed(
+                &self.counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_COPY_ALLOWED,
+            ),
+            Err(AuthorizedCopyFileError::Authorization(error)) => record_filesystem_denied(
+                &self.counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                error.reason_code(),
+            ),
+            Err(AuthorizedCopyFileError::Filesystem(error)) => record_filesystem_denied(
+                &self.counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                copy_file_filesystem_reason(error),
+            ),
+            Err(AuthorizedCopyFileError::Cancelled) => record_filesystem_denied(
+                &self.counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_MUTATION_REQUEST_CANCELLED,
+            ),
+        }
+        self.recorded = true;
+    }
+
+    fn cancelled(mut self) {
+        record_filesystem_denied(
+            &self.counters,
+            COPY_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            AuditMode::Mutating,
+            FILESYSTEM_MUTATION_REQUEST_CANCELLED,
+        );
+        self.recorded = true;
+    }
+}
+
+impl Drop for CopyFileMutationAuditGuard {
+    fn drop(&mut self) {
+        if !self.recorded {
+            record_filesystem_denied(
+                &self.counters,
+                COPY_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_COPY_FAILED,
             );
             self.recorded = true;
         }
@@ -695,6 +780,98 @@ fn run_prepared_create_directory_mutation(
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
 
+struct CopyFileMutationWorker {
+    file_tools: FileSystemTools,
+    source_path: String,
+    destination_path: String,
+    authority: CopyFileGrantAuthority,
+    capability_grant: Option<String>,
+    session_id: String,
+    commit: FilesystemMutationWorkerCommitGuard,
+    audit: CopyFileMutationAuditGuard,
+}
+
+fn run_copy_file_mutation_worker(
+    worker: CopyFileMutationWorker,
+) -> FilesystemMutationWorkerOutcome<crate::tools::CopyFileResult, AuthorizedCopyFileError> {
+    run_copy_file_mutation_worker_inner(worker, None::<fn()>)
+}
+
+#[cfg(test)]
+fn run_copy_file_mutation_worker_with_lock_contention_hook(
+    worker: CopyFileMutationWorker,
+    on_lock_contention: impl FnOnce(),
+) -> FilesystemMutationWorkerOutcome<crate::tools::CopyFileResult, AuthorizedCopyFileError> {
+    run_copy_file_mutation_worker_inner(worker, Some(on_lock_contention))
+}
+
+fn run_copy_file_mutation_worker_inner(
+    worker: CopyFileMutationWorker,
+    on_lock_contention: Option<impl FnOnce()>,
+) -> FilesystemMutationWorkerOutcome<crate::tools::CopyFileResult, AuthorizedCopyFileError> {
+    let CopyFileMutationWorker {
+        file_tools,
+        source_path,
+        destination_path,
+        authority,
+        capability_grant,
+        session_id,
+        commit,
+        audit,
+    } = worker;
+    let prepared =
+        match file_tools.prepare_copy_file_mutation_blocking(source_path, destination_path) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let outcome = Err(AuthorizedCopyFileError::Filesystem(error));
+                audit.finish(&outcome);
+                return FilesystemMutationWorkerOutcome::Completed(outcome);
+            }
+        };
+    run_prepared_copy_file_mutation(
+        prepared,
+        authority,
+        capability_grant,
+        session_id,
+        commit,
+        audit,
+        on_lock_contention,
+    )
+}
+
+fn run_prepared_copy_file_mutation(
+    prepared: PreparedCopyFileMutation,
+    authority: CopyFileGrantAuthority,
+    capability_grant: Option<String>,
+    session_id: String,
+    commit: FilesystemMutationWorkerCommitGuard,
+    audit: CopyFileMutationAuditGuard,
+    on_lock_contention: Option<impl FnOnce()>,
+) -> FilesystemMutationWorkerOutcome<crate::tools::CopyFileResult, AuthorizedCopyFileError> {
+    let authorize_and_commit = |target: &crate::copy_file_grant::CopyFileGrantTarget| {
+        if !commit.claim() {
+            return Err(AuthorizedCopyFileError::Cancelled);
+        }
+        authority
+            .consume(capability_grant.as_deref(), &session_id, target)
+            .map_err(AuthorizedCopyFileError::Authorization)
+    };
+    let outcome = match on_lock_contention {
+        Some(on_lock_contention) => prepared
+            .execute_authorized_with_commit_and_lock_contention_hook(
+                authorize_and_commit,
+                on_lock_contention,
+            ),
+        None => prepared.execute_authorized_with_commit(authorize_and_commit),
+    };
+    if matches!(outcome, Err(AuthorizedCopyFileError::Cancelled)) {
+        audit.cancelled();
+        return FilesystemMutationWorkerOutcome::Cancelled;
+    }
+    audit.finish(&outcome);
+    FilesystemMutationWorkerOutcome::Completed(outcome)
+}
+
 struct WriteFileMutationWorker {
     file_tools: FileSystemTools,
     path: String,
@@ -780,6 +957,7 @@ impl McpTransportOptions {
 
 struct FilesystemMutationAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
+    copy_file: Option<CopyFileGrantAuthority>,
     write_file: Option<WriteFileGrantAuthority>,
 }
 
@@ -790,8 +968,14 @@ impl FilesystemMutationAuthorities {
     ) -> Self {
         Self {
             create_directory,
+            copy_file: None,
             write_file,
         }
+    }
+
+    fn with_copy_file(mut self, copy_file: Option<CopyFileGrantAuthority>) -> Self {
+        self.copy_file = copy_file;
+        self
     }
 }
 
@@ -879,6 +1063,7 @@ fn is_loopback_listener_host(listener_host: &str) -> bool {
 #[cfg(feature = "android-volume-control")]
 pub struct McpCapabilityAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
+    copy_file: Option<CopyFileGrantAuthority>,
     write_file: Option<WriteFileGrantAuthority>,
     android_volume_control: Option<AndroidVolumeGrantAuthority>,
 }
@@ -892,9 +1077,16 @@ impl McpCapabilityAuthorities {
     ) -> Self {
         Self {
             create_directory,
+            copy_file: None,
             write_file,
             android_volume_control,
         }
+    }
+
+    /// Add the independently gated `copy_file` mutation authority.
+    pub fn with_copy_file_authority(mut self, authority: CopyFileGrantAuthority) -> Self {
+        self.copy_file = Some(authority);
+        self
     }
 }
 
@@ -911,6 +1103,7 @@ struct McpTransportState {
     android_volume_control_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    copy_file_authority: Option<CopyFileGrantAuthority>,
     write_file_authority: Option<WriteFileGrantAuthority>,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
@@ -959,6 +1152,7 @@ impl McpTransportState {
             command_execution_enabled: command_execution_enabled
                 && cfg!(feature = "command-execution"),
             create_directory_authority,
+            copy_file_authority: None,
             write_file_authority,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
@@ -975,6 +1169,11 @@ impl McpTransportState {
 
     fn with_options(mut self, options: McpTransportOptions) -> Self {
         self.sse_enabled = options.sse_enabled;
+        self
+    }
+
+    fn with_copy_file_authority(mut self, authority: Option<CopyFileGrantAuthority>) -> Self {
+        self.copy_file_authority = authority;
         self
     }
 
@@ -1017,6 +1216,7 @@ impl McpTransportState {
             android_volume_control_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
+            copy_file_authority: None,
             write_file_authority: None,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
@@ -1059,6 +1259,7 @@ impl McpTransportState {
             android_volume_control_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
+            copy_file_authority: None,
             write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
@@ -1091,6 +1292,7 @@ impl McpTransportState {
             android_volume_control_enabled: false,
             command_execution_enabled,
             create_directory_authority: None,
+            copy_file_authority: None,
             write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
@@ -1399,6 +1601,66 @@ pub fn protected_router_with_create_directory_authority_and_options(
     )
 }
 
+/// Build a protected MCP router with the request-authorized `copy_file`
+/// mutation capability enabled. Preview calls remain available without a
+/// grant, while every live copy requires an exact single-use grant.
+#[rustfmt::skip]
+pub fn protected_router_with_copy_file_authority(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    copy_file_authority: CopyFileGrantAuthority,
+) -> Router {
+    protect_router(
+        router_with_filesystem_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            FilesystemMutationAuthorities::new(None, None)
+                .with_copy_file(Some(copy_file_authority)),
+            McpTransportOptions::default(),
+        ),
+        protection,
+    )
+}
+
+/// Build a protected copy-authorized MCP router with explicit additive
+/// transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
+#[rustfmt::skip]
+pub fn protected_router_with_copy_file_authority_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    copy_file_authority: CopyFileGrantAuthority,
+    options: McpTransportOptions,
+) -> Router {
+    protect_router(
+        router_with_filesystem_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            FilesystemMutationAuthorities::new(None, None)
+                .with_copy_file(Some(copy_file_authority)),
+            options,
+        ),
+        protection,
+    )
+}
+
 /// Build a protected MCP router with independently optional filesystem
 /// mutation authorities.
 #[expect(
@@ -1459,6 +1721,76 @@ pub fn protected_router_with_filesystem_authorities_and_options(
                 create_directory_authority,
                 write_file_authority,
             ),
+            options,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected MCP router with all independently optional filesystem
+/// mutation authorities. This additive constructor preserves the established
+/// two-authority API while making the copy gate explicit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
+#[rustfmt::skip]
+pub fn protected_router_with_all_filesystem_authorities(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    copy_file_authority: Option<CopyFileGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+) -> Router {
+    protected_router_with_all_filesystem_authorities_and_options(
+        protection,
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        command_execution_enabled,
+        create_directory_authority,
+        copy_file_authority,
+        write_file_authority,
+        McpTransportOptions::default(),
+    )
+}
+
+/// Build a protected MCP router with all independently optional filesystem
+/// mutation authorities and explicit additive transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
+#[rustfmt::skip]
+pub fn protected_router_with_all_filesystem_authorities_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    command_execution_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    copy_file_authority: Option<CopyFileGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+    options: McpTransportOptions,
+) -> Router {
+    protect_router(
+        router_with_filesystem_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            command_execution_enabled,
+            FilesystemMutationAuthorities::new(
+                create_directory_authority,
+                write_file_authority,
+            )
+            .with_copy_file(copy_file_authority),
             options,
         ),
         protection,
@@ -1665,6 +1997,7 @@ fn router_with_filesystem_authorities_and_options(
 ) -> Router {
     let FilesystemMutationAuthorities {
         create_directory,
+        copy_file,
         write_file,
     } = authorities;
     router_from_state(McpTransportState::new(
@@ -1675,7 +2008,7 @@ fn router_with_filesystem_authorities_and_options(
         command_execution_enabled,
         create_directory,
         write_file,
-    ).with_options(options))
+    ).with_copy_file_authority(copy_file).with_options(options))
 }
 
 /// Build the MCP transport with independently optional filesystem and Android
@@ -1723,6 +2056,7 @@ pub(crate) fn router_with_capability_authorities_and_options(
 ) -> Router {
     let McpCapabilityAuthorities {
         create_directory,
+        copy_file,
         write_file,
         android_volume_control,
     } = authorities;
@@ -1736,6 +2070,7 @@ pub(crate) fn router_with_capability_authorities_and_options(
             create_directory,
             write_file,
         )
+        .with_copy_file_authority(copy_file)
         .with_android_volume_control_authority(android_volume_control)
         .with_options(options),
     )
@@ -2988,6 +3323,38 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
         );
     }
 
+    let copy_file_tool = body
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+        .and_then(|tools| {
+            tools
+                .iter_mut()
+                .find(|tool| tool.get("name") == Some(&json!(COPY_FILE_TOOL)))
+        })
+        .expect("baseline discovery owns copy_file");
+    if state.copy_file_authority.is_some() {
+        copy_file_tool["description"] = json!(
+            "Validate one bounded safe-rooted regular-file copy, or publish it with fixed mode 0600 only when dry_run=false and one source-identity/content/destination-bound MCP-Capability-Grant is valid."
+        );
+        let dry_run_schema = copy_file_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("copy_file owns a dry_run schema");
+        dry_run_schema["description"] = json!(
+            "Defaults to true. Explicit false additionally requires the enabled copy mutation gate and one exact request-scoped grant."
+        );
+    } else {
+        copy_file_tool["description"] = json!(
+            "Validate one bounded safe-rooted regular-file copy without mutation; the dedicated copy mutation gate is disabled."
+        );
+        let dry_run_schema = copy_file_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("copy_file owns a dry_run schema");
+        dry_run_schema["const"] = json!(true);
+        dry_run_schema["description"] = json!(
+            "Mutation is disabled in this runtime posture; omitted dry_run and explicit true are accepted."
+        );
+    }
+
     let write_file_tool = body
         .pointer_mut("/result/tools")
         .and_then(Value::as_array_mut)
@@ -3131,7 +3498,7 @@ async fn handle_tool_call(
     if capability_grant.is_some()
         && !matches!(
             call.name.as_str(),
-            CREATE_DIRECTORY_TOOL | WRITE_FILE_TOOL | SET_ANDROID_VOLUME_TOOL
+            CREATE_DIRECTORY_TOOL | COPY_FILE_TOOL | WRITE_FILE_TOOL | SET_ANDROID_VOLUME_TOOL
         )
     {
         return capability_context_not_allowed(id);
@@ -3202,8 +3569,9 @@ async fn handle_tool_call(
             handle_copy_file_call(
                 id,
                 call.arguments.into_value(),
-                &state.file_tools,
-                &state.audit_counters,
+                state,
+                session_id,
+                capability_grant,
             )
             .await
         }
@@ -3876,6 +4244,7 @@ fn runtime_status_response(
     let error_id = id.clone();
     let audit_counters_snapshot = audit_counters_snapshot(&state.audit_counters);
     let create_directory_mutation_enabled = state.create_directory_authority.is_some();
+    let copy_file_mutation_enabled = state.copy_file_authority.is_some();
     let write_file_mutation_enabled = state.write_file_authority.is_some();
     let android_battery_status_enabled = state.android_battery_status_enabled;
     let android_volume_status_enabled = state.android_volume_status_enabled;
@@ -3929,6 +4298,11 @@ fn runtime_status_response(
     } else {
         "dry_run_only_mutation_disabled"
     };
+    let copy_file_mode = if copy_file_mutation_enabled {
+        "dry_run_or_source_content_destination_scoped_single_use_grant"
+    } else {
+        "dry_run_only_mutation_disabled"
+    };
     let write_file_mode = if write_file_mutation_enabled {
         "dry_run_or_target_content_disposition_scoped_single_use_grant"
     } else {
@@ -3965,7 +4339,7 @@ fn runtime_status_response(
         "projectServiceStatus": true,
         "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
         "filesystemTools": true,
-        "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text_and_default_dry_run_grant_gated_write_file",
+        "filesystemToolMode": "default_dry_run_grant_gated_create_directory_copy_file_write_file_plus_bounded_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text",
         "pathDiscovery": true,
         "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
         "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
@@ -4000,6 +4374,15 @@ fn runtime_status_response(
         "createDirectoryGrantRequired": create_directory_mutation_enabled,
         "createDirectoryGrantHeader": REQUEST_GRANT_HEADER,
         "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
+        "copyFileMutationEnabled": copy_file_mutation_enabled,
+        "copyFileMode": copy_file_mode,
+        "copyFileGrantRequired": copy_file_mutation_enabled,
+        "copyFileGrantHeader": REQUEST_GRANT_HEADER,
+        "copyFileGrantTtlSeconds": COPY_FILE_GRANT_TTL_SECONDS,
+        "copyFileGrantBinding": "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace",
+        "copyFileMaxBytes": MAX_COPY_FILE_BYTES,
+        "copyFileMaxResponseBytes": MAX_COPY_FILE_RESPONSE_BYTES,
+        "copyFileResponsePosture": "path_free_bounded_metadata_only",
         "fileWrites": true,
         "fileWriteMode": write_file_mode,
         "fileWriteMutationEnabled": write_file_mutation_enabled,
@@ -4043,13 +4426,14 @@ fn runtime_status_response(
                 {
                     "type": "text",
                     "text": format!(
-                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, write_file_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search-and-grant-gated-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, copy_file_mutation={}, write_file_mutation={}, filesystem=default-dry-run-grant-gated-create-directory-copy-file-write-file-plus-bounded-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                         transport_mode,
                         android_platform_mode,
                         battery_mode,
                         volume_mode,
                         volume_control_mode,
                         create_directory_mode,
+                        copy_file_mode,
                         write_file_mode,
                         if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
                         command_execution_mode,
@@ -5324,9 +5708,12 @@ fn create_directory_filesystem_error_response(
 async fn handle_copy_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
-    file_tools: &FileSystemTools,
-    audit_counters: &SharedAuditCounters,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
 ) -> Response {
+    let file_tools = &state.file_tools;
+    let audit_counters = &state.audit_counters;
     let arguments = match arguments {
         Some(arguments) => arguments,
         None => {
@@ -5337,6 +5724,9 @@ async fn handle_copy_file_call(
                 AuditMode::DryRun,
                 FILESYSTEM_MISSING_ARGUMENTS,
             );
+            if capability_grant.is_some() {
+                return capability_context_not_allowed(id);
+            }
             return invalid_params(
                 id,
                 "copy_file requires source_path and destination_path arguments.",
@@ -5354,29 +5744,78 @@ async fn handle_copy_file_call(
                 AuditMode::DryRun,
                 FILESYSTEM_INVALID_ARGUMENTS,
             );
+            if capability_grant.is_some() {
+                return capability_context_not_allowed(id);
+            }
             return invalid_params(id, TOOL_ARGUMENTS_INVALID);
         }
     };
 
     let dry_run = args.dry_run.unwrap_or(true);
     let mode = filesystem_write_mode(dry_run);
+    // A grant header is valid only for the explicit live-copy posture. Reject
+    // preview smuggling before any path validation or filesystem access.
+    if capability_grant.is_some() && args.dry_run != Some(false) {
+        record_filesystem_denied(
+            audit_counters,
+            COPY_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_INVALID_ARGUMENTS,
+        );
+        return capability_context_not_allowed(id);
+    }
+    if !dry_run && state.copy_file_authority.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            COPY_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_COPY_MUTATION_DISABLED,
+        );
+        return bounded_capability_authorization_denied(
+            id,
+            FILESYSTEM_COPY_MUTATION_DISABLED,
+            MAX_COPY_FILE_RESPONSE_BYTES,
+        );
+    }
+    if !dry_run && capability_grant.is_none() {
+        let reason = CopyFileGrantError::Missing.reason_code();
+        record_filesystem_denied(
+            audit_counters,
+            COPY_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            reason,
+        );
+        return bounded_capability_authorization_denied(
+            id,
+            reason,
+            MAX_COPY_FILE_RESPONSE_BYTES,
+        );
+    }
     let success_text = if dry_run {
         "Validated one bounded safe-rooted file copy without mutation."
     } else {
         "Copied one bounded safe-rooted file with fixed mode 0600."
     };
-    if file_tools
-        .copy_file_response_preview(&args.source_path, &args.destination_path, dry_run)
-        .ok()
-        .is_some_and(|preview| {
-            bounded_ok_result(
-                id.clone(),
-                success_text.to_owned(),
-                json!(preview),
-                MAX_COPY_FILE_RESPONSE_BYTES,
-            )
-            .is_none()
-        })
+    // Use the actual request id and the longest valid copy-result shape before
+    // any path access, worker admission, descriptor preparation, grant
+    // consumption, or mutation.
+    let response_preflight = crate::tools::CopyFileResult {
+        dry_run,
+        size_bytes: MAX_COPY_FILE_BYTES,
+        mode: format!("{COPY_FILE_MODE:04o}"),
+        max_file_bytes: MAX_COPY_FILE_BYTES,
+        max_response_bytes: MAX_COPY_FILE_RESPONSE_BYTES,
+    };
+    if bounded_ok_result(
+        id.clone(),
+        success_text.to_owned(),
+        json!(response_preflight),
+        MAX_COPY_FILE_RESPONSE_BYTES,
+    )
+    .is_none()
     {
         record_filesystem_denied(
             audit_counters,
@@ -5391,15 +5830,84 @@ async fn handle_copy_file_call(
             MAX_COPY_FILE_RESPONSE_BYTES,
         );
     }
+    if let Err(error) = file_tools.copy_file_response_preview(
+        &args.source_path,
+        &args.destination_path,
+        dry_run,
+    ) {
+        return copy_file_filesystem_error(id, audit_counters, mode, error);
+    }
 
-    match file_tools
-        .copy_file(
-            args.source_path,
-            args.destination_path,
-            Some(dry_run),
-        )
-        .await
-    {
+    let operation = if dry_run {
+        file_tools
+            .copy_file(args.source_path, args.destination_path, Some(true))
+            .await
+    } else {
+        let worker_permit = match state.mutation_worker_capacity.try_acquire() {
+            Some(permit) => permit,
+            None => {
+                record_filesystem_denied(
+                    audit_counters,
+                    COPY_FILE_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_MUTATION_WORKER_CAPACITY_EXCEEDED,
+                );
+                return filesystem_mutation_worker_capacity_exhausted(id);
+            }
+        };
+        let worker_file_tools = file_tools.clone();
+        let source_path = args.source_path;
+        let destination_path = args.destination_path;
+        let authority = state
+            .copy_file_authority
+            .clone()
+            .expect("enabled copy_file mutation owns an authority");
+        let session_id = session_id.to_owned();
+        let capability_grant = capability_grant.map(str::to_owned);
+        let worker_audit = CopyFileMutationAuditGuard::new(Arc::clone(audit_counters));
+        let (waiter_guard, worker_commit) = filesystem_mutation_commit_guards();
+        let joined = spawn_filesystem_mutation_worker(worker_permit, move || {
+            run_copy_file_mutation_worker(CopyFileMutationWorker {
+                file_tools: worker_file_tools,
+                source_path,
+                destination_path,
+                authority,
+                capability_grant,
+                session_id,
+                commit: worker_commit,
+                audit: worker_audit,
+            })
+        })
+        .await;
+        waiter_guard.complete();
+        match joined {
+            Ok(FilesystemMutationWorkerOutcome::Completed(Ok(result))) => Ok(result),
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedCopyFileError::Authorization(error),
+            ))) => {
+                return bounded_capability_authorization_denied(
+                    id,
+                    error.reason_code(),
+                    MAX_COPY_FILE_RESPONSE_BYTES,
+                );
+            }
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedCopyFileError::Filesystem(error),
+            ))) => Err(error),
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedCopyFileError::Cancelled,
+            )))
+            | Ok(FilesystemMutationWorkerOutcome::Cancelled) => {
+                return filesystem_mutation_request_cancelled(id);
+            }
+            Err(_error) => Err(AppError::Io(std::io::Error::other(
+                "copy file worker failed",
+            ))),
+        }
+    };
+
+    match operation {
         Ok(result) => {
             let error_id = id.clone();
             let Some(response) = bounded_ok_result(
@@ -5421,102 +5929,90 @@ async fn handle_copy_file_call(
                     MAX_COPY_FILE_RESPONSE_BYTES,
                 );
             };
-            record_filesystem_allowed(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                if dry_run {
-                    FILESYSTEM_DRY_RUN_ALLOWED
-                } else {
-                    FILESYSTEM_COPY_ALLOWED
-                },
-            );
+            if dry_run {
+                record_filesystem_allowed(
+                    audit_counters,
+                    COPY_FILE_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_DRY_RUN_ALLOWED,
+                );
+            }
             response
         }
-        Err(AppError::PathTraversal { .. }) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_SAFE_ROOT_REJECTED,
-            );
-            invalid_params(
-                id,
-                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
-            )
-        }
-        Err(AppError::CopySourceNotFound) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_COPY_SOURCE_NOT_FOUND,
-            );
+        Err(error) if dry_run => copy_file_filesystem_error(id, audit_counters, mode, error),
+        Err(error) => copy_file_filesystem_error_response(id, error),
+    }
+}
+
+fn copy_file_filesystem_reason(error: &AppError) -> &'static str {
+    match error {
+        AppError::PathTraversal { .. } => FILESYSTEM_SAFE_ROOT_REJECTED,
+        AppError::CopySourceNotFound => FILESYSTEM_COPY_SOURCE_NOT_FOUND,
+        AppError::CopyDestinationParentNotFound => FILESYSTEM_COPY_PARENT_NOT_FOUND,
+        AppError::CopySourceDestinationSame => FILESYSTEM_COPY_SAME_PATH,
+        AppError::PathAlreadyExists => FILESYSTEM_CREATE_EXISTS,
+        AppError::UnsupportedPathType => FILESYSTEM_COPY_SOURCE_UNSUPPORTED,
+        AppError::FileTooLarge { .. } => FILESYSTEM_COPY_SOURCE_TOO_LARGE,
+        AppError::CopySourceChanged => FILESYSTEM_COPY_SOURCE_CHANGED,
+        AppError::CopyDestinationChanged => FILESYSTEM_COPY_DESTINATION_CHANGED,
+        AppError::WriteQuarantineCapacityExceeded => FILESYSTEM_COPY_QUARANTINE_FULL,
+        AppError::WriteQuarantineBusy => FILESYSTEM_COPY_QUARANTINE_BUSY,
+        _ => FILESYSTEM_COPY_FAILED,
+    }
+}
+
+#[rustfmt::skip]
+fn copy_file_filesystem_error(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    mode: AuditMode,
+    error: AppError,
+) -> Response {
+    record_filesystem_denied(
+        audit_counters,
+        COPY_FILE_TOOL,
+        FILESYSTEM_WRITE_GATE,
+        mode,
+        copy_file_filesystem_reason(&error),
+    );
+    copy_file_filesystem_error_response(id, error)
+}
+
+#[rustfmt::skip]
+fn copy_file_filesystem_error_response(id: Option<Value>, error: AppError) -> Response {
+    match error {
+        AppError::PathTraversal { .. } => invalid_params(
+            id,
+            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+        ),
+        AppError::CopySourceNotFound => {
             invalid_params(id, "Filesystem copy source does not exist.")
         }
-        Err(AppError::CopyDestinationParentNotFound) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_COPY_PARENT_NOT_FOUND,
-            );
+        AppError::CopyDestinationParentNotFound => {
             invalid_params(id, "Filesystem copy destination parent does not exist.")
         }
-        Err(AppError::CopySourceDestinationSame) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_COPY_SAME_PATH,
-            );
+        AppError::CopySourceDestinationSame => {
             invalid_params(id, "Filesystem copy source and destination must differ.")
         }
-        Err(AppError::PathAlreadyExists) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_CREATE_EXISTS,
-            );
-            invalid_params(id, "Filesystem destination already exists.")
+        AppError::PathAlreadyExists => {
+            invalid_params(id, "Filesystem copy destination already exists.")
         }
-        Err(AppError::UnsupportedPathType) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_COPY_SOURCE_UNSUPPORTED,
-            );
-            invalid_params(id, "Filesystem copy source must be a regular file.")
+        AppError::UnsupportedPathType => {
+            invalid_params(id, "Filesystem copy source must be a single-link regular file.")
         }
-        Err(AppError::FileTooLarge { .. }) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_COPY_SOURCE_TOO_LARGE,
-            );
+        AppError::FileTooLarge { .. } => {
             payload_too_large(id, "File exceeds the staged copy_file byte limit.")
         }
-        Err(_error) => {
-            record_filesystem_denied(
-                audit_counters,
-                COPY_FILE_TOOL,
-                FILESYSTEM_WRITE_GATE,
-                mode,
-                FILESYSTEM_COPY_FAILED,
-            );
-            internal_error(id, "Filesystem copy failed.")
+        AppError::CopySourceChanged => {
+            resource_changed(id, "Filesystem copy source changed after validation.")
         }
+        AppError::CopyDestinationChanged => {
+            resource_changed(id, "Filesystem copy destination changed after validation.")
+        }
+        AppError::WriteQuarantineCapacityExceeded => copy_staging_capacity_exhausted(id),
+        AppError::WriteQuarantineBusy => copy_staging_busy(id),
+        _error => internal_error(id, "Filesystem copy failed."),
     }
 }
 
@@ -6521,6 +7017,40 @@ fn write_recovery_busy(id: Option<Value>) -> Response {
 }
 
 #[rustfmt::skip]
+fn copy_staging_capacity_exhausted(id: Option<Value>) -> Response {
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32005,
+                "message": "Copy staging capacity exhausted",
+                "data": "Private copy staging capacity is exhausted.",
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
+fn copy_staging_busy(id: Option<Value>) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32006,
+                "message": "Copy staging busy",
+                "data": "Another cooperating filesystem publisher owns the private staging lock.",
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
 fn filesystem_mutation_worker_capacity_exhausted(id: Option<Value>) -> Response {
     let mut response = (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -6830,6 +7360,552 @@ mod tests {
         fn drop(&mut self) {
             self.finish();
         }
+    }
+
+    const COPY_TEST_KEY: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn copy_test_authority(principal: &str) -> CopyFileGrantAuthority {
+        CopyFileGrantAuthority::from_hex_key("copy-transport-test-1", COPY_TEST_KEY, principal)
+            .expect("test copy authority must validate")
+    }
+
+    fn copy_test_state(
+        file_tools: FileSystemTools,
+        authority: Option<CopyFileGrantAuthority>,
+    ) -> McpTransportState {
+        McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            file_tools,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .with_copy_file_authority(authority)
+    }
+
+    fn issue_copy_test_grant(
+        authority: &CopyFileGrantAuthority,
+        file_tools: &FileSystemTools,
+        session_id: &str,
+        source: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> String {
+        let target = file_tools
+            .copy_file_grant_target(
+                source.to_string_lossy().as_ref(),
+                destination.to_string_lossy().as_ref(),
+            )
+            .expect("test copy target must validate");
+        authority
+            .issue(session_id, &target)
+            .expect("test copy grant must issue")
+    }
+
+    #[tokio::test]
+    async fn copy_discovery_and_runtime_status_report_exact_gate_posture() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let disabled = copy_test_state(file_tools.clone(), None);
+
+        let tools = response_json(tools_list_response(Some(json!("tools")), &disabled)).await;
+        let copy = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == COPY_FILE_TOOL)
+            .unwrap();
+        assert_eq!(copy["inputSchema"]["properties"]["dry_run"]["const"], true);
+        assert!(copy["description"]
+            .as_str()
+            .unwrap()
+            .contains("mutation gate is disabled"));
+
+        let disabled_status = response_json(runtime_status_response(
+            Some(json!("runtime-disabled")),
+            &disabled,
+        ))
+        .await;
+        let disabled_status = &disabled_status["result"]["structuredContent"];
+        assert_eq!(disabled_status["copyFileMutationEnabled"], false);
+        assert_eq!(disabled_status["copyFileGrantRequired"], false);
+        assert_eq!(disabled_status["copyFileMode"], "dry_run_only_mutation_disabled");
+        assert_eq!(disabled_status["copyFileGrantHeader"], REQUEST_GRANT_HEADER);
+        assert_eq!(disabled_status["copyFileGrantTtlSeconds"], COPY_FILE_GRANT_TTL_SECONDS);
+        assert_eq!(disabled_status["copyFileMaxBytes"], MAX_COPY_FILE_BYTES);
+        assert_eq!(disabled_status["copyFileMaxResponseBytes"], MAX_COPY_FILE_RESPONSE_BYTES);
+        assert_eq!(disabled_status["copyFileResponsePosture"], "path_free_bounded_metadata_only");
+
+        let enabled = copy_test_state(
+            file_tools,
+            Some(copy_test_authority("copy-discovery-runtime-principal")),
+        );
+        let tools = response_json(tools_list_response(Some(json!("tools")), &enabled)).await;
+        let copy = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == COPY_FILE_TOOL)
+            .unwrap();
+        assert!(copy["inputSchema"]["properties"]["dry_run"].get("const").is_none());
+        assert!(copy["description"]
+            .as_str()
+            .unwrap()
+            .contains("source-identity/content/destination-bound"));
+
+        let enabled_status = response_json(runtime_status_response(
+            Some(json!("runtime-enabled")),
+            &enabled,
+        ))
+        .await;
+        let enabled_status = &enabled_status["result"]["structuredContent"];
+        assert_eq!(enabled_status["copyFileMutationEnabled"], true);
+        assert_eq!(enabled_status["copyFileGrantRequired"], true);
+        assert_eq!(
+            enabled_status["copyFileMode"],
+            "dry_run_or_source_content_destination_scoped_single_use_grant"
+        );
+        assert_eq!(
+            enabled_status["copyFileGrantBinding"],
+            "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_live_gate_and_missing_grant_fail_before_filesystem_access() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let disabled = copy_test_state(file_tools.clone(), None);
+        let session_id = Uuid::new_v4().to_string();
+        let inaccessible = json!({
+            "source_path": "/outside/not-readable",
+            "destination_path": "/outside/not-writable",
+            "dry_run": false,
+        });
+
+        let denied = handle_copy_file_call(
+            Some(json!("disabled")),
+            Some(inaccessible.clone()),
+            &disabled,
+            &session_id,
+            Some("not-a-real-grant"),
+        )
+        .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let denied = response_json(denied).await;
+        assert_eq!(
+            denied["error"]["data"]["reason"],
+            FILESYSTEM_COPY_MUTATION_DISABLED
+        );
+
+        let enabled = copy_test_state(
+            file_tools,
+            Some(copy_test_authority("copy-missing-grant-principal")),
+        );
+        let missing = handle_copy_file_call(
+            Some(json!("missing")),
+            Some(inaccessible),
+            &enabled,
+            &session_id,
+            None,
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::FORBIDDEN);
+        let missing = response_json(missing).await;
+        assert_eq!(
+            missing["error"]["data"]["reason"],
+            CopyFileGrantError::Missing.reason_code()
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_preview_rejects_grant_smuggling_without_consuming_exact_grant() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let source = safe_root.path().join("source.bin");
+        let destination = safe_root.path().join("destination.bin");
+        std::fs::write(&source, b"copy-preview-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let authority = copy_test_authority("copy-preview-smuggling-principal");
+        let state = copy_test_state(file_tools.clone(), Some(authority.clone()));
+        let session_id = Uuid::new_v4().to_string();
+        let grant = issue_copy_test_grant(
+            &authority,
+            &file_tools,
+            &session_id,
+            &source,
+            &destination,
+        );
+
+        let smuggled = handle_copy_file_call(
+            Some(json!("smuggled")),
+            Some(json!({
+                "source_path": source,
+                "destination_path": destination,
+                "dry_run": true,
+            })),
+            &state,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(smuggled.status(), StatusCode::BAD_REQUEST);
+        assert!(!destination.exists());
+
+        let preview = handle_copy_file_call(
+            Some(json!("preview")),
+            Some(json!({
+                "source_path": source,
+                "destination_path": destination,
+            })),
+            &state,
+            &session_id,
+            None,
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview = response_json(preview).await;
+        assert_eq!(preview["result"]["structuredContent"]["dryRun"], true);
+        assert!(preview["result"]["structuredContent"].get("sourcePath").is_none());
+        assert!(preview["result"]["structuredContent"].get("destinationPath").is_none());
+        assert!(!destination.exists());
+
+        let live = handle_copy_file_call(
+            Some(json!("live")),
+            Some(json!({
+                "source_path": source,
+                "destination_path": destination,
+                "dry_run": false,
+            })),
+            &state,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(live.status(), StatusCode::OK);
+        let live = response_json(live).await;
+        assert_eq!(live["result"]["structuredContent"]["dryRun"], false);
+        assert!(live["result"]["structuredContent"].get("sourcePath").is_none());
+        assert!(live["result"]["structuredContent"].get("destinationPath").is_none());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"copy-preview-content");
+    }
+
+    #[tokio::test]
+    async fn copy_response_and_worker_capacity_preflights_preserve_grant() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let source = safe_root.path().join("source.bin");
+        let destination = safe_root.path().join("destination.bin");
+        std::fs::write(&source, b"copy-preflight-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let authority = copy_test_authority("copy-preflight-capacity-principal");
+        let state = copy_test_state(file_tools.clone(), Some(authority.clone()));
+        let session_id = Uuid::new_v4().to_string();
+        let grant = issue_copy_test_grant(
+            &authority,
+            &file_tools,
+            &session_id,
+            &source,
+            &destination,
+        );
+        let arguments = json!({
+            "source_path": source,
+            "destination_path": destination,
+            "dry_run": false,
+        });
+
+        let oversized = handle_copy_file_call(
+            Some(json!("x".repeat(MAX_COPY_FILE_RESPONSE_BYTES))),
+            Some(arguments.clone()),
+            &state,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!destination.exists());
+
+        let permits = exhaust_mutation_workers(&state);
+        let capacity = handle_copy_file_call(
+            Some(json!("capacity")),
+            Some(arguments.clone()),
+            &state,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(capacity.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!destination.exists());
+        drop(permits);
+
+        let allowed = handle_copy_file_call(
+            Some(json!("allowed")),
+            Some(arguments),
+            &state,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"copy-preflight-content");
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[COPY_FILE_TOOL].allowed, 1);
+        assert_eq!(counters.by_tool[COPY_FILE_TOOL].denied, 2);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_RESPONSE_TOO_LARGE].denied,
+            1
+        );
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_MUTATION_WORKER_CAPACITY_EXCEEDED].denied,
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn live_copy_worker_records_exactly_once_after_http_waiter_is_dropped() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let source = safe_root.path().join("source.bin");
+        let destination = safe_root.path().join("destination.bin");
+        std::fs::write(&source, b"detached-copy-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let issuer_tools = file_tools.clone();
+        let authority = copy_test_authority("copy-detached-audit-principal");
+        let state = copy_test_state(file_tools, Some(authority.clone()));
+        let session_id = Uuid::new_v4().to_string();
+        let binding = issuer_tools
+            .copy_file_grant_target(
+                source.to_string_lossy().as_ref(),
+                destination.to_string_lossy().as_ref(),
+            )
+            .unwrap();
+        let grant = authority.issue(&session_id, &binding).unwrap();
+
+        let counters = Arc::clone(&state.audit_counters);
+        let counter_blocker = AuditCounterBlocker::acquire(Arc::clone(&counters));
+        let request_state = state.clone();
+        let request_session = session_id.clone();
+        let request_grant = grant.clone();
+        let request_source = source.clone();
+        let request_destination = destination.clone();
+        let request_task = tokio::spawn(async move {
+            handle_copy_file_call(
+                Some(json!("detached-copy")),
+                Some(json!({
+                    "source_path": request_source,
+                    "destination_path": request_destination,
+                    "dry_run": false,
+                })),
+                &request_state,
+                &request_session,
+                Some(&request_grant),
+            )
+            .await
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !destination.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "authorized copy did not publish before the test deadline"
+            );
+            tokio::task::yield_now().await;
+        }
+        request_task.abort();
+        assert!(request_task.await.unwrap_err().is_cancelled());
+        counter_blocker.release();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let snapshot = counters.lock().unwrap().clone();
+            if snapshot.allowed_total == 1 {
+                assert_eq!(snapshot.denied_total, 0);
+                assert_eq!(snapshot.by_tool[COPY_FILE_TOOL].allowed, 1);
+                assert_eq!(snapshot.by_tool[COPY_FILE_TOOL].denied, 0);
+                assert_eq!(
+                    snapshot.by_reason_code[FILESYSTEM_COPY_ALLOWED].allowed,
+                    1
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "detached copy worker did not record its terminal audit outcome"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(std::fs::read(&destination).unwrap(), b"detached-copy-content");
+        assert_eq!(
+            authority
+                .consume(Some(&grant), &session_id, &binding)
+                .unwrap_err(),
+            CopyFileGrantError::Replayed
+        );
+    }
+
+    #[tokio::test]
+    async fn equivalent_copy_router_authorities_share_single_replay_domain() {
+        use axum::{body::Body, http::{header, Request}};
+        use tower::ServiceExt;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let source = safe_root.path().join("source.bin");
+        let destination = safe_root.path().join("destination.bin");
+        std::fs::write(&source, b"shared-copy-replay-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let first_authority = copy_test_authority("copy-shared-router-principal");
+        let second_authority = copy_test_authority("copy-shared-router-principal");
+        let first_state = copy_test_state(file_tools.clone(), Some(first_authority.clone()));
+        let mut second_state = copy_test_state(file_tools.clone(), Some(second_authority));
+        second_state.sessions = first_state.sessions.clone();
+        let session = first_state.sessions.create().unwrap();
+        first_state.sessions.activate(&session).unwrap();
+        let grant = issue_copy_test_grant(
+            &first_authority,
+            &file_tools,
+            &session,
+            &source,
+            &destination,
+        );
+        let first_router = router_from_state(first_state);
+        let second_router = router_from_state(second_state);
+
+        let request = |id: &str| {
+            Request::post("/mcp")
+                .header(header::HOST, "localhost:8000")
+                .header(header::ORIGIN, "http://localhost:8000")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, MCP_POST_ACCEPT)
+                .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
+                .header(MCP_SESSION_ID_HEADER, &session)
+                .header(REQUEST_GRANT_HEADER, &grant)
+                .body(Body::from(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": COPY_FILE_TOOL,
+                        "arguments": {
+                            "source_path": source,
+                            "destination_path": destination,
+                            "dry_run": false,
+                        }
+                    }
+                }).to_string()))
+                .unwrap()
+        };
+
+        let first = first_router.oneshot(request("copy-router-a")).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"shared-copy-replay-content");
+        std::fs::remove_file(&destination).unwrap();
+
+        let replay = second_router.oneshot(request("copy-router-b")).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        let replay = response_json(replay).await;
+        assert_eq!(
+            replay["error"]["data"]["reason"],
+            CopyFileGrantError::Replayed.reason_code()
+        );
+        assert!(!destination.exists());
+        let serialized = replay.to_string();
+        assert!(!serialized.contains(COPY_TEST_KEY));
+        assert!(!serialized.contains("copy-shared-router-principal"));
+        assert!(!serialized.contains(&grant));
+    }
+
+    #[test]
+    fn copy_changed_errors_map_to_stable_private_reasons_and_path_free_conflicts() {
+        assert_eq!(
+            copy_file_filesystem_reason(&AppError::CopySourceChanged),
+            FILESYSTEM_COPY_SOURCE_CHANGED
+        );
+        assert_eq!(
+            copy_file_filesystem_reason(&AppError::CopyDestinationChanged),
+            FILESYSTEM_COPY_DESTINATION_CHANGED
+        );
+        for error in [AppError::CopySourceChanged, AppError::CopyDestinationChanged] {
+            let response = copy_file_filesystem_error_response(Some(json!("changed")), error);
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+    }
+
+    #[test]
+    fn copy_lock_contention_cancellation_preserves_grant_and_retry_commits() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let source = safe_root.path().join("source.bin");
+        let destination = safe_root.path().join("destination.bin");
+        std::fs::write(&source, b"copy-cancel-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let retry_tools = file_tools.clone();
+        let authority = copy_test_authority("copy-lock-cancel-principal");
+        let retry_authority = authority.clone();
+        let session_id = Uuid::new_v4().to_string();
+        let retry_session = session_id.clone();
+        let grant = issue_copy_test_grant(
+            &authority,
+            &file_tools,
+            &session_id,
+            &source,
+            &destination,
+        );
+        let retry_grant = grant.clone();
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+        let waiting_counters = Arc::clone(&counters);
+        let publication_lock = crate::tools::acquire_filesystem_publication_lock_for_test();
+        let (waiter, worker_commit) = filesystem_mutation_commit_guards();
+        let (contended_tx, contended_rx) = std::sync::mpsc::channel();
+        let waiting_source = source.to_string_lossy().to_string();
+        let waiting_destination = destination.to_string_lossy().to_string();
+        let worker = std::thread::spawn(move || {
+            run_copy_file_mutation_worker_with_lock_contention_hook(
+                CopyFileMutationWorker {
+                    file_tools,
+                    source_path: waiting_source,
+                    destination_path: waiting_destination,
+                    authority,
+                    capability_grant: Some(grant),
+                    session_id,
+                    commit: worker_commit,
+                    audit: CopyFileMutationAuditGuard::new(waiting_counters),
+                },
+                || contended_tx.send(()).unwrap(),
+            )
+        });
+        contended_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("copy worker did not contend on publication lock");
+        drop(waiter);
+        drop(publication_lock);
+        assert!(matches!(
+            worker.join().unwrap(),
+            FilesystemMutationWorkerOutcome::Cancelled
+        ));
+        assert!(!destination.exists());
+
+        let (retry_waiter, retry_commit) = filesystem_mutation_commit_guards();
+        let retry = run_copy_file_mutation_worker(CopyFileMutationWorker {
+            file_tools: retry_tools,
+            source_path: source.to_string_lossy().to_string(),
+            destination_path: destination.to_string_lossy().to_string(),
+            authority: retry_authority,
+            capability_grant: Some(retry_grant),
+            session_id: retry_session,
+            commit: retry_commit,
+            audit: CopyFileMutationAuditGuard::new(Arc::clone(&counters)),
+        });
+        retry_waiter.complete();
+        assert!(matches!(
+            retry,
+            FilesystemMutationWorkerOutcome::Completed(Ok(_))
+        ));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"copy-cancel-content");
+        let counters = counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[COPY_FILE_TOOL].allowed, 1);
+        assert_eq!(counters.by_tool[COPY_FILE_TOOL].denied, 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_MUTATION_REQUEST_CANCELLED].denied,
+            1
+        );
     }
 
     #[test]
@@ -8318,6 +9394,102 @@ printf '%s\n' "$2" >"$level"
         let serialized = serde_json::to_string(&counters).unwrap();
         assert!(!serialized.contains(&grant));
         assert!(!serialized.contains("private-static-principal"));
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[tokio::test]
+    async fn equivalent_router_authorities_share_replay_state() {
+        use axum::{
+            body::Body,
+            http::{header, Request},
+        };
+        use tower::ServiceExt;
+
+        const KEY: &str =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        const PRINCIPAL: &str = "shared-router-replay-principal";
+        let (program_root, client) = test_volume_control_client();
+        let safe_root = tempfile::tempdir().unwrap();
+        let first_authority = AndroidVolumeGrantAuthority::from_hex_key(
+            "shared-router-1",
+            KEY,
+            PRINCIPAL,
+        )
+        .unwrap();
+        let second_authority = AndroidVolumeGrantAuthority::from_hex_key(
+            "shared-router-1",
+            KEY,
+            PRINCIPAL,
+        )
+        .unwrap();
+        let first_state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+                .expect("test safe root must validate"),
+            Some(first_authority.clone()),
+            client.clone(),
+        );
+        let mut second_state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+                .expect("test safe root must validate"),
+            Some(second_authority),
+            client,
+        );
+        second_state.sessions = first_state.sessions.clone();
+        let session = first_state.sessions.create().unwrap();
+        first_state.sessions.activate(&session).unwrap();
+        let target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+        let grant = first_authority
+            .issue_at(&session, target, current_unix_seconds())
+            .unwrap();
+        let first_router = router_from_state(first_state);
+        let second_router = router_from_state(second_state);
+
+        let request = |id: &str| {
+            Request::post("/mcp")
+                .header(header::HOST, "localhost:8000")
+                .header(header::ORIGIN, "http://localhost:8000")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, MCP_POST_ACCEPT)
+                .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
+                .header(MCP_SESSION_ID_HEADER, &session)
+                .header(REQUEST_GRANT_HEADER, &grant)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "tools/call",
+                        "params": {
+                            "name": SET_ANDROID_VOLUME_TOOL,
+                            "arguments": {"stream": "music", "level": 9, "dry_run": false}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+
+        let first = first_router.oneshot(request("router-a")).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = response_json(first).await;
+        assert_eq!(first["result"]["structuredContent"]["verified"], true);
+        assert_eq!(
+            std::fs::read_to_string(program_root.path().join("calls")).unwrap(),
+            "music:9:/\n"
+        );
+
+        let replay = second_router.oneshot(request("router-b")).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::FORBIDDEN);
+        let replay = response_json(replay).await;
+        assert_eq!(
+            replay["error"]["data"]["reason"],
+            "capability_grant_replayed"
+        );
+        let serialized = replay.to_string();
+        assert!(!serialized.contains(KEY));
+        assert!(!serialized.contains(PRINCIPAL));
+        assert!(!serialized.contains(&grant));
     }
 
     #[cfg(feature = "android-volume-control")]

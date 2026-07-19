@@ -143,8 +143,9 @@ Recommended denied reason codes:
 - `filesystem_destination_exists`
 - `filesystem_directory_create_failed`
 - `create_directory_mutation_disabled`
+- `copy_file_mutation_disabled`
 - `write_file_mutation_disabled`
-- stable `capability_*` authorization reasons defined independently by [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md)
+- stable `capability_*` authorization reasons defined independently by [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md), and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md)
 - `filesystem_write_target_changed`
 - `filesystem_write_target_not_found`
 - `filesystem_write_target_type_unsupported`
@@ -155,6 +156,8 @@ Recommended denied reason codes:
 - `filesystem_copy_same_path`
 - `filesystem_copy_source_type_unsupported`
 - `filesystem_copy_source_too_large`
+- `filesystem_copy_source_changed`
+- `filesystem_copy_destination_changed`
 - `filesystem_copy_failed`
 - `filesystem_binary_read_target_not_found`
 - `filesystem_binary_read_type_unsupported`
@@ -204,7 +207,7 @@ The `write_file` result is content- and path-free and bounded to a 16 KiB comple
 A focused runtime wiring PR should verify all of the following:
 
 1. `create_directory` records allowed dry-run and authorized mutating decisions and denied gate/grant/missing/existing/boundary/failure decisions without retaining keys, grants, principal/session/root/target bindings, replay state, paths, or temporary-name data.
-2. `copy_file` records allowed preview and explicit-copy decisions plus every stable copy-specific denial without retaining paths, bytes, request ids, source metadata, or temporary names.
+2. `copy_file` records allowed preview and grant-authorized detached-worker terminal decisions plus disabled/header/grant/source/destination/scheduling/publication denials without retaining paths, bytes, request ids, source identities, SHA-256, principal/session/JTI state, grants, or temporary names. Preview and every pre-commit failure consume no grant; each worker records exactly one terminal decision after ownership.
 3. `find_paths` records allowed and denied read-only decisions without retaining its root, matched paths, filenames, query, kind, request ID, filesystem identities, or raw errors.
 4. `hash_file` records allowed and denied read-only decisions without retaining its path, filename, content, digest, byte count, file identity, partial state, or raw error.
 5. `list_directory` records an allowed read-only filesystem event on successful safe-rooted listing.

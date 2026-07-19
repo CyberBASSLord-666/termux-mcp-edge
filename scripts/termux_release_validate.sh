@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="8"
+readonly VALIDATOR_VERSION="9"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -160,6 +160,7 @@ MCP_SESSION_ID=""
 CAPABILITY_KEY_ID="release-validator-1"
 CAPABILITY_KEY_HEX=""
 CAPABILITY_GRANT_FILE=""
+COPY_CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_CONTENT_FILE=""
 CAPABILITY_RUNTIME_CONFIG_FILE=""
@@ -700,6 +701,7 @@ prepare_runtime_inputs() {
     REQUEST_FILE="$TEMP_ROOT/request.json"
     SESSION_HEADER_FILE="$TEMP_ROOT/session-headers.txt"
     CAPABILITY_GRANT_FILE="$TEMP_ROOT/create-directory-grant.txt"
+    COPY_CAPABILITY_GRANT_FILE="$TEMP_ROOT/copy-file-grant.txt"
     WRITE_CAPABILITY_GRANT_FILE="$TEMP_ROOT/write-file-grant.txt"
     WRITE_CAPABILITY_CONTENT_FILE="$TEMP_ROOT/write-file-content.txt"
     CAPABILITY_RUNTIME_CONFIG_FILE="$TEMP_ROOT/capability-runtime.env"
@@ -707,10 +709,11 @@ prepare_runtime_inputs() {
     : >"$REQUEST_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
+    : >"$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$WRITE_CAPABILITY_CONTENT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
-    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
+    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$COPY_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
   fi
   [[ "$SAFE_ROOT" == /* && -d "$SAFE_ROOT" && ! -L "$SAFE_ROOT" ]] || fail safe_root_invalid
   SAFE_ROOT="${SAFE_ROOT%/}"
@@ -738,6 +741,7 @@ prepare_runtime_inputs() {
     'MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false' \
     "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT" \
     'MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true' \
+    'MCP__FILE__COPY_FILE_MUTATION_ENABLED=true' \
     'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
     "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID" \
     "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
@@ -825,6 +829,25 @@ issue_create_directory_grant() {
   unset grant
 }
 
+issue_copy_file_grant() {
+  local source="$1" destination="$2" grant
+  : >"$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null || fail copy_capability_grant_staging_failed
+  chmod 600 "$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null || fail copy_capability_grant_staging_failed
+  if ! MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_RUNTIME_CONFIG_FILE" \
+    MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+    MCP__CAPABILITY__COPY_FILE_SOURCE="$source" \
+    MCP__CAPABILITY__COPY_FILE_DESTINATION="$destination" \
+      "$MCP_PINNED_ARTIFACT" --issue-copy-file-grant >"$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null
+  then
+    fail copy_capability_grant_issue_failed
+  fi
+  [[ "$(wc -l <"$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null)" == 1 ]] || fail copy_capability_grant_output_invalid
+  grant="$(<"$COPY_CAPABILITY_GRANT_FILE")"
+  valid_capability_grant "$grant" || fail copy_capability_grant_output_invalid
+  capability_grant_has_signed_byte "$grant" 130 16 04 || fail copy_file_capability_byte_invalid
+  unset grant
+}
+
 issue_write_file_grant() {
   local target="$1" content_file="$2" disposition="$3" grant
   validate_private_file "$content_file" write_capability_content_file_invalid
@@ -898,11 +921,15 @@ start_server() {
     "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30"
     "MCP__TRANSPORT__MAX_BODY_BYTES=$max_body_bytes"
     "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT"
+    "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false"
+    "MCP__FILE__COPY_FILE_MUTATION_ENABLED=false"
+    "MCP__FILE__WRITE_MUTATION_ENABLED=false"
     "RUST_LOG=termux_mcp_server=info"
   )
   if [[ "$posture" == mcp ]]; then
     environment+=(
       "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true"
+      "MCP__FILE__COPY_FILE_MUTATION_ENABLED=true"
       "MCP__FILE__WRITE_MUTATION_ENABLED=true"
       "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
       "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
@@ -1017,6 +1044,8 @@ run_default_runtime_checks() {
 run_mcp_runtime_checks() {
   local body="$TEMP_ROOT/mcp-response.json" headers="$TEMP_ROOT/mcp-headers.txt"
   local second="$TEMP_ROOT/mcp-second.json" status payload oversized bytes directory_target mismatch_target hash_digest
+  local copy_source copy_target copy_mismatch_target copy_stale_source copy_stale_target
+  local copy_oversized copy_retry_target copy_bytes copy_grant
   local replacement_content old_identity new_identity preflight_identity substitute_identity preserved_target
   local recovery_count_before recovery_count_after
   start_server "$MCP_PINNED_ARTIFACT" mcp
@@ -1115,6 +1144,14 @@ run_mcp_runtime_checks() {
   ' "$body" >/dev/null 2>&1 || fail create_directory_grant_discovery_invalid
   jq -e '
     .result.tools
+    | map(select(.name == "copy_file"))[0] as $tool
+    | ($tool.inputSchema.properties.dry_run | has("const") | not)
+      and ($tool.inputSchema.additionalProperties == false)
+      and ($tool.description | contains("MCP-Capability-Grant"))
+      and ($tool.description | contains("source-identity/content/destination-bound"))
+  ' "$body" >/dev/null 2>&1 || fail copy_file_grant_discovery_invalid
+  jq -e '
+    .result.tools
     | map(select(.name == "write_file"))[0] as $tool
     | ($tool.inputSchema.properties.dry_run | has("const") | not)
       and ($tool.inputSchema.additionalProperties == false)
@@ -1207,6 +1244,15 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
     and .result.structuredContent.createDirectoryGrantTtlSeconds == 60
     and .result.structuredContent.createDirectoryMutationMode == "dry_run_or_request_scoped_single_use_grant"
+    and .result.structuredContent.copyFileMutationEnabled == true
+    and .result.structuredContent.copyFileMode == "dry_run_or_source_content_destination_scoped_single_use_grant"
+    and .result.structuredContent.copyFileGrantRequired == true
+    and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.copyFileGrantTtlSeconds == 60
+    and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace"
+    and .result.structuredContent.copyFileMaxBytes == 1048576
+    and .result.structuredContent.copyFileMaxResponseBytes == 16384
+    and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only"
     and .result.structuredContent.fileWrites == true
     and .result.structuredContent.fileWriteMode == "dry_run_or_target_content_disposition_scoped_single_use_grant"
     and .result.structuredContent.fileWriteMutationEnabled == true
@@ -1628,62 +1674,137 @@ run_mcp_runtime_checks() {
   [[ ! -e "$directory_target" ]] || fail create_directory_replay_mutated
   record_result runtime create_directory_grant pass request_scoped_single_use_grant_enforced
 
-  printf 'validation-copy\000\377binary' >"$VALIDATION_SAFE_ROOT/copy-source.bin" 2>/dev/null || fail copy_file_fixture_create_failed
-  chmod 777 "$VALIDATION_SAFE_ROOT/copy-source.bin" 2>/dev/null || fail copy_file_fixture_create_failed
-  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy-dry.bin" '{"jsonrpc":"2.0","id":"copy-dry","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
+  copy_source="$VALIDATION_SAFE_ROOT/copy-source.bin"
+  copy_target="$VALIDATION_SAFE_ROOT/copy.bin"
+  copy_mismatch_target="$VALIDATION_SAFE_ROOT/copy-mismatch.bin"
+  printf 'validation-copy\000\377binary' >"$copy_source" 2>/dev/null || fail copy_file_fixture_create_failed
+  chmod 777 "$copy_source" 2>/dev/null || fail copy_file_fixture_create_failed
+  copy_bytes="$(stat -c '%s' "$copy_source" 2>/dev/null)" || fail copy_file_fixture_create_failed
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$VALIDATION_SAFE_ROOT/copy-dry.bin" '{"jsonrpc":"2.0","id":"copy-dry","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status copy_file_dry_run "$status" 200 copy_file_dry_run_succeeded
-  jq -e --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy-dry.bin" '
+  jq -e --argjson size "$copy_bytes" '
     .result.structuredContent == {
-      sourcePath:$source,
-      destinationPath:$destination,
       dryRun:true,
-      sizeBytes:23,
+      sizeBytes:$size,
       mode:"0600",
       maxFileBytes:1048576,
       maxResponseBytes:16384
     }
   ' "$body" >/dev/null 2>&1 || fail copy_file_dry_run_contract_invalid
-  grep -Fq validation-copy "$body" && fail copy_file_content_reflected
+  grep -Eq 'validation-copy|copy-source\.bin|copy-dry\.bin|termux-mcp-release-validation-' "$body" && fail copy_file_private_data_reflected
   [[ ! -e "$VALIDATION_SAFE_ROOT/copy-dry.bin" ]] || fail copy_file_dry_run_mutated
 
-  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy.bin" '{"jsonrpc":"2.0","id":"copy","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-missing-grant","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
-  expect_status copy_file_explicit "$status" 200 copy_file_explicit_succeeded
-  jq -e --arg source "$VALIDATION_SAFE_ROOT/copy-source.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy.bin" '
+  expect_status copy_file_missing_grant "$status" 403 copy_file_missing_grant_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_missing"' "$body" >/dev/null 2>&1 || fail copy_file_missing_grant_body_invalid
+  [[ ! -e "$copy_target" ]] || fail copy_file_missing_grant_mutated
+
+  issue_copy_file_grant "$copy_source" "$copy_target"
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-grant-preview","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
+  expect_status copy_file_grant_preview "$status" 400 copy_file_grant_preview_rejected
+  jq -e '.error.code == -32600' "$body" >/dev/null 2>&1 || fail copy_file_grant_preview_body_invalid
+  [[ ! -e "$copy_target" ]] || fail copy_file_grant_preview_mutated
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_mismatch_target" '{"jsonrpc":"2.0","id":"copy-grant-mismatch","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
+  expect_status copy_file_grant_binding "$status" 403 copy_file_grant_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail copy_file_grant_binding_body_invalid
+  [[ ! -e "$copy_mismatch_target" && ! -e "$copy_target" ]] || fail copy_file_grant_binding_mutated
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_target" '{"jsonrpc":"2.0","id":"copy-authorized","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
+  expect_status copy_file_authorized "$status" 200 copy_file_authorized_succeeded
+  jq -e --argjson size "$copy_bytes" '
     .result.structuredContent == {
-      sourcePath:$source,
-      destinationPath:$destination,
       dryRun:false,
-      sizeBytes:23,
+      sizeBytes:$size,
       mode:"0600",
       maxFileBytes:1048576,
       maxResponseBytes:16384
     }
   ' "$body" >/dev/null 2>&1 || fail copy_file_contract_invalid
-  grep -Fq validation-copy "$body" && fail copy_file_content_reflected
-  cmp -s "$VALIDATION_SAFE_ROOT/copy-source.bin" "$VALIDATION_SAFE_ROOT/copy.bin" || fail copy_file_content_invalid
-  [[ "$(stat -c '%a' "$VALIDATION_SAFE_ROOT/copy.bin" 2>/dev/null)" == 600 ]] || fail copy_file_mode_invalid
+  grep -Eq 'validation-copy|copy-source\.bin|copy\.bin|termux-mcp-release-validation-' "$body" && fail copy_file_private_data_reflected
+  cmp -s "$copy_source" "$copy_target" || fail copy_file_content_invalid
+  [[ "$(stat -c '%a' "$copy_target" 2>/dev/null)" == 600 ]] || fail copy_file_mode_invalid
 
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
   expect_status copy_file_existing "$status" 400 copy_file_existing_rejected
   jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail copy_file_existing_body_invalid
-  cmp -s "$VALIDATION_SAFE_ROOT/copy-source.bin" "$VALIDATION_SAFE_ROOT/copy.bin" || fail copy_file_existing_modified
+  cmp -s "$copy_source" "$copy_target" || fail copy_file_existing_modified
+
+  rm -f -- "$copy_target" 2>/dev/null || fail copy_file_replay_fixture_cleanup_failed
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
+  expect_status copy_file_replay "$status" 403 copy_file_grant_replay_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_replayed"' "$body" >/dev/null 2>&1 || fail copy_file_replay_body_invalid
+  [[ ! -e "$copy_target" ]] || fail copy_file_replay_mutated
+
+  copy_stale_source="$VALIDATION_SAFE_ROOT/copy-stale-source.bin"
+  copy_stale_target="$VALIDATION_SAFE_ROOT/copy-stale-target.bin"
+  printf '%s' stale-original >"$copy_stale_source" 2>/dev/null || fail copy_file_stale_fixture_create_failed
+  issue_copy_file_grant "$copy_stale_source" "$copy_stale_target"
+  printf '%s' stale-mutated! >"$copy_stale_source" 2>/dev/null || fail copy_file_stale_fixture_change_failed
+  payload="$(jq -cn --arg source "$copy_stale_source" --arg destination "$copy_stale_target" '{"jsonrpc":"2.0","id":"copy-stale-source","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
+  expect_status copy_file_stale_source "$status" 403 copy_file_stale_source_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail copy_file_stale_source_body_invalid
+  [[ ! -e "$copy_stale_target" ]] || fail copy_file_stale_source_mutated
 
   ln -s -- "$VALIDATION_SAFE_ROOT/copy-source.bin" "$VALIDATION_SAFE_ROOT/copy-source-link" 2>/dev/null || fail copy_file_symlink_fixture_create_failed
   payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-source-link" --arg destination "$VALIDATION_SAFE_ROOT/copy-from-link.bin" '{"jsonrpc":"2.0","id":"copy-link","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
   expect_status copy_file_symlink "$status" 400 copy_file_symlink_rejected
   jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail copy_file_symlink_body_invalid
   [[ ! -e "$VALIDATION_SAFE_ROOT/copy-from-link.bin" ]] || fail copy_file_symlink_mutated
 
-  dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/copy-oversized.bin" bs=1048577 count=1 status=none 2>/dev/null || fail copy_file_oversized_fixture_create_failed
-  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/copy-oversized.bin" --arg destination "$VALIDATION_SAFE_ROOT/copy-oversized-destination.bin" '{"jsonrpc":"2.0","id":"copy-oversized","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
-  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  copy_oversized="$VALIDATION_SAFE_ROOT/copy-oversized.bin"
+  copy_retry_target="$VALIDATION_SAFE_ROOT/copy-oversized-grant-retry.bin"
+  dd if=/dev/zero of="$copy_oversized" bs=1048577 count=1 status=none 2>/dev/null || fail copy_file_oversized_fixture_create_failed
+  issue_copy_file_grant "$copy_source" "$copy_retry_target"
+  payload="$(jq -cn --arg source "$copy_oversized" --arg destination "$copy_retry_target" '{"jsonrpc":"2.0","id":"copy-oversized","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
   expect_status copy_file_oversized "$status" 413 copy_file_oversized_rejected
   jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail copy_file_oversized_body_invalid
-  [[ ! -e "$VALIDATION_SAFE_ROOT/copy-oversized-destination.bin" ]] || fail copy_file_oversized_mutated
+  [[ ! -e "$copy_retry_target" ]] || fail copy_file_oversized_mutated
+
+  payload="$(jq -cn --arg source "$copy_source" --arg destination "$copy_retry_target" '{"jsonrpc":"2.0","id":"copy-oversized-grant-retry","method":"tools/call","params":{"name":"copy_file","arguments":{"source_path":$source,"destination_path":$destination,"dry_run":false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$COPY_CAPABILITY_GRANT_FILE")"
+  expect_status copy_file_oversized_grant_retry "$status" 200 copy_file_oversized_grant_retry_succeeded
+  cmp -s "$copy_source" "$copy_retry_target" || fail copy_file_oversized_grant_retry_content_invalid
+  [[ "$(stat -c '%a' "$copy_retry_target" 2>/dev/null)" == 600 ]] || fail copy_file_oversized_grant_retry_mode_invalid
+
+  payload='{"jsonrpc":"2.0","id":"copy-audit","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status copy_file_audit "$status" 200 copy_file_audit_read
+  jq -e '
+    .result.structuredContent.auditCounters as $audit
+    | $audit.by_tool.copy_file.allowed >= 3
+      and $audit.by_tool.copy_file.denied >= 6
+      and $audit.by_reason_code.dry_run_preview.allowed >= 1
+      and $audit.by_reason_code.safe_root_file_copied.allowed >= 2
+      and $audit.by_reason_code.capability_grant_missing.denied >= 1
+      and $audit.by_reason_code.capability_grant_binding_mismatch.denied >= 2
+      and $audit.by_reason_code.capability_grant_replayed.denied >= 1
+      and $audit.by_reason_code.filesystem_destination_exists.denied >= 1
+      and $audit.by_reason_code.filesystem_copy_source_too_large.denied >= 1
+  ' "$body" >/dev/null 2>&1 || fail copy_file_audit_contract_invalid
+  copy_grant="$(<"$COPY_CAPABILITY_GRANT_FILE")"
+  if grep -Eq 'validation-copy|stale-mutated|copy-(source|stale|oversized)|termux-mcp-release-validation-' "$body" \
+    || grep -Fq "$copy_grant" "$body"; then
+    fail copy_file_audit_private_data_reflected
+  fi
+  unset copy_grant
+
   record_result runtime copy_file pass safe_root_file_copy_verified
+  record_result runtime copy_file_authorization pass request_scoped_single_use_copy_grant_enforced
+  record_result runtime copy_file_binding pass source_content_destination_binding_enforced
+  record_result runtime copy_file_exact_binary pass exact_binary_copy_verified
+  record_result runtime copy_file_boundaries pass copy_file_boundary_denials_verified
+  record_result runtime copy_file_private_audit pass copy_file_private_audit_verified
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/expanded-response.bin" bs=200000 count=1 status=none 2>/dev/null || fail read_bound_fixture_create_failed
   chmod 600 "$VALIDATION_SAFE_ROOT/expanded-response.bin" 2>/dev/null || fail read_bound_fixture_create_failed
@@ -2066,6 +2187,12 @@ run_volume_control_runtime_checks() {
     | $tool.inputSchema.properties.dry_run.const == true
       and ($tool.description | contains("mutation gate is disabled"))
   ' "$body" >/dev/null 2>&1 || fail volume_control_write_discovery_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "copy_file"))[0] as $tool
+    | $tool.inputSchema.properties.dry_run.const == true
+      and ($tool.description | contains("copy mutation gate is disabled"))
+  ' "$body" >/dev/null 2>&1 || fail volume_control_copy_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -2075,6 +2202,15 @@ run_volume_control_runtime_checks() {
     .result.structuredContent.androidVolumeControlCompiled == true
     and .result.structuredContent.androidVolumeControlEnabled == false
     and .result.structuredContent.androidVolumeGrantRequired == false
+    and .result.structuredContent.copyFileMutationEnabled == false
+    and .result.structuredContent.copyFileMode == "dry_run_only_mutation_disabled"
+    and .result.structuredContent.copyFileGrantRequired == false
+    and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.copyFileGrantTtlSeconds == 60
+    and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace"
+    and .result.structuredContent.copyFileMaxBytes == 1048576
+    and .result.structuredContent.copyFileMaxResponseBytes == 16384
+    and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only"
     and .result.structuredContent.fileWrites == true
     and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
     and .result.structuredContent.fileWriteMutationEnabled == false
@@ -2093,6 +2229,13 @@ run_volume_control_runtime_checks() {
     and .result.structuredContent.textRangeReadMaxBytes == 262144
     and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936
   ' "$body" >/dev/null 2>&1 || fail volume_control_runtime_status_invalid
+
+  payload="$(jq -cn --arg source "$VALIDATION_SAFE_ROOT/visible.txt" --arg destination "$VALIDATION_SAFE_ROOT/volume-copy-disabled.txt" '{jsonrpc:"2.0",id:"volume-copy-disabled",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_copy_disabled "$status" 403 copy_file_mutation_disabled
+  jq -e '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"' "$body" >/dev/null 2>&1 || fail volume_control_copy_disabled_body_invalid
+  [[ ! -e "$VALIDATION_SAFE_ROOT/volume-copy-disabled.txt" ]] || fail volume_control_copy_disabled_mutated
+  record_result runtime copy_file_disabled_posture pass copy_file_disabled_posture_verified
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -2176,6 +2319,9 @@ MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=1024
 MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT
+MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false
+MCP__FILE__COPY_FILE_MUTATION_ENABLED=false
+MCP__FILE__WRITE_MUTATION_ENABLED=false
 RUST_LOG=termux_mcp_server=info
 EOF
   then

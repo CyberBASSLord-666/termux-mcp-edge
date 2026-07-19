@@ -42,6 +42,7 @@ fn help_is_successful_and_describes_supported_commands() {
     assert!(stdout.contains("termux-mcp-server --version"));
     assert!(stdout.contains("termux-mcp-server --help"));
     assert!(stdout.contains("termux-mcp-server --issue-create-directory-grant"));
+    assert!(stdout.contains("termux-mcp-server --issue-copy-file-grant"));
     assert!(stdout.contains("termux-mcp-server --issue-write-file-grant"));
     assert!(stdout.contains("termux-mcp-server --issue-android-volume-grant"));
     assert!(output.stderr.is_empty());
@@ -64,7 +65,11 @@ fn volume_grant_issuance_fails_closed_without_the_compiled_capability() {
 #[cfg(not(feature = "mcp-runtime"))]
 #[test]
 fn grant_issuance_fails_closed_without_the_compiled_runtime() {
-    for command in ["--issue-create-directory-grant", "--issue-write-file-grant"] {
+    for command in [
+        "--issue-create-directory-grant",
+        "--issue-copy-file-grant",
+        "--issue-write-file-grant",
+    ] {
         let output = isolated_binary().arg(command).output().unwrap();
 
         assert!(!output.status.success());
@@ -95,6 +100,31 @@ fn configured_issuer(root: &std::path::Path, target: &std::path::Path) -> Comman
 }
 
 #[cfg(feature = "mcp-runtime")]
+fn configured_copy_issuer(
+    root: &std::path::Path,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Command {
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let mut command = isolated_binary();
+    command
+        .arg("--issue-copy-file-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-copy-cli-principal")
+        .env("MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY", "false")
+        .env("MCP__FILE__SAFE_ROOTS", root)
+        .env("MCP__FILE__COPY_FILE_MUTATION_ENABLED", "true")
+        .env("MCP__CAPABILITY__KEY_ID", "copy-cli-test-1")
+        .env("MCP__CAPABILITY__HMAC_KEY_HEX", KEY)
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__COPY_FILE_SOURCE", source)
+        .env("MCP__CAPABILITY__COPY_FILE_DESTINATION", destination);
+    command
+}
+
+#[cfg(feature = "mcp-runtime")]
 fn configured_write_issuer(
     root: &std::path::Path,
     target: &std::path::Path,
@@ -119,6 +149,130 @@ fn configured_write_issuer(
         .env("MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE", content_file)
         .env("MCP__CAPABILITY__WRITE_FILE_DISPOSITION", disposition);
     command
+}
+
+#[cfg(feature = "mcp-runtime")]
+#[test]
+fn exact_copy_cli_issuer_outputs_one_private_source_destination_bound_grant() {
+    use termux_mcp_server::{
+        copy_file_grant::{
+            CopyFileGrantAuthority, CopyFileGrantError, MAX_COPY_FILE_GRANT_HEADER_BYTES,
+        },
+        tools::FileSystemTools,
+    };
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SESSION: &str = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("private-copy-cli-source.bin");
+    let destination = root.path().join("private-copy-cli-destination.bin");
+    let other_destination = root.path().join("private-copy-cli-other.bin");
+    std::fs::write(&source, b"private-copy\0\xff-content").unwrap();
+
+    let output = configured_copy_issuer(root.path(), &source, &destination)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    let grant = stdout.trim_end();
+    assert!(grant.len() <= MAX_COPY_FILE_GRANT_HEADER_BYTES);
+    let segments = grant.split('.').collect::<Vec<_>>();
+    assert_eq!(segments.len(), 4);
+    assert_eq!(segments[0], "v1");
+    assert_eq!(segments[1], "copy-cli-test-1");
+    assert_eq!(segments[2].len(), 130);
+    assert_signed_capability_byte(segments[2], 16, "04");
+    assert_eq!(segments[3].len(), 64);
+    assert!(segments[2..].iter().all(|segment| segment
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))));
+    for private in [
+        "private-copy-cli-principal",
+        "private-copy-cli-source",
+        "private-copy-cli-destination",
+        "private-copy",
+        SESSION,
+    ] {
+        assert!(!stdout.contains(private));
+    }
+    assert!(!destination.exists());
+
+    let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()]).unwrap();
+    let exact_target = tools
+        .copy_file_grant_target(
+            source.to_string_lossy().as_ref(),
+            destination.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+    let authority =
+        CopyFileGrantAuthority::from_hex_key("copy-cli-test-1", KEY, "private-copy-cli-principal")
+            .unwrap();
+    authority
+        .consume(Some(grant), SESSION, &exact_target)
+        .unwrap();
+
+    let other_target = tools
+        .copy_file_grant_target(
+            source.to_string_lossy().as_ref(),
+            other_destination.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+    assert_eq!(
+        authority
+            .consume(Some(grant), SESSION, &other_target)
+            .unwrap_err(),
+        CopyFileGrantError::BindingMismatch
+    );
+}
+
+#[cfg(feature = "mcp-runtime")]
+#[test]
+fn copy_cli_issuer_fails_closed_without_gate_or_for_invalid_private_inputs() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("private-copy-cli-denied-source");
+    let destination = root.path().join("private-copy-cli-denied-destination");
+    std::fs::write(&source, "private-copy-denied-content").unwrap();
+
+    let disabled = isolated_binary()
+        .arg("--issue-copy-file-grant")
+        .env("MCP__AUTH__STATIC_TOKEN", "private-copy-cli-principal")
+        .env("MCP__FILE__SAFE_ROOTS", root.path())
+        .env(
+            "MCP__CAPABILITY__SESSION_ID",
+            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        )
+        .env("MCP__CAPABILITY__COPY_FILE_SOURCE", &source)
+        .env("MCP__CAPABILITY__COPY_FILE_DESTINATION", &destination)
+        .output()
+        .unwrap();
+    assert!(!disabled.status.success());
+    assert!(disabled.stdout.is_empty());
+    let disabled_stderr = String::from_utf8(disabled.stderr).unwrap();
+    assert!(disabled_stderr.contains("copy_file mutation gate is disabled"));
+
+    let missing_source = root.path().join("private-copy-cli-missing-source");
+    let invalid = configured_copy_issuer(root.path(), &missing_source, &destination)
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
+    let invalid_stderr = String::from_utf8(invalid.stderr).unwrap();
+    assert!(invalid_stderr.contains("copy_file grant target validation failed"));
+
+    for stderr in [disabled_stderr, invalid_stderr] {
+        for private in [
+            "private-copy-cli-principal",
+            "private-copy-cli-denied",
+            "private-copy-denied-content",
+            "private-copy-cli-missing",
+            "0194f9f9",
+            "0123456789abcdef",
+        ] {
+            assert!(!stderr.contains(private));
+        }
+    }
 }
 
 #[cfg(feature = "android-volume-control")]

@@ -113,6 +113,9 @@ fi
 if [[ "\${1:-}" == --issue-create-directory-grant ]]; then
   exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-create
 fi
+if [[ "\${1:-}" == --issue-copy-file-grant ]]; then
+  exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-copy
+fi
 if [[ "\${1:-}" == --issue-write-file-grant ]]; then
   exec python3 '$REPO_ROOT/tests/fixtures/release_validator_mock_server.py' issue-write
 fi
@@ -231,6 +234,28 @@ bash -n "$SCRIPT"
 grep -Fq 'valid_capability_grant()' "$SCRIPT"
 grep -Fq 'capability_grant_has_signed_byte "$grant" 260 64 01' "$SCRIPT"
 grep -Fq 'capability_grant_has_signed_byte "$grant" 130 16 02' "$SCRIPT"
+grep -Fq 'capability_grant_has_signed_byte "$grant" 130 16 04' "$SCRIPT"
+for marker in \
+  'MCP__FILE__COPY_FILE_MUTATION_ENABLED=true' \
+  '--issue-copy-file-grant' \
+  'MCP__CAPABILITY__COPY_FILE_SOURCE="$source"' \
+  'MCP__CAPABILITY__COPY_FILE_DESTINATION="$destination"' \
+  'copy_file_missing_grant_rejected' \
+  'copy_file_grant_preview_rejected' \
+  'copy_file_grant_binding_rejected' \
+  'copy_file_grant_replay_rejected' \
+  'copy_file_stale_source_rejected' \
+  'copy_file_oversized_rejected' \
+  'copy_file_oversized_grant_retry_succeeded' \
+  'request_scoped_single_use_copy_grant_enforced' \
+  'source_content_destination_binding_enforced' \
+  'exact_binary_copy_verified' \
+  'copy_file_boundary_denials_verified' \
+  'copy_file_private_audit_verified' \
+  'copy_file_disabled_posture_verified'
+do
+  grep -Fq -- "$marker" "$SCRIPT" || fail_test "release validator omitted copy capability marker: $marker"
+done
 for marker in \
   'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
   '--issue-write-file-grant' \
@@ -316,7 +341,7 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "8"
+  and .validatorVersion == "9"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
@@ -611,6 +636,12 @@ jq -e '
   and ([.results[].code] | index("recovery_namespace_private_and_bounded") != null)
   and ([.results[].code] | index("replacement_identity_binding_enforced") != null)
   and ([.results[].code] | index("safe_root_file_copy_verified") != null)
+  and ([.results[].code] | index("request_scoped_single_use_copy_grant_enforced") != null)
+  and ([.results[].code] | index("source_content_destination_binding_enforced") != null)
+  and ([.results[].code] | index("exact_binary_copy_verified") != null)
+  and ([.results[].code] | index("copy_file_boundary_denials_verified") != null)
+  and ([.results[].code] | index("copy_file_private_audit_verified") != null)
+  and ([.results[].code] | index("copy_file_disabled_posture_verified") != null)
   and ([.results[].code] | index("safe_root_file_hash_verified") != null)
   and ([.results[].code] | index("safe_root_binary_read_verified") != null)
   and ([.results[].code] | index("safe_root_binary_range_read_verified") != null)

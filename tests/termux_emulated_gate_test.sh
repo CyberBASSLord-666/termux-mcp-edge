@@ -44,6 +44,12 @@ for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$CO
   grep -Fq 'inputSchema.properties.dry_run.const' "$script" \
     || fail_test "write discovery const missing for $(basename "$script")"
 done
+grep -Fq 'MCP__FILE__COPY_FILE_MUTATION_ENABLED=false' "$GATE" \
+  || fail_test 'baseline native gate does not pin copy_file mutation disabled'
+grep -Fq 'stress_copy_file_disabled_status_invalid' "$GATE" \
+  || fail_test 'baseline native gate omits live copy_file disabled denial'
+grep -Fq 'copyFileMutationDisabled: true' "$GATE" \
+  || fail_test 'baseline native gate evidence omits copy_file disabled posture'
 grep -Fq 'write-key-isolation' "$VOLUME_CONTROL_GATE" \
   || fail_test 'shared volume capability key is not isolated from write_file'
 grep -Fq '"${payload:128:2}" == 03' "$VOLUME_CONTROL_GATE" \
@@ -53,7 +59,13 @@ for code in \
   safe_root_file_create_replace_verified \
   request_scoped_single_use_write_grant_enforced \
   exact_write_file_byte_limit_verified \
-  bounded_write_file_response_preflight_verified
+  bounded_write_file_response_preflight_verified \
+  request_scoped_single_use_copy_grant_enforced \
+  source_content_destination_binding_enforced \
+  exact_binary_copy_verified \
+  copy_file_boundary_denials_verified \
+  copy_file_private_audit_verified \
+  copy_file_disabled_posture_verified
 do
   grep -Fq "$code" "$GATE" \
     || fail_test "canonical emulation gate omits required validator evidence: $code"
@@ -112,6 +124,7 @@ jq -e '
   and .properties.candidate.properties.androidVolumeControlArtifact."$ref" == "#/$defs/artifact"
   and .properties.stress.properties.samples.minimum == 32
   and .properties.stress.properties.highImpactDisabled.const == true
+  and .properties.stress.properties.copyFileMutationDisabled.const == true
 ' "$ROOT/docs/emulated-release-evidence-schema-v1.json" >/dev/null
 
 jq -e '
