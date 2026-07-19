@@ -3933,6 +3933,284 @@ mod tests {
         assert!(!moved.join("destination.txt").exists());
     }
 
+    #[tokio::test]
+    async fn root_replacement_cannot_redirect_any_read_only_filesystem_surface() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        let requested_file = root.join("original.txt");
+        let original_content = "pinned-original-content";
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&requested_file, original_content).unwrap();
+        let tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("original.txt"),
+            "hostile-replacement-content-that-is-longer",
+        )
+        .unwrap();
+        std::fs::write(root.join("replacement-only.txt"), "replacement-only").unwrap();
+
+        assert_eq!(
+            tools
+                .sanitize(requested_file.to_string_lossy().as_ref())
+                .unwrap(),
+            requested_file
+        );
+
+        let text = tools
+            .read_file(requested_file.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(text.content, original_content);
+
+        let binary = tools
+            .read_binary_file(requested_file.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(binary.size_bytes, original_content.len());
+
+        let binary_range = tools
+            .read_binary_range(
+                requested_file.to_string_lossy().to_string(),
+                0,
+                original_content.len() + 16,
+            )
+            .await
+            .unwrap();
+        assert_eq!(binary_range.size_bytes, original_content.len());
+
+        let text_range = tools
+            .read_text_range(
+                requested_file.to_string_lossy().to_string(),
+                0,
+                original_content.len() + 16,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text_range.content, original_content);
+
+        let hash = tools
+            .hash_file(requested_file.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(hash.size_bytes, original_content.len());
+
+        let metadata = tools
+            .path_metadata(requested_file.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(metadata.kind, PathMetadataKind::RegularFile);
+        assert_eq!(metadata.size_bytes, Some(original_content.len() as u64));
+
+        let listed = tools
+            .list_directory(root.to_string_lossy().to_string(), Some(2))
+            .await
+            .unwrap();
+        assert!(listed
+            .entries
+            .iter()
+            .any(|entry| entry.path == requested_file.to_string_lossy()));
+        assert!(!listed.entries.iter().any(|entry| {
+            entry.path == root.join("replacement-only.txt").to_string_lossy()
+        }));
+
+        let found = tools
+            .find_paths(
+                root.to_string_lossy().to_string(),
+                "original".to_owned(),
+                FindPathFilter::Any,
+                Some(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(found.matches.len(), 1);
+
+        let searched = tools
+            .search_text(
+                root.to_string_lossy().to_string(),
+                original_content.to_owned(),
+                Some(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(searched.matches.len(), 1);
+
+        let replacement_tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+        let replacement = replacement_tools
+            .read_file(requested_file.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            replacement.content,
+            "hostile-replacement-content-that-is-longer"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("original.txt")).unwrap(),
+            original_content
+        );
+    }
+
+    #[test]
+    fn grants_issued_before_root_replacement_authorize_only_the_pinned_original() {
+        const TEST_KEY: &str = "33445566778899001122aabbccddeeff33445566778899001122aabbccddeeff";
+
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("authority");
+        let moved = parent.path().join("original-authority");
+        let source = root.join("source.txt");
+        let directory = root.join("authorized-directory");
+        let destination = root.join("authorized-copy.txt");
+        let written = root.join("authorized-write.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&source, "pinned-copy-source").unwrap();
+        let tools = FileSystemTools::try_new(vec![root.clone()]).unwrap();
+
+        let create_target = tools
+            .create_directory_grant_target(directory.to_string_lossy().as_ref())
+            .unwrap();
+        let copy_target = tools
+            .copy_file_grant_target(
+                source.to_string_lossy().as_ref(),
+                destination.to_string_lossy().as_ref(),
+            )
+            .unwrap();
+        let write_target = tools
+            .write_file_grant_target(
+                written.to_string_lossy().as_ref(),
+                b"pinned-write-content",
+                WriteFileDisposition::Create,
+            )
+            .unwrap();
+
+        let create_authority =
+            crate::create_directory_grant::CreateDirectoryGrantAuthority::from_hex_key(
+                "test-key-1",
+                TEST_KEY,
+                "pre-replacement-create-principal",
+            )
+            .unwrap();
+        let copy_authority = crate::copy_file_grant::CopyFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "pre-replacement-copy-principal",
+        )
+        .unwrap();
+        let write_authority = crate::write_file_grant::WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "pre-replacement-write-principal",
+        )
+        .unwrap();
+        let create_session = uuid::Uuid::new_v4().to_string();
+        let copy_session = uuid::Uuid::new_v4().to_string();
+        let write_session = uuid::Uuid::new_v4().to_string();
+        let create_grant = create_authority
+            .issue_at(
+                &create_session,
+                &create_target,
+                unix_timestamp_seconds(),
+            )
+            .unwrap();
+        let copy_grant = copy_authority.issue(&copy_session, &copy_target).unwrap();
+        let write_grant = write_authority
+            .issue(&write_session, &write_target)
+            .unwrap();
+
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("source.txt"), "replacement-copy-source").unwrap();
+
+        assert_eq!(
+            tools
+                .create_directory_grant_target(directory.to_string_lossy().as_ref())
+                .unwrap(),
+            create_target
+        );
+        assert_eq!(
+            tools
+                .copy_file_grant_target(
+                    source.to_string_lossy().as_ref(),
+                    destination.to_string_lossy().as_ref(),
+                )
+                .unwrap(),
+            copy_target
+        );
+        assert_eq!(
+            tools
+                .write_file_grant_target(
+                    written.to_string_lossy().as_ref(),
+                    b"pinned-write-content",
+                    WriteFileDisposition::Create,
+                )
+                .unwrap(),
+            write_target
+        );
+
+        let create_result = tools
+            .prepare_create_directory_mutation_blocking(directory.to_string_lossy().to_string())
+            .unwrap()
+            .execute_authorized(|target| {
+                create_authority.consume_at(
+                    Some(&create_grant),
+                    &create_session,
+                    target,
+                    unix_timestamp_seconds(),
+                )
+            });
+        assert!(
+            create_result.is_ok(),
+            "the original-root create grant must remain valid"
+        );
+
+        let copy_result = tools
+            .prepare_copy_file_mutation_blocking(
+                source.to_string_lossy().to_string(),
+                destination.to_string_lossy().to_string(),
+            )
+            .unwrap()
+            .execute_authorized(|target| {
+                copy_authority.consume(Some(&copy_grant), &copy_session, target)
+            });
+        assert!(
+            copy_result.is_ok(),
+            "the original-root copy grant must remain valid"
+        );
+
+        let write_result = tools
+            .prepare_write_file_mutation_blocking(
+                written.to_string_lossy().to_string(),
+                "pinned-write-content".to_owned(),
+            )
+            .unwrap()
+            .execute_authorized(|target| {
+                write_authority.consume(Some(&write_grant), &write_session, target)
+            });
+        assert!(
+            write_result.is_ok(),
+            "the original-root write grant must remain valid"
+        );
+
+        assert!(moved.join("authorized-directory").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(moved.join("authorized-copy.txt")).unwrap(),
+            "pinned-copy-source"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("authorized-write.txt")).unwrap(),
+            "pinned-write-content"
+        );
+        assert!(!root.join("authorized-directory").exists());
+        assert!(!root.join("authorized-copy.txt").exists());
+        assert!(!root.join("authorized-write.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("source.txt")).unwrap(),
+            "replacement-copy-source"
+        );
+    }
+
     #[test]
     fn filesystem_tools_debug_and_rejections_redact_root_authority() {
         let root = tempfile::tempdir().unwrap();
