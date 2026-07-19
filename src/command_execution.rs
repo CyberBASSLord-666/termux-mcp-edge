@@ -6,7 +6,6 @@
 
 use std::{
     ffi::{OsStr, OsString},
-    fs,
     os::fd::{AsRawFd, OwnedFd},
     path::PathBuf,
     sync::Arc,
