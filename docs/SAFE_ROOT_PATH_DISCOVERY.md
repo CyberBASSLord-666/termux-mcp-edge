@@ -2,6 +2,8 @@
 
 `find_paths` is the baseline Class 1 tool for locating regular files and directories by a bounded literal basename substring. It reads no file content, follows no links, performs no mutation, and receives no authority beyond the configured filesystem safe roots.
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Request
 
 The closed input object accepts only:
@@ -20,7 +22,7 @@ The query is never interpreted as a regular expression, glob, path, shell fragme
 The runtime:
 
 1. selects the most specific configured safe root that lexically contains `path`;
-2. opens that root as a no-follow directory descriptor;
+2. derives a fresh directory handle from the lifetime-pinned root descriptor and verifies its device/inode identity;
 3. walks every starting-path component with descriptor-relative no-follow directory opens;
 4. reads descendants through held directory descriptors;
 5. classifies each child with no-follow descriptor-relative metadata;

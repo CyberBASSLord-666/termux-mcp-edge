@@ -2,6 +2,8 @@
 
 `path_metadata` is the baseline read-only MCP capability for inspecting one regular file or directory beneath a configured filesystem safe root. It avoids parent-directory enumeration and file-content reads while preserving the same descriptor-relative no-follow boundary as the other filesystem tools.
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Request contract
 
 The closed input schema accepts exactly one field:
@@ -24,7 +26,7 @@ The result does not expose file content, inode or device numbers, UID/GID values
 
 ## Descriptor and race boundary
 
-The server anchors the request beneath the longest matching configured safe root, opens that root as a no-follow directory descriptor, and walks every parent component relative to the already-open descriptor. The final object is opened with Linux path-descriptor and no-follow semantics, then classified with `fstat` on that exact descriptor. The configured safe-root directory itself is inspected through its already-open root descriptor.
+The server anchors the request beneath the longest matching configured safe root, derives an identity-checked handle from its lifetime-pinned no-follow descriptor, and walks every parent component relative to that handle. The final object is opened with Linux path-descriptor and no-follow semantics, then classified with `fstat` on that exact descriptor. The configured safe-root directory itself is inspected through its already-open root descriptor.
 
 Symlink final components are opened only as links long enough to classify and reject them; link targets are never resolved or returned. Sockets, FIFOs, devices, and other non-regular types are rejected. Holding the final descriptor prevents a concurrent rename or path exchange from redirecting metadata lookup to an outside object.
 

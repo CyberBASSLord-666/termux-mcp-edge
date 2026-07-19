@@ -13,6 +13,8 @@ requesting mutation returns the stable authorization-required error without a
 filesystem change. Preparation and authorized execution are crate-private and
 reachable only by the request-grant-aware transport path.
 
+
+The offline issuer and runtime independently derive the grant target from their pinned safe-root device/inode identity. A grant issued before a configured root pathname is replaced remains valid only for the runtime's already-pinned original root. An issuer started after replacement derives a different binding and cannot authorize the older running process. Operators must stop the service before changing safe-root paths and restart it before issuing further grants.
 ## Runtime configuration
 
 The mutation posture requires an `mcp-runtime` build, static bearer authentication, and all three settings below:

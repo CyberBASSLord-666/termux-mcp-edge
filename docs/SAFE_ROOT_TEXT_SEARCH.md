@@ -2,6 +2,8 @@
 
 `search_text` is the read-only literal text-search capability in the baseline `mcp-runtime` tool registry. It lets an authenticated client locate text under a configured filesystem safe root without downloading every file, executing `grep`, evaluating a regular expression, or returning file contents.
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Input contract
 
 The closed input object accepts only:
@@ -14,7 +16,7 @@ Unknown properties, empty queries, NUL, CR/LF, oversized queries, and out-of-ran
 
 ## Descriptor boundary
 
-The operation anchors the supplied path to the most specific configured safe root, opens that root, and resolves every descendant directory and file relative to an already-open descriptor with `NOFOLLOW`. Symlinks and non-regular file types are skipped. An opened file is checked again before reading, so exchanging a validated pathname for a symlink, FIFO, device, or outside-root directory cannot redirect the read.
+The operation anchors the supplied path to the most specific configured safe root, derives an identity-checked handle from its lifetime-pinned descriptor, and resolves every descendant directory and file relative to that handle with `NOFOLLOW`. Symlinks and non-regular file types are skipped. An opened file is checked again before reading, so exchanging a validated pathname for a symlink, FIFO, device, or outside-root directory cannot redirect the read.
 
 Blocking enumeration and reads run outside the async executor. No subprocess, shell, Android API, network request, write, or temporary file is involved.
 

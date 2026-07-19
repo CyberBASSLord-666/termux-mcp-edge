@@ -2,6 +2,8 @@
 
 `copy_file` copies one bounded regular file between configured filesystem safe roots without returning file contents or paths. Omitted `dry_run` and explicit `dry_run:true` perform the same fully validated preview without publishing a destination. Class 2 mutation additionally requires the independent default-false copy gate and one exact request-scoped grant; explicit `dry_run:false` alone is denied. The complete authorization and issuance contract is [copy-file capability grants](COPY_FILE_CAPABILITY_GRANTS.md).
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Closed request schema
 
 | Field | Type | Required | Contract |
@@ -39,7 +41,7 @@ Before filesystem preparation or grant consumption, the transport constructs a w
 The operation does not invoke a shell, subprocess, platform copy utility, archive tool, or external provider.
 
 1. Anchor source and destination lexically beneath the longest matching configured safe roots.
-2. Open each safe-root directory and traverse every descendant component descriptor-relatively with no-follow semantics.
+2. Derive and identity-check a fresh handle from each lifetime-pinned safe-root descriptor, then traverse every descendant component descriptor-relatively with no-follow semantics.
 3. Inspect the source final component without following links and require a regular file at or below the fixed limit.
 4. Open the source with `O_NOFOLLOW`, `O_NONBLOCK`, and close-on-exec; verify that device, inode, type, and size match the pre-open observation.
 5. Read at most 1 MiB plus one byte from that exact held descriptor and verify its type, identity, and size again after the read.

@@ -2,6 +2,8 @@
 
 `hash_file` computes a SHA-256 digest for one bounded regular file inside a configured filesystem safe root. It is a Class 1 read-only capability: it does not mutate the file, invoke a subprocess, return file content, or expose the requested path in its result or audit counters.
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Closed request schema
 
 | Field | Type | Required | Contract |
@@ -36,7 +38,7 @@ Successful `structuredContent` contains exactly:
 The implementation does not authorize a pathname and reopen it later.
 
 1. Select the longest matching configured safe root and retain normalized relative components.
-2. Open the safe-root directory and walk every parent component relative to held descriptors with no-follow directory opens.
+2. Derive and identity-check a fresh directory handle from the lifetime-pinned safe-root descriptor, then walk every parent component relative to held descriptors with no-follow directory opens.
 3. Inspect the final component with no-follow metadata and require a regular file no larger than 16 MiB.
 4. Open that final component relative to the retained parent with read-only, nonblocking, no-follow, and close-on-exec flags. Nonblocking open prevents a concurrent swap to a FIFO from stalling a worker before final-type validation.
 5. Verify that the opened descriptor is regular and that its device and inode match the no-follow path observation. A concurrent replacement therefore fails or leaves the operation attached to the already-open object; it cannot redirect hashing through a replacement link.

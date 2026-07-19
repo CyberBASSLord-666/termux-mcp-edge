@@ -17,6 +17,21 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Fixed `mcp_runtime` runit service only.
 - Dedicated safe-root defaults plus independent default-disabled directory, file-copy, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
+## Safe-root identity lifecycle
+
+At service startup, each `MCP__FILE__SAFE_ROOTS` entry is lexically normalized and walked from `/` with no-follow path descriptors. Missing paths, non-directories, symbolic-link components, parent traversal, reserved namespaces, and filesystem root fail startup. The service pins the validated descriptor and device/inode identity for its entire process lifetime; every filesystem call derives and identity-checks a fresh handle from that authority instead of reopening the configured path.
+
+A rename or replacement of the root or any ancestor does not retarget the running service. It continues to access the original directory inode, including for grant-target derivation and authorized mutation. Conversely, changing a pathname does not revoke the held authority. To activate, replace, or revoke a safe root:
+
+1. disable live filesystem mutation gates and stop `mcp_runtime`;
+2. create and permission the intended real directory without symbolic-link components;
+3. update the protected `runtime.env` only if the lexical root changes;
+4. start the service and require successful readiness;
+5. initialize a fresh MCP session and issue new grants only after restart; and
+6. validate allowed and denied filesystem calls before re-enabling mutations.
+
+An offline issuer started after path replacement pins the replacement inode, so its grant intentionally cannot authorize an older process still pinned to the original root. Never treat repeated grant failure after namespace replacement as a reason to weaken the binding; restart through the controlled procedure.
+
 ## Android hardening
 
 1. Set Termux battery usage to unrestricted.

@@ -10,6 +10,8 @@ Live `copy_file` is a narrowly scoped Class 2 mutation. It requires all of the f
 
 Omitted `dry_run` and explicit `dry_run:true` remain previews. They never require or consume a grant and never publish a destination. Explicit `dry_run:false`, a bearer token, and an active MCP session are not substitutes for the copy grant. Enabling create, write, or Android-volume mutation does not enable copy.
 
+
+The offline issuer and runtime independently derive the grant target from their pinned safe-root device/inode identity. A grant issued before a configured root pathname is replaced remains valid only for the runtime's already-pinned original root. An issuer started after replacement derives a different binding and cannot authorize the older running process. Operators must stop the service before changing safe-root paths and restart it before issuing further grants.
 ## Runtime configuration
 
 ```bash

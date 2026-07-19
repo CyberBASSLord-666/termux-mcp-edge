@@ -1,5 +1,7 @@
 # `write_file` capability grants
 
+
+The offline issuer and runtime independently derive the grant target from their pinned safe-root device/inode identity. A grant issued before a configured root pathname is replaced remains valid only for the runtime's already-pinned original root. An issuer started after replacement derives a different binding and cannot authorize the older running process. Operators must stop the service before changing safe-root paths and restart it before issuing further grants.
 ## Purpose
 
 `write_file` is always available as a bounded UTF-8 validation preview in the staged MCP runtime. A live write is a separate Class 2 authority. It is disabled by default and requires all of the following:

@@ -30,6 +30,21 @@ Before validating behavior, confirm the operator configuration is deliberately n
 7. Keep filesystem safe roots limited to a dedicated project directory, not broad shared storage such as `/storage/emulated/0` or `/sdcard`.
 8. Leave `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false`, `MCP__FILE__COPY_FILE_MUTATION_ENABLED=false`, `MCP__FILE__WRITE_MUTATION_ENABLED=false`, and `MCP__ANDROID__VOLUME_CONTROL_ENABLED=false` unless their exact mutations are operationally required. Each enabled gate requires static-token auth and a paired lowercase `MCP__CAPABILITY__KEY_ID` plus 64-lowercase-hex `MCP__CAPABILITY__HMAC_KEY_HEX`; keep both secrets owner-readable and out of transcripts. Enabling one gate does not enable any other gate.
 
+## Safe-root lifetime checks
+
+Run these checks only in a disposable, controlled root with all live mutation gates disabled unless the exact granted-mutation phase is under test.
+
+1. Start the service with one real, non-symlink safe root and confirm readiness.
+2. Rename the root to a sibling path, recreate the configured pathname as a different directory, and place distinct marker files in the original and replacement.
+3. Through the already-running MCP session, prove read/list/metadata/discovery/search observe only the original marker and never the replacement marker.
+4. Start a separate offline issuer or validation process against the replacement and confirm its root-bound mutation target/grant is rejected by the older runtime.
+5. Stop the service. Confirm no assumption of revocation was made while the old process held its descriptor.
+6. Start a new service, initialize a new session, and prove it now observes only the replacement root.
+7. Repeat the read-only check after renaming and replacing an ancestor directory rather than the root itself.
+8. Restore the intended directory layout before enabling any mutation gate.
+
+Expected behavior is identity pinning, not pathname tracking: replacement cannot redirect a live process, and restart is required both to activate a new inode and to release the old authority. Do not record private paths, grants, device/inode values, or descriptor numbers in validation evidence.
+
 ## Authentication checks
 
 For static-token validation, load the protected token into a temporary shell variable without printing it:

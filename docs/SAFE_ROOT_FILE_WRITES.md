@@ -8,6 +8,8 @@ The baseline `mcp-runtime` registry always contains the tool. Mutation is indepe
 
 The public library entry point `FileSystemTools::write_file` is preview-only. Omitted `dry_run` and `Some(true)` validate and classify; `Some(false)` returns an authorization-required error without mutation. Live publication is reachable only through the crate-private prepared operation used by the MCP transport, so an embedding caller cannot bypass request-scoped authorization.
 
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
+
 ## Request and response bounds
 
 | Field | Type | Required | Contract |
@@ -35,7 +37,7 @@ See [Write-file capability grants](WRITE_FILE_CAPABILITY_GRANTS.md) for configur
 After argument and complete-response preflight, the runtime:
 
 1. Lexically anchors `path` to the most specific configured safe root and rejects relative paths, NUL bytes, parent traversal, the safe-root path itself, and paths outside every root.
-2. Opens the anchored root, captures its device/inode identity, and resolves the existing parent one component at a time with no-follow descriptors.
+2. Derives an identity-checked handle from the lifetime-pinned anchored root and resolves the existing parent one component at a time with no-follow descriptors.
 3. Retains the mutation-parent descriptor through authorization, private-quarantine staging, publication, verification, and durability sync. Replacement also retains a no-follow descriptor for the classified target. The safe-root descriptor is no longer needed after parent resolution.
 4. Classifies the final name without following it:
    - absence selects **create**;

@@ -2,6 +2,8 @@
 
 `create_directory` validates exactly one project-owned directory target inside a configured filesystem safe root. Mutation is separately default-disabled and requires one request-scoped, single-use capability grant. It does not enable shell access, recursive creation, deletion, rename, permission selection, or writes outside the existing safe-root authority. The complete grant format, issuance workflow, denial contract, and rotation procedure are defined in [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md).
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Input schema
 
 The closed MCP argument object accepts:
@@ -19,7 +21,7 @@ Confinement and response-size validation complete before grant matching. After d
 
 ## Descriptor and publication boundary
 
-The runtime anchors the request to the most specific configured safe root, opens that root with no-follow semantics, and walks every existing parent component by descriptor. Each component is opened with `O_PATH | O_NOFOLLOW`, classified with `fstat`, and required to be a directory. The final writable parent is reopened from the held descriptor; no authorized pathname is later re-resolved for mutation.
+The runtime anchors the request to the most specific configured safe root, derives an identity-checked handle from its lifetime-pinned descriptor, and walks every existing parent component by descriptor. Each component is opened with `O_PATH | O_NOFOLLOW`, classified with `fstat`, and required to be a directory. The final writable parent is reopened from the held descriptor; no authorized pathname is later re-resolved for mutation.
 
 Mutation uses this sequence:
 

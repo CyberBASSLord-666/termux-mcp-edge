@@ -2,6 +2,8 @@
 
 `read_text_range` is the baseline Class 1 tool for paginating larger UTF-8 text files without authorizing an unbounded read or splitting a Unicode code point. It extends read authority only inside configured filesystem safe roots and does not increase the separate 1 MiB whole-file authority of `read_file`.
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Discovery and input
 
 The tool is present only on the authenticated `mcp-runtime` surface. Its schema is closed:

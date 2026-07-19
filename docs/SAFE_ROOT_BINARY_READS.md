@@ -2,6 +2,8 @@
 
 `read_binary_file` is the baseline Class 1 tool for reading one arbitrary-byte regular file without expanding filesystem authority or requiring callers to treat binary data as UTF-8.
 
+
+At `FileSystemTools` construction, every configured root is lexically normalized and opened by a component-by-component `O_PATH | O_NOFOLLOW` walk from `/`. Missing components, non-directories, symbolic links, parent traversal, reserved namespaces, and filesystem root fail before runtime state exists. The process retains the resulting no-follow descriptor and device/inode identity for its lifetime. Every operation derives a fresh directory handle from that pinned authority, verifies the same identity with `fstat`, and only then walks descendants. It never reopens the configured root pathname, so replacing or renaming the root or any ancestor cannot redirect a running process; a different root becomes authoritative only after a new validated process starts.
 ## Discovery and input
 
 The tool is present only on the authenticated `mcp-runtime` surface. Its input schema is closed:

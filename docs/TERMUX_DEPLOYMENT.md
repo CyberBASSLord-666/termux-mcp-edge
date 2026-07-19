@@ -18,6 +18,12 @@ Deployment and configuration roots must remain below `HOME`. The service root an
 
 Install, upgrade, rollback, and uninstall are serialized by a project deployment lock. Temporary staging directories, link files, and owned stale locks are cleaned automatically.
 
+## Safe-root startup and replacement boundary
+
+The deployment manager must start the service only after every configured filesystem safe root exists as a real directory with no symbolic-link component. Runtime construction walks each root from `/` with no-follow path descriptors, rejects invalid roots, and pins the resulting descriptor plus device/inode identity for the complete process lifetime. Subsequent filesystem operations never reopen the configured root pathname.
+
+Replacing or renaming a root or any ancestor while `mcp_runtime` is running does not redirect it; the old inode remains authoritative until process exit. Path replacement also does not revoke that authority. For a safe-root change, stop the service before namespace work, update/create the intended directory and protected configuration, start a new process, require readiness, initialize a new MCP session, and issue new mutation grants. A post-replacement offline issuer binds the new root identity and its grants fail against an older process pinned to the original identity by design.
+
 ## Prerequisites
 
 ```bash

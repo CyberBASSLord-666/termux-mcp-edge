@@ -213,6 +213,14 @@ curl -sS \
 
 Expected behavior: the response is read-only, reports only the allowlisted project-owned logical runtime service, and does not expose process inventory, shell fallback, arbitrary service names, or control actions.
 
+## Lifetime-pinned safe-root validation
+
+Filesystem validation must prove the constructor rejects an empty list, empty and relative entries, parent traversal, missing components, regular files, symbolic-link final components, symbolic-link ancestors, reserved namespaces, filesystem root, and aliases with filesystem-root identity. Rejected configuration errors and debug output must not contain the configured path, descriptor number, device, or inode.
+
+For every filesystem family, construct the tools once, rename the configured root, create a populated replacement at the same pathname, and prove reads, listings, metadata, discovery, search, directory creation, copy, and write still act only on the original pinned inode. Repeat with an ancestor rename/replacement. A newly constructed tool instance must observe the replacement, proving that startup—not pathname substitution—is the authority transition.
+
+Issue create, copy, and write grants before replacement; after replacement, prove the original running instance derives the same targets, consumes each grant once, and mutates only the pinned original root. Independently construct an issuer/tool instance against the replacement and prove its root-bound targets differ and cannot authorize the older runtime. Verify the source contains no production call that reopens a configured root path and no best-effort `canonicalize` fallback.
+
 ## MCP Request-Limit Validation
 
 Default values are intentionally conservative for Termux:
