@@ -51,7 +51,8 @@ use crate::{
         COMMAND_MISSING_ARGUMENTS_REASON, RUN_COMMAND_PROFILE_TOOL,
     },
     create_directory_grant::{
-        CreateDirectoryGrantAuthority, CreateDirectoryGrantError, CREATE_DIRECTORY_GRANT_TTL_SECONDS,
+        CreateDirectoryGrantAuthority, CreateDirectoryGrantError,
+        CREATE_DIRECTORY_GRANT_TTL_SECONDS,
     },
     error::{AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE, INVALID_TEXT_RANGE_PUBLIC_MESSAGE},
     json_rpc::{parse_incoming_message, IncomingJsonRpcMessage, JsonRpcEnvelopeError},
