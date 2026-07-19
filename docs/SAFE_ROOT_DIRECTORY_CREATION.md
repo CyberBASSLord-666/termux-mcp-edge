@@ -15,7 +15,7 @@ With `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false` (the default), discove
 
 ## Authorization boundary
 
-Confinement and response-size validation complete before grant matching. The runtime then atomically consumes the grant immediately before the first `mkdirat` attempt. Dry runs, invalid paths, target mismatches, and wrong-context header use do not consume a valid grant. Once consumed, a grant stays consumed after any later staging, verification, sync, publication, response, or cleanup failure. Reuse and concurrent replay fail closed.
+Confinement and response-size validation complete before grant matching. After descriptor preparation, the permit-owned blocking worker acquires the poison-fail-closed process-wide publication lock shared with every `write_file` and `create_directory` instance, revalidates that the final name is still absent, resolves cancellation against worker ownership, and only then atomically consumes the grant immediately before the first `mkdirat` attempt. Dry runs, invalid paths, target mismatches, a poisoned lock, stale prepared targets, cancellation while waiting for the lock, and wrong-context header use do not consume a valid grant. Once consumed, a grant stays consumed after any later staging, verification, sync, publication, response, or cleanup failure. Reuse and concurrent replay fail closed.
 
 ## Descriptor and publication boundary
 
@@ -23,13 +23,15 @@ The runtime anchors the request to the most specific configured safe root, opens
 
 Mutation uses this sequence:
 
-1. Confirm the final name is absent with no-follow descriptor metadata.
-2. Create one unpredictable temporary directory in the held parent descriptor.
-3. Open that exact temporary directory without following links.
-4. Force and verify mode `0700` on the opened descriptor.
-5. Sync the directory descriptor.
-6. Publish it to the requested final name with atomic `RENAME_NOREPLACE` semantics.
-7. Sync the exact held parent descriptor before reporting success.
+1. Confirm the final name is absent during descriptor preparation.
+2. Acquire the process-wide publication lock and confirm the final name is still absent under that lock.
+3. Resolve cancellation, consume the exact grant, and retain the lock through all remaining steps.
+4. Create one unpredictable temporary directory in the held parent descriptor.
+5. Open that exact temporary directory without following links.
+6. Force and verify mode `0700` on the opened descriptor.
+7. Sync the directory descriptor.
+8. Publish it to the requested final name with atomic `RENAME_NOREPLACE` semantics.
+9. Verify the published identity and sync the exact held parent descriptor before releasing the process lock and reporting success.
 
 An existing file, directory, link, or concurrently inserted final object is never replaced. The temporary directory is removed on pre-publication failure. After publication, rollback cleanup compares the held directory identity with no-follow metadata before removing the empty object, so a concurrently substituted path is not deleted.
 

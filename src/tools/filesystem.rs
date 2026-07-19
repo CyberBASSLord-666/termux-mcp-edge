@@ -7,6 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{
@@ -81,6 +82,57 @@ const WRITE_FILE_ARTIFACT_PREFIX: &str = ".termux-mcp-write-artifact-";
 pub const MAX_WRITE_FILE_QUARANTINE_ARTIFACTS: usize = 32;
 pub const MAX_WRITE_FILE_QUARANTINE_BYTES: u64 =
     MAX_WRITE_FILE_QUARANTINE_ARTIFACTS as u64 * 1_048_576;
+
+/// One process-wide serialization boundary for every authorized directory and
+/// file-write publication.
+///
+/// The transport's fail-fast worker permit remains a per-state admission
+/// boundary. This mutex is the narrower correctness boundary shared by every
+/// `FileSystemTools` instance: it is acquired only by an already admitted
+/// blocking worker, after descriptor preparation, and retained through
+/// revalidation, grant consumption, publication, verification, and durability.
+static FILESYSTEM_PUBLICATION_LOCK: Mutex<()> = Mutex::new(());
+
+fn publication_lock_poisoned() -> AppError {
+    AppError::Io(std::io::Error::other(
+        "filesystem publication lock is poisoned",
+    ))
+}
+
+fn acquire_publication_lock_with_contention_hook(
+    lock: &Mutex<()>,
+    on_contention: impl FnOnce(),
+) -> Result<MutexGuard<'_, ()>, AppError> {
+    match lock.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(_)) => Err(publication_lock_poisoned()),
+        Err(TryLockError::WouldBlock) => {
+            on_contention();
+            lock.lock().map_err(|_| publication_lock_poisoned())
+        }
+    }
+}
+
+#[cfg(test)]
+fn acquire_publication_lock(lock: &Mutex<()>) -> Result<MutexGuard<'_, ()>, AppError> {
+    acquire_publication_lock_with_contention_hook(lock, || {})
+}
+
+#[cfg(test)]
+fn acquire_filesystem_publication_lock() -> Result<MutexGuard<'static, ()>, AppError> {
+    acquire_publication_lock(&FILESYSTEM_PUBLICATION_LOCK)
+}
+
+fn acquire_filesystem_publication_lock_with_contention_hook(
+    on_contention: impl FnOnce(),
+) -> Result<MutexGuard<'static, ()>, AppError> {
+    acquire_publication_lock_with_contention_hook(&FILESYSTEM_PUBLICATION_LOCK, on_contention)
+}
+
+#[cfg(test)]
+pub(crate) fn acquire_filesystem_publication_lock_for_test() -> MutexGuard<'static, ()> {
+    acquire_filesystem_publication_lock().expect("test publication lock must not be poisoned")
+}
 
 struct DescriptorDirectoryCleanup<'a> {
     parent: &'a OwnedFd,
@@ -213,6 +265,7 @@ pub(crate) struct PreparedCreateDirectoryMutation {
 pub(crate) enum AuthorizedCreateDirectoryError {
     Authorization(CreateDirectoryGrantError),
     Filesystem(AppError),
+    Cancelled,
 }
 
 pub(crate) struct PreparedWriteFileMutation {
@@ -231,6 +284,7 @@ pub(crate) struct PreparedWriteFileMutation {
 pub(crate) enum AuthorizedWriteFileError {
     Authorization(WriteFileGrantError),
     Filesystem(AppError),
+    Cancelled,
 }
 
 impl PreparedCreateDirectoryMutation {
@@ -241,7 +295,61 @@ impl PreparedCreateDirectoryMutation {
         self.result
     }
 
-    pub(crate) fn revalidate_destination_absent(&self) -> Result<(), AppError> {
+    #[cfg(test)]
+    pub(crate) fn execute_authorized(
+        self,
+        authorize: impl FnOnce(&CreateDirectoryGrantTarget) -> Result<(), CreateDirectoryGrantError>,
+    ) -> Result<CreateDirectoryResult, AuthorizedCreateDirectoryError> {
+        self.execute_authorized_with_commit(|target| {
+            authorize(target).map_err(AuthorizedCreateDirectoryError::Authorization)
+        })
+    }
+
+    /// Execute after one lock-held authorization-and-commit decision.
+    ///
+    /// The callback is deliberately invoked only after the process-wide
+    /// publication lock is held and the prepared absent-target posture has
+    /// been revalidated. The transport claims request ownership inside this
+    /// callback immediately before consuming the exact grant.
+    pub(crate) fn execute_authorized_with_commit(
+        self,
+        authorize_and_commit: impl FnOnce(
+            &CreateDirectoryGrantTarget,
+        ) -> Result<(), AuthorizedCreateDirectoryError>,
+    ) -> Result<CreateDirectoryResult, AuthorizedCreateDirectoryError> {
+        self.execute_authorized_with_commit_and_lock_contention_hook(authorize_and_commit, || {})
+    }
+
+    fn execute_authorized_with_commit_and_lock_contention_hook(
+        self,
+        authorize_and_commit: impl FnOnce(
+            &CreateDirectoryGrantTarget,
+        ) -> Result<(), AuthorizedCreateDirectoryError>,
+        on_lock_contention: impl FnOnce(),
+    ) -> Result<CreateDirectoryResult, AuthorizedCreateDirectoryError> {
+        let publication_lock =
+            acquire_filesystem_publication_lock_with_contention_hook(on_lock_contention)
+                .map_err(AuthorizedCreateDirectoryError::Filesystem)?;
+        self.revalidate_absent_target()
+            .map_err(AuthorizedCreateDirectoryError::Filesystem)?;
+        let temp_name = OsString::from(format!(
+            ".termux-mcp-create-directory-{}.tmp",
+            uuid::Uuid::new_v4()
+        ));
+        authorize_and_commit(&self.grant_target)?;
+
+        let started = self.started;
+        let result = self
+            .execute_after_authorization(temp_name)
+            .map_err(AuthorizedCreateDirectoryError::Filesystem)?;
+        drop(publication_lock);
+        histogram!("mcp.fs.create_directory.latency_seconds")
+            .record(started.elapsed().as_secs_f64());
+        counter!("mcp.fs.create_directory.created_total").increment(1);
+        Ok(result)
+    }
+
+    fn revalidate_absent_target(&self) -> Result<(), AppError> {
         match descriptor_fs::statat(
             &self.parent_fd,
             &self.directory_name,
@@ -251,26 +359,6 @@ impl PreparedCreateDirectoryMutation {
             Ok(_) => Err(AppError::PathAlreadyExists),
             Err(error) => Err(descriptor_error(error)),
         }
-    }
-
-    pub(crate) fn execute_authorized(
-        self,
-        authorize: impl FnOnce(&CreateDirectoryGrantTarget) -> Result<(), CreateDirectoryGrantError>,
-    ) -> Result<CreateDirectoryResult, AuthorizedCreateDirectoryError> {
-        let temp_name = OsString::from(format!(
-            ".termux-mcp-create-directory-{}.tmp",
-            uuid::Uuid::new_v4()
-        ));
-        authorize(&self.grant_target).map_err(AuthorizedCreateDirectoryError::Authorization)?;
-
-        let started = self.started;
-        let result = self
-            .execute_after_authorization(temp_name)
-            .map_err(AuthorizedCreateDirectoryError::Filesystem)?;
-        histogram!("mcp.fs.create_directory.latency_seconds")
-            .record(started.elapsed().as_secs_f64());
-        counter!("mcp.fs.create_directory.created_total").increment(1);
-        Ok(result)
     }
 
     fn execute_after_authorization(
@@ -341,7 +429,95 @@ impl PreparedWriteFileMutation {
         self.result
     }
 
-    pub(crate) fn revalidate_target_posture(&self) -> Result<(), AppError> {
+    #[cfg(test)]
+    pub(crate) fn execute_authorized(
+        self,
+        authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        self.execute_authorized_with_capture_hook(authorize, || {})
+    }
+
+    /// Execute after one lock-held authorization-and-commit decision.
+    ///
+    /// This is the transport path. The callback claims cancellation ownership
+    /// and consumes the grant only after the process-wide publication lock and
+    /// the exact prepared create-or-replace posture have both been established.
+    pub(crate) fn execute_authorized_with_commit(
+        self,
+        authorize_and_commit: impl FnOnce(&WriteFileGrantTarget) -> Result<(), AuthorizedWriteFileError>,
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        self.execute_authorized_with_commit_and_capture_hook(authorize_and_commit, || {}, || {})
+    }
+
+    #[cfg(test)]
+    fn execute_authorized_with_capture_hook(
+        self,
+        authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
+        before_replace_capture: impl FnOnce(),
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        self.execute_authorized_with_commit_and_capture_hook(
+            |target| authorize(target).map_err(AuthorizedWriteFileError::Authorization),
+            before_replace_capture,
+            || {},
+        )
+    }
+
+    #[cfg(test)]
+    fn execute_authorized_with_lock_contention_hook(
+        self,
+        authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
+        on_lock_contention: impl FnOnce(),
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        self.execute_authorized_with_commit_and_capture_hook(
+            |target| authorize(target).map_err(AuthorizedWriteFileError::Authorization),
+            || {},
+            on_lock_contention,
+        )
+    }
+
+    pub(crate) fn execute_authorized_with_commit_and_lock_contention_hook(
+        self,
+        authorize_and_commit: impl FnOnce(&WriteFileGrantTarget) -> Result<(), AuthorizedWriteFileError>,
+        on_lock_contention: impl FnOnce(),
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        self.execute_authorized_with_commit_and_capture_hook(
+            authorize_and_commit,
+            || {},
+            on_lock_contention,
+        )
+    }
+
+    fn execute_authorized_with_commit_and_capture_hook(
+        self,
+        authorize_and_commit: impl FnOnce(&WriteFileGrantTarget) -> Result<(), AuthorizedWriteFileError>,
+        before_replace_capture: impl FnOnce(),
+        on_lock_contention: impl FnOnce(),
+    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
+        let publication_lock =
+            acquire_filesystem_publication_lock_with_contention_hook(on_lock_contention)
+                .map_err(AuthorizedWriteFileError::Filesystem)?;
+        let required_bytes = self
+            .existing_size
+            .unwrap_or(0)
+            .max(self.content.len() as u64);
+        preflight_write_quarantine_capacity(&self.parent_fd, required_bytes)
+            .map_err(AuthorizedWriteFileError::Filesystem)?;
+        self.revalidate_disposition()
+            .map_err(AuthorizedWriteFileError::Filesystem)?;
+        authorize_and_commit(&self.grant_target)?;
+
+        let started = self.started;
+        let result = self
+            .execute_after_authorization(before_replace_capture)
+            .map_err(AuthorizedWriteFileError::Filesystem)?;
+        drop(publication_lock);
+        histogram!("mcp.fs.write.latency_seconds").record(started.elapsed().as_secs_f64());
+        counter!("mcp.fs.write.calls_total").increment(1);
+        counter!("mcp.fs.write.bytes_total").increment(result.size_bytes as u64);
+        Ok(result)
+    }
+
+    fn revalidate_disposition(&self) -> Result<(), AppError> {
         match self.disposition {
             WriteFileDisposition::Create => match descriptor_fs::statat(
                 &self.parent_fd,
@@ -376,43 +552,12 @@ impl PreparedWriteFileMutation {
                         descriptor_error(error)
                     }
                 })?;
-                if write_file_existing_identity_matches(&current_target, expected_identity) {
-                    Ok(())
-                } else {
-                    Err(AppError::WriteTargetChanged)
+                if !write_file_existing_identity_matches(&current_target, expected_identity) {
+                    return Err(AppError::WriteTargetChanged);
                 }
+                Ok(())
             }
         }
-    }
-
-    pub(crate) fn execute_authorized(
-        self,
-        authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
-    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
-        self.execute_authorized_with_capture_hook(authorize, || {})
-    }
-
-    fn execute_authorized_with_capture_hook(
-        self,
-        authorize: impl FnOnce(&WriteFileGrantTarget) -> Result<(), WriteFileGrantError>,
-        before_replace_capture: impl FnOnce(),
-    ) -> Result<WriteFileResult, AuthorizedWriteFileError> {
-        let required_bytes = self
-            .existing_size
-            .unwrap_or(0)
-            .max(self.content.len() as u64);
-        preflight_write_quarantine_capacity(&self.parent_fd, required_bytes)
-            .map_err(AuthorizedWriteFileError::Filesystem)?;
-        authorize(&self.grant_target).map_err(AuthorizedWriteFileError::Authorization)?;
-
-        let started = self.started;
-        let result = self
-            .execute_after_authorization(before_replace_capture)
-            .map_err(AuthorizedWriteFileError::Filesystem)?;
-        histogram!("mcp.fs.write.latency_seconds").record(started.elapsed().as_secs_f64());
-        counter!("mcp.fs.write.calls_total").increment(1);
-        counter!("mcp.fs.write.bytes_total").increment(result.size_bytes as u64);
-        Ok(result)
     }
 
     fn execute_after_authorization(
@@ -420,8 +565,9 @@ impl PreparedWriteFileMutation {
         before_replace_capture: impl FnOnce(),
     ) -> Result<WriteFileResult, AppError> {
         // Grant consumption occurs immediately before this first mutating
-        // operation. The advisory lock serializes cooperating writers only;
-        // descriptor-relative identity checks and preservation provide safety.
+        // operation while the process-wide publication lock is retained. The
+        // quarantine advisory lock additionally coordinates its parent-local
+        // recovery namespace with cooperating external processes.
         let quarantine = open_write_file_quarantine(&self.parent_fd)?;
         let required_bytes = self
             .existing_size
@@ -3220,6 +3366,208 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_publication_lock_fails_closed_without_recovery() {
+        let lock = std::sync::Arc::new(Mutex::new(()));
+        let poisoner = std::sync::Arc::clone(&lock);
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("intentional publication-lock poison");
+        })
+        .join()
+        .is_err());
+
+        let error = acquire_publication_lock(&lock)
+            .expect_err("a poisoned publication lock must fail closed");
+        assert!(matches!(error, AppError::Io(_)));
+        assert!(error.to_string().contains("publication lock is poisoned"));
+    }
+
+    #[test]
+    fn process_publication_lock_serializes_create_and_write_across_tool_instances() {
+        let root = tempfile::tempdir().unwrap();
+        let create_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let write_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let directory = root.path().join("serialized-directory");
+        let file = root.path().join("serialized-file.txt");
+        let prepared_directory = create_tools
+            .prepare_create_directory_mutation_blocking(directory.to_string_lossy().to_string())
+            .unwrap();
+        let prepared_file = write_tools
+            .prepare_write_file_mutation_blocking(
+                file.to_string_lossy().to_string(),
+                "serialized-content".to_owned(),
+            )
+            .unwrap();
+
+        let (directory_locked_tx, directory_locked_rx) = std::sync::mpsc::channel();
+        let (release_directory_tx, release_directory_rx) = std::sync::mpsc::channel();
+        let directory_worker = std::thread::spawn(move || {
+            prepared_directory.execute_authorized(|_| {
+                directory_locked_tx.send(()).unwrap();
+                release_directory_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        directory_locked_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("directory worker did not acquire the publication lock");
+
+        let (file_authorized_tx, file_authorized_rx) = std::sync::mpsc::channel();
+        let (file_contended_tx, file_contended_rx) = std::sync::mpsc::channel();
+        let file_worker = std::thread::spawn(move || {
+            prepared_file.execute_authorized_with_lock_contention_hook(
+                |_| {
+                    file_authorized_tx.send(()).unwrap();
+                    Ok(())
+                },
+                || file_contended_tx.send(()).unwrap(),
+            )
+        });
+        file_contended_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("write worker did not contend on the held publication lock");
+        assert!(
+            matches!(
+                file_authorized_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "a distinct tool instance entered authorization while create held the process lock"
+        );
+
+        release_directory_tx.send(()).unwrap();
+        assert!(directory_worker.join().unwrap().is_ok());
+        file_authorized_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("write worker did not continue after publication-lock release");
+        assert!(file_worker.join().unwrap().is_ok());
+        assert!(directory.is_dir());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "serialized-content");
+    }
+
+    #[test]
+    fn stale_create_directory_loser_preserves_grant_for_fresh_preparation() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let first_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let second_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("stale-directory");
+        let first = first_tools
+            .prepare_create_directory_mutation_blocking(target.to_string_lossy().to_string())
+            .unwrap();
+        let stale = second_tools
+            .prepare_create_directory_mutation_blocking(target.to_string_lossy().to_string())
+            .unwrap();
+        let authority = crate::create_directory_grant::CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "stale-create-test-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let grant = authority
+            .issue_at(&session_id, &stale.grant_target, unix_timestamp_seconds())
+            .unwrap();
+
+        assert!(first.execute_authorized(|_| Ok(())).is_ok());
+        let authorization_called = Cell::new(false);
+        let stale_result = stale.execute_authorized(|grant_target| {
+            authorization_called.set(true);
+            authority.consume_at(
+                Some(&grant),
+                &session_id,
+                grant_target,
+                unix_timestamp_seconds(),
+            )
+        });
+        assert!(matches!(
+            stale_result,
+            Err(AuthorizedCreateDirectoryError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!authorization_called.get());
+
+        std::fs::remove_dir(&target).unwrap();
+        let fresh = second_tools
+            .prepare_create_directory_mutation_blocking(target.to_string_lossy().to_string())
+            .unwrap();
+        assert!(fresh
+            .execute_authorized(|grant_target| authority.consume_at(
+                Some(&grant),
+                &session_id,
+                grant_target,
+                unix_timestamp_seconds(),
+            ))
+            .is_ok());
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn stale_write_create_loser_preserves_grant_for_fresh_preparation() {
+        const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+        let root = tempfile::tempdir().unwrap();
+        let first_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let second_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let target = root.path().join("stale-write.txt");
+        let first = first_tools
+            .prepare_write_file_mutation_blocking(
+                target.to_string_lossy().to_string(),
+                "winner".to_owned(),
+            )
+            .unwrap();
+        let stale = second_tools
+            .prepare_write_file_mutation_blocking(
+                target.to_string_lossy().to_string(),
+                "reusable".to_owned(),
+            )
+            .unwrap();
+        let authority = crate::write_file_grant::WriteFileGrantAuthority::from_hex_key(
+            "test-key-1",
+            TEST_KEY,
+            "stale-write-test-principal",
+        )
+        .unwrap();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let grant = authority.issue(&session_id, &stale.grant_target).unwrap();
+
+        assert!(first.execute_authorized(|_| Ok(())).is_ok());
+        let authorization_called = Cell::new(false);
+        let stale_result = stale.execute_authorized(|grant_target| {
+            authorization_called.set(true);
+            authority.consume(Some(&grant), &session_id, grant_target)
+        });
+        assert!(matches!(
+            stale_result,
+            Err(AuthorizedWriteFileError::Filesystem(
+                AppError::PathAlreadyExists
+            ))
+        ));
+        assert!(!authorization_called.get());
+
+        std::fs::remove_file(&target).unwrap();
+        let fresh = second_tools
+            .prepare_write_file_mutation_blocking(
+                target.to_string_lossy().to_string(),
+                "reusable".to_owned(),
+            )
+            .unwrap();
+        assert!(fresh
+            .execute_authorized(|grant_target| {
+                authority.consume(Some(&grant), &session_id, grant_target)
+            })
+            .is_ok());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "reusable");
+    }
+
+    #[test]
     fn base64_encoder_matches_rfc_4648_canonical_vectors() {
         for (plain, expected) in [
             (b"".as_slice(), ""),
@@ -4165,7 +4513,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_write_rejects_target_exchange_without_deleting_either_identity() {
+    async fn prepared_write_rejects_stale_target_before_authorization_or_artifact() {
         let root = tempfile::tempdir().unwrap();
         let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
             .expect("test safe root must validate");
@@ -4182,7 +4530,11 @@ mod tests {
         std::fs::rename(&target, &parked).unwrap();
         std::fs::write(&target, "foreign-current").unwrap();
 
-        let result = prepared.execute_authorized(|_| Ok(()));
+        let authorization_called = Cell::new(false);
+        let result = prepared.execute_authorized(|_| {
+            authorization_called.set(true);
+            Ok(())
+        });
 
         assert!(matches!(
             result,
@@ -4190,6 +4542,7 @@ mod tests {
                 AppError::WriteTargetChanged
             ))
         ));
+        assert!(!authorization_called.get());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "foreign-current");
         assert_eq!(std::fs::read_to_string(&parked).unwrap(), "prepared-old");
         assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
@@ -4199,16 +4552,7 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".termux-mcp-write-file-")
         }));
-        let quarantine = root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
-        let artifacts = std::fs::read_dir(quarantine)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(artifacts.len(), 1);
-        assert_eq!(
-            std::fs::read_to_string(artifacts[0].path()).unwrap(),
-            "authorized-new"
-        );
+        assert!(!root.path().join(WRITE_FILE_QUARANTINE_DIRECTORY).exists());
     }
 
     #[tokio::test]
