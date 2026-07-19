@@ -117,6 +117,7 @@ TOOLS = [
     "read_binary_file",
     "read_binary_range",
     "read_file",
+    "read_text_range",
     "search_text",
     "write_file",
 ]
@@ -570,6 +571,31 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "read_text_range":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded UTF-8 safe-root file range read.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "offset_bytes": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 67108864,
+                                    },
+                                    "max_bytes": {
+                                        "type": "integer",
+                                        "minimum": 4,
+                                        "maximum": 262144,
+                                    },
+                                },
+                                "required": ["path", "offset_bytes", "max_bytes"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -647,6 +673,12 @@ class Handler(BaseHTTPRequestHandler):
                         "binaryRangeReadMaxFileBytes": 67108864,
                         "binaryRangeReadMaxBytes": 262144,
                         "binaryRangeReadMaxResponseBytes": 393216,
+                        "textRangeReads": True,
+                        "textRangeReadEncoding": "utf-8",
+                        "textRangeReadMinBytes": 4,
+                        "textRangeReadMaxFileBytes": 67108864,
+                        "textRangeReadMaxBytes": 262144,
+                        "textRangeReadMaxResponseBytes": 1703936,
                         "fileHashing": True,
                         "fileHashAlgorithm": "sha256",
                         "fileHashMaxBytes": 16777216,
@@ -1164,6 +1196,122 @@ class Handler(BaseHTTPRequestHandler):
                         "maxReadBytes": 262144,
                         "maxFileBytes": 67108864,
                         "maxResponseBytes": 393216,
+                    },
+                ),
+            )
+            return
+        if name == "read_text_range":
+            target = safe_path(str(arguments.get("path", "")))
+            offset = arguments.get("offset_bytes")
+            maximum = arguments.get("max_bytes")
+            if (
+                target is None
+                or target.is_symlink()
+                or not target.is_file()
+                or isinstance(offset, bool)
+                or not isinstance(offset, int)
+                or offset < 0
+                or offset > 67108864
+                or isinstance(maximum, bool)
+                or not isinstance(maximum, int)
+                or maximum < 4
+                or maximum > 262144
+            ):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Text range invalid."),
+                )
+                return
+            try:
+                descriptor = os.open(
+                    target,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                )
+                with os.fdopen(descriptor, "rb") as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode):
+                        raise OSError("text range target is not regular")
+                    if metadata.st_size > 67108864:
+                        self.send_json(
+                            413,
+                            rpc_error(
+                                identifier,
+                                -32001,
+                                "Payload too large",
+                                "Text range file too large.",
+                            ),
+                        )
+                        return
+                    if offset > metadata.st_size:
+                        self.send_json(
+                            400,
+                            rpc_error(
+                                identifier,
+                                -32602,
+                                "Invalid params",
+                                "Text range invalid.",
+                            ),
+                        )
+                        return
+                    stream.seek(offset)
+                    content_bytes = stream.read(maximum)
+                    post_metadata = os.fstat(stream.fileno())
+                    if post_metadata.st_size != metadata.st_size:
+                        self.send_json(
+                            409,
+                            rpc_error(
+                                identifier,
+                                -32004,
+                                "Resource changed",
+                                "Text range file changed.",
+                            ),
+                        )
+                        return
+            except OSError:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Text range invalid."),
+                )
+                return
+            if content_bytes and content_bytes[0] & 0xC0 == 0x80:
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Text range invalid."),
+                )
+                return
+            physical_end = offset + len(content_bytes)
+            try:
+                content = content_bytes.decode("utf-8")
+            except UnicodeDecodeError as error:
+                if error.reason == "unexpected end of data" and physical_end < metadata.st_size:
+                    content_bytes = content_bytes[: error.start]
+                    content = content_bytes.decode("utf-8")
+                else:
+                    self.send_json(
+                        400,
+                        rpc_error(
+                            identifier,
+                            -32602,
+                            "Invalid params",
+                            "Text range encoding invalid.",
+                        ),
+                    )
+                    return
+            next_offset = offset + len(content_bytes)
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "content": content,
+                        "offsetBytes": offset,
+                        "nextOffsetBytes": next_offset,
+                        "sizeBytes": len(content_bytes),
+                        "fileSizeBytes": metadata.st_size,
+                        "eof": next_offset >= metadata.st_size,
+                        "maxReadBytes": 262144,
+                        "maxFileBytes": 67108864,
+                        "maxResponseBytes": 1703936,
                     },
                 ),
             )

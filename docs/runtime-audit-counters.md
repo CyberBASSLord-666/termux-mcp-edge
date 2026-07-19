@@ -19,6 +19,7 @@ The current staged runtime records aggregate decisions for the enabled surfaces 
 - `read_binary_file`
 - `read_binary_range`
 - `read_file`
+- `read_text_range`
 - `search_text`
 - `write_file`
 
@@ -26,7 +27,7 @@ When a separately compiled and runtime-enabled optional posture is active, the s
 
 The counters are additive runtime metadata. They do not change the availability, authorization, output shape, or behavior of the staged tools. They are reset when the process restarts.
 
-Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/discovery/copy/hash, and dry-run-by-default mutation. Directory mutation is additionally default-disabled and request-grant gated. Its counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target digests, timestamps, or replay state. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Path-discovery counters retain neither starting/matched path, filename, query, kind, request ID, identity, nor raw error. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Whole-file and range-read audit counters retain neither path, filename, offset, requested/returned size, raw/base64 content, file size/identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
+Filesystem tools remain governed by safe-root validation, bounded metadata/binary reads/text reads/search/discovery/copy/hash, and dry-run-by-default mutation. Directory mutation is additionally default-disabled and request-grant gated. Its counters retain only stable decisions/reasons, never capability keys, grants, principal fingerprints, sessions, JTIs, target digests, timestamps, or replay state. Copy audit counters are content-private and retain neither endpoint path nor copied bytes, identities, source metadata, request ids, or temporary names. Path-discovery counters retain neither starting/matched path, filename, query, kind, request ID, identity, nor raw error. Hash audit counters retain neither path, content, digest, size, identity, nor partial state. Whole-file, binary-range, and UTF-8-range read audit counters retain neither path, filename, offset, requested/returned size, raw/base64/text content, file size/identity, request ID, nor host error. All filesystem counters record only stable tool names and reason codes for allowed or denied decisions.
 
 See [`filesystem-audit-counter-contract.md`](filesystem-audit-counter-contract.md) for the filesystem-specific counter contract and [`capability-token-evaluation-contract.md`](capability-token-evaluation-contract.md) for the future high-impact capability-token evaluation boundary.
 

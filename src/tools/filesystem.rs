@@ -878,8 +878,7 @@ impl FileSystemTools {
         .await
         .map_err(filesystem_worker_error)??;
 
-        histogram!("mcp.fs.read_text_range.latency_seconds")
-            .record(start.elapsed().as_secs_f64());
+        histogram!("mcp.fs.read_text_range.latency_seconds").record(start.elapsed().as_secs_f64());
         counter!("mcp.fs.read_text_range.calls_total").increment(1);
         counter!("mcp.fs.read_text_range.bytes_total").increment(result.size_bytes as u64);
         Ok(result)
@@ -2739,9 +2738,7 @@ mod tests {
         assert!(eof.eof);
 
         assert!(matches!(
-            tools
-                .read_text_range(path, 2, MIN_TEXT_RANGE_BYTES)
-                .await,
+            tools.read_text_range(path, 2, MIN_TEXT_RANGE_BYTES).await,
             Err(AppError::InvalidTextRange)
         ));
     }
@@ -2768,11 +2765,7 @@ mod tests {
         for path in [invalid, truncated] {
             assert!(matches!(
                 tools
-                    .read_text_range(
-                        path.to_string_lossy().to_string(),
-                        0,
-                        MIN_TEXT_RANGE_BYTES,
-                    )
+                    .read_text_range(path.to_string_lossy().to_string(), 0, MIN_TEXT_RANGE_BYTES,)
                     .await,
                 Err(AppError::InvalidFileEncoding)
             ));
@@ -2805,11 +2798,7 @@ mod tests {
         for max_bytes in [MIN_TEXT_RANGE_BYTES - 1, MAX_TEXT_RANGE_BYTES + 1] {
             assert!(matches!(
                 tools
-                    .read_text_range(
-                        exact_file.to_string_lossy().to_string(),
-                        0,
-                        max_bytes,
-                    )
+                    .read_text_range(exact_file.to_string_lossy().to_string(), 0, max_bytes,)
                     .await,
                 Err(AppError::InvalidTextRange)
             ));
@@ -2834,11 +2823,7 @@ mod tests {
         let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
 
         let result = tools
-            .read_text_range(
-                path.to_string_lossy().to_string(),
-                0,
-                MAX_TEXT_RANGE_BYTES,
-            )
+            .read_text_range(path.to_string_lossy().to_string(), 0, MAX_TEXT_RANGE_BYTES)
             .await
             .unwrap();
         assert_eq!(result.content.len(), MAX_TEXT_RANGE_BYTES);

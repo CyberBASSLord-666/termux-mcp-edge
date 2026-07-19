@@ -578,6 +578,7 @@ jq -e '
   and ([.results[].code] | index("safe_root_file_hash_verified") != null)
   and ([.results[].code] | index("safe_root_binary_read_verified") != null)
   and ([.results[].code] | index("safe_root_binary_range_read_verified") != null)
+  and ([.results[].code] | index("safe_root_text_range_read_verified") != null)
   and ([.results[].code] | index("safe_root_path_metadata_succeeded") != null)
   and ([.results[].code] | index("safe_root_text_search_succeeded") != null)
   and ([.results[].code] | index("read_response_bound_enforced") != null)

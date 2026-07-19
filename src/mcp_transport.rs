@@ -69,8 +69,8 @@ use crate::{
         MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
         MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
         MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_ESCAPED_BYTES,
-        MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES, MIN_FIND_DEPTH,
-        MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
+        MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
+        MIN_TEXT_RANGE_BYTES,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -3700,9 +3700,8 @@ async fn handle_read_binary_range_call(
 }
 
 fn text_range_success_envelope_fits(id: Option<Value>) -> bool {
-    let maximum_summary = format!(
-        "Read {MAX_TEXT_RANGE_BYTES} UTF-8 bytes from one bounded safe-rooted file range."
-    );
+    let maximum_summary =
+        format!("Read {MAX_TEXT_RANGE_BYTES} UTF-8 bytes from one bounded safe-rooted file range.");
     let body = result_body(
         id,
         maximum_summary,

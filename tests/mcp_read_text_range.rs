@@ -498,7 +498,10 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
     assert_eq!(runtime["textRangeReads"], true);
     assert_eq!(runtime["textRangeReadEncoding"], "utf-8");
     assert_eq!(runtime["textRangeReadMinBytes"], MIN_TEXT_RANGE_BYTES);
-    assert_eq!(runtime["textRangeReadMaxFileBytes"], MAX_TEXT_RANGE_FILE_BYTES);
+    assert_eq!(
+        runtime["textRangeReadMaxFileBytes"],
+        MAX_TEXT_RANGE_FILE_BYTES
+    );
     assert_eq!(runtime["textRangeReadMaxBytes"], MAX_TEXT_RANGE_BYTES);
     assert_eq!(
         runtime["textRangeReadMaxResponseBytes"],

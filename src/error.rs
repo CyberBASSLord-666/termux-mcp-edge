@@ -81,10 +81,9 @@ impl AppError {
                 StatusCode::BAD_REQUEST,
                 "Requested binary range is not valid",
             ),
-            AppError::InvalidTextRange => (
-                StatusCode::BAD_REQUEST,
-                "Requested text range is not valid",
-            ),
+            AppError::InvalidTextRange => {
+                (StatusCode::BAD_REQUEST, "Requested text range is not valid")
+            }
             AppError::FileChangedDuringRead => {
                 (StatusCode::CONFLICT, "File changed during the bounded read")
             }
@@ -210,10 +209,7 @@ mod tests {
         );
         assert_eq!(
             AppError::InvalidTextRange.public_response(),
-            (
-                StatusCode::BAD_REQUEST,
-                "Requested text range is not valid",
-            )
+            (StatusCode::BAD_REQUEST, "Requested text range is not valid",)
         );
         assert_eq!(
             AppError::FileChangedDuringRead.public_response(),
