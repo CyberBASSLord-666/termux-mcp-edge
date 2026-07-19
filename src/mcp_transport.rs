@@ -467,6 +467,55 @@ impl Drop for WriteFileMutationAuditGuard {
     }
 }
 
+#[cfg(feature = "android-volume-control")]
+struct AndroidVolumeMutationAuditGuard {
+    counters: SharedAuditCounters,
+    recorded: bool,
+}
+
+#[cfg(feature = "android-volume-control")]
+impl AndroidVolumeMutationAuditGuard {
+    fn new(counters: SharedAuditCounters) -> Self {
+        Self {
+            counters,
+            recorded: false,
+        }
+    }
+
+    fn finish<T>(mut self, outcome: &Result<T, AndroidVolumeControlError>) {
+        match outcome {
+            Ok(_) => record_volume_control_decision(
+                &self.counters,
+                AuditMode::Mutating,
+                AuditDecision::Allowed,
+                ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED,
+            ),
+            Err(error) => record_volume_control_decision(
+                &self.counters,
+                AuditMode::Mutating,
+                AuditDecision::Denied,
+                (*error).reason_code(),
+            ),
+        }
+        self.recorded = true;
+    }
+}
+
+#[cfg(feature = "android-volume-control")]
+impl Drop for AndroidVolumeMutationAuditGuard {
+    fn drop(&mut self) {
+        if !self.recorded {
+            record_volume_control_decision(
+                &self.counters,
+                AuditMode::Mutating,
+                AuditDecision::Denied,
+                AndroidVolumeControlError::WorkerFailed.reason_code(),
+            );
+            self.recorded = true;
+        }
+    }
+}
+
 const MUTATION_COMMIT_PENDING: u8 = 0;
 const MUTATION_COMMIT_CANCELLED: u8 = 1;
 const MUTATION_COMMIT_WORKER_OWNED: u8 = 2;
@@ -3551,31 +3600,25 @@ async fn handle_set_android_volume_call(
             return capability_authorization_denied(id, error.reason_code());
         }
 
-        // The prepared operation owns the one mutation permit and is detached
-        // from request cancellation. If the HTTP future is dropped after grant
-        // consumption, the fixed command, verification, and rollback sequence
-        // still runs to completion under its own strict process deadlines.
-        let worker = tokio::spawn(prepared.execute());
+        // The prepared operation and its terminal audit guard move into one
+        // detached task. Dropping the HTTP waiter cannot abandon or duplicate
+        // the verified mutation/recovery outcome.
+        let audit =
+            AndroidVolumeMutationAuditGuard::new(Arc::clone(&state.audit_counters));
+        let worker = tokio::spawn(async move {
+            let outcome = prepared.execute().await;
+            audit.finish(&outcome);
+            outcome
+        });
         match worker.await {
-            Ok(Ok(result)) => {
-                record_volume_control_decision(
-                    &state.audit_counters,
-                    mode,
-                    AuditDecision::Allowed,
-                    ANDROID_VOLUME_CONTROL_MUTATION_ALLOWED,
-                );
-                ok_result(
-                    id,
-                    "set_android_volume: exact stream mutation completed and was verified."
-                        .to_owned(),
-                    json!(result),
-                )
-            }
-            Ok(Err(error)) => volume_control_error_response(id, state, mode, error),
-            Err(_error) => volume_control_error_response(
+            Ok(Ok(result)) => ok_result(
                 id,
-                state,
-                mode,
+                "set_android_volume: exact stream mutation completed and was verified.".to_owned(),
+                json!(result),
+            ),
+            Ok(Err(error)) => volume_control_worker_error_response(id, error),
+            Err(_error) => volume_control_worker_error_response(
+                id,
                 AndroidVolumeControlError::WorkerFailed,
             ),
         }
@@ -3601,6 +3644,19 @@ fn volume_control_error_response(
         SET_ANDROID_VOLUME_TOOL,
         "android_volume_control_failed",
         reason_code,
+    )
+}
+
+#[cfg(feature = "android-volume-control")]
+fn volume_control_worker_error_response(
+    id: Option<Value>,
+    error: AndroidVolumeControlError,
+) -> Response {
+    tool_error_result(
+        id,
+        SET_ANDROID_VOLUME_TOOL,
+        "android_volume_control_failed",
+        error.reason_code(),
     )
 }
 
@@ -8088,6 +8144,116 @@ printf '%s\n' "$2" >"$level"
         let serialized = serde_json::to_string(&counters).unwrap();
         assert!(!serialized.contains(&grant));
         assert!(!serialized.contains("private-static-principal"));
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[test]
+    fn volume_mutation_audit_guard_records_exactly_once_on_error_and_drop() {
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+        let error = Err::<(), _>(AndroidVolumeControlError::SetFailedRollbackConfirmed);
+        AndroidVolumeMutationAuditGuard::new(Arc::clone(&counters)).finish(&error);
+        drop(AndroidVolumeMutationAuditGuard::new(Arc::clone(&counters)));
+
+        let counters = counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[SET_ANDROID_VOLUME_TOOL].denied, 2);
+        assert_eq!(
+            counters.by_reason_code[
+                AndroidVolumeControlError::SetFailedRollbackConfirmed.reason_code()
+            ]
+            .denied,
+            1
+        );
+        assert_eq!(
+            counters.by_reason_code[AndroidVolumeControlError::WorkerFailed.reason_code()].denied,
+            1
+        );
+    }
+
+    #[cfg(feature = "android-volume-control")]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the held audit lock parks only the detached worker on another runtime thread"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_volume_worker_records_after_http_waiter_is_dropped() {
+        let _provider_guard = crate::android_provider::ANDROID_PROVIDER_TEST_LOCK
+            .lock()
+            .await;
+        let (program_root, client) = test_volume_control_client();
+        let safe_root = tempfile::tempdir().unwrap();
+        let authority = test_volume_authority();
+        let state = McpTransportState::with_android_volume_control_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+                .expect("test safe root must validate"),
+            Some(authority.clone()),
+            client,
+        );
+        let session = "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+        let target = AndroidVolumeGrantTarget::new(AndroidVolumeStreamName::Music, 9).unwrap();
+        let grant = authority
+            .issue_at(session, target, current_unix_seconds())
+            .unwrap();
+
+        let counters = Arc::clone(&state.audit_counters);
+        let counter_lock = counters.lock().unwrap();
+        let request_state = state.clone();
+        let request_grant = grant.clone();
+        let request_task = tokio::spawn(async move {
+            handle_set_android_volume_call(
+                Some(json!("detached-volume")),
+                Some(json!({"stream":"music", "level":9, "dry_run":false})),
+                &request_state,
+                session,
+                Some(&request_grant),
+            )
+            .await
+        });
+
+        let level_path = program_root.path().join("level");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if std::fs::read_to_string(&level_path)
+                .is_ok_and(|level| level.trim() == "9")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "detached volume worker did not complete its mutation"
+            );
+            tokio::task::yield_now().await;
+        }
+
+        request_task.abort();
+        assert!(request_task.await.unwrap_err().is_cancelled());
+        drop(counter_lock);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let snapshot = counters.lock().unwrap().clone();
+            if snapshot.by_tool[SET_ANDROID_VOLUME_TOOL].allowed == 1 {
+                assert_eq!(snapshot.by_tool[SET_ANDROID_VOLUME_TOOL].denied, 0);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "detached volume worker did not record its terminal audit"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            authority
+                .consume_at(
+                    Some(&grant),
+                    session,
+                    target,
+                    current_unix_seconds(),
+                )
+                .unwrap_err()
+                .reason_code(),
+            "capability_grant_replayed"
+        );
     }
 
     #[cfg(feature = "android-volume-control")]
