@@ -84,7 +84,6 @@ pub(super) fn test_router(file_tools: FileSystemTools) -> Router {
         file_tools,
         false,
         false,
-        false,
     ))
 }
 
@@ -94,7 +93,6 @@ pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
-        false,
         false,
         false,
         McpTransportOptions::default().with_sse_enabled(true),
@@ -115,7 +113,6 @@ pub(super) fn create_directory_authorized_test_router(
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
-        false,
         false,
         false,
         authority.clone(),
@@ -144,7 +141,6 @@ pub(super) fn write_file_authorized_test_router(
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
         file_tools,
-        false,
         false,
         false,
         None,
@@ -184,7 +180,7 @@ pub(super) fn issue_write_file_grant(
 }
 
 #[cfg(feature = "command-execution")]
-pub(super) fn command_test_router(file_tools: FileSystemTools) -> Router {
+pub(super) fn public_command_embedding_test_router(file_tools: FileSystemTools) -> Router {
     with_loopback_test_peer(protected_router(
         test_router_protection(),
         TransportSecurityPolicy::localhost(8000, false)
@@ -192,7 +188,6 @@ pub(super) fn command_test_router(file_tools: FileSystemTools) -> Router {
         file_tools,
         false,
         false,
-        true,
     ))
 }
 
