@@ -108,7 +108,7 @@ stream, exact level, mutating posture, key ID, random identifier, issue time,
 and expiry.
 
 The signed family code is allocated by the single project-wide request-grant
-registry: directory creation is `1`, Android volume is `2`, file write is `3`,
+registry: directory creation is `1`, file write is `2`, Android volume is `3`,
 and file copy reserves `4` for any future separately reviewed grant gate. The
 registry is an internal wire-compatibility boundary; callers cannot select or
 override a family code.
