@@ -212,11 +212,11 @@ jq -e '
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.fixedCurrentExecutable.const == true
   and ."$defs".validation.properties.wrongExecutableNameFailsClosed.const == true
-  and ."$defs".validation.properties.wrongExecutableNameRejectedBeforeListener.const == true
+  and ."$defs".validation.properties.wrongExecutableNameRejectedBeforeServing.const == true
   and ."$defs".validation.properties.runningInodePinned.const == true
   and ."$defs".validation.properties.workingDirectoryDescriptorPinned.const == true
   and (."$defs".validation.required | index("wrongExecutableNameFailsClosed") != null)
-  and (."$defs".validation.required | index("wrongExecutableNameRejectedBeforeListener") != null)
+  and (."$defs".validation.required | index("wrongExecutableNameRejectedBeforeServing") != null)
   and (."$defs".validation.required | index("workingDirectoryDescriptorPinned") != null)
   and ."$defs".validation.properties.fixedArgvProfiles.const == true
   and ."$defs".validation.properties.closedInputSchema.const == true
@@ -247,22 +247,26 @@ grep -Fq 'working_directory_path_replacement_used' "$COMMAND_GATE" \
   || fail_test 'command gate omits cwd replacement-content assertion'
 grep -Fq 'wrongExecutableNameFailsClosed: true' "$COMMAND_GATE" \
   || fail_test 'command report omits precise wrong-name fail-closed evidence'
-grep -Fq 'wrongExecutableNameRejectedBeforeListener: true' "$COMMAND_GATE" \
-  || fail_test 'command report omits pre-listener wrong-name rejection evidence'
+grep -Fq 'wrongExecutableNameRejectedBeforeServing: true' "$COMMAND_GATE" \
+  || fail_test 'command report omits pre-service wrong-name rejection evidence'
 grep -Fq 'workingDirectoryDescriptorPinned: true' "$COMMAND_GATE" \
   || fail_test 'command report omits descriptor-pinned cwd evidence'
-grep -Fq "validating wrong executable name is rejected before listener startup" "$COMMAND_GATE" \
-  || fail_test 'command gate omits wrong-name pre-listener rejection posture'
-grep -Fq 'requested MCP optional client is unavailable: command_execution' "$COMMAND_GATE" \
-  || fail_test 'command gate omits the typed command-client startup error'
-grep -Fq 'wrong_name_startup_error_leaked_token' "$COMMAND_GATE" \
+grep -Fq "validating wrong executable name is rejected before serving" "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name pre-service rejection posture'
+grep -Fq 'the command execution client could not be initialized' "$COMMAND_GATE" \
+  || fail_test 'command gate omits the typed command-client construction error'
+grep -Fq 'wrong_name_construction_error_leaked_token' "$COMMAND_GATE" \
   || fail_test 'command gate omits wrong-name token-redaction evidence'
-grep -Fq 'wrong_name_startup_error_leaked_path' "$COMMAND_GATE" \
+grep -Fq 'wrong_name_construction_error_leaked_path' "$COMMAND_GATE" \
   || fail_test 'command gate omits wrong-name path-redaction evidence'
-grep -Fq 'wrong_name_listener_started' "$COMMAND_GATE" \
-  || fail_test 'command gate omits pre-listener log evidence'
-grep -Fq 'wrong_name_listener_reachable' "$COMMAND_GATE" \
-  || fail_test 'command gate omits pre-listener reachability evidence'
+grep -Fq 'wrong_name_service_announced' "$COMMAND_GATE" \
+  || fail_test 'command gate omits pre-service log evidence'
+grep -Fq 'wrong_name_service_reachable' "$COMMAND_GATE" \
+  || fail_test 'command gate omits pre-service reachability evidence'
+grep -Fq 'wrong_name_reachable=false' "$COMMAND_GATE" \
+  || fail_test 'command gate omits the bounded live reachability probe'
+grep -Fq 'wrong_name_reachable=true' "$COMMAND_GATE" \
+  || fail_test 'command gate cannot record a live service failure'
 if grep -Fq '"id":"wrong-name-' "$COMMAND_GATE"; then
   fail_test 'command gate still treats invalid command-client initialization as a live MCP posture'
 fi
@@ -418,7 +422,7 @@ for contract in \
   '.validation.exactArtifact == true' \
   '.validation.compileGate == true' \
   '.validation.wrongExecutableNameFailsClosed == true' \
-  '.validation.wrongExecutableNameRejectedBeforeListener == true' \
+  '.validation.wrongExecutableNameRejectedBeforeServing == true' \
   '.validation.runningInodePinned == true' \
   '.validation.workingDirectoryDescriptorPinned == true'; do
   grep -Fq "$contract" "$ANDROID_WORKFLOW" || fail_test "command evidence workflow omits: $contract"
