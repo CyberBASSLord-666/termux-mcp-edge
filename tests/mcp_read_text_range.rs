@@ -4,7 +4,9 @@ mod support;
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
+use support::{
+    empty_test_file_tools, initialize_session, post_json_to_session, response_json, test_router,
+};
 use termux_mcp_server::{
     error::AppError,
     tools::{
@@ -384,6 +386,13 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        if index >= 3 {
+            let payload = response_json(response).await;
+            assert_eq!(
+                payload["error"]["data"],
+                "Requested text range is not valid"
+            );
+        }
     }
 
     let invalid = post_json_to_session(

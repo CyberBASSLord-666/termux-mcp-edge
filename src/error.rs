@@ -3,6 +3,9 @@
 use axum::http::StatusCode;
 use thiserror::Error;
 
+pub(crate) const INVALID_BINARY_RANGE_PUBLIC_MESSAGE: &str = "Requested binary range is not valid";
+pub(crate) const INVALID_TEXT_RANGE_PUBLIC_MESSAGE: &str = "Requested text range is not valid";
+
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("Path traversal attempt blocked: {attempted}")]
@@ -80,12 +83,11 @@ impl AppError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "File content must be valid UTF-8",
             ),
-            AppError::InvalidBinaryRange => (
-                StatusCode::BAD_REQUEST,
-                "Requested binary range is not valid",
-            ),
+            AppError::InvalidBinaryRange => {
+                (StatusCode::BAD_REQUEST, INVALID_BINARY_RANGE_PUBLIC_MESSAGE)
+            }
             AppError::InvalidTextRange => {
-                (StatusCode::BAD_REQUEST, "Requested text range is not valid")
+                (StatusCode::BAD_REQUEST, INVALID_TEXT_RANGE_PUBLIC_MESSAGE)
             }
             AppError::FileChangedDuringRead => {
                 (StatusCode::CONFLICT, "File changed during the bounded read")
