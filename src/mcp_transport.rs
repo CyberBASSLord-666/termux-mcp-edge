@@ -8229,8 +8229,9 @@ printf '%s\n' "$2" >"$level"
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let snapshot = counters.lock().unwrap().clone();
-            if snapshot.by_tool[SET_ANDROID_VOLUME_TOOL].allowed == 1 {
-                assert_eq!(snapshot.by_tool[SET_ANDROID_VOLUME_TOOL].denied, 0);
+            if let Some(tool_counters) = snapshot.by_tool.get(SET_ANDROID_VOLUME_TOOL) {
+                assert_eq!(tool_counters.allowed, 1);
+                assert_eq!(tool_counters.denied, 0);
                 break;
             }
             assert!(
