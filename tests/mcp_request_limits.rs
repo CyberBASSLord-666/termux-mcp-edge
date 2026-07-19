@@ -10,35 +10,28 @@ use serde_json::{json, Value};
 use termux_mcp_server::{
     auth::McpAuthPolicy,
     mcp_transport::{
-        self, McpRouterProtection, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
-        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+        McpRouterBuilder, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
+        MCP_SESSION_ID_HEADER,
     },
     request_limits::McpRequestLimits,
-    tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
 };
 use tower::ServiceExt;
 
 fn protected_limited_router(max_body_bytes: usize) -> Router {
     let root = tempfile::tempdir().unwrap();
-    let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
-        .expect("test safe root must validate");
-    let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
-    let protection = McpRouterProtection::new(
+
+    McpRouterBuilder::new(
         "127.0.0.1",
         McpAuthPolicy::static_bearer("expected-token").unwrap(),
-        limits,
-    )
-    .unwrap();
-
-    mcp_transport::protected_router(
-        protection,
+        McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap(),
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
+        vec![root.path().to_path_buf()],
     )
+    .expect("limited router configuration must be valid")
+    .build()
+    .expect("limited router must build")
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {
