@@ -187,7 +187,17 @@ fn main() {
 
     let rejected = [
         "McpRouterProtection",
+        "McpTransportState",
+        "FilesystemMutationAuthorities",
         "McpCapabilityAuthorities",
+        "router",
+        "router_with_options",
+        "router_with_create_directory_authority",
+        "router_with_create_directory_authority_and_options",
+        "router_with_filesystem_authorities",
+        "router_with_filesystem_authorities_and_options",
+        "router_with_capability_authorities",
+        "router_with_capability_authorities_and_options",
         "protected_router",
         "protected_router_with_options",
         "protected_router_with_create_directory_authority",
