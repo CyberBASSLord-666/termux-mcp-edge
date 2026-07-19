@@ -154,7 +154,9 @@ Once step 4 succeeds, the grant remains consumed for success, provider failure,
 verification failure, rollback success, rollback failure, response loss, or
 caller cancellation. Execution, verification, and recovery move to an owned
 task after consumption, so cancellation of the HTTP request cannot cancel the
-recovery sequence. Every provider subprocess remains under the bounded,
+recovery sequence. The task also owns an exactly-once terminal audit guard: it
+records the verified or recovery result itself, and task drop records only the
+stable worker-failed denial. Every provider subprocess remains under the bounded,
 process-group-aware supervisor.
 
 A verified success returns `outcome:"mutation_verified"`, the captured and
