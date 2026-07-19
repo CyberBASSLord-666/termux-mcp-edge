@@ -287,7 +287,6 @@ async fn authentication_rejects_before_transport_validation_or_body_dispatch() {
     assert_eq!(payload["error"], "unauthorized");
 }
 
-
 fn builder_error_for_roots(safe_roots: Vec<std::path::PathBuf>) -> McpRouterBuildError {
     match McpRouterBuilder::new(
         "127.0.0.1",
@@ -315,10 +314,7 @@ fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
     std::fs::write(&regular_file, b"not a directory").unwrap();
 
     let cases = [
-        (
-            Vec::new(),
-            SafeRootConfigurationError::EmptyConfiguration,
-        ),
+        (Vec::new(), SafeRootConfigurationError::EmptyConfiguration),
         (
             vec![std::path::PathBuf::from("relative/root")],
             SafeRootConfigurationError::RelativePath,
@@ -387,18 +383,12 @@ async fn one_public_builder_authenticates_before_every_transport_surface() {
         "builder-auth-test-principal",
     )
     .unwrap();
-    let copy_authority = CopyFileGrantAuthority::from_hex_key(
-        "test-key-1",
-        KEY,
-        "builder-auth-test-principal",
-    )
-    .unwrap();
-    let write_authority = WriteFileGrantAuthority::from_hex_key(
-        "test-key-1",
-        KEY,
-        "builder-auth-test-principal",
-    )
-    .unwrap();
+    let copy_authority =
+        CopyFileGrantAuthority::from_hex_key("test-key-1", KEY, "builder-auth-test-principal")
+            .unwrap();
+    let write_authority =
+        WriteFileGrantAuthority::from_hex_key("test-key-1", KEY, "builder-auth-test-principal")
+            .unwrap();
 
     let app = McpRouterBuilder::new(
         "127.0.0.1",
