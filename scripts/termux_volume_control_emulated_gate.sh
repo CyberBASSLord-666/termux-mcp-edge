@@ -401,7 +401,7 @@ start_server true
 initialize_session
 post_mcp '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}' "$SESSION_ID"
 jq -e '
-  [.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file","set_android_volume"]
+  [.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","set_android_volume"]
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.type) == "object"
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.required) == ["stream","level"]
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.additionalProperties) == false

@@ -17,6 +17,9 @@ pub enum AppError {
     #[error("Requested binary range is outside the bounded file contract")]
     InvalidBinaryRange,
 
+    #[error("Requested text range is outside the bounded UTF-8 file contract")]
+    InvalidTextRange,
+
     #[error("File size changed during the bounded read")]
     FileChangedDuringRead,
 
@@ -78,6 +81,9 @@ impl AppError {
                 StatusCode::BAD_REQUEST,
                 "Requested binary range is not valid",
             ),
+            AppError::InvalidTextRange => {
+                (StatusCode::BAD_REQUEST, "Requested text range is not valid")
+            }
             AppError::FileChangedDuringRead => {
                 (StatusCode::CONFLICT, "File changed during the bounded read")
             }
@@ -200,6 +206,10 @@ mod tests {
                 StatusCode::BAD_REQUEST,
                 "Requested binary range is not valid",
             )
+        );
+        assert_eq!(
+            AppError::InvalidTextRange.public_response(),
+            (StatusCode::BAD_REQUEST, "Requested text range is not valid",)
         );
         assert_eq!(
             AppError::FileChangedDuringRead.public_response(),

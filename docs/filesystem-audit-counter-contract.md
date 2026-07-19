@@ -13,6 +13,7 @@ The contract applies to the existing staged filesystem tools:
 - `read_binary_file`
 - `read_binary_range`
 - `read_file`
+- `read_text_range`
 - `search_text`
 - `write_file`
 
@@ -42,6 +43,8 @@ The runtime should count:
 - denied binary range reads, including invalid arguments/ranges, missing/unsupported targets, safe-root rejection, file/response limits, concurrent size change, and internal failures
 - allowed bounded safe-rooted file reads
 - denied read requests, including invalid arguments, safe-root rejections, and byte-limit failures
+- allowed bounded code-point-safe UTF-8 range reads of one safe-rooted regular file
+- denied UTF-8 range reads, including invalid arguments/ranges/encoding, missing/unsupported targets, safe-root rejection, file/response limits, concurrent size change, and internal failures
 - allowed bounded safe-rooted literal text searches
 - denied search requests, including invalid arguments/query/depth, safe-root rejection, response bounds, and internal failures
 - allowed `write_file` dry-run previews
@@ -97,6 +100,7 @@ Counters may store only stable tool names and stable reason codes. Event metadat
 | `read_binary_file` | `read_only` | `read_only` | `filesystem_read` |
 | `read_binary_range` | `read_only` | `read_only` | `filesystem_read` |
 | `read_file` | `read_only` | `read_only` | `filesystem_read` |
+| `read_text_range` | `read_only` | `read_only` | `filesystem_read` |
 | `search_text` | `read_only` | `read_only` | `filesystem_read` |
 | `write_file` with dry-run preview | `dry_run` | `dry_run` | `filesystem_write` |
 | `write_file` with explicit mutation | `mutating` | `mutating` | `filesystem_write` |
@@ -115,6 +119,7 @@ Recommended allowed reason codes:
 - `safe_root_metadata_read`
 - `safe_root_binary_read`
 - `safe_root_binary_range_read`
+- `safe_root_text_range_read`
 - `safe_root_paths_found`
 - `safe_root_read`
 - `safe_root_text_searched`
@@ -153,6 +158,13 @@ Recommended denied reason codes:
 - `filesystem_binary_range_file_too_large`
 - `filesystem_binary_range_changed_during_read`
 - `filesystem_binary_range_failed`
+- `filesystem_text_range_target_not_found`
+- `filesystem_text_range_type_unsupported`
+- `filesystem_text_range_invalid`
+- `filesystem_text_range_file_too_large`
+- `filesystem_text_range_encoding_invalid`
+- `filesystem_text_range_changed_during_read`
+- `filesystem_text_range_failed`
 - `find_query_invalid`
 - `filesystem_find_failed`
 - `path_outside_safe_root`
@@ -164,7 +176,7 @@ The final runtime implementation may consolidate equivalent failures under fewer
 
 ## Response-contract preservation
 
-Audit counter wiring must not change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `search_text`, or `write_file`.
+Audit counter wiring must not change existing JSON-RPC response shapes for `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, or `write_file`.
 
 In particular, runtime wiring must preserve:
 
@@ -190,12 +202,13 @@ A focused runtime wiring PR should verify all of the following:
 8. `read_binary_range` records allowed and denied read-only decisions without retaining its path, filename, offset, requested/returned length, raw or encoded content, file size/identity, request ID, or raw error.
 9. `read_file` records an allowed read-only filesystem event on successful bounded safe-rooted read.
 10. `read_file` records a denied read-only filesystem event for invalid arguments, safe-root rejection, read byte-limit failure, and internal read failure.
-11. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
-12. `write_file` records an allowed mutating filesystem event for successful explicit writes.
-13. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
-14. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
-15. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
-16. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content/digests/base64 data.
+11. `read_text_range` records allowed and denied read-only decisions without retaining its path, filename, offset, requested/returned size, text content, file size/identity, request ID, or raw error.
+12. `write_file` records an allowed dry-run filesystem event for successful dry-run previews.
+13. `write_file` records an allowed mutating filesystem event for successful explicit writes.
+14. `write_file` records denied filesystem events using the resolved dry-run or mutating mode for invalid arguments, write byte-limit failure, safe-root rejection, and internal write failure.
+15. `path_metadata` records allowed and denied read-only decisions without retaining its path, filename, kind, size, timestamp, or raw error.
+16. `search_text` records allowed and denied read-only decisions without retaining its path, query, content, or match locations.
+17. Tests assert counter increments by stable tool and reason-code labels without asserting or storing raw paths/content/digests/base64/text data.
 
 ## Security invariant
 

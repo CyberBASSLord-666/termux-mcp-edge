@@ -135,7 +135,7 @@ The `mcp-runtime` artifact must prove:
 - authentication before Host/Origin validation, plus rejected unexpected Host, missing Origin, and unexpected Origin values;
 - stable `2025-11-25` initialize/initialized lifecycle;
 - required protocol and session headers plus unknown-session rejection;
-- the exact fifteen-tool allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, content-free bounded literal `find_paths`, bounded SHA-256 `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, content-free `path_metadata`, and bounded literal `search_text`;
+- the exact sixteen-tool allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, content-free bounded literal `find_paths`, bounded SHA-256 `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, content-free `path_metadata`, and bounded literal `search_text`;
 - command execution, Android control, and high-impact gates disabled;
 - bounded read-only platform, Android, and project-service metadata with the project-service allowlist enforced;
 - enabled directory-mutation discovery/status, missing-grant denial, wrong-target binding denial, dry-run non-consumption, one locally issued exact-target mode-`0700` creation, and replay denial;

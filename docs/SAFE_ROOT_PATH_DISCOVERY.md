@@ -62,7 +62,7 @@ Successful `structuredContent` contains exactly:
 - `maxMatches`;
 - `maxResponseBytes`.
 
-The raw query is not echoed. File contents, excerpts, sizes, timestamps, identities, permissions, and host metadata are absent. Use `path_metadata`, `read_file`, `read_binary_file`, `read_binary_range`, or `hash_file` in a separate bounded call when that independently confined information is needed.
+The raw query is not echoed. File contents, excerpts, sizes, timestamps, identities, permissions, and host metadata are absent. Use `path_metadata`, `read_file`, `read_text_range`, `read_binary_file`, `read_binary_range`, or `hash_file` in a separate bounded call when that independently confined information is needed.
 
 ## Audit privacy
 

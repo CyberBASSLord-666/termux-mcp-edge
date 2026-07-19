@@ -68,7 +68,9 @@ use crate::{
         MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
         MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
         MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
-        MAX_SEARCH_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
+        MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_ESCAPED_BYTES,
+        MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
+        MIN_TEXT_RANGE_BYTES,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -115,9 +117,10 @@ const PATH_METADATA_TOOL: &str = "path_metadata";
 const READ_BINARY_FILE_TOOL: &str = "read_binary_file";
 const READ_BINARY_RANGE_TOOL: &str = "read_binary_range";
 const READ_FILE_TOOL: &str = "read_file";
+const READ_TEXT_RANGE_TOOL: &str = "read_text_range";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 15] = [
+const BASE_AVAILABLE_TOOLS: [&str; 16] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
@@ -131,6 +134,7 @@ const BASE_AVAILABLE_TOOLS: [&str; 15] = [
     READ_BINARY_FILE_TOOL,
     READ_BINARY_RANGE_TOOL,
     READ_FILE_TOOL,
+    READ_TEXT_RANGE_TOOL,
     SEARCH_TEXT_TOOL,
     WRITE_FILE_TOOL,
 ];
@@ -202,6 +206,14 @@ const FILESYSTEM_BINARY_RANGE_INVALID: &str = "filesystem_binary_range_invalid";
 const FILESYSTEM_BINARY_RANGE_TOO_LARGE: &str = "filesystem_binary_range_file_too_large";
 const FILESYSTEM_BINARY_RANGE_CHANGED: &str = "filesystem_binary_range_changed_during_read";
 const FILESYSTEM_BINARY_RANGE_FAILED: &str = "filesystem_binary_range_failed";
+const FILESYSTEM_TEXT_RANGE_ALLOWED: &str = "safe_root_text_range_read";
+const FILESYSTEM_TEXT_RANGE_NOT_FOUND: &str = "filesystem_text_range_target_not_found";
+const FILESYSTEM_TEXT_RANGE_UNSUPPORTED: &str = "filesystem_text_range_type_unsupported";
+const FILESYSTEM_TEXT_RANGE_INVALID: &str = "filesystem_text_range_invalid";
+const FILESYSTEM_TEXT_RANGE_TOO_LARGE: &str = "filesystem_text_range_file_too_large";
+const FILESYSTEM_TEXT_RANGE_ENCODING_INVALID: &str = "filesystem_text_range_encoding_invalid";
+const FILESYSTEM_TEXT_RANGE_CHANGED: &str = "filesystem_text_range_changed_during_read";
+const FILESYSTEM_TEXT_RANGE_FAILED: &str = "filesystem_text_range_failed";
 const FILESYSTEM_HASH_ALLOWED: &str = "safe_root_file_hashed";
 const FILESYSTEM_HASH_NOT_FOUND: &str = "filesystem_hash_target_not_found";
 const FILESYSTEM_HASH_UNSUPPORTED: &str = "filesystem_hash_target_type_unsupported";
@@ -579,6 +591,14 @@ struct ReadBinaryRangeArguments {
     path: String,
     offset_bytes: u64,
     length_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadTextRangeArguments {
+    path: String,
+    offset_bytes: u64,
+    max_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1869,6 +1889,37 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": READ_TEXT_RANGE_TOOL,
+                        "description": "Read one bounded UTF-8 byte range from a larger regular file inside a configured filesystem safe root.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": format!(
+                                        "Absolute regular-file path inside one configured safe root; the file may be at most {MAX_TEXT_RANGE_FILE_BYTES} bytes."
+                                    ),
+                                },
+                                "offset_bytes": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": MAX_TEXT_RANGE_FILE_BYTES,
+                                    "description": "Zero-based UTF-8 byte boundary; EOF itself is accepted and returns an empty range.",
+                                },
+                                "max_bytes": {
+                                    "type": "integer",
+                                    "minimum": MIN_TEXT_RANGE_BYTES,
+                                    "maximum": MAX_TEXT_RANGE_BYTES,
+                                    "description": format!(
+                                        "Maximum UTF-8 bytes to return; incomplete code points at a non-EOF boundary are deferred. Fixed bounds are {MIN_TEXT_RANGE_BYTES} through {MAX_TEXT_RANGE_BYTES}."
+                                    ),
+                                },
+                            },
+                            "required": ["path", "offset_bytes", "max_bytes"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": SEARCH_TEXT_TOOL,
                         "description": "Locate bounded literal UTF-8 text matches under a configured filesystem safe root without returning file contents.",
                         "inputSchema": {
@@ -2196,6 +2247,15 @@ async fn handle_tool_call(
         }
         READ_FILE_TOOL => {
             handle_read_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        READ_TEXT_RANGE_TOOL => {
+            handle_read_text_range_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -2861,7 +2921,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                             transport_mode,
                             android_platform_mode,
                             battery_mode,
@@ -2894,7 +2954,7 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text_and_default_dry_run_write_file",
                     "pathDiscovery": true,
                     "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
                     "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
@@ -2911,6 +2971,12 @@ fn runtime_status_response(
                     "binaryRangeReadMaxFileBytes": MAX_BINARY_RANGE_FILE_BYTES,
                     "binaryRangeReadMaxBytes": MAX_BINARY_RANGE_BYTES,
                     "binaryRangeReadMaxResponseBytes": MAX_BINARY_RANGE_RESPONSE_BYTES,
+                    "textRangeReads": true,
+                    "textRangeReadEncoding": "utf-8",
+                    "textRangeReadMinBytes": MIN_TEXT_RANGE_BYTES,
+                    "textRangeReadMaxFileBytes": MAX_TEXT_RANGE_FILE_BYTES,
+                    "textRangeReadMaxBytes": MAX_TEXT_RANGE_BYTES,
+                    "textRangeReadMaxResponseBytes": MAX_TEXT_RANGE_RESPONSE_BYTES,
                     "fileHashing": true,
                     "fileHashAlgorithm": "sha256",
                     "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
@@ -3629,6 +3695,203 @@ async fn handle_read_binary_range_call(
                 FILESYSTEM_BINARY_RANGE_FAILED,
             );
             internal_error(id, "Binary range read failed.")
+        }
+    }
+}
+
+fn text_range_success_envelope_fits(id: Option<Value>) -> bool {
+    let maximum_summary =
+        format!("Read {MAX_TEXT_RANGE_BYTES} UTF-8 bytes from one bounded safe-rooted file range.");
+    let body = result_body(
+        id,
+        maximum_summary,
+        json!({
+            "content": "",
+            "offsetBytes": MAX_TEXT_RANGE_FILE_BYTES,
+            "nextOffsetBytes": MAX_TEXT_RANGE_FILE_BYTES,
+            "sizeBytes": MAX_TEXT_RANGE_BYTES,
+            "fileSizeBytes": MAX_TEXT_RANGE_FILE_BYTES,
+            "eof": false,
+            "maxReadBytes": MAX_TEXT_RANGE_BYTES,
+            "maxFileBytes": MAX_TEXT_RANGE_FILE_BYTES,
+            "maxResponseBytes": MAX_TEXT_RANGE_RESPONSE_BYTES,
+        }),
+    );
+    serde_json::to_vec(&body)
+        .ok()
+        .and_then(|serialized| serialized.len().checked_add(MAX_TEXT_RANGE_ESCAPED_BYTES))
+        .is_some_and(|bytes| bytes <= MAX_TEXT_RANGE_RESPONSE_BYTES)
+}
+
+#[rustfmt::skip]
+async fn handle_read_text_range_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    if !text_range_success_envelope_fits(id.clone()) {
+        record_filesystem_denied(
+            audit_counters,
+            READ_TEXT_RANGE_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "Text range response exceeds the staged read_text_range response byte limit.",
+            MAX_TEXT_RANGE_RESPONSE_BYTES,
+        );
+    }
+
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(
+                id,
+                "read_text_range requires path, offset_bytes, and max_bytes arguments.",
+            );
+        }
+    };
+    let args = match serde_json::from_value::<ReadTextRangeArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools
+        .read_text_range(args.path, args.offset_bytes, args.max_bytes)
+        .await
+    {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = format!(
+                "Read {} UTF-8 bytes from one bounded safe-rooted file range.",
+                result.size_bytes
+            );
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_TEXT_RANGE_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    READ_TEXT_RANGE_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Text range response exceeds the staged read_text_range response byte limit.",
+                    MAX_TEXT_RANGE_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(id, "Path is outside the configured filesystem safe roots.")
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_NOT_FOUND,
+            );
+            invalid_params(id, "Text range file does not exist.")
+        }
+        Err(AppError::UnsupportedPathType) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_UNSUPPORTED,
+            );
+            invalid_params(id, "Text range target must be one regular file.")
+        }
+        Err(AppError::InvalidTextRange) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_INVALID,
+            );
+            invalid_params(id, "Text range is outside the bounded UTF-8 file contract.")
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_TOO_LARGE,
+            );
+            payload_too_large(id, "Text range file exceeds the staged file byte limit.")
+        }
+        Err(AppError::InvalidFileEncoding) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_ENCODING_INVALID,
+            );
+            invalid_params(id, "Selected text range must contain valid UTF-8.")
+        }
+        Err(AppError::FileChangedDuringRead) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_CHANGED,
+            );
+            resource_changed(id, "Text range file changed during the bounded read.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_TEXT_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_TEXT_RANGE_FAILED,
+            );
+            internal_error(id, "Text range read failed.")
         }
     }
 }
@@ -5164,6 +5427,7 @@ mod tests {
                 "read_binary_file",
                 "read_binary_range",
                 "read_file",
+                "read_text_range",
                 "search_text",
                 "write_file",
                 "android_battery_status",
@@ -5185,7 +5449,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            17
+            18
         );
     }
 

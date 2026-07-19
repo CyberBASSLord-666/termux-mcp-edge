@@ -985,7 +985,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -1042,6 +1042,21 @@ run_mcp_runtime_checks() {
       and $schema.required == ["path","offset_bytes","length_bytes"]
       and $schema.additionalProperties == false
   ' "$body" >/dev/null 2>&1 || fail read_binary_range_discovery_schema_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "read_text_range"))[0].inputSchema as $schema
+    | $schema.type == "object"
+      and ($schema.properties | keys) == ["max_bytes","offset_bytes","path"]
+      and $schema.properties.path.type == "string"
+      and $schema.properties.offset_bytes.type == "integer"
+      and $schema.properties.offset_bytes.minimum == 0
+      and $schema.properties.offset_bytes.maximum == 67108864
+      and $schema.properties.max_bytes.type == "integer"
+      and $schema.properties.max_bytes.minimum == 4
+      and $schema.properties.max_bytes.maximum == 262144
+      and $schema.required == ["path","offset_bytes","max_bytes"]
+      and $schema.additionalProperties == false
+  ' "$body" >/dev/null 2>&1 || fail read_text_range_discovery_schema_invalid
   record_result runtime tool_allowlist pass exact_tool_allowlist
 
   payload='{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1080,6 +1095,12 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864
     and .result.structuredContent.binaryRangeReadMaxBytes == 262144
     and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216
+    and .result.structuredContent.textRangeReads == true
+    and .result.structuredContent.textRangeReadEncoding == "utf-8"
+    and .result.structuredContent.textRangeReadMinBytes == 4
+    and .result.structuredContent.textRangeReadMaxFileBytes == 67108864
+    and .result.structuredContent.textRangeReadMaxBytes == 262144
+    and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936
     and .result.structuredContent.fileHashing == true
     and .result.structuredContent.fileHashAlgorithm == "sha256"
     and .result.structuredContent.fileHashMaxBytes == 16777216
@@ -1292,6 +1313,11 @@ run_mcp_runtime_checks() {
   expect_status binary_range_symlink "$status" 400 binary_range_symlink_rejected
   jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail binary_range_symlink_body_invalid
   grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail binary_range_symlink_path_reflected
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/binary-read-link" '{"jsonrpc":"2.0","id":"text-range-link","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":0,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status text_range_symlink "$status" 400 text_range_symlink_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail text_range_symlink_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail text_range_symlink_path_reflected
   rm -f -- "$VALIDATION_SAFE_ROOT/binary-read-link" || fail binary_read_symlink_fixture_cleanup_failed
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" bs=1 seek=1048576 count=1 status=none 2>/dev/null || fail binary_read_oversized_fixture_create_failed
@@ -1306,10 +1332,78 @@ run_mcp_runtime_checks() {
   expect_status binary_range_oversized "$status" 413 binary_range_oversized_rejected
   jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail binary_range_oversized_body_invalid
   grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail binary_range_oversized_path_reflected
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/binary-range-oversized.bin" '{"jsonrpc":"2.0","id":"text-range-oversized","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":0,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status text_range_oversized "$status" 413 text_range_oversized_rejected
+  jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail text_range_oversized_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail text_range_oversized_path_reflected
   rm -f -- "$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" "$VALIDATION_SAFE_ROOT/binary-range-oversized.bin" "$binary_read_target" || fail binary_read_fixture_cleanup_failed
   [[ ! -e "$VALIDATION_SAFE_ROOT/binary-read-oversized.bin" && ! -e "$VALIDATION_SAFE_ROOT/binary-range-oversized.bin" && ! -e "$binary_read_target" ]] || fail binary_read_fixture_cleanup_incomplete
   record_result runtime read_binary_file pass safe_root_binary_read_verified
   record_result runtime read_binary_range pass safe_root_binary_range_read_verified
+
+  text_range_target="$VALIDATION_SAFE_ROOT/text-range-private.txt"
+  text_range_invalid="$VALIDATION_SAFE_ROOT/text-range-invalid.txt"
+  text_range_expanded="$VALIDATION_SAFE_ROOT/text-range-expanded.txt"
+  printf '\141\303\251\360\237\231\202\172' >"$text_range_target" || fail text_range_fixture_create_failed
+  printf '\141\377' >"$text_range_invalid" || fail text_range_invalid_fixture_create_failed
+
+  payload="$(jq -cn --arg path "$text_range_target" '{"jsonrpc":"2.0","id":"text-range-first","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":0,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range "$status" 200 safe_root_text_range_read_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail text_range_response_size_failed
+  ((bytes <= 1703936)) || fail text_range_response_too_large
+  jq -e '
+    .result.structuredContent as $range
+    | ($range | keys) == ["content","eof","fileSizeBytes","maxFileBytes","maxReadBytes","maxResponseBytes","nextOffsetBytes","offsetBytes","sizeBytes"]
+      and $range.content == "a\u00e9"
+      and $range.offsetBytes == 0
+      and $range.nextOffsetBytes == 3
+      and $range.sizeBytes == 3
+      and $range.fileSizeBytes == 8
+      and $range.eof == false
+      and $range.maxReadBytes == 262144
+      and $range.maxFileBytes == 67108864
+      and $range.maxResponseBytes == 1703936
+  ' "$body" >/dev/null 2>&1 || fail text_range_contract_invalid
+  grep -Eq 'text-range-private\.txt|inode|device|uid|gid|mode|accessTime' "$body" && fail text_range_path_or_metadata_reflected
+
+  payload="$(jq -cn --arg path "$text_range_target" '{"jsonrpc":"2.0","id":"text-range-second","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":3,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range_second "$status" 200 safe_root_text_range_second_page_succeeded
+  jq -e '.result.structuredContent.content == "\ud83d\ude42" and .result.structuredContent.nextOffsetBytes == 7 and .result.structuredContent.sizeBytes == 4 and .result.structuredContent.eof == false' "$body" >/dev/null 2>&1 || fail text_range_second_contract_invalid
+
+  payload="$(jq -cn --arg path "$text_range_target" '{"jsonrpc":"2.0","id":"text-range-final","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":7,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range_final "$status" 200 safe_root_text_range_final_page_succeeded
+  jq -e '.result.structuredContent.content == "z" and .result.structuredContent.nextOffsetBytes == 8 and .result.structuredContent.sizeBytes == 1 and .result.structuredContent.eof == true' "$body" >/dev/null 2>&1 || fail text_range_final_contract_invalid
+
+  payload="$(jq -cn --arg path "$text_range_target" '{"jsonrpc":"2.0","id":"text-range-eof","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":8,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range_eof "$status" 200 safe_root_text_range_eof_succeeded
+  jq -e '.result.structuredContent.content == "" and .result.structuredContent.nextOffsetBytes == 8 and .result.structuredContent.sizeBytes == 0 and .result.structuredContent.eof == true' "$body" >/dev/null 2>&1 || fail text_range_eof_contract_invalid
+
+  payload="$(jq -cn --arg path "$text_range_target" '{"jsonrpc":"2.0","id":"text-range-mid-codepoint","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":2,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range_mid_codepoint "$status" 400 text_range_mid_codepoint_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail text_range_mid_codepoint_body_invalid
+
+  payload="$(jq -cn --arg path "$text_range_invalid" '{"jsonrpc":"2.0","id":"text-range-invalid-encoding","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":0,"max_bytes":4}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range_invalid_encoding "$status" 400 text_range_invalid_encoding_rejected
+  jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail text_range_invalid_encoding_body_invalid
+  grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail text_range_invalid_encoding_path_reflected
+
+  dd if=/dev/zero of="$text_range_expanded" bs=262144 count=1 status=none 2>/dev/null || fail text_range_expanded_fixture_create_failed
+  payload="$(jq -cn --arg path "$text_range_expanded" '{"jsonrpc":"2.0","id":"text-range-expanded","method":"tools/call","params":{"name":"read_text_range","arguments":{"path":$path,"offset_bytes":0,"max_bytes":262144}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status read_text_range_expanded "$status" 200 text_range_expanded_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail text_range_expanded_response_size_failed
+  ((bytes <= 1703936)) || fail text_range_expanded_response_too_large
+  jq -e '.result.structuredContent.content | utf8bytelength == 262144' "$body" >/dev/null 2>&1 || fail text_range_expanded_contract_invalid
+  rm -f -- "$text_range_target" "$text_range_invalid" "$text_range_expanded" || fail text_range_fixture_cleanup_failed
+  [[ ! -e "$text_range_target" && ! -e "$text_range_invalid" && ! -e "$text_range_expanded" ]] || fail text_range_fixture_cleanup_incomplete
+  record_result runtime read_text_range pass safe_root_text_range_read_verified
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1592,7 +1686,7 @@ run_volume_control_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -1607,6 +1701,12 @@ run_volume_control_runtime_checks() {
     and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864
     and .result.structuredContent.binaryRangeReadMaxBytes == 262144
     and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216
+    and .result.structuredContent.textRangeReads == true
+    and .result.structuredContent.textRangeReadEncoding == "utf-8"
+    and .result.structuredContent.textRangeReadMinBytes == 4
+    and .result.structuredContent.textRangeReadMaxFileBytes == 67108864
+    and .result.structuredContent.textRangeReadMaxBytes == 262144
+    and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936
   ' "$body" >/dev/null 2>&1 || fail volume_control_runtime_status_invalid
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
