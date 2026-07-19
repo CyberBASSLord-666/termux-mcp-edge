@@ -66,7 +66,7 @@ For `dry_run:false`, the runtime acquires one process-wide mutex shared by every
 
 The mutex remains held through staging, publication, verification, any rollback, operation-owned cleanup, and the final parent sync. Consequently, two mutations prepared against the same old destination cannot race inside one server process: after the winner completes, the waiting operation fails its first destination revalidation before authorization or grant consumption. Its distinct, still-valid grant remains reusable with a newly prepared request.
 
-In-process namespace changes are serialized; detected namespace changes may cause a bounded private failure, but cannot turn create into overwrite, follow a symlink, publish a special object, or delete a name whose observed identity is not owned by the operation.
+In-process `write_file` namespace changes are serialized; detected namespace changes may cause a bounded private failure, but cannot turn create into overwrite, follow a symlink, publish a special object, or delete a name whose observed identity is not owned by the operation.
 
 ## Failure, cancellation, and cleanup
 

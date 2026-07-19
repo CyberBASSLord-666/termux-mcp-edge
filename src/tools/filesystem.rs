@@ -4045,19 +4045,20 @@ mod tests {
         const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
         let root = tempfile::tempdir().unwrap();
-        let tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let first_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
+        let second_tools = FileSystemTools::new(vec![root.path().to_path_buf()]);
         let target = root.path().join("serialized-replacement.txt");
         std::fs::write(&target, "captured-original").unwrap();
         let first_content = "first-authorized-replacement";
         let second_content = "second-authorized-replacement";
-        let first = tools
+        let first = first_tools
             .prepare_write_file_mutation(
                 target.to_string_lossy().to_string(),
                 first_content.to_owned(),
             )
             .await
             .unwrap();
-        let second = tools
+        let second = second_tools
             .prepare_write_file_mutation(
                 target.to_string_lossy().to_string(),
                 second_content.to_owned(),
@@ -4136,7 +4137,7 @@ mod tests {
         assert!(!second_authorized.load(Ordering::SeqCst));
         assert_eq!(std::fs::read_to_string(&target).unwrap(), first_content);
 
-        let retry = tools
+        let retry = second_tools
             .prepare_write_file_mutation(
                 target.to_string_lossy().to_string(),
                 second_content.to_owned(),
