@@ -8,15 +8,16 @@ options, and capability-authority bundles are not public API.
 ## Minimal static-token embedding
 
 Bind the listener first and give that exact listener to the builder. Serve the
-result with socket `ConnectInfo`; this is mandatory even when static-token
-authentication is used because it keeps the same router valid under the
-strict localhost-development posture.
+result with `ConnectInfo<McpConnectionInfo>` derived by Axum from each accepted
+TCP stream; this is mandatory even when static-token authentication is used
+because it keeps the same router valid under the strict localhost-development
+posture.
 
 ```rust,no_run
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 use termux_mcp_server::{
-    auth::McpAuthPolicy,
+    auth::{McpAuthPolicy, McpConnectionInfo},
     mcp_transport::McpRouterBuilder,
     request_limits::McpRequestLimits,
     transport_security::TransportSecurityPolicy,
@@ -41,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<McpConnectionInfo>(),
     )
     .await?;
     Ok(())
@@ -56,8 +57,11 @@ tokens, configured paths, descriptor numbers, or filesystem identities.
 
 `McpAuthPolicy` is opaque: downstream code can construct a validated static or
 localhost policy, clone it, and use its redacted `Debug` implementation, but it
-cannot destructure the policy to recover the bearer principal. This keeps the
-credential inside the authentication and startup authority-matching boundary.
+cannot destructure the policy to recover the bearer principal.
+`McpConnectionInfo` is also opaque: Axum constructs it from the accepted TCP
+stream, while downstream code cannot synthesize or inspect trusted peer/local
+fields. This keeps credentials and socket identity inside the authentication
+and startup authority-matching boundary.
 
 ## Mandatory order
 
@@ -83,9 +87,11 @@ omit these layers because no raw public router constructor exists.
 `McpAuthPolicy::unauthenticated_localhost_only()` is accepted only when the
 listener passed to `try_new` is actually bound to an IPv4 or IPv6 loopback
 address. Each request must independently contain Axum
-`ConnectInfo<SocketAddr>` proving the actual TCP peer is loopback. Missing
-metadata, a wildcard/non-loopback listener, or a non-loopback peer fails
-closed. `Host`, `Origin`, and forwarded headers are not peer evidence.
+`ConnectInfo<McpConnectionInfo>` derived from its accepted TCP stream. The
+actual peer must be loopback and the stream's local address must exactly match
+the listener validated by the builder. Missing metadata, a wildcard/non-loopback
+listener, a non-loopback peer, or listener substitution fails closed. `Host`,
+`Origin`, and forwarded headers are not socket evidence.
 
 Do not use this posture behind a proxy, tunnel, LAN listener, or adapter that
 does not preserve socket peer metadata. Prefer a static bearer token for every
@@ -129,7 +135,8 @@ safe-root tools and assume their authority identity is interchangeable.
 ## Composition rules
 
 - Serve the same listener supplied to `try_new` and always use
-  `into_make_service_with_connect_info::<SocketAddr>()`.
+  `into_make_service_with_connect_info::<McpConnectionInfo>()`. A different
+  served listener fails authentication even when it is also loopback-bound.
 - Merge unrelated health/readiness routes only outside `/mcp`; never overlay or
   replace `/mcp` after the builder returns.
 - Construct `McpAuthPolicy`, `McpRequestLimits`, and
