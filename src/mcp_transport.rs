@@ -69,6 +69,7 @@ use crate::{
     },
     tools::{
         AuthorizedCreateDirectoryError, AuthorizedWriteFileError, FileSystemTools, FindPathFilter,
+        PreparedCreateDirectoryMutation,
         MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES,
         MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES,
         MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
@@ -609,6 +610,27 @@ fn run_create_directory_mutation_worker(
             return FilesystemMutationWorkerOutcome::Completed(outcome);
         }
     };
+    run_prepared_create_directory_mutation(
+        prepared,
+        authority,
+        capability_grant,
+        session_id,
+        commit,
+        audit,
+    )
+}
+
+fn run_prepared_create_directory_mutation(
+    prepared: PreparedCreateDirectoryMutation,
+    authority: CreateDirectoryGrantAuthority,
+    capability_grant: Option<String>,
+    session_id: String,
+    commit: FilesystemMutationWorkerCommitGuard,
+    audit: CreateDirectoryMutationAuditGuard,
+) -> FilesystemMutationWorkerOutcome<
+    crate::tools::CreateDirectoryResult,
+    AuthorizedCreateDirectoryError,
+> {
     let publication_guard = filesystem_mutation_publication_lock();
     if let Err(error) = prepared.revalidate_destination_absent() {
         drop(publication_guard);
@@ -7078,6 +7100,103 @@ mod tests {
             counters.by_reason_code[FILESYSTEM_MUTATION_REQUEST_CANCELLED].denied,
             1
         );
+    }
+
+    #[test]
+    fn two_distinct_prepared_create_grants_preserve_the_stale_loser() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+            .expect("test safe root must validate");
+        let authority = CreateDirectoryGrantAuthority::from_hex_key(
+            "test-key-1",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "stale-create-test-principal",
+        )
+        .unwrap();
+        let session_id = Uuid::new_v4().to_string();
+        let target = safe_root.path().join("serialized-directory");
+        let path = target.to_string_lossy().to_string();
+        let binding = file_tools.create_directory_grant_target(&path).unwrap();
+        let now = current_unix_seconds();
+        let winner_grant = authority.issue_at(&session_id, &binding, now).unwrap();
+        let stale_grant = authority.issue_at(&session_id, &binding, now).unwrap();
+        assert_ne!(winner_grant, stale_grant);
+
+        let winner_prepared = file_tools
+            .prepare_create_directory_mutation_blocking(path.clone())
+            .unwrap();
+        let stale_prepared = file_tools
+            .prepare_create_directory_mutation_blocking(path.clone())
+            .unwrap();
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+
+        let (winner_waiter, winner_commit) = filesystem_mutation_commit_guards();
+        let winner = run_prepared_create_directory_mutation(
+            winner_prepared,
+            authority.clone(),
+            Some(winner_grant),
+            session_id.clone(),
+            winner_commit,
+            CreateDirectoryMutationAuditGuard::new(Arc::clone(&counters)),
+        );
+        winner_waiter.complete();
+        assert!(matches!(
+            winner,
+            FilesystemMutationWorkerOutcome::Completed(Ok(_))
+        ));
+        assert!(target.is_dir());
+
+        let (stale_waiter, stale_commit) = filesystem_mutation_commit_guards();
+        let stale = run_prepared_create_directory_mutation(
+            stale_prepared,
+            authority.clone(),
+            Some(stale_grant.clone()),
+            session_id.clone(),
+            stale_commit,
+            CreateDirectoryMutationAuditGuard::new(Arc::clone(&counters)),
+        );
+        stale_waiter.complete();
+        assert!(matches!(
+            stale,
+            FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedCreateDirectoryError::Filesystem(AppError::PathAlreadyExists)
+            ))
+        ));
+
+        std::fs::remove_dir(&target).unwrap();
+        let fresh_prepared = file_tools
+            .prepare_create_directory_mutation_blocking(path)
+            .unwrap();
+        let (fresh_waiter, fresh_commit) = filesystem_mutation_commit_guards();
+        let fresh = run_prepared_create_directory_mutation(
+            fresh_prepared,
+            authority.clone(),
+            Some(stale_grant.clone()),
+            session_id.clone(),
+            fresh_commit,
+            CreateDirectoryMutationAuditGuard::new(Arc::clone(&counters)),
+        );
+        fresh_waiter.complete();
+        assert!(matches!(
+            fresh,
+            FilesystemMutationWorkerOutcome::Completed(Ok(_))
+        ));
+        assert!(target.is_dir());
+        assert_eq!(
+            authority
+                .consume_at(
+                    Some(&stale_grant),
+                    &session_id,
+                    &binding,
+                    current_unix_seconds(),
+                )
+                .unwrap_err(),
+            CreateDirectoryGrantError::Replayed
+        );
+
+        let counters = counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[CREATE_DIRECTORY_TOOL].allowed, 2);
+        assert_eq!(counters.by_tool[CREATE_DIRECTORY_TOOL].denied, 1);
     }
 
     #[test]
