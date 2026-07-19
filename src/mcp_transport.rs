@@ -54,10 +54,11 @@ use crate::{
     tools::{
         AuthorizedCreateDirectoryError, FileSystemTools, PreparedCreateDirectoryMutation,
         MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES,
-        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
-        MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
-        MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
-        MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+        MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES,
+        MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
+        MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES,
+        MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES,
+        MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -98,10 +99,11 @@ const HASH_FILE_TOOL: &str = "hash_file";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const PATH_METADATA_TOOL: &str = "path_metadata";
 const READ_BINARY_FILE_TOOL: &str = "read_binary_file";
+const READ_BINARY_RANGE_TOOL: &str = "read_binary_range";
 const READ_FILE_TOOL: &str = "read_file";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 13] = [
+const BASE_AVAILABLE_TOOLS: [&str; 14] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
@@ -112,6 +114,7 @@ const BASE_AVAILABLE_TOOLS: [&str; 13] = [
     LIST_DIRECTORY_TOOL,
     PATH_METADATA_TOOL,
     READ_BINARY_FILE_TOOL,
+    READ_BINARY_RANGE_TOOL,
     READ_FILE_TOOL,
     SEARCH_TEXT_TOOL,
     WRITE_FILE_TOOL,
@@ -176,6 +179,13 @@ const FILESYSTEM_BINARY_READ_NOT_FOUND: &str = "filesystem_binary_read_target_no
 const FILESYSTEM_BINARY_READ_UNSUPPORTED: &str = "filesystem_binary_read_type_unsupported";
 const FILESYSTEM_BINARY_READ_TOO_LARGE: &str = "filesystem_binary_read_size_limit_exceeded";
 const FILESYSTEM_BINARY_READ_FAILED: &str = "filesystem_binary_read_failed";
+const FILESYSTEM_BINARY_RANGE_ALLOWED: &str = "safe_root_binary_range_read";
+const FILESYSTEM_BINARY_RANGE_NOT_FOUND: &str = "filesystem_binary_range_target_not_found";
+const FILESYSTEM_BINARY_RANGE_UNSUPPORTED: &str = "filesystem_binary_range_type_unsupported";
+const FILESYSTEM_BINARY_RANGE_INVALID: &str = "filesystem_binary_range_invalid";
+const FILESYSTEM_BINARY_RANGE_TOO_LARGE: &str = "filesystem_binary_range_file_too_large";
+const FILESYSTEM_BINARY_RANGE_CHANGED: &str = "filesystem_binary_range_changed_during_read";
+const FILESYSTEM_BINARY_RANGE_FAILED: &str = "filesystem_binary_range_failed";
 const FILESYSTEM_HASH_ALLOWED: &str = "safe_root_file_hashed";
 const FILESYSTEM_HASH_NOT_FOUND: &str = "filesystem_hash_target_not_found";
 const FILESYSTEM_HASH_UNSUPPORTED: &str = "filesystem_hash_target_type_unsupported";
@@ -497,6 +507,14 @@ struct ReadFileArguments {
 #[serde(deny_unknown_fields)]
 struct ReadBinaryFileArguments {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadBinaryRangeArguments {
+    path: String,
+    offset_bytes: u64,
+    length_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1457,6 +1475,37 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": READ_BINARY_RANGE_TOOL,
+                        "description": "Read one bounded byte range as canonical padded base64 from a larger regular file inside a configured filesystem safe root.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": format!(
+                                        "Absolute regular-file path inside one configured safe root; the file may be at most {MAX_BINARY_RANGE_FILE_BYTES} bytes."
+                                    ),
+                                },
+                                "offset_bytes": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": MAX_BINARY_RANGE_FILE_BYTES,
+                                    "description": "Zero-based raw byte offset; EOF itself is accepted and returns an empty range.",
+                                },
+                                "length_bytes": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": MAX_BINARY_RANGE_BYTES,
+                                    "description": format!(
+                                        "Maximum raw bytes to return; fixed upper bound is {MAX_BINARY_RANGE_BYTES}."
+                                    ),
+                                },
+                            },
+                            "required": ["path", "offset_bytes", "length_bytes"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": READ_FILE_TOOL,
                         "description": "Read a bounded UTF-8 text file from inside a configured filesystem safe root without writing data.",
                         "inputSchema": {
@@ -1772,6 +1821,15 @@ async fn handle_tool_call(
         }
         READ_BINARY_FILE_TOOL => {
             handle_read_binary_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        READ_BINARY_RANGE_TOOL => {
+            handle_read_binary_range_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -2448,7 +2506,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-hash-file-list-metadata-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-hash-file-list-metadata-binary-read-binary-range-text-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -2473,11 +2531,16 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_binary_file_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_search_text_and_default_dry_run_write_file",
                     "binaryFileReads": true,
                     "binaryFileReadEncoding": "base64",
                     "binaryFileReadMaxBytes": MAX_BINARY_READ_BYTES,
                     "binaryFileReadMaxResponseBytes": MAX_BINARY_READ_RESPONSE_BYTES,
+                    "binaryRangeReads": true,
+                    "binaryRangeReadEncoding": "base64",
+                    "binaryRangeReadMaxFileBytes": MAX_BINARY_RANGE_FILE_BYTES,
+                    "binaryRangeReadMaxBytes": MAX_BINARY_RANGE_BYTES,
+                    "binaryRangeReadMaxResponseBytes": MAX_BINARY_RANGE_RESPONSE_BYTES,
                     "fileHashing": true,
                     "fileHashAlgorithm": "sha256",
                     "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
@@ -3008,6 +3071,194 @@ async fn handle_read_binary_file_call(
                 FILESYSTEM_BINARY_READ_FAILED,
             );
             internal_error(id, "Binary file read failed.")
+        }
+    }
+}
+
+fn binary_range_success_envelope_fits(id: Option<Value>) -> bool {
+    let maximum_summary = format!(
+        "Read and base64-encoded {MAX_BINARY_RANGE_BYTES} bytes from one bounded safe-rooted file range."
+    );
+    let body = result_body(
+        id,
+        maximum_summary,
+        json!({
+            "encoding": "base64",
+            "data": "",
+            "offsetBytes": MAX_BINARY_RANGE_FILE_BYTES,
+            "sizeBytes": MAX_BINARY_RANGE_BYTES,
+            "fileSizeBytes": MAX_BINARY_RANGE_FILE_BYTES,
+            "eof": false,
+            "maxReadBytes": MAX_BINARY_RANGE_BYTES,
+            "maxFileBytes": MAX_BINARY_RANGE_FILE_BYTES,
+            "maxResponseBytes": MAX_BINARY_RANGE_RESPONSE_BYTES,
+        }),
+    );
+    serde_json::to_vec(&body)
+        .ok()
+        .and_then(|serialized| serialized.len().checked_add(MAX_BINARY_RANGE_BASE64_BYTES))
+        .is_some_and(|bytes| bytes <= MAX_BINARY_RANGE_RESPONSE_BYTES)
+}
+
+#[rustfmt::skip]
+async fn handle_read_binary_range_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    if !binary_range_success_envelope_fits(id.clone()) {
+        record_filesystem_denied(
+            audit_counters,
+            READ_BINARY_RANGE_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "Binary range response exceeds the staged read_binary_range response byte limit.",
+            MAX_BINARY_RANGE_RESPONSE_BYTES,
+        );
+    }
+
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(
+                id,
+                "read_binary_range requires path, offset_bytes, and length_bytes arguments.",
+            );
+        }
+    };
+    let args = match serde_json::from_value::<ReadBinaryRangeArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    match file_tools
+        .read_binary_range(args.path, args.offset_bytes, args.length_bytes)
+        .await
+    {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = format!(
+                "Read and base64-encoded {} bytes from one bounded safe-rooted file range.",
+                result.size_bytes
+            );
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_BINARY_RANGE_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    READ_BINARY_RANGE_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Binary range response exceeds the staged read_binary_range response byte limit.",
+                    MAX_BINARY_RANGE_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(id, "Path is outside the configured filesystem safe roots.")
+        }
+        Err(AppError::PathNotFound) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_NOT_FOUND,
+            );
+            invalid_params(id, "Binary range file does not exist.")
+        }
+        Err(AppError::UnsupportedPathType) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_UNSUPPORTED,
+            );
+            invalid_params(id, "Binary range target must be one regular file.")
+        }
+        Err(AppError::InvalidBinaryRange) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_INVALID,
+            );
+            invalid_params(id, "Binary range is outside the bounded file contract.")
+        }
+        Err(AppError::FileTooLarge { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_TOO_LARGE,
+            );
+            payload_too_large(id, "Binary range file exceeds the staged file byte limit.")
+        }
+        Err(AppError::FileChangedDuringRead) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_CHANGED,
+            );
+            resource_changed(id, "Binary range file changed during the bounded read.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                READ_BINARY_RANGE_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_BINARY_RANGE_FAILED,
+            );
+            internal_error(id, "Binary range read failed.")
         }
     }
 }
@@ -4082,6 +4333,23 @@ fn internal_error(id: Option<Value>, message: &str) -> Response {
 }
 
 #[rustfmt::skip]
+fn resource_changed(id: Option<Value>, message: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32004,
+                "message": "Resource changed",
+                "data": message,
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
 fn payload_too_large(id: Option<Value>, message: &str) -> Response {
     (
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -4318,6 +4586,7 @@ mod tests {
                 "list_directory",
                 "path_metadata",
                 "read_binary_file",
+                "read_binary_range",
                 "read_file",
                 "search_text",
                 "write_file",
@@ -4348,7 +4617,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            15
+            16
         );
     }
 

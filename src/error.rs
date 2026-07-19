@@ -14,6 +14,12 @@ pub enum AppError {
     #[error("File content is not valid UTF-8")]
     InvalidFileEncoding,
 
+    #[error("Requested binary range is outside the bounded file contract")]
+    InvalidBinaryRange,
+
+    #[error("File size changed during the bounded read")]
+    FileChangedDuringRead,
+
     #[error("Search query does not satisfy the literal text-search contract")]
     InvalidSearchQuery,
 
@@ -64,6 +70,14 @@ impl AppError {
             AppError::InvalidFileEncoding => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "File content must be valid UTF-8",
+            ),
+            AppError::InvalidBinaryRange => (
+                StatusCode::BAD_REQUEST,
+                "Requested binary range is not valid",
+            ),
+            AppError::FileChangedDuringRead => (
+                StatusCode::CONFLICT,
+                "File changed during the bounded read",
             ),
             AppError::InvalidSearchQuery => (
                 StatusCode::BAD_REQUEST,
@@ -172,6 +186,20 @@ mod tests {
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "File content must be valid UTF-8",
+            )
+        );
+        assert_eq!(
+            AppError::InvalidBinaryRange.public_response(),
+            (
+                StatusCode::BAD_REQUEST,
+                "Requested binary range is not valid",
+            )
+        );
+        assert_eq!(
+            AppError::FileChangedDuringRead.public_response(),
+            (
+                StatusCode::CONFLICT,
+                "File changed during the bounded read",
             )
         );
         assert_eq!(

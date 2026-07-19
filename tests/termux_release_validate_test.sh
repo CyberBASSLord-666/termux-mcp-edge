@@ -289,7 +289,7 @@ fi
 
 jq -e '
   .schemaVersion == 1
-  and .validatorVersion == "5"
+  and .validatorVersion == "6"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
@@ -576,6 +576,7 @@ jq -e '
   and ([.results[].code] | index("safe_root_file_copy_verified") != null)
   and ([.results[].code] | index("safe_root_file_hash_verified") != null)
   and ([.results[].code] | index("safe_root_binary_read_verified") != null)
+  and ([.results[].code] | index("safe_root_binary_range_read_verified") != null)
   and ([.results[].code] | index("safe_root_path_metadata_succeeded") != null)
   and ([.results[].code] | index("safe_root_text_search_succeeded") != null)
   and ([.results[].code] | index("read_response_bound_enforced") != null)

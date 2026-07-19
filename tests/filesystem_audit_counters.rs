@@ -62,8 +62,15 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
         AuditMode::ReadOnly,
         "safe_root_binary_read",
     );
-    let denied_read = filesystem_denied_event(
+    let allowed_binary_range = filesystem_allowed_event(
         1_725_000_008,
+        "read_binary_range",
+        "filesystem_read",
+        AuditMode::ReadOnly,
+        "safe_root_binary_range_read",
+    );
+    let denied_read = filesystem_denied_event(
+        1_725_000_009,
         "read_file",
         "filesystem_read",
         AuditMode::ReadOnly,
@@ -78,11 +85,12 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
     counters.record_event(&allowed_copy);
     counters.record_event(&allowed_hash);
     counters.record_event(&allowed_binary_read);
+    counters.record_event(&allowed_binary_range);
     counters.record_event(&denied_read);
 
-    assert_eq!(counters.allowed_total, 8);
+    assert_eq!(counters.allowed_total, 9);
     assert_eq!(counters.denied_total, 1);
-    assert_eq!(counters.total(), 9);
+    assert_eq!(counters.total(), 10);
     assert_eq!(counters.by_tool["list_directory"].allowed, 1);
     assert_eq!(counters.by_tool["write_file"].allowed, 1);
     assert_eq!(counters.by_tool["read_file"].denied, 1);
@@ -92,6 +100,7 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
     assert_eq!(counters.by_tool["copy_file"].allowed, 1);
     assert_eq!(counters.by_tool["hash_file"].allowed, 1);
     assert_eq!(counters.by_tool["read_binary_file"].allowed, 1);
+    assert_eq!(counters.by_tool["read_binary_range"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_listed"].allowed, 1);
     assert_eq!(counters.by_reason_code["dry_run_preview"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_rejected"].denied, 1);
@@ -110,6 +119,10 @@ fn filesystem_audit_events_increment_aggregate_counters_without_sensitive_values
     assert_eq!(counters.by_reason_code["safe_root_file_copied"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_file_hashed"].allowed, 1);
     assert_eq!(counters.by_reason_code["safe_root_binary_read"].allowed, 1);
+    assert_eq!(
+        counters.by_reason_code["safe_root_binary_range_read"].allowed,
+        1
+    );
 
     let serialized = serde_json::to_string(&counters)
         .expect("filesystem audit counters should serialize deterministically")

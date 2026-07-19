@@ -95,8 +95,8 @@ Changes to this tool are blocked unless tests and release gates prove:
 - complete response bounding at the exact raw-file limit;
 - path/content/host-metadata-private results and audit counters;
 - parity across default and optional artifact discovery postures;
-- release-validator v5, device-harness v5, and native official-Termux ARM64 execution for the exact candidate.
+- release-validator v6, device-harness v6, and native official-Termux ARM64 execution for the exact candidate.
 
 ## Non-goals
 
-`read_binary_file` does not authorize shared-storage access, recursive reads, directory archives, byte ranges, link following, alternate encodings, content-type detection, decompression, decryption, file mutation, upload, deletion, command execution, or network access. Each broader capability requires a separate threat model and authorization decision.
+`read_binary_file` does not authorize shared-storage access, recursive reads, directory archives, link following, alternate encodings, content-type detection, decompression, decryption, file mutation, upload, deletion, command execution, or network access. Bounded byte ranges are a separate Class 1 capability with a larger file ceiling and their own contract in [`SAFE_ROOT_BINARY_RANGES.md`](SAFE_ROOT_BINARY_RANGES.md); it does not broaden whole-file reads.

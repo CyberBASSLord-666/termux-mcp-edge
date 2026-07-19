@@ -19,7 +19,7 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
-assert_contains 'HARNESS_VERSION="5"' "$SCRIPT"
+assert_contains 'HARNESS_VERSION="6"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
 assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then
@@ -68,7 +68,7 @@ done
 
 for protocol_marker in \
   '"notifications/initialized"' \
-  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_file","search_text","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
   'create_directory_missing_grant_http' \
@@ -88,6 +88,12 @@ for protocol_marker in \
   'read_binary_file_schema' \
   'binaryFileReadMaxBytes == 1048576' \
   'binaryFileReadMaxResponseBytes == 1507328' \
+  'read_binary_range_http' \
+  'read_binary_range=base64' \
+  'read_binary_range_schema' \
+  'binaryRangeReadMaxFileBytes == 67108864' \
+  'binaryRangeReadMaxBytes == 262144' \
+  'binaryRangeReadMaxResponseBytes == 393216' \
   '"name":"shell"' \
   'mcp_request_body_too_large' \
   'outside-secret-must-not-be-returned' \
