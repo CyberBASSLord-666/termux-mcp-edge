@@ -26,6 +26,15 @@ for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$CO
   bash "$script" --help | grep -Fq 'Usage:' || fail_test "help output missing for $(basename "$script")"
 done
 
+for script in "$BATTERY_GATE" "$VOLUME_GATE" "$COMMAND_GATE"; do
+  [[ "$(grep -Fc '"read_text_range",' "$script")" == 2 ]] \
+    || fail_test "enabled/disabled UTF-8 range allowlist parity missing for $(basename "$script")"
+done
+grep -Fq '"read_text_range","search_text"' "$GATE" \
+  || fail_test 'baseline native gate UTF-8 range allowlist parity missing'
+grep -Fq '"read_text_range","search_text"' "$VOLUME_CONTROL_GATE" \
+  || fail_test 'volume-control native gate UTF-8 range allowlist parity missing'
+
 if bash "$GATE" >"$ROOT/.termux-emulated-test.stdout" 2>"$ROOT/.termux-emulated-test.stderr"; then
   fail_test 'gate without required arguments unexpectedly succeeded'
 fi

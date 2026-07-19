@@ -444,6 +444,7 @@ jq -e '
     "read_binary_file",
     "read_binary_range",
     "read_file",
+    "read_text_range",
     "search_text",
     "write_file",
     "android_volume_status"
@@ -566,6 +567,7 @@ jq -e '
     "read_binary_file",
     "read_binary_range",
     "read_file",
+    "read_text_range",
     "search_text",
     "write_file"
   ]
