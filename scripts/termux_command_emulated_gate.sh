@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-GATE_VERSION=1
+GATE_VERSION=2
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
 DEFAULT_PORT=18769
 
@@ -46,7 +46,8 @@ Usage: termux_command_emulated_gate.sh \
 Run an exact command-execution artifact natively in the pinned official ARM64
 Termux environment. This validates the compile/runtime truth table, fixed
 profile registry, closed schema, cleared environment, null stdin, safe-rooted
-working directory, bounded structured output, stable errors, and audit counters.
+working directory, bounded structured output, wrong-name fail-closed behavior,
+loaded-inode replacement isolation, stable errors, and audit counters.
 It does not run a long observation window or enable arbitrary commands.
 EOF
 }
@@ -218,6 +219,7 @@ curl_local() {
 
 start_server() {
   local enabled="$1"
+  local candidate="${2:-$ARTIFACT}"
   MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
   MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
   MCP__COMMAND__ENABLED="$enabled" \
@@ -233,7 +235,7 @@ start_server() {
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
   MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
-    "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
+    "$candidate" >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
   local attempt
   for attempt in $(seq 1 100); do
@@ -432,6 +434,56 @@ jq -e '
 ' "$BODY_FILE" >/dev/null || fail audit_counter_contract_invalid
 stop_server
 
+log 'validating loaded executable inode replacement isolation'
+PINNED_DIR="$WORK_ROOT/pinned-server"
+PINNED_ARTIFACT="$PINNED_DIR/termux-mcp-server"
+PINNED_MARKER="$WORK_ROOT/replacement-marker"
+mkdir -m 700 "$PINNED_DIR"
+install -m 700 "$ARTIFACT" "$PINNED_ARTIFACT"
+start_server true "$PINNED_ARTIFACT"
+initialize_session
+rm -f -- "$PINNED_ARTIFACT"
+{
+  printf '#!/data/data/com.termux/files/usr/bin/bash\n'
+  printf ': > %q\n' "$PINNED_MARKER"
+  printf "printf 'replacement-executed\\n'\n"
+} >"$PINNED_ARTIFACT"
+chmod 700 "$PINNED_ARTIFACT"
+post_mcp '{"jsonrpc":"2.0","id":"pinned-version","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail pinned_version_http_invalid
+jq -e --arg version "$EXPECTED_VERSION" '
+  .result.isError == false
+  and .result.structuredContent.profile == "server_version"
+  and .result.structuredContent.stdout == ("termux-mcp-server " + $version + "\n")
+  and .result.structuredContent.stderr == ""
+' "$BODY_FILE" >/dev/null || fail pinned_version_contract_invalid
+[[ ! -e "$PINNED_MARKER" && ! -L "$PINNED_MARKER" ]] || fail executable_path_replacement_ran
+stop_server
+
+log 'validating wrong executable name fails closed'
+RENAMED_ARTIFACT="$WORK_ROOT/renamed-command-server"
+install -m 700 "$ARTIFACT" "$RENAMED_ARTIFACT"
+start_server true "$RENAMED_ARTIFACT"
+initialize_session
+post_mcp '{"jsonrpc":"2.0","id":"wrong-name-tools","method":"tools/list"}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_tools_http_invalid
+jq -e '[.result.tools[].name] | index("run_command_profile") == null' "$BODY_FILE" >/dev/null || fail wrong_name_tool_discovered
+post_mcp '{"jsonrpc":"2.0","id":"wrong-name-runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_runtime_http_invalid
+jq -e '
+  .result.structuredContent.commandExecutionCompiled == true
+  and .result.structuredContent.commandExecution == false
+  and .result.structuredContent.commandExecutionMode == "disabled"
+  and .result.structuredContent.arbitraryCommandExecution == false
+' "$BODY_FILE" >/dev/null || fail wrong_name_runtime_contract_invalid
+post_mcp '{"jsonrpc":"2.0","id":"wrong-name-direct","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_direct_http_invalid
+jq -e '
+  .result.isError == true
+  and .result.structuredContent.reasonCode == "command_runtime_disabled"
+' "$BODY_FILE" >/dev/null || fail wrong_name_direct_contract_invalid
+stop_server
+
 log 'validating disabled fixed-profile command posture'
 start_server false
 initialize_session
@@ -497,7 +549,7 @@ jq -n \
   --arg image_digest "$IMAGE_DIGEST" \
   --argjson requests "$REQUEST_COUNT" '
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     gateVersion: $gate_version,
     status: "pass",
     failureCode: null,
@@ -528,6 +580,8 @@ jq -n \
       runtimeDefaultDisabled: true,
       disabledDiscovery: true,
       fixedCurrentExecutable: true,
+      wrongExecutableNameRejected: true,
+      runningInodePinned: true,
       fixedArgvProfiles: true,
       closedInputSchema: true,
       overrideFieldsRejected: true,
@@ -551,7 +605,7 @@ jq -n \
 chmod 600 "$REPORT_NEXT" || fail report_mode_failed
 
 jq -e '
-  .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+  .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
   and .failureCode == null and .releaseQualificationEligible == false
   and .environment.executionMode == "official-termux-docker-native-arm64"
   and .environment.androidLinker == true
