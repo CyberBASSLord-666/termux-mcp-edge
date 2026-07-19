@@ -98,6 +98,8 @@ pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 pub const MCP_LAST_EVENT_ID_HEADER: &str = "last-event-id";
 pub const MCP_POST_ACCEPT: &str = "application/json, text/event-stream";
 pub const MAX_MCP_LAST_EVENT_ID_BYTES: usize = 64;
+/// Maximum canonical serialized byte length of one non-null JSON-RPC request id.
+pub const MAX_MCP_JSON_RPC_ID_BYTES: usize = 1_048_576;
 pub const MCP_SSE_RETRY_MILLISECONDS: u64 = SSE_RETRY_MILLISECONDS;
 
 const APPLICATION_JSON: &str = "application/json";
@@ -1165,9 +1167,18 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
                 .into_response();
         }
         Err(JsonRpcEnvelopeError::InvalidRequest { id, reason }) => {
+            if id.as_ref().is_some_and(|id| !json_rpc_id_fits(id)) {
+                return json_rpc_id_too_large();
+            }
             return invalid_request(id, reason);
         }
     };
+
+    if let IncomingJsonRpcMessage::Request { id, .. } = &message {
+        if !json_rpc_id_fits(id) {
+            return json_rpc_id_too_large();
+        }
+    }
 
     if let IncomingJsonRpcMessage::Request { id, method, params } = &message {
         if method == "initialize" {
@@ -1467,31 +1478,37 @@ fn initialize_response(
         );
     }
 
+    let error_id = id.clone();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "result": {
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "serverInfo": {
+                "name": "termux-mcp-edge",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": {
+                "tools": {
+                    "listChanged": false,
+                },
+            },
+        },
+    });
+    if !json_response_fits(&body, MAX_MCP_JSON_RESPONSE_BYTES) {
+        return bounded_payload_too_large(
+            error_id,
+            "Initialize response exceeds the bounded transport response byte limit.",
+            MAX_MCP_JSON_RESPONSE_BYTES,
+        );
+    }
+
     let session_id = match state.sessions.create() {
         Ok(session_id) => session_id,
         Err(error) => return session_store_error_response(error),
     };
 
-    let mut response = (
-        StatusCode::OK,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id.unwrap_or(Value::Null),
-            "result": {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "serverInfo": {
-                    "name": "termux-mcp-edge",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": {
-                    "tools": {
-                        "listChanged": false,
-                    },
-                },
-            },
-        })),
-    )
-        .into_response();
+    let mut response = (StatusCode::OK, Json(body)).into_response();
     response.headers_mut().insert(
         MCP_SESSION_ID_HEADER,
         HeaderValue::try_from(session_id.as_str())
@@ -1502,15 +1519,17 @@ fn initialize_response(
 
 #[rustfmt::skip]
 fn ping_response(id: Option<Value>) -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id.unwrap_or(Value::Null),
-            "result": {},
-        })),
+    let error_id = id.clone();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "result": {},
+    });
+    bounded_json_rpc_ok(
+        error_id,
+        body,
+        "Ping response exceeds the bounded transport response byte limit.",
     )
-        .into_response()
 }
 
 fn valid_initialize_params(params: Option<&Value>) -> bool {
@@ -1885,6 +1904,7 @@ fn capability_authorization_denied(
 
 #[rustfmt::skip]
 fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response {
+    let error_id = id.clone();
     let mut body = json!({
             "jsonrpc": "2.0",
             "id": id.unwrap_or(Value::Null),
@@ -2366,7 +2386,11 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             }));
     }
 
-    (StatusCode::OK, Json(body)).into_response()
+    bounded_json_rpc_ok(
+        error_id,
+        body,
+        "Tool discovery response exceeds the bounded transport response byte limit.",
+    )
 }
 
 #[rustfmt::skip]
@@ -3127,6 +3151,7 @@ fn runtime_status_response(
     id: Option<Value>,
     state: &McpTransportState,
 ) -> Response {
+    let error_id = id.clone();
     let audit_counters_snapshot = audit_counters_snapshot(&state.audit_counters);
     let create_directory_mutation_enabled = state.create_directory_authority.is_some();
     let write_file_mutation_enabled = state.write_file_authority.is_some();
@@ -3193,117 +3218,131 @@ fn runtime_status_response(
         "streamable-http-2025-11-25-session-scoped-no-sse"
     };
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id.unwrap_or(Value::Null),
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": format!(
-                            "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, write_file_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search-and-grant-gated-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
-                            transport_mode,
-                            android_platform_mode,
-                            battery_mode,
-                            volume_mode,
-                            volume_control_mode,
-                            create_directory_mode,
-                            write_file_mode,
-                            if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
-                            command_execution_mode,
-                        ),
-                    },
-                ],
-                "structuredContent": {
-                    "server": "termux-mcp-edge",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "transport": "streamable_http_2025_11_25",
-                    "sessionManagement": "bounded_uuid_idle_expiry",
-                    "serverSentEvents": sse_enabled,
-                    "serverSentEventsMode": if sse_enabled { "finite_request_response_with_origin_stream_replay" } else { "disabled" },
-                    "sseMaxStreamsPerSession": MAX_MCP_SSE_STREAMS_PER_SESSION,
-                    "sseMaxEventsPerStream": MAX_MCP_SSE_EVENTS_PER_STREAM,
-                    "sseMaxEventDataBytes": MAX_MCP_SSE_EVENT_DATA_BYTES,
-                    "sseMaxReplayBytesPerSession": MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION,
-                    "sseMaxLastEventIdBytes": MAX_MCP_LAST_EVENT_ID_BYTES,
-                    "sseRetryMilliseconds": MCP_SSE_RETRY_MILLISECONDS,
-                    "availableTools": available_tools,
-                    "platformInfo": true,
-                    "platformInfoMode": "read_only_non_sensitive_metadata",
-                    "androidStatus": true,
-                    "androidStatusMode": "read_only_allowlisted_status_no_api_or_control",
-                    "projectServiceStatus": true,
-                    "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
-                    "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text_and_default_dry_run_grant_gated_write_file",
-                    "pathDiscovery": true,
-                    "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
-                    "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
-                    "pathDiscoveryMaxEntries": MAX_FIND_ENTRIES,
-                    "pathDiscoveryMaxMatches": MAX_FIND_MATCHES,
-                    "pathDiscoveryMaxQueryBytes": MAX_FIND_QUERY_BYTES,
-                    "pathDiscoveryMaxResponseBytes": MAX_FIND_RESPONSE_BYTES,
-                    "binaryFileReads": true,
-                    "binaryFileReadEncoding": "base64",
-                    "binaryFileReadMaxBytes": MAX_BINARY_READ_BYTES,
-                    "binaryFileReadMaxResponseBytes": MAX_BINARY_READ_RESPONSE_BYTES,
-                    "binaryRangeReads": true,
-                    "binaryRangeReadEncoding": "base64",
-                    "binaryRangeReadMaxFileBytes": MAX_BINARY_RANGE_FILE_BYTES,
-                    "binaryRangeReadMaxBytes": MAX_BINARY_RANGE_BYTES,
-                    "binaryRangeReadMaxResponseBytes": MAX_BINARY_RANGE_RESPONSE_BYTES,
-                    "textRangeReads": true,
-                    "textRangeReadEncoding": "utf-8",
-                    "textRangeReadMinBytes": MIN_TEXT_RANGE_BYTES,
-                    "textRangeReadMaxFileBytes": MAX_TEXT_RANGE_FILE_BYTES,
-                    "textRangeReadMaxBytes": MAX_TEXT_RANGE_BYTES,
-                    "textRangeReadMaxResponseBytes": MAX_TEXT_RANGE_RESPONSE_BYTES,
-                    "fileHashing": true,
-                    "fileHashAlgorithm": "sha256",
-                    "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
-                    "createDirectoryMutationEnabled": create_directory_mutation_enabled,
-                    "createDirectoryMutationMode": create_directory_mode,
-                    "createDirectoryGrantRequired": create_directory_mutation_enabled,
-                    "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
-                    "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
-                    "fileWrites": true,
-                    "fileWriteMode": write_file_mode,
-                    "fileWriteMutationEnabled": write_file_mutation_enabled,
-                    "fileWriteGrantRequired": write_file_mutation_enabled,
-                    "fileWriteGrantHeader": WRITE_FILE_GRANT_HEADER,
-                    "fileWriteGrantTtlSeconds": WRITE_FILE_GRANT_TTL_SECONDS,
-                    "fileWriteMaxBytes": DEFAULT_MAX_WRITE_BYTES,
-                    "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
-                    "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled,
-                    "androidPlatformToolMode": android_platform_mode,
-                    "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
-                    "androidBatteryStatusEnabled": android_battery_status_enabled,
-                    "androidVolumeStatusCompiled": cfg!(feature = "android-volume-status"),
-                    "androidVolumeStatusEnabled": android_volume_status_enabled,
-                    "androidVolumeControlCompiled": cfg!(feature = "android-volume-control"),
-                    "androidVolumeControlEnabled": android_volume_control_enabled,
-                    "androidVolumeControlMode": volume_control_mode,
-                    "androidVolumeGrantRequired": android_volume_control_enabled,
-                    "androidVolumeGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
-                    "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
-                    "androidDeviceControl": android_volume_control_enabled,
-                    "commandExecutionCompiled": cfg!(feature = "command-execution"),
-                    "commandExecution": command_execution_enabled,
-                    "commandExecutionMode": command_execution_mode,
-                    "arbitraryCommandExecution": false,
-                    // Preserve the established runtime-status contract: this
-                    // field reports Android device-control exposure. Filesystem
-                    // mutations have their own explicit gate/mode fields above.
-                    "highImpactTools": android_volume_control_enabled,
-                    "auditCounters": audit_counters_snapshot,
+    // Keep each macro invocation comfortably below the crate recursion ceiling.
+    // Runtime status is intentionally flat on the wire, so merge bounded object
+    // fragments before placing the result into the JSON-RPC envelope.
+    let Value::Object(mut structured_content) = json!({
+        "server": "termux-mcp-edge",
+        "version": env!("CARGO_PKG_VERSION"),
+        "transport": "streamable_http_2025_11_25",
+        "sessionManagement": "bounded_uuid_idle_expiry",
+        "serverSentEvents": sse_enabled,
+        "serverSentEventsMode": if sse_enabled { "finite_request_response_with_origin_stream_replay" } else { "disabled" },
+        "sseMaxStreamsPerSession": MAX_MCP_SSE_STREAMS_PER_SESSION,
+        "sseMaxEventsPerStream": MAX_MCP_SSE_EVENTS_PER_STREAM,
+        "sseMaxEventDataBytes": MAX_MCP_SSE_EVENT_DATA_BYTES,
+        "sseMaxReplayBytesPerSession": MAX_MCP_SSE_REPLAY_BYTES_PER_SESSION,
+        "sseMaxLastEventIdBytes": MAX_MCP_LAST_EVENT_ID_BYTES,
+        "sseRetryMilliseconds": MCP_SSE_RETRY_MILLISECONDS,
+        "jsonRpcIdMaxBytes": MAX_MCP_JSON_RPC_ID_BYTES,
+        "availableTools": available_tools,
+        "platformInfo": true,
+        "platformInfoMode": "read_only_non_sensitive_metadata",
+        "androidStatus": true,
+        "androidStatusMode": "read_only_allowlisted_status_no_api_or_control",
+        "projectServiceStatus": true,
+        "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
+        "filesystemTools": true,
+        "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text_and_default_dry_run_grant_gated_write_file",
+        "pathDiscovery": true,
+        "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
+        "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
+        "pathDiscoveryMaxEntries": MAX_FIND_ENTRIES,
+        "pathDiscoveryMaxMatches": MAX_FIND_MATCHES,
+        "pathDiscoveryMaxQueryBytes": MAX_FIND_QUERY_BYTES,
+        "pathDiscoveryMaxResponseBytes": MAX_FIND_RESPONSE_BYTES,
+        "binaryFileReads": true,
+        "binaryFileReadEncoding": "base64",
+        "binaryFileReadMaxBytes": MAX_BINARY_READ_BYTES,
+        "binaryFileReadMaxResponseBytes": MAX_BINARY_READ_RESPONSE_BYTES,
+        "binaryRangeReads": true,
+        "binaryRangeReadEncoding": "base64",
+        "binaryRangeReadMaxFileBytes": MAX_BINARY_RANGE_FILE_BYTES,
+        "binaryRangeReadMaxBytes": MAX_BINARY_RANGE_BYTES,
+        "binaryRangeReadMaxResponseBytes": MAX_BINARY_RANGE_RESPONSE_BYTES,
+    }) else {
+        unreachable!("runtime status core fields must form a JSON object");
+    };
+    let Value::Object(filesystem_and_platform_content) = json!({
+        "textRangeReads": true,
+        "textRangeReadEncoding": "utf-8",
+        "textRangeReadMinBytes": MIN_TEXT_RANGE_BYTES,
+        "textRangeReadMaxFileBytes": MAX_TEXT_RANGE_FILE_BYTES,
+        "textRangeReadMaxBytes": MAX_TEXT_RANGE_BYTES,
+        "textRangeReadMaxResponseBytes": MAX_TEXT_RANGE_RESPONSE_BYTES,
+        "fileHashing": true,
+        "fileHashAlgorithm": "sha256",
+        "fileHashMaxBytes": MAX_HASH_FILE_BYTES,
+        "createDirectoryMutationEnabled": create_directory_mutation_enabled,
+        "createDirectoryMutationMode": create_directory_mode,
+        "createDirectoryGrantRequired": create_directory_mutation_enabled,
+        "createDirectoryGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+        "createDirectoryGrantTtlSeconds": CREATE_DIRECTORY_GRANT_TTL_SECONDS,
+        "fileWrites": true,
+        "fileWriteMode": write_file_mode,
+        "fileWriteMutationEnabled": write_file_mutation_enabled,
+        "fileWriteGrantRequired": write_file_mutation_enabled,
+        "fileWriteGrantHeader": WRITE_FILE_GRANT_HEADER,
+        "fileWriteGrantTtlSeconds": WRITE_FILE_GRANT_TTL_SECONDS,
+        "fileWriteMaxBytes": DEFAULT_MAX_WRITE_BYTES,
+        "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
+        "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled,
+        "androidPlatformToolMode": android_platform_mode,
+        "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
+        "androidBatteryStatusEnabled": android_battery_status_enabled,
+        "androidVolumeStatusCompiled": cfg!(feature = "android-volume-status"),
+        "androidVolumeStatusEnabled": android_volume_status_enabled,
+        "androidVolumeControlCompiled": cfg!(feature = "android-volume-control"),
+        "androidVolumeControlEnabled": android_volume_control_enabled,
+        "androidVolumeControlMode": volume_control_mode,
+        "androidVolumeGrantRequired": android_volume_control_enabled,
+        "androidVolumeGrantHeader": CREATE_DIRECTORY_GRANT_HEADER,
+        "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
+        "androidDeviceControl": android_volume_control_enabled,
+        "commandExecutionCompiled": cfg!(feature = "command-execution"),
+        "commandExecution": command_execution_enabled,
+        "commandExecutionMode": command_execution_mode,
+        "arbitraryCommandExecution": false,
+        // Preserve the established runtime-status contract: this field reports
+        // Android device-control exposure. Filesystem mutations have their own
+        // explicit gate/mode fields above.
+        "highImpactTools": android_volume_control_enabled,
+        "auditCounters": audit_counters_snapshot,
+    }) else {
+        unreachable!("runtime status capability fields must form a JSON object");
+    };
+    structured_content.extend(filesystem_and_platform_content);
+
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": format!(
+                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, write_file_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search-and-grant-gated-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                        transport_mode,
+                        android_platform_mode,
+                        battery_mode,
+                        volume_mode,
+                        volume_control_mode,
+                        create_directory_mode,
+                        write_file_mode,
+                        if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
+                        command_execution_mode,
+                    ),
                 },
-                "isError": false
-            },
-        })),
+            ],
+            "structuredContent": structured_content,
+            "isError": false
+        },
+    });
+    bounded_json_rpc_ok(
+        error_id,
+        body,
+        "Runtime status response exceeds the bounded transport response byte limit.",
     )
-        .into_response()
 }
 
 #[rustfmt::skip]
@@ -5468,7 +5507,20 @@ fn write_file_filesystem_error(
 
 #[rustfmt::skip]
 fn ok_result(id: Option<Value>, text: String, structured_content: Value) -> Response {
-    result_response(result_body(id, text, structured_content))
+    let error_id = id.clone();
+    bounded_ok_result(
+        id,
+        text,
+        structured_content,
+        MAX_MCP_JSON_RESPONSE_BYTES,
+    )
+    .unwrap_or_else(|| {
+        bounded_payload_too_large(
+            error_id,
+            "Tool result exceeds the bounded transport response byte limit.",
+            MAX_MCP_JSON_RESPONSE_BYTES,
+        )
+    })
 }
 
 #[rustfmt::skip]
@@ -5478,27 +5530,29 @@ fn tool_error_result(
     error_name: &'static str,
     reason_code: &'static str,
 ) -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id.unwrap_or(Value::Null),
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": format!("{tool_name} unavailable: {reason_code}"),
-                    },
-                ],
-                "structuredContent": {
-                    "error": error_name,
-                    "reasonCode": reason_code,
+    let error_id = id.clone();
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": format!("{tool_name} unavailable: {reason_code}"),
                 },
-                "isError": true
+            ],
+            "structuredContent": {
+                "error": error_name,
+                "reasonCode": reason_code,
             },
-        })),
+            "isError": true
+        },
+    });
+    bounded_json_rpc_ok(
+        error_id,
+        body,
+        "Tool error result exceeds the bounded transport response byte limit.",
     )
-        .into_response()
 }
 
 fn bounded_ok_result(
@@ -5534,6 +5588,30 @@ fn result_body(id: Option<Value>, text: String, structured_content: Value) -> Va
 
 fn result_response(body: Value) -> Response {
     (StatusCode::OK, Json(body)).into_response()
+}
+
+fn json_response_fits(body: &Value, max_response_bytes: usize) -> bool {
+    serde_json::to_vec(body).is_ok_and(|serialized| serialized.len() <= max_response_bytes)
+}
+
+fn bounded_json_rpc_ok(id: Option<Value>, body: Value, message: &'static str) -> Response {
+    if json_response_fits(&body, MAX_MCP_JSON_RESPONSE_BYTES) {
+        return result_response(body);
+    }
+
+    bounded_payload_too_large(id, message, MAX_MCP_JSON_RESPONSE_BYTES)
+}
+
+fn json_rpc_id_fits(id: &Value) -> bool {
+    serde_json::to_vec(id).is_ok_and(|serialized| serialized.len() <= MAX_MCP_JSON_RPC_ID_BYTES)
+}
+
+fn json_rpc_id_too_large() -> Response {
+    bounded_payload_too_large(
+        None,
+        "JSON-RPC request id exceeds the bounded transport byte limit.",
+        MAX_MCP_JSON_RESPONSE_BYTES,
+    )
 }
 
 #[rustfmt::skip]
@@ -5810,6 +5888,39 @@ mod tests {
         assert!(BOUNDED_TOOL_RESPONSE_BYTES
             .iter()
             .all(|limit| *limit <= MAX_MCP_JSON_RESPONSE_BYTES));
+    }
+
+    #[test]
+    fn oversized_initialize_response_does_not_allocate_a_session() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::new(vec![safe_root.path().to_path_buf()]),
+            false,
+            false,
+            false,
+            None,
+        );
+        let oversized_id = "x".repeat(MAX_MCP_JSON_RESPONSE_BYTES);
+        let response = initialize_response(
+            Some(json!(oversized_id)),
+            Some(json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "bounded-id-test", "version": "1.0.0"},
+            })),
+            &state,
+        );
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(response.headers().get(MCP_SESSION_ID_HEADER).is_none());
+        for _ in 0..crate::mcp_session::MAX_MCP_SESSIONS {
+            assert!(state.sessions.create().is_ok());
+        }
+        assert_eq!(
+            state.sessions.create(),
+            Err(SessionStoreError::CapacityExhausted)
+        );
     }
 
     #[tokio::test]

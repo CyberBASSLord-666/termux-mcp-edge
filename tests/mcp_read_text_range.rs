@@ -454,7 +454,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
     assert!(expanded_body.len() <= MAX_TEXT_RANGE_RESPONSE_BYTES);
 
     std::fs::remove_file(&path).unwrap();
-    let oversized_id = "x".repeat(MAX_TEXT_RANGE_RESPONSE_BYTES);
+    let oversized_id = "x".repeat(MAX_TEXT_RANGE_BYTES);
     for payload in [
         json!({
             "jsonrpc": "2.0",
@@ -463,7 +463,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
             "params": {"name": "read_text_range"}
         }),
         range_call(
-            json!(oversized_id),
+            json!(oversized_id.clone()),
             path.to_string_lossy().as_ref(),
             0,
             MIN_TEXT_RANGE_BYTES,
@@ -477,7 +477,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(payload["id"], Value::Null);
+        assert_eq!(payload["id"].as_str(), Some(oversized_id.as_str()));
         assert_eq!(payload["error"]["code"], -32001);
     }
 

@@ -144,7 +144,7 @@ The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65
 
 Values outside these ranges fail startup. Increasing concurrency and body size together increases possible peak memory use; evaluate them together on the target device.
 
-When SSE is enabled, JSON-RPC responses up to 128 KiB are retained for exact cursor resumption. Larger bounded responses remain JSON. Missing `Last-Event-ID` receives 405; malformed values receive 400; unavailable values receive 404. A reconnect must reuse the original session, bearer authentication, protocol version, Host, and Origin headers.
+When SSE is enabled, JSON-RPC responses up to 128 KiB are retained for exact cursor resumption. Larger bounded responses remain JSON. The canonical serialized non-null JSON-RPC request id is limited to 1,048,576 bytes independently of the configured whole-request limit; larger ids receive HTTP 413 with a null response id before session allocation or method dispatch. Missing `Last-Event-ID` receives 405; malformed values receive 400; unavailable values receive 404. A reconnect must reuse the original session, bearer authentication, protocol version, Host, and Origin headers.
 
 Failure semantics:
 

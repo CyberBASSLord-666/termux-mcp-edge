@@ -13,8 +13,8 @@ use support::{
     empty_test_file_tools, json_request, response_json, session_request, sse_test_router,
 };
 use termux_mcp_server::mcp_transport::{
-    MAX_MCP_LAST_EVENT_ID_BYTES, MCP_LAST_EVENT_ID_HEADER, MCP_PROTOCOL_VERSION,
-    MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+    MAX_MCP_JSON_RPC_ID_BYTES, MAX_MCP_LAST_EVENT_ID_BYTES, MCP_LAST_EVENT_ID_HEADER,
+    MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
 };
 use termux_mcp_server::tools::{
     MAX_BINARY_READ_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES,
@@ -210,6 +210,7 @@ async fn opt_in_sse_primes_then_delivers_one_terminal_json_rpc_response() {
         structured["serverSentEventsMode"],
         "finite_request_response_with_origin_stream_replay"
     );
+    assert_eq!(structured["jsonRpcIdMaxBytes"], MAX_MCP_JSON_RPC_ID_BYTES);
 }
 
 #[tokio::test]
@@ -462,6 +463,82 @@ async fn maximum_escaped_text_range_falls_back_to_bounded_json() {
         .unwrap();
     assert_eq!(content.len(), MAX_TEXT_RANGE_BYTES);
     assert!(content.bytes().all(|byte| byte == 0));
+}
+
+#[tokio::test]
+async fn bounded_json_rpc_ids_never_fail_sse_collection_or_orphan_initialization() {
+    let (_root, file_tools) = empty_test_file_tools();
+    let router = sse_test_router(file_tools);
+    let maximum_id = "x".repeat(MAX_MCP_JSON_RPC_ID_BYTES - 2);
+    let oversized_id = "x".repeat(MAX_MCP_JSON_RPC_ID_BYTES - 1);
+    let escaped_oversized_id = "\0".repeat(MAX_MCP_JSON_RPC_ID_BYTES / 6 + 1);
+
+    let mut oversized_initialize = initialize_body();
+    oversized_initialize["id"] = json!(oversized_id.clone());
+    let response = router
+        .clone()
+        .oneshot(json_request(oversized_initialize))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(response.headers().get(MCP_SESSION_ID_HEADER).is_none());
+    let payload = response_json(response).await;
+    assert_eq!(payload["id"], Value::Null);
+    assert_eq!(payload["error"]["code"], -32001);
+
+    let (session_id, _) = initialize_active_sse(&router).await;
+    let maximum_ping = router
+        .clone()
+        .oneshot(session_request(
+            json!({"jsonrpc":"2.0","id":maximum_id,"method":"ping"}),
+            &session_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(maximum_ping.status(), StatusCode::OK);
+    assert!(maximum_ping
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
+    assert_eq!(
+        response_json(maximum_ping).await["id"]
+            .as_str()
+            .unwrap()
+            .len(),
+        MAX_MCP_JSON_RPC_ID_BYTES - 2
+    );
+
+    for body in [
+        json!({"jsonrpc":"2.0","id":oversized_id.clone(),"method":"ping"}),
+        json!({"jsonrpc":"2.0","id":escaped_oversized_id,"method":"ping"}),
+        json!({"jsonrpc":"2.0","id":oversized_id.clone(),"method":"tools/list"}),
+        json!({
+            "jsonrpc":"2.0",
+            "id":oversized_id,
+            "method":"tools/call",
+            "params":{"name":"runtime_status","arguments":{}}
+        }),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(session_request(body, &session_id))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"));
+        let payload = response_json(response).await;
+        assert_eq!(payload["id"], Value::Null);
+        assert_eq!(payload["error"]["code"], -32001);
+    }
 }
 
 #[tokio::test]
