@@ -865,7 +865,7 @@ impl FileSystemTools {
 
             Ok::<_, AppError>(HashFileResult {
                 algorithm: "sha256".to_owned(),
-                digest: format!("{:x}", hasher.finalize()),
+                digest: encode_lower_hex(&hasher.finalize()),
                 size_bytes: bytes_hashed,
             })
         })
@@ -1813,6 +1813,16 @@ fn read_verified_binary_range(
 
 fn base64_encoded_len(byte_len: usize) -> Option<usize> {
     byte_len.checked_add(2)?.checked_div(3)?.checked_mul(4)
+}
+
+fn encode_lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 fn read_bounded_bytes(reader: impl Read, max_bytes: usize) -> Result<Vec<u8>, AppError> {
@@ -3366,10 +3376,7 @@ mod tests {
         let mut bytes = Vec::new();
         File::from(source_fd).read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"inside-hash");
-        assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
-            format!("{:x}", Sha256::digest(b"inside-hash"))
-        );
+        assert_eq!(Sha256::digest(&bytes), Sha256::digest(b"inside-hash"));
         assert_eq!(
             std::fs::read_to_string(outside_source).unwrap(),
             "outside-secret"

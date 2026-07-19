@@ -32,9 +32,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 metrics = "0.24"
-hmac = { version = "0.12", optional = true }
+hmac = { version = "0.13", optional = true }
 rustix = { version = "1", features = ["fs"], optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 
 [dev-dependencies]
 proptest = "1"
