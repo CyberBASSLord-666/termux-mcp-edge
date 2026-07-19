@@ -1129,6 +1129,8 @@ run_mcp_runtime_checks() {
   expect_status hash_file_symlink "$status" 400 hash_file_symlink_rejected
   jq -e '.error.code == -32602' "$body" >/dev/null 2>&1 || fail hash_file_symlink_body_invalid
   grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail hash_file_symlink_path_reflected
+  rm -f -- "$VALIDATION_SAFE_ROOT/hash-link" || fail hash_file_symlink_fixture_cleanup_failed
+  [[ ! -e "$VALIDATION_SAFE_ROOT/hash-link" && ! -L "$VALIDATION_SAFE_ROOT/hash-link" ]] || fail hash_file_symlink_fixture_cleanup_incomplete
 
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/hash-oversized.bin" bs=1 seek=16777216 count=1 status=none 2>/dev/null || fail hash_file_oversized_fixture_create_failed
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/hash-oversized.bin" '{"jsonrpc":"2.0","id":"hash-oversized","method":"tools/call","params":{"name":"hash_file","arguments":{"path":$path}}}')"
@@ -1136,6 +1138,8 @@ run_mcp_runtime_checks() {
   expect_status hash_file_oversized "$status" 413 hash_file_oversized_rejected
   jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail hash_file_oversized_body_invalid
   grep -Fq "$VALIDATION_SAFE_ROOT" "$body" && fail hash_file_oversized_path_reflected
+  rm -f -- "$VALIDATION_SAFE_ROOT/hash-oversized.bin" || fail hash_file_oversized_fixture_cleanup_failed
+  [[ ! -e "$VALIDATION_SAFE_ROOT/hash-oversized.bin" ]] || fail hash_file_oversized_fixture_cleanup_incomplete
   record_result runtime hash_file pass safe_root_file_hash_verified
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
