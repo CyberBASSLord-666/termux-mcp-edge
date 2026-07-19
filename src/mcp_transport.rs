@@ -52,13 +52,15 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        AuthorizedCreateDirectoryError, FileSystemTools, PreparedCreateDirectoryMutation,
-        MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES,
-        MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES,
-        MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
-        MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES,
-        MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES,
-        MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MIN_SEARCH_DEPTH,
+        AuthorizedCreateDirectoryError, FileSystemTools, FindPathFilter,
+        PreparedCreateDirectoryMutation, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
+        MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
+        MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
+        MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH, MAX_FIND_ENTRIES, MAX_FIND_MATCHES,
+        MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
+        MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
+        MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES,
+        MAX_SEARCH_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
     },
     transport_security::TransportSecurityPolicy,
     write_policy::{WriteMode, WritePolicy},
@@ -95,6 +97,7 @@ const SET_ANDROID_VOLUME_TOOL: &str = "set_android_volume";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const COPY_FILE_TOOL: &str = "copy_file";
+const FIND_PATHS_TOOL: &str = "find_paths";
 const HASH_FILE_TOOL: &str = "hash_file";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
 const PATH_METADATA_TOOL: &str = "path_metadata";
@@ -103,13 +106,14 @@ const READ_BINARY_RANGE_TOOL: &str = "read_binary_range";
 const READ_FILE_TOOL: &str = "read_file";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 14] = [
+const BASE_AVAILABLE_TOOLS: [&str; 15] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
     PROJECT_SERVICE_STATUS_TOOL,
     CREATE_DIRECTORY_TOOL,
     COPY_FILE_TOOL,
+    FIND_PATHS_TOOL,
     HASH_FILE_TOOL,
     LIST_DIRECTORY_TOOL,
     PATH_METADATA_TOOL,
@@ -121,6 +125,7 @@ const BASE_AVAILABLE_TOOLS: [&str; 14] = [
 ];
 const MIN_LIST_DIRECTORY_DEPTH: u32 = 1;
 const MAX_LIST_DIRECTORY_DEPTH: u32 = 5;
+const MAX_FIND_STRUCTURED_CONTENT_BYTES: usize = MAX_FIND_RESPONSE_BYTES - 1_024;
 
 const RUNTIME_STATUS_GATE: &str = "runtime_metadata";
 const PLATFORM_INFO_GATE: &str = "platform_metadata";
@@ -209,6 +214,9 @@ const FILESYSTEM_COPY_SAME_PATH: &str = "filesystem_copy_same_path";
 const FILESYSTEM_COPY_SOURCE_UNSUPPORTED: &str = "filesystem_copy_source_type_unsupported";
 const FILESYSTEM_COPY_SOURCE_TOO_LARGE: &str = "filesystem_copy_source_too_large";
 const FILESYSTEM_COPY_FAILED: &str = "filesystem_copy_failed";
+const FILESYSTEM_FIND_ALLOWED: &str = "safe_root_paths_found";
+const FILESYSTEM_FIND_INVALID_QUERY: &str = "find_query_invalid";
+const FILESYSTEM_FIND_FAILED: &str = "filesystem_find_failed";
 const FILESYSTEM_READ_FAILED: &str = "filesystem_read_failed";
 const FILESYSTEM_DRY_RUN_ALLOWED: &str = "dry_run_preview";
 const FILESYSTEM_WRITE_ALLOWED: &str = "explicit_write_allowed";
@@ -544,6 +552,17 @@ struct CopyFileArguments {
     destination_path: String,
     #[serde(default)]
     dry_run: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FindPathsArguments {
+    path: String,
+    query: String,
+    #[serde(default)]
+    kind: FindPathFilter,
+    #[serde(default)]
+    max_depth: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1403,6 +1422,41 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": FIND_PATHS_TOOL,
+                        "description": "Locate bounded case-sensitive literal basename matches below one configured filesystem safe root without reading file contents.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute directory path inside one configured safe root.",
+                                },
+                                "query": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": MAX_FIND_QUERY_BYTES,
+                                    "x-maxBytes": MAX_FIND_QUERY_BYTES,
+                                    "description": "Case-sensitive literal UTF-8 basename substring of at most 256 bytes; path separators, regular expressions, and globs are not evaluated.",
+                                },
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["any", "regular_file", "directory"],
+                                    "description": "Optional exact object-kind filter; defaults to any.",
+                                },
+                                "max_depth": {
+                                    "type": "integer",
+                                    "minimum": MIN_FIND_DEPTH,
+                                    "maximum": MAX_FIND_DEPTH,
+                                    "description": format!(
+                                        "Optional bounded traversal depth; defaults to {MAX_FIND_DEPTH}."
+                                    ),
+                                },
+                            },
+                            "required": ["path", "query"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": HASH_FILE_TOOL,
                         "description": "Compute a bounded SHA-256 digest for one safe-rooted regular file without returning file contents.",
                         "inputSchema": {
@@ -1785,6 +1839,15 @@ async fn handle_tool_call(
         }
         COPY_FILE_TOOL => {
             handle_copy_file_call(
+                id,
+                call.arguments.into_value(),
+                &state.file_tools,
+                &state.audit_counters,
+            )
+            .await
+        }
+        FIND_PATHS_TOOL => {
+            handle_find_paths_call(
                 id,
                 call.arguments.into_value(),
                 &state.file_tools,
@@ -2506,7 +2569,7 @@ fn runtime_status_response(
                     {
                         "type": "text",
                         "text": format!(
-                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-hash-file-list-metadata-binary-read-binary-range-text-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                            "termux-mcp-edge runtime_status: transport=streamable-http-2025-11-25-session-scoped-no-sse, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, filesystem=create-directory-copy-file-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-search-and-dry-run-write-file, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                             android_platform_mode,
                             battery_mode,
                             volume_mode,
@@ -2531,7 +2594,14 @@ fn runtime_status_response(
                     "projectServiceStatus": true,
                     "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
                     "filesystemTools": true,
-                    "filesystemToolMode": "create_directory_copy_file_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_search_text_and_default_dry_run_write_file",
+                    "filesystemToolMode": "create_directory_copy_file_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_search_text_and_default_dry_run_write_file",
+                    "pathDiscovery": true,
+                    "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
+                    "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
+                    "pathDiscoveryMaxEntries": MAX_FIND_ENTRIES,
+                    "pathDiscoveryMaxMatches": MAX_FIND_MATCHES,
+                    "pathDiscoveryMaxQueryBytes": MAX_FIND_QUERY_BYTES,
+                    "pathDiscoveryMaxResponseBytes": MAX_FIND_RESPONSE_BYTES,
                     "binaryFileReads": true,
                     "binaryFileReadEncoding": "base64",
                     "binaryFileReadMaxBytes": MAX_BINARY_READ_BYTES,
@@ -3802,6 +3872,211 @@ async fn handle_copy_file_call(
     }
 }
 
+fn find_paths_success_envelope_fits(id: Option<Value>) -> bool {
+    let structured = json!({
+        "path": "",
+        "matches": [],
+        "truncated": true,
+        "entriesExamined": MAX_FIND_ENTRIES,
+        "skippedInvalidUtf8Entries": MAX_FIND_ENTRIES,
+        "skippedUnsafeEntries": MAX_FIND_ENTRIES,
+        "skippedUnreadableEntries": MAX_FIND_ENTRIES,
+        "queryBytes": MAX_FIND_QUERY_BYTES,
+        "kindFilter": "regular_file",
+        "maxDepth": MAX_FIND_DEPTH,
+        "maxEntries": MAX_FIND_ENTRIES,
+        "maxMatches": MAX_FIND_MATCHES,
+        "maxResponseBytes": MAX_FIND_RESPONSE_BYTES,
+    });
+    let Ok(structured_bytes) = serde_json::to_vec(&structured) else {
+        return false;
+    };
+    if structured_bytes.len() > MAX_FIND_STRUCTURED_CONTENT_BYTES {
+        return false;
+    }
+    let body = result_body(
+        id,
+        format!(
+            "Located {MAX_FIND_MATCHES} safe-rooted literal basename matches; the bounded discovery was truncated."
+        ),
+        structured,
+    );
+    serde_json::to_vec(&body)
+        .ok()
+        .and_then(|serialized| {
+            serialized.len().checked_add(
+                MAX_FIND_STRUCTURED_CONTENT_BYTES.saturating_sub(structured_bytes.len()),
+            )
+        })
+        .is_some_and(|bytes| bytes <= MAX_FIND_RESPONSE_BYTES)
+}
+
+#[rustfmt::skip]
+async fn handle_find_paths_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    file_tools: &FileSystemTools,
+    audit_counters: &SharedAuditCounters,
+) -> Response {
+    if !find_paths_success_envelope_fits(id.clone()) {
+        record_filesystem_denied(
+            audit_counters,
+            FIND_PATHS_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "Path-discovery response exceeds the staged find_paths response byte limit.",
+            MAX_FIND_RESPONSE_BYTES,
+        );
+    }
+
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            return invalid_params(id, "find_paths requires path and query arguments.");
+        }
+    };
+    let args = match serde_json::from_value::<FindPathsArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    if args.query.is_empty()
+        || args.query.len() > MAX_FIND_QUERY_BYTES
+        || args.query.chars().any(|character| matches!(character, '\0' | '\n' | '\r' | '/'))
+    {
+        record_filesystem_denied(
+            audit_counters,
+            FIND_PATHS_TOOL,
+            FILESYSTEM_READ_GATE,
+            AuditMode::ReadOnly,
+            FILESYSTEM_FIND_INVALID_QUERY,
+        );
+        return invalid_params(
+            id,
+            &format!(
+                "find_paths.query must be one non-empty literal basename substring of at most {MAX_FIND_QUERY_BYTES} UTF-8 bytes."
+            ),
+        );
+    }
+    if let Some(max_depth) = args.max_depth {
+        if !(MIN_FIND_DEPTH..=MAX_FIND_DEPTH).contains(&max_depth) {
+            record_filesystem_denied(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_INVALID_DEPTH,
+            );
+            return invalid_params(
+                id,
+                &format!(
+                    "find_paths.max_depth must be between {MIN_FIND_DEPTH} and {MAX_FIND_DEPTH}."
+                ),
+            );
+        }
+    }
+
+    match file_tools
+        .find_paths(args.path, args.query, args.kind, args.max_depth)
+        .await
+    {
+        Ok(result) => {
+            let error_id = id.clone();
+            let summary = if result.truncated {
+                format!(
+                    "Located {} safe-rooted literal basename matches; the bounded discovery was truncated.",
+                    result.matches.len()
+                )
+            } else {
+                format!(
+                    "Located {} safe-rooted literal basename matches.",
+                    result.matches.len()
+                )
+            };
+            let Some(response) = bounded_ok_result(
+                id,
+                summary,
+                json!(result),
+                MAX_FIND_RESPONSE_BYTES,
+            ) else {
+                record_filesystem_denied(
+                    audit_counters,
+                    FIND_PATHS_TOOL,
+                    FILESYSTEM_READ_GATE,
+                    AuditMode::ReadOnly,
+                    FILESYSTEM_RESPONSE_TOO_LARGE,
+                );
+                return bounded_payload_too_large(
+                    error_id,
+                    "Path-discovery results exceed the staged find_paths response byte limit.",
+                    MAX_FIND_RESPONSE_BYTES,
+                );
+            };
+            record_filesystem_allowed(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_FIND_ALLOWED,
+            );
+            response
+        }
+        Err(AppError::PathTraversal { .. }) => {
+            record_filesystem_denied(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_SAFE_ROOT_REJECTED,
+            );
+            invalid_params(
+                id,
+                "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+            )
+        }
+        Err(AppError::InvalidFindQuery) => {
+            record_filesystem_denied(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_FIND_INVALID_QUERY,
+            );
+            invalid_params(id, "Path-discovery query does not satisfy the literal basename contract.")
+        }
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                FIND_PATHS_TOOL,
+                FILESYSTEM_READ_GATE,
+                AuditMode::ReadOnly,
+                FILESYSTEM_FIND_FAILED,
+            );
+            internal_error(id, "Filesystem path discovery failed.")
+        }
+    }
+}
+
 #[rustfmt::skip]
 async fn handle_hash_file_call(
     id: Option<Value>,
@@ -4582,6 +4857,7 @@ mod tests {
                 "project_service_status",
                 "create_directory",
                 "copy_file",
+                "find_paths",
                 "hash_file",
                 "list_directory",
                 "path_metadata",
@@ -4617,7 +4893,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            16
+            17
         );
     }
 

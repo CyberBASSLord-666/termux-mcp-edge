@@ -115,6 +115,10 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
             "copy_file",
             "copy_file requires source_path and destination_path arguments.",
         ),
+        (
+            "find_paths",
+            "find_paths requires path and query arguments.",
+        ),
         ("hash_file", "hash_file requires a path argument."),
         ("list_directory", "list_directory requires a path argument."),
         ("path_metadata", "path_metadata requires a path argument."),
@@ -223,6 +227,21 @@ async fn argument_bearing_tools_accept_their_minimal_and_full_schemas() {
                 "source_path": source.to_string_lossy(),
                 "destination_path": copy_mutation.to_string_lossy(),
                 "dry_run": false
+            }),
+        ),
+        (
+            "find-paths-minimal",
+            "find_paths",
+            json!({"path": root.path().to_string_lossy(), "query": "source"}),
+        ),
+        (
+            "find-paths-full",
+            "find_paths",
+            json!({
+                "path": root.path().to_string_lossy(),
+                "query": "source",
+                "kind": "regular_file",
+                "max_depth": 5
             }),
         ),
         (
@@ -343,6 +362,14 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
             }),
         ),
         (
+            "find_paths",
+            json!({
+                "path": root.path().to_string_lossy(),
+                "query": "source",
+                "unexpected": true
+            }),
+        ),
+        (
             "hash_file",
             json!({"path": source.to_string_lossy(), "unexpected": true}),
         ),
@@ -410,6 +437,7 @@ async fn every_advertised_tool_rejects_unknown_argument_fields() {
 async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
     let (root, file_tools) = empty_test_file_tools();
     let router = test_router(file_tools);
+    let session_id = initialize_session(&router).await;
     let source = root.path().join("source.txt");
     tokio::fs::write(&source, "safe content").await.unwrap();
 
@@ -417,6 +445,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
         "project_service_status",
         "create_directory",
         "copy_file",
+        "find_paths",
         "hash_file",
         "list_directory",
         "path_metadata",
@@ -433,8 +462,9 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
             ("empty-object", json!({})),
         ] {
             let id = json!(format!("{tool_name}-{label}"));
-            let response = post_to_router(
+            let response = post_json_to_session(
                 router.clone(),
+                &session_id,
                 tool_call(id.clone(), tool_name, Some(arguments)),
             )
             .await;
@@ -473,6 +503,30 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
                 "source_path": source.to_string_lossy(),
                 "destination_path": root.path().join("copy-b").to_string_lossy(),
                 "dry_run": "false"
+            }),
+        ),
+        ("find_paths", json!({"path": false, "query": "source"})),
+        (
+            "find_paths",
+            json!({
+                "path": root.path().to_string_lossy(),
+                "query": false
+            }),
+        ),
+        (
+            "find_paths",
+            json!({
+                "path": root.path().to_string_lossy(),
+                "query": "source",
+                "kind": 7
+            }),
+        ),
+        (
+            "find_paths",
+            json!({
+                "path": root.path().to_string_lossy(),
+                "query": "source",
+                "max_depth": "5"
             }),
         ),
         ("hash_file", json!({"path": [source.to_string_lossy()]})),
@@ -531,8 +585,9 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
 
     for (index, (tool_name, arguments)) in wrong_field_types.into_iter().enumerate() {
         let id = json!(format!("wrong-field-type-{index}"));
-        let response = post_to_router(
+        let response = post_json_to_session(
             router.clone(),
+            &session_id,
             tool_call(id.clone(), tool_name, Some(arguments)),
         )
         .await;

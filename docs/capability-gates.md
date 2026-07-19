@@ -12,6 +12,7 @@ Enabled staged tools:
 - `project_service_status`
 - `create_directory` preview for exactly one absent safe-rooted directory; mutation additionally requires the default-disabled runtime gate and one request-scoped single-use grant, then uses fixed mode `0700` and atomic no-replace publication
 - `copy_file` for exactly one no-follow regular source of at most 1 MiB and one absent safe-rooted destination, dry-run by default, fixed mode `0600`, content-private response/audit surfaces, and atomic no-replace publication
+- `find_paths` for case-sensitive literal basename discovery across at most 8,192 descriptor-relative no-follow entries to depth 5, with exact kind filtering, at most 512 ordered content-free matches, and a fixed complete-response ceiling
 - `hash_file` for streaming SHA-256 of exactly one no-follow safe-rooted regular file of at most 16 MiB, with a digest-and-size-only response and content/path-private audit surfaces
 - `list_directory`
 - `path_metadata` for one descriptor-relative regular-file or directory metadata result without host identifiers

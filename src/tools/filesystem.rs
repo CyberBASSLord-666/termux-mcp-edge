@@ -41,6 +41,12 @@ pub const CREATE_DIRECTORY_MODE: u32 = 0o700;
 pub const MAX_COPY_FILE_BYTES: usize = 1_048_576;
 pub const MAX_COPY_FILE_RESPONSE_BYTES: usize = 16_384;
 pub const COPY_FILE_MODE: u32 = 0o600;
+pub const MIN_FIND_DEPTH: u32 = 1;
+pub const MAX_FIND_DEPTH: u32 = 5;
+pub const MAX_FIND_QUERY_BYTES: usize = 256;
+pub const MAX_FIND_ENTRIES: usize = 8_192;
+pub const MAX_FIND_MATCHES: usize = 512;
+pub const MAX_FIND_RESPONSE_BYTES: usize = 262_144;
 pub const MIN_SEARCH_DEPTH: u32 = 1;
 pub const MAX_SEARCH_DEPTH: u32 = 5;
 pub const MAX_SEARCH_QUERY_BYTES: usize = 256;
@@ -55,6 +61,7 @@ pub const MAX_SEARCH_RESPONSE_BYTES: usize = 262_144;
 // normally sized request id. The transport independently enforces the exact
 // full-response ceilings above, including caller-controlled ids.
 const MAX_LIST_STRUCTURED_BYTES: usize = MAX_LIST_RESPONSE_BYTES - 1_024;
+const MAX_FIND_STRUCTURED_BYTES: usize = MAX_FIND_RESPONSE_BYTES - 1_024;
 const MAX_SEARCH_STRUCTURED_BYTES: usize = MAX_SEARCH_RESPONSE_BYTES - 1_024;
 
 struct DescriptorTempFileCleanup<'a> {
@@ -319,6 +326,42 @@ struct SearchPendingEntry {
     display_path: PathBuf,
     file_type: FileType,
     size: u64,
+}
+
+struct FindPendingEntry {
+    name: OsString,
+    display_path: PathBuf,
+    kind: FindPathKind,
+}
+
+struct FindPathsState<'a> {
+    query: &'a str,
+    kind_filter: FindPathFilter,
+    matches: Vec<FindPathMatch>,
+    entries_examined: usize,
+    skipped_invalid_utf8_entries: usize,
+    skipped_unsafe_entries: usize,
+    skipped_unreadable_entries: usize,
+    truncated: bool,
+}
+
+impl<'a> FindPathsState<'a> {
+    fn new(query: &'a str, kind_filter: FindPathFilter) -> Self {
+        Self {
+            query,
+            kind_filter,
+            matches: Vec::new(),
+            entries_examined: 0,
+            skipped_invalid_utf8_entries: 0,
+            skipped_unsafe_entries: 0,
+            skipped_unreadable_entries: 0,
+            truncated: false,
+        }
+    }
+
+    fn execution_exhausted(&self) -> bool {
+        self.entries_examined >= MAX_FIND_ENTRIES || self.matches.len() >= MAX_FIND_MATCHES
+    }
 }
 
 struct SearchState<'a> {
@@ -1163,6 +1206,72 @@ impl FileSystemTools {
         ))
     }
 
+    pub async fn find_paths(
+        &self,
+        path: String,
+        query: String,
+        kind_filter: FindPathFilter,
+        max_depth: Option<u32>,
+    ) -> Result<FindPathsResult, AppError> {
+        validate_find_query(&query)?;
+        let start = Instant::now();
+        let anchored = self.anchor(&path)?;
+        let depth = max_depth
+            .unwrap_or(MAX_FIND_DEPTH)
+            .clamp(MIN_FIND_DEPTH, MAX_FIND_DEPTH);
+        let result = tokio::task::spawn_blocking(move || {
+            let root_fd = open_root_directory(&anchored.root_path)?;
+            let target_fd = open_descendant_directory(root_fd, &anchored.relative_path)?;
+            let mut state = FindPathsState::new(&query, kind_filter);
+            collect_path_matches_descriptor_relative(
+                target_fd,
+                &anchored.display_path,
+                depth,
+                &mut state,
+            )?;
+            state
+                .matches
+                .sort_unstable_by(|left, right| left.path.cmp(&right.path));
+
+            let mut result = FindPathsResult {
+                path: anchored.display_path.to_string_lossy().to_string(),
+                matches: state.matches,
+                truncated: state.truncated,
+                entries_examined: state.entries_examined,
+                skipped_invalid_utf8_entries: state.skipped_invalid_utf8_entries,
+                skipped_unsafe_entries: state.skipped_unsafe_entries,
+                skipped_unreadable_entries: state.skipped_unreadable_entries,
+                query_bytes: query.len(),
+                kind_filter,
+                max_depth: depth,
+                max_entries: MAX_FIND_ENTRIES,
+                max_matches: MAX_FIND_MATCHES,
+                max_response_bytes: MAX_FIND_RESPONSE_BYTES,
+            };
+            while serde_json::to_vec(&result)
+                .map_err(std::io::Error::other)?
+                .len()
+                > MAX_FIND_STRUCTURED_BYTES
+            {
+                if result.matches.pop().is_none() {
+                    return Err(AppError::Io(std::io::Error::other(
+                        "path-discovery response metadata exceeds its bound",
+                    )));
+                }
+                result.truncated = true;
+            }
+            Ok::<_, AppError>(result)
+        })
+        .await
+        .map_err(filesystem_worker_error)??;
+
+        histogram!("mcp.fs.find_paths.latency_seconds").record(start.elapsed().as_secs_f64());
+        counter!("mcp.fs.find_paths.calls_total").increment(1);
+        counter!("mcp.fs.find_paths.entries_total").increment(result.entries_examined as u64);
+
+        Ok(result)
+    }
+
     pub async fn search_text(
         &self,
         path: String,
@@ -1305,6 +1414,109 @@ fn path_rejected(input: &str) -> AppError {
     AppError::PathTraversal {
         attempted: input.to_string(),
     }
+}
+
+fn validate_find_query(query: &str) -> Result<(), AppError> {
+    if query.is_empty()
+        || query.len() > MAX_FIND_QUERY_BYTES
+        || query
+            .chars()
+            .any(|character| matches!(character, '\0' | '\n' | '\r' | '/'))
+    {
+        return Err(AppError::InvalidFindQuery);
+    }
+    Ok(())
+}
+
+fn collect_path_matches_descriptor_relative(
+    root_fd: OwnedFd,
+    root_path: &Path,
+    max_depth: u32,
+    state: &mut FindPathsState<'_>,
+) -> Result<(), AppError> {
+    let mut queue = VecDeque::new();
+    queue.push_back((root_fd, root_path.to_path_buf(), 1_u32));
+
+    'traversal: while let Some((dir_fd, dir_path, depth)) = queue.pop_front() {
+        if state.execution_exhausted() {
+            state.truncated = true;
+            break;
+        }
+
+        let mut read_dir = Dir::read_from(&dir_fd).map_err(descriptor_error)?;
+        let mut candidates = BTreeMap::new();
+        for entry in &mut read_dir {
+            if state.entries_examined >= MAX_FIND_ENTRIES {
+                state.truncated = true;
+                break;
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    state.skipped_unreadable_entries += 1;
+                    continue;
+                }
+            };
+            let name_bytes = entry.file_name().to_bytes();
+            if name_bytes == b"." || name_bytes == b".." {
+                continue;
+            }
+            state.entries_examined += 1;
+            let name = OsString::from_vec(name_bytes.to_vec());
+            let Some(name_key) = name.to_str().map(str::to_owned) else {
+                state.skipped_invalid_utf8_entries += 1;
+                continue;
+            };
+            let metadata = match descriptor_fs::statat(&dir_fd, &name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    state.skipped_unreadable_entries += 1;
+                    continue;
+                }
+            };
+            let file_type = FileType::from_raw_mode(metadata.st_mode);
+            let kind = if file_type.is_file() {
+                FindPathKind::RegularFile
+            } else if file_type.is_dir() {
+                FindPathKind::Directory
+            } else {
+                state.skipped_unsafe_entries += 1;
+                continue;
+            };
+            let display_path = dir_path.join(&name);
+            candidates.insert(
+                name_key,
+                FindPendingEntry {
+                    name,
+                    display_path,
+                    kind,
+                },
+            );
+        }
+
+        for (name_key, pending) in candidates {
+            if state.matches.len() >= MAX_FIND_MATCHES {
+                state.truncated = true;
+                break 'traversal;
+            }
+            if name_key.contains(state.query) && state.kind_filter.matches(pending.kind) {
+                state.matches.push(FindPathMatch {
+                    path: pending.display_path.to_string_lossy().to_string(),
+                    kind: pending.kind,
+                });
+            }
+            if pending.kind == FindPathKind::Directory && depth < max_depth {
+                match open_child_directory(&dir_fd, &pending.name) {
+                    Ok(child_fd) => {
+                        queue.push_back((child_fd, pending.display_path, depth + 1));
+                    }
+                    Err(_) => state.skipped_unreadable_entries += 1,
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_search_query(query: &str) -> Result<(), AppError> {
@@ -2010,6 +2222,57 @@ pub struct CopyFileResult {
     pub size_bytes: usize,
     pub mode: String,
     pub max_file_bytes: usize,
+    pub max_response_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindPathFilter {
+    #[default]
+    Any,
+    RegularFile,
+    Directory,
+}
+
+impl FindPathFilter {
+    const fn matches(self, kind: FindPathKind) -> bool {
+        match self {
+            Self::Any => true,
+            Self::RegularFile => matches!(kind, FindPathKind::RegularFile),
+            Self::Directory => matches!(kind, FindPathKind::Directory),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindPathKind {
+    RegularFile,
+    Directory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindPathMatch {
+    pub path: String,
+    pub kind: FindPathKind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindPathsResult {
+    pub path: String,
+    pub matches: Vec<FindPathMatch>,
+    pub truncated: bool,
+    pub entries_examined: usize,
+    pub skipped_invalid_utf8_entries: usize,
+    pub skipped_unsafe_entries: usize,
+    pub skipped_unreadable_entries: usize,
+    pub query_bytes: usize,
+    pub kind_filter: FindPathFilter,
+    pub max_depth: u32,
+    pub max_entries: usize,
+    pub max_matches: usize,
     pub max_response_bytes: usize,
 }
 

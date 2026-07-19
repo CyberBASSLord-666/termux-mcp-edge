@@ -55,7 +55,7 @@ if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPOSITORY_URL="https://github.com/CyberBASSLord-666/termux-mcp-edge.git"
-HARNESS_VERSION="6"
+HARNESS_VERSION="7"
 HEAD_LABEL="${EXPECTED_HEAD:0:12}"
 SMOKE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_ROOT="$HOME/termux-mcp-device-smoke-$HEAD_LABEL-$SMOKE_ID"
@@ -390,8 +390,9 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_tools_list_http" "$status" 200
-  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]'
+  assert_json "${label}_tool_allowlist" "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]'
   assert_json "${label}_create_directory_grant_discovery" "$body" '.result.tools | map(select(.name == "create_directory"))[0] as $tool | ($tool.inputSchema.properties.dry_run | has("const") | not) and ($tool.description | contains("MCP-Capability-Grant"))'
+  assert_json "${label}_find_paths_schema" "$body" '.result.tools | map(select(.name == "find_paths"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["kind","max_depth","path","query"] and $schema.properties.path.type == "string" and $schema.properties.query.type == "string" and $schema.properties.query.minLength == 1 and $schema.properties.query.maxLength == 256 and $schema.properties.query."x-maxBytes" == 256 and $schema.properties.kind.enum == ["any","regular_file","directory"] and $schema.properties.max_depth.minimum == 1 and $schema.properties.max_depth.maximum == 5 and $schema.required == ["path","query"] and $schema.additionalProperties == false'
   assert_json "${label}_hash_file_schema" "$body" '.result.tools | map(select(.name == "hash_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
   assert_json "${label}_read_binary_file_schema" "$body" '.result.tools | map(select(.name == "read_binary_file"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["path"] and $schema.properties.path.type == "string" and $schema.required == ["path"] and $schema.additionalProperties == false'
   assert_json "${label}_read_binary_range_schema" "$body" '.result.tools | map(select(.name == "read_binary_range"))[0].inputSchema as $schema | $schema.type == "object" and ($schema.properties | keys) == ["length_bytes","offset_bytes","path"] and $schema.properties.path.type == "string" and $schema.properties.offset_bytes.type == "integer" and $schema.properties.offset_bytes.minimum == 0 and $schema.properties.offset_bytes.maximum == 67108864 and $schema.properties.length_bytes.type == "integer" and $schema.properties.length_bytes.minimum == 1 and $schema.properties.length_bytes.maximum == 262144 and $schema.required == ["path","offset_bytes","length_bytes"] and $schema.additionalProperties == false'
@@ -399,13 +400,30 @@ protocol_smoke() {
   payload='{"jsonrpc":"2.0","id":"runtime-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_runtime_status_http" "$status" 200
-  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadEncoding == "base64" and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json "${label}_high_impact_disabled" "$body" '.result.structuredContent.commandExecution == false and .result.structuredContent.androidPlatformTools == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.createDirectoryMutationEnabled == true and .result.structuredContent.createDirectoryGrantRequired == true and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant" and .result.structuredContent.createDirectoryGrantTtlSeconds == 60 and .result.structuredContent.pathDiscovery == true and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename" and .result.structuredContent.pathDiscoveryMaxDepth == 5 and .result.structuredContent.pathDiscoveryMaxEntries == 8192 and .result.structuredContent.pathDiscoveryMaxMatches == 512 and .result.structuredContent.pathDiscoveryMaxQueryBytes == 256 and .result.structuredContent.pathDiscoveryMaxResponseBytes == 262144 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadEncoding == "base64" and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
 
   payload="$(jq -cn --arg path "$SAFE_ROOT" '{"jsonrpc":"2.0","id":"list-directory","method":"tools/call","params":{"name":"list_directory","arguments":{"path":$path,"max_depth":1}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq "${label}_list_directory_http" "$status" 200
   jq -e --arg expected "$SAFE_ROOT/visible.txt" '.result.structuredContent.entries | any(.path == $expected)' "$body" >/dev/null || fail "safe-root listing omitted the expected file"
   log "PASS ${label}_list_directory=expected-file"
+
+  payload="$(jq -cn --arg path "$SAFE_ROOT" --arg query visible '{"jsonrpc":"2.0","id":"find-paths","method":"tools/call","params":{"name":"find_paths","arguments":{"path":$path,"query":$query,"kind":"regular_file","max_depth":1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq "${label}_find_paths_http" "$status" 200
+  jq -e --arg expected "$SAFE_ROOT/visible.txt" '
+    .result.structuredContent as $find
+    | $find.matches == [{"path":$expected,"kind":"regular_file"}]
+      and $find.truncated == false
+      and $find.queryBytes == 7
+      and $find.kindFilter == "regular_file"
+      and $find.maxDepth == 1
+      and $find.maxEntries == 8192
+      and $find.maxMatches == 512
+      and $find.maxResponseBytes == 262144
+  ' "$body" >/dev/null || fail "${label}_find_paths_result JSON assertion failed"
+  grep -Fq device-smoke-visible "$body" && fail "path-discovery response reflected file content"
+  log "PASS ${label}_find_paths=expected-file"
 
   payload="$(jq -cn --arg path "$SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"path-metadata","method":"tools/call","params":{"name":"path_metadata","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -668,7 +686,7 @@ volume_control_disabled_smoke() {
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_tools_http "$status" 200
-  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]'
+  assert_json volume_control_disabled_discovery "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]'
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
