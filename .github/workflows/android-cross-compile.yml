@@ -554,7 +554,7 @@ jobs:
               and .validation.disabledDiscovery == true
               and .validation.fixedCurrentExecutable == true
               and .validation.wrongExecutableNameFailsClosed == true
-              and .validation.wrongExecutableNameRejectedBeforeListener == true
+              and .validation.wrongExecutableNameRejectedBeforeServing == true
               and .validation.runningInodePinned == true
               and .validation.workingDirectoryDescriptorPinned == true
               and .validation.fixedArgvProfiles == true
