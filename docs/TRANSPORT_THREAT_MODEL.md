@@ -14,7 +14,7 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - strict single-message JSON-RPC request, notification, and response classification;
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
-- the fourteen-tool baseline allowlist, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
+- the fifteen-tool baseline allowlist, including bounded content-free path discovery, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. GET validates the same authentication, Host, Origin, protocol, and session boundaries, then returns the specification-permitted HTTP 405 because the server does not initiate SSE streams. Consequently there is no replay buffer, event cursor, or resumability state. DELETE removes a valid session and returns HTTP 204.

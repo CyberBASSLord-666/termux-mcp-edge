@@ -121,7 +121,7 @@ curl -sS \
   -H 'MCP-Protocol-Version: 2025-11-25' \
   -H "MCP-Session-Id: ${MCP_SESSION_ID}" \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 14'
+  http://127.0.0.1:8000/mcp | jq -e '.result.tools | length == 15'
 
 rm -f "$MCP_RESPONSE_HEADERS"
 unset MCP_TEST_TOKEN MCP_SESSION_ID MCP_RESPONSE_HEADERS
@@ -161,22 +161,23 @@ Authenticated discovery currently exposes:
 4. `project_service_status` — read-only allowlisted project service metadata for `mcp_runtime`.
 5. `create_directory` — safe-rooted preview by default; one mode-`0700` atomic no-replace mutation only after the dedicated gate and a target-bound single-use grant authorize it.
 6. `copy_file` — one binary-safe regular file up to 1 MiB, fixed mode `0600`, atomic no-replace, content-private, dry-run first.
-7. `hash_file` — streaming SHA-256 for one no-follow regular file up to 16 MiB, returning only digest and byte count.
-8. `list_directory` — bounded safe-rooted listing.
-9. `path_metadata` — bounded safe-rooted regular-file or directory metadata without content or host identifiers.
-10. `read_binary_file` — one no-follow regular file up to 1 MiB as canonical padded base64, without path or host metadata.
-11. `read_binary_range` — one byte range up to 256 KiB from a no-follow regular file up to 64 MiB as canonical padded base64, with explicit EOF metadata and no path or host metadata.
-12. `read_file` — bounded safe-rooted UTF-8 reads.
-13. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
-14. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
+7. `find_paths` — case-sensitive literal basename discovery with exact kind/depth filters, descriptor-relative no-follow traversal, and content-free bounded results.
+8. `hash_file` — streaming SHA-256 for one no-follow regular file up to 16 MiB, returning only digest and byte count.
+9. `list_directory` — bounded safe-rooted listing.
+10. `path_metadata` — bounded safe-rooted regular-file or directory metadata without content or host identifiers.
+11. `read_binary_file` — one no-follow regular file up to 1 MiB as canonical padded base64, without path or host metadata.
+12. `read_binary_range` — one byte range up to 256 KiB from a no-follow regular file up to 64 MiB as canonical padded base64, with explicit EOF metadata and no path or host metadata.
+13. `read_file` — bounded safe-rooted UTF-8 reads.
+14. `search_text` — bounded case-sensitive literal UTF-8 location search without content excerpts.
+15. `write_file` — safe-rooted, payload-bounded, dry-run-first writes.
 
-An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the fifteenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
+An `android-battery-status` binary with `MCP__ANDROID__BATTERY_STATUS_ENABLED=true` additionally exposes `android_battery_status` as the sixteenth tool. It is disabled and hidden by default; see [`ANDROID_BATTERY_STATUS.md`](ANDROID_BATTERY_STATUS.md).
 
-An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the fifteenth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
+An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` instead exposes `android_volume_status` as the sixteenth tool. It is independently disabled and hidden by default, uses only the fixed zero-argument `termux-volume` status mode, and never authorizes volume mutation; see [`ANDROID_VOLUME_STATUS.md`](ANDROID_VOLUME_STATUS.md). An all-feature validation build can expose both provider tools when both runtime flags are explicitly enabled.
 
 An `android-volume-control` binary with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and the capability key pair exposes `set_android_volume`. It defaults to fresh validated preview. Explicit mutation requires one exact request grant and performs fixed execution, verification, and restoration on failure; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the fourteen baseline tools. It offers only the exact `server_version`, `server_help`, and `execution_boundary` profiles of the current server binary. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes eighteen tools only when all four optional runtime flags are explicitly enabled.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the fifteen baseline tools. It offers only the exact `server_version`, `server_help`, and `execution_boundary` profiles of the current server binary. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes nineteen tools only when all four optional runtime flags are explicitly enabled.
 
 The runtime does not expose Android platform control beyond exact request-authorized volume, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or unrelated high-impact controls.
 
@@ -184,6 +185,7 @@ Filesystem responses have explicit mobile-oriented ceilings:
 
 - `create_directory` validates one absent child by default. Explicit `dry_run:false` selects mutation but succeeds only when `MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true` and the request carries one unexpired, exact-target, single-use `MCP-Capability-Grant`. Confinement completes before authorization; consumption occurs immediately before the first mutation and survives downstream failure. The operation creates fixed mode `0700`, publishes without replacement, syncs child and parent descriptors, and caps the complete response at 16 KiB; see [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md) and [`SAFE_ROOT_DIRECTORY_CREATION.md`](SAFE_ROOT_DIRECTORY_CREATION.md).
 - `copy_file` validates one regular source and absent destination by default and mutates only with explicit `dry_run:false`. It copies at most 1 MiB from the exact held source descriptor, publishes fixed mode `0600` atomically without replacement, verifies identities and sizes, syncs file and parent descriptors, returns no content, and caps the complete response at 16 KiB; see [`SAFE_ROOT_FILE_COPY.md`](SAFE_ROOT_FILE_COPY.md).
+- `find_paths` accepts one case-sensitive literal basename query of at most 256 UTF-8 bytes, traverses no-follow descriptors to depth 5, examines at most 8,192 entries, returns at most 512 lexicographically ordered file/directory matches, and caps the complete response at 262,144 bytes; see [`SAFE_ROOT_PATH_DISCOVERY.md`](SAFE_ROOT_PATH_DISCOVERY.md).
 - `hash_file` streams at most 16 MiB from one exact held no-follow regular-file descriptor through SHA-256, rejects growth past the limit, returns only lowercase digest and byte count, and caps the complete response at 16 KiB before the file read; see [`SAFE_ROOT_FILE_HASHING.md`](SAFE_ROOT_FILE_HASHING.md).
 - `read_binary_file` reads at most 1 MiB from one exact held no-follow regular-file descriptor, rejects runtime growth, returns canonical padded RFC 4648 base64 without path or host metadata, and preflights the complete 1,507,328-byte response ceiling before file access; see [`SAFE_ROOT_BINARY_READS.md`](SAFE_ROOT_BINARY_READS.md).
 - `read_binary_range` reads at most 256 KiB from one exact held no-follow regular-file descriptor up to 64 MiB, accepts offset equal to EOF as an empty result, rejects offset past EOF and concurrent size change, and preflights the complete 393,216-byte response ceiling before file access; see [`SAFE_ROOT_BINARY_RANGES.md`](SAFE_ROOT_BINARY_RANGES.md).

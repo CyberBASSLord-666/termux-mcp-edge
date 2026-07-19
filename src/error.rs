@@ -20,6 +20,9 @@ pub enum AppError {
     #[error("File size changed during the bounded read")]
     FileChangedDuringRead,
 
+    #[error("Path-discovery query does not satisfy the literal basename contract")]
+    InvalidFindQuery,
+
     #[error("Search query does not satisfy the literal text-search contract")]
     InvalidSearchQuery,
 
@@ -78,6 +81,10 @@ impl AppError {
             AppError::FileChangedDuringRead => {
                 (StatusCode::CONFLICT, "File changed during the bounded read")
             }
+            AppError::InvalidFindQuery => (
+                StatusCode::BAD_REQUEST,
+                "Path-discovery query does not satisfy the literal basename contract",
+            ),
             AppError::InvalidSearchQuery => (
                 StatusCode::BAD_REQUEST,
                 "Search query does not satisfy the literal text-search contract",
@@ -197,6 +204,13 @@ mod tests {
         assert_eq!(
             AppError::FileChangedDuringRead.public_response(),
             (StatusCode::CONFLICT, "File changed during the bounded read",)
+        );
+        assert_eq!(
+            AppError::InvalidFindQuery.public_response(),
+            (
+                StatusCode::BAD_REQUEST,
+                "Path-discovery query does not satisfy the literal basename contract",
+            )
         );
         assert_eq!(
             AppError::InvalidSearchQuery.public_response(),

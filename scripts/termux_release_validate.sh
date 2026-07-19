@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="6"
+readonly VALIDATOR_VERSION="7"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -983,7 +983,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -991,6 +991,22 @@ run_mcp_runtime_checks() {
       and ($tool.inputSchema.additionalProperties == false)
       and ($tool.description | contains("MCP-Capability-Grant"))
   ' "$body" >/dev/null 2>&1 || fail create_directory_grant_discovery_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "find_paths"))[0].inputSchema as $schema
+    | $schema.type == "object"
+      and ($schema.properties | keys) == ["kind","max_depth","path","query"]
+      and $schema.properties.path.type == "string"
+      and $schema.properties.query.type == "string"
+      and $schema.properties.query.minLength == 1
+      and $schema.properties.query.maxLength == 256
+      and $schema.properties.query."x-maxBytes" == 256
+      and $schema.properties.kind.enum == ["any","regular_file","directory"]
+      and $schema.properties.max_depth.minimum == 1
+      and $schema.properties.max_depth.maximum == 5
+      and $schema.required == ["path","query"]
+      and $schema.additionalProperties == false
+  ' "$body" >/dev/null 2>&1 || fail find_paths_discovery_schema_invalid
   jq -e '
     .result.tools
     | map(select(.name == "hash_file"))[0].inputSchema as $schema
@@ -1038,6 +1054,13 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.createDirectoryGrantHeader == "mcp-capability-grant"
     and .result.structuredContent.createDirectoryGrantTtlSeconds == 60
     and .result.structuredContent.createDirectoryMutationMode == "dry_run_or_request_scoped_single_use_grant"
+    and .result.structuredContent.pathDiscovery == true
+    and .result.structuredContent.pathDiscoveryMatchMode == "case_sensitive_literal_basename"
+    and .result.structuredContent.pathDiscoveryMaxDepth == 5
+    and .result.structuredContent.pathDiscoveryMaxEntries == 8192
+    and .result.structuredContent.pathDiscoveryMaxMatches == 512
+    and .result.structuredContent.pathDiscoveryMaxQueryBytes == 256
+    and .result.structuredContent.pathDiscoveryMaxResponseBytes == 262144
     and .result.structuredContent.binaryFileReads == true
     and .result.structuredContent.binaryFileReadEncoding == "base64"
     and .result.structuredContent.binaryFileReadMaxBytes == 1048576
@@ -1124,6 +1147,25 @@ run_mcp_runtime_checks() {
       and ([$listing.entries[].path] == ([$listing.entries[].path] | sort))
   ' "$body" >/dev/null 2>&1 || fail list_response_contract_invalid
   record_result runtime list_contract pass deterministic_bounded_list
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT" --arg query visible '{"jsonrpc":"2.0","id":"find-paths","method":"tools/call","params":{"name":"find_paths","arguments":{"path":$path,"query":$query,"kind":"regular_file","max_depth":1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status find_paths "$status" 200 safe_root_path_discovery_succeeded
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail find_paths_response_size_failed
+  ((bytes <= 262144)) || fail find_paths_response_too_large
+  jq -e --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '
+    .result.structuredContent as $find
+    | $find.matches == [{"path":$path,"kind":"regular_file"}]
+      and $find.truncated == false
+      and $find.queryBytes == 7
+      and $find.kindFilter == "regular_file"
+      and $find.maxDepth == 1
+      and $find.maxEntries == 8192
+      and $find.maxMatches == 512
+      and $find.maxResponseBytes == 262144
+  ' "$body" >/dev/null 2>&1 || fail find_paths_contract_invalid
+  grep -Fq validation-visible "$body" && fail find_paths_content_reflected
+  record_result runtime find_paths pass safe_root_path_discovery_verified
 
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{"jsonrpc":"2.0","id":"path-metadata","method":"tools/call","params":{"name":"path_metadata","arguments":{"path":$path}}}')"
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -1539,7 +1581,7 @@ run_volume_control_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'

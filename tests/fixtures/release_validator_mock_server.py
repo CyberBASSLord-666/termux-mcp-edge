@@ -109,6 +109,7 @@ TOOLS = [
     "project_service_status",
     "create_directory",
     "copy_file",
+    "find_paths",
     "hash_file",
     "list_directory",
     "path_metadata",
@@ -486,6 +487,36 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "find_paths":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded literal basename discovery.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "query": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 256,
+                                        "x-maxBytes": 256,
+                                    },
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": ["any", "regular_file", "directory"],
+                                    },
+                                    "max_depth": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 5,
+                                    },
+                                },
+                                "required": ["path", "query"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 elif name == "hash_file":
                     tools.append(
                         {
@@ -586,6 +617,13 @@ class Handler(BaseHTTPRequestHandler):
                         "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
                         "androidVolumeControlEnabled": False,
                         "androidVolumeGrantRequired": False,
+                        "pathDiscovery": True,
+                        "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
+                        "pathDiscoveryMaxDepth": 5,
+                        "pathDiscoveryMaxEntries": 8192,
+                        "pathDiscoveryMaxMatches": 512,
+                        "pathDiscoveryMaxQueryBytes": 256,
+                        "pathDiscoveryMaxResponseBytes": 262144,
                         "binaryFileReads": True,
                         "binaryFileReadEncoding": "base64",
                         "binaryFileReadMaxBytes": 1048576,
@@ -773,6 +811,95 @@ class Handler(BaseHTTPRequestHandler):
                         "mode": "0600",
                         "maxFileBytes": 1048576,
                         "maxResponseBytes": 16384,
+                    },
+                ),
+            )
+            return
+        if name == "find_paths":
+            target = safe_path(str(arguments.get("path", "")))
+            query = arguments.get("query")
+            kind_filter = arguments.get("kind", "any")
+            max_depth = arguments.get("max_depth", 5)
+            if (
+                target is None
+                or not target.is_dir()
+                or not isinstance(query, str)
+                or not query
+                or len(query.encode("utf-8")) > 256
+                or any(character in query for character in ("\0", "\n", "\r", "/"))
+                or kind_filter not in {"any", "regular_file", "directory"}
+                or isinstance(max_depth, bool)
+                or not isinstance(max_depth, int)
+                or max_depth < 1
+                or max_depth > 5
+            ):
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Path discovery invalid."),
+                )
+                return
+            matches: list[dict[str, str]] = []
+            entries_examined = 0
+            skipped_invalid_utf8_entries = 0
+            skipped_unsafe_entries = 0
+            skipped_unreadable_entries = 0
+            truncated = False
+            queue: list[tuple[pathlib.Path, int]] = [(target, 1)]
+            while queue and not truncated:
+                directory, depth = queue.pop(0)
+                try:
+                    entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
+                except OSError:
+                    skipped_unreadable_entries += 1
+                    continue
+                for entry in entries:
+                    if entries_examined >= 8192 or len(matches) >= 512:
+                        truncated = True
+                        break
+                    entries_examined += 1
+                    try:
+                        entry.name.encode("utf-8")
+                    except UnicodeEncodeError:
+                        skipped_invalid_utf8_entries += 1
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            skipped_unsafe_entries += 1
+                            continue
+                        if entry.is_file(follow_symlinks=False):
+                            entry_kind = "regular_file"
+                        elif entry.is_dir(follow_symlinks=False):
+                            entry_kind = "directory"
+                        else:
+                            skipped_unsafe_entries += 1
+                            continue
+                    except OSError:
+                        skipped_unreadable_entries += 1
+                        continue
+                    entry_path = pathlib.Path(entry.path)
+                    if query in entry.name and kind_filter in {"any", entry_kind}:
+                        matches.append({"path": str(entry_path), "kind": entry_kind})
+                    if entry_kind == "directory" and depth < max_depth:
+                        queue.append((entry_path, depth + 1))
+            matches.sort(key=lambda match: match["path"])
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "path": str(target),
+                        "matches": matches,
+                        "truncated": truncated,
+                        "entriesExamined": entries_examined,
+                        "skippedInvalidUtf8Entries": skipped_invalid_utf8_entries,
+                        "skippedUnsafeEntries": skipped_unsafe_entries,
+                        "skippedUnreadableEntries": skipped_unreadable_entries,
+                        "queryBytes": len(query.encode("utf-8")),
+                        "kindFilter": kind_filter,
+                        "maxDepth": max_depth,
+                        "maxEntries": 8192,
+                        "maxMatches": 512,
+                        "maxResponseBytes": 262144,
                     },
                 ),
             )

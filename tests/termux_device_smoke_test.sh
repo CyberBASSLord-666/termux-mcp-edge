@@ -19,7 +19,7 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
-assert_contains 'HARNESS_VERSION="6"' "$SCRIPT"
+assert_contains 'HARNESS_VERSION="7"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
 assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then
@@ -68,7 +68,7 @@ done
 
 for protocol_marker in \
   '"notifications/initialized"' \
-  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","search_text","write_file"' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
   'create_directory_missing_grant_http' \
@@ -79,6 +79,10 @@ for protocol_marker in \
   'volume_control_runtime_disabled' \
   'copy_dry_run_http' \
   'copy_existing=unchanged' \
+  'find_paths_http' \
+  'find_paths_schema' \
+  'pathDiscoveryMaxEntries == 8192' \
+  'pathDiscoveryMaxMatches == 512' \
   'hash_file_http' \
   'hash_file=sha256' \
   'hash_file_schema' \
