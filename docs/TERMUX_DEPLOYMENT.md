@@ -108,6 +108,10 @@ Replace an existing `false` gate line instead of retaining both values: duplicat
 
 For issuance, set `MCP__CAPABILITY__CONFIG_FILE` to this private `runtime.env`. The exact binary opens it without following the final component, enforces the same private mode and a 64 KiB ceiling, rejects duplicate or non-allowlisted records, and parses literal values without shell evaluation. Use `--issue-write-file-grant` only with the canonical active session, absolute safe-rooted target, and lowercase SHA-256 of the exact intended UTF-8 bytes. The issuer classifies create versus replace; it does not accept caller-selected disposition.
 
+Reserve every mutation safe root for this server and do not run independent writers in the same directories. The server serializes all of its own `write_file` transactions from destination revalidation through authorization, staging, publication, rollback, cleanup, and final sync. That process-local mutex cannot cover another OS process with direct directory-write access; Linux has no conditional unlink-by-inode primitive, so a cross-process writer can race identity-check-then-name-based cleanup.
+
+If a request is cancelled before its worker claims the commit point immediately before grant consumption, no mutation occurs and the grant remains usable while otherwise valid. After the worker claims that point, it owns completion even if the request disconnects. A same-target operation prepared before another in-process write completes fails stale destination revalidation before consuming its distinct grant; re-prepare before retrying it.
+
 ## Validate the candidate
 
 ```bash

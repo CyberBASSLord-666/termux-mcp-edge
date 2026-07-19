@@ -16,6 +16,8 @@ Live `write_file` requires all of the following:
 
 The gate defaults to `false`. Partial, malformed, non-Unicode, or compile-incompatible configuration fails before the listener starts.
 
+The public `FileSystemTools::write_file` library method cannot authorize itself: it supports preview only and rejects `Some(false)`. Live mutation is confined to the crate-private prepared operation reached through the authenticated MCP transport.
+
 ## Private configuration
 
 ```dotenv
@@ -76,6 +78,8 @@ The exact binary issues a 60-second grant. The runtime rejects expired, excessiv
 
 Replay state is in-memory, concurrency safe, bounded, and fail closed. Exactly one concurrent consumer can win. Expired replay entries are pruned, capacity exhaustion denies new consumption, clock rollback denies consumption, and poisoned/unavailable state never authorizes mutation.
 
+Separately issued grants are not treated as replay of one another. Instead, all in-process `write_file` mutations share a process-wide transaction mutex. If two calls were prepared against the same destination identity, the waiter revalidates only after the winner completes and fails as stale before authorization. Its unconsumed grant remains reusable for a freshly prepared matching request while the token is otherwise valid.
+
 Restarting the service clears replay memory but does not make an old token valid beyond its signed expiry, binding, current target disposition, active session, and key posture. Rotate the key after suspected disclosure.
 
 ## Request order
@@ -88,11 +92,12 @@ For a live call, the runtime:
 4. parses arguments and confirms the write gate is enabled;
 5. serializes the complete success response with the caller's actual JSON-RPC ID under the 16 KiB ceiling;
 6. validates the 1 MiB payload ceiling and descriptor-safe target classification;
-7. revalidates the create-or-replace destination posture;
-8. verifies and atomically consumes the grant immediately before exclusive staging-file creation; and
-9. completes staging, publication, durability, verification, rollback, and identity-safe cleanup in an owned worker.
+7. acquires the process-wide `write_file` mutation mutex and revalidates the create-or-replace destination posture;
+8. at a single pending/request-cancelled/worker-owned commit point, lets request cancellation stop the worker or lets the worker take ownership;
+9. verifies and atomically consumes the grant immediately before exclusive staging-file creation; and
+10. completes staging, publication, durability, verification, any non-destructive exchange rollback, identity-safe cleanup, and final parent sync in the owned worker before releasing the mutex.
 
-Failure after step 8 leaves the grant consumed. Failure before step 8 leaves it unconsumed.
+If cancellation wins step 8, no grant is consumed, no staging file is created, and the grant remains reusable. If the worker wins, later cancellation cannot abandon the transaction. Failure after step 9 leaves the grant consumed; destination revalidation or any other failure before step 9 leaves it unconsumed.
 
 Dry-run calls never consume a grant and never stage or publish. A grant supplied to an exact `write_file` preview remains usable for the later matching live call. A grant header on initialization, lifecycle messages, discovery, another tool, notifications, responses, GET, or DELETE is rejected as invalid capability context.
 
@@ -101,6 +106,7 @@ Dry-run calls never consume a grant and never stage or publish. A grant supplied
 - A different bearer principal, session, safe root, target, content byte, disposition, or mutating posture fails with the same private binding denial.
 - A create grant cannot replace a file that appears after issuance; no-replace publication fails and the grant remains consumed once staging was attempted.
 - A replace grant cannot create a target that disappears.
+- A separately granted operation prepared against an old replacement identity waits behind the process mutex, then fails revalidation before consumption if another in-process write won. Re-prepare before retrying its still-valid grant.
 - A directory-creation or Android-volume grant cannot authorize `write_file`, even when the key ID and HMAC key are shared.
 - A successful or failed consumed grant cannot be retried. Issue a new grant after revalidating the current target and content.
 
@@ -132,6 +138,8 @@ Header duplication, non-ASCII bytes, oversize, or a forbidden request context is
 6. securely remove obsolete grant files and old configuration copies after rollback requirements expire.
 
 If a mutation returns a post-consumption failure, inspect only the safe-rooted target and private service logs, verify no operation-owned staging name remains, and issue a fresh grant only after confirming the intended current create-or-replace posture and exact content digest. Never reuse or paste the failed grant for diagnosis.
+
+Reserve configured mutation safe roots for the server. The process mutex covers every in-process `write_file` operation, but it cannot serialize an independent local process with direct directory-write access. Because Linux has no conditional unlink-by-inode operation, such a process can race the identity check before name-based cleanup unlink; cross-process foreign-object preservation is not guaranteed.
 
 ## Audit and evidence privacy
 

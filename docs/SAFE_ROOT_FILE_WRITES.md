@@ -6,6 +6,8 @@
 
 The baseline `mcp-runtime` registry always contains the tool. Mutation is independently default-disabled and is never authorized by bearer authentication or `dry_run:false` alone.
 
+The public library entry point `FileSystemTools::write_file` is preview-only. Omitted `dry_run` and `Some(true)` validate and classify; `Some(false)` returns an authorization-required error without mutation. Live publication is reachable only through the crate-private prepared operation used by the MCP transport, so an embedding caller cannot bypass request-scoped authorization.
+
 ## Request and response bounds
 
 | Field | Type | Required | Contract |
@@ -45,31 +47,38 @@ Create and replace are distinct authorization postures. A create grant cannot ov
 
 ## Preview behavior
 
-Omitted `dry_run` and explicit `dry_run:true` perform the same validation and classification needed to describe the operation but do not require or consume a grant, create a staging file, publish content, or change the destination. Supplying an otherwise valid grant on a preview is permitted only in the exact `write_file` tool-call context and leaves that grant available for its later matching mutation.
+Omitted `dry_run` and explicit `dry_run:true` perform the same validation and classification needed to describe the operation but do not require or consume a grant, create a staging file, publish content, or change the destination. Supplying an otherwise valid grant on a preview is permitted only in the exact `write_file` tool-call context and leaves that grant available for its later matching mutation. This is also the complete behavior of the public `FileSystemTools::write_file` API; it rejects explicit mutation.
 
 ## Authorized mutation sequence
 
-For `dry_run:false`, the runtime follows this order:
+For `dry_run:false`, the runtime acquires one process-wide mutex shared by every in-process `FileSystemTools` instance, then follows this order while retaining the mutex:
 
 1. Revalidate the classified destination posture and any held replacement identity.
-2. Atomically validate and consume the exact grant immediately before the first filesystem mutation attempt. Consumption survives every later success, failure, timeout, or client cancellation.
-3. Create one unpredictable same-parent staging name with exclusive no-follow creation, force mode `0600`, and capture its regular-file device/inode identity.
-4. Write the exact bytes, sync the staging descriptor, then verify its held and named type, device, inode, mode, size, and SHA-256.
-5. Revalidate the create-or-replace posture immediately before publication.
-6. Publish atomically:
+2. At one atomic request commit point immediately before grant consumption, transition from pending to either request-cancelled or worker-owned. A cancellation winner stops before grant consumption or mutation; a worker winner owns completion independently of later request cancellation.
+3. Atomically validate and consume the exact grant immediately before the first filesystem mutation attempt. Consumption survives every later success, failure, timeout, or client cancellation.
+4. Create one unpredictable same-parent staging name with exclusive no-follow creation, force mode `0600`, and capture its regular-file device/inode identity.
+5. Write the exact bytes, sync the staging descriptor, then verify its held and named type, device, inode, mode, size, and SHA-256.
+6. Revalidate the create-or-replace posture immediately before publication.
+7. Publish atomically:
    - **create:** `RENAME_NOREPLACE`, followed by held/named identity, mode, and size verification;
    - **replace:** `RENAME_EXCHANGE`, followed by verification that the new staged identity owns the final name and the exact captured old identity owns the displaced name.
-7. Sync the parent directory at the publication boundary, remove only the exact displaced regular-file identity for replacement, and sync the parent again after cleanup.
+8. Sync the parent directory at the publication boundary, remove only the exact displaced regular-file identity for replacement, and sync the parent again after cleanup.
 
-Namespace races may cause a bounded private failure, but cannot turn create into overwrite, follow a symlink, publish a special object, or delete a name whose observed identity is not owned by the operation.
+The mutex remains held through staging, publication, verification, any rollback, operation-owned cleanup, and the final parent sync. Consequently, two mutations prepared against the same old destination cannot race inside one server process: after the winner completes, the waiting operation fails its first destination revalidation before authorization or grant consumption. Its distinct, still-valid grant remains reusable with a newly prepared request.
+
+In-process namespace changes are serialized; detected namespace changes may cause a bounded private failure, but cannot turn create into overwrite, follow a symlink, publish a special object, or delete a name whose observed identity is not owned by the operation.
 
 ## Failure, cancellation, and cleanup
 
-Cleanup is descriptor-relative and identity checked. A cleanup guard is armed only after the staging identity is captured. It may unlink only a named regular file whose device and inode still match that captured identity; a missing, exchanged, linked, or foreign object is preserved. Successful publication disarms staging cleanup only after the required durability boundary.
+Cleanup is descriptor-relative and identity checked. A cleanup guard is armed only after the staging identity is captured. It may unlink only a named regular file whose device and inode still match that captured identity; a missing, exchanged, linked, or foreign object is preserved. Successful publication disarms staging cleanup only after the required durability boundary. The process-wide mutex makes this guarantee complete against every other in-process `write_file` mutation.
 
-Replacement failures before commit attempt an exact exchange rollback only while the staged and displaced identities still match. Failures never make a consumed grant reusable. The mutation runs in an owned blocking worker, so dropping the request future does not abandon grant-consumed staging, verification, publication, rollback, or cleanup work.
+When replacement publication verification fails, rollback first requires the exact staged inode at the final name, then non-destructively exchanges it back with the displaced name regardless of the displaced object's identity. This restores a late foreign replacement instead of leaving authorized content published by a call that reports failure. Failures never make a consumed grant reusable.
 
-No success or failure path may leave an operation-owned staging file. A foreign object placed at a former staging name must not be removed.
+The mutation runs in an owned blocking worker with a three-state pending/request-cancelled/worker-owned commit point immediately before grant consumption. If request cancellation wins, the worker performs no mutation and the grant remains reusable. If the worker wins, later request cancellation cannot abandon grant-consumed staging, verification, publication, rollback, cleanup, or durability work.
+
+Against other in-process server writes, no success or failure path leaves an operation-owned staging file, and a foreign object placed at a former staging name is not removed.
+
+An independent local OS process with direct write access to the same parent directory is outside the process mutex. Linux provides no conditional unlink-by-inode operation, so such a process can race the identity check and subsequent name-based `unlinkat`. Operators must give the server exclusive operational ownership of configured safe roots and must not run independent writers there; otherwise the foreign-object cleanup guarantee cannot be absolute across processes.
 
 ## Stable private failures and audit behavior
 
@@ -90,7 +99,9 @@ Release evidence must cover:
 - exact 1 MiB acceptance and 1 MiB plus one byte rejection;
 - fixed `0600` create and replace with exact content;
 - create/replace mismatch, create no-replace, missing parent, root target, outside root, linked parent, final symlink, directory, FIFO, and other special-object rejection;
-- parent/final/staging exchange races, target mode/size/identity races, cancellation, every post-consumption failure boundary, exact rollback, no staging residue, and foreign-object preservation;
+- process-wide serialization across separate `FileSystemTools` instances, including two pre-prepared same-target replacements where the stale loser fails before grant consumption and reuses that grant only after re-preparation;
+- request cancellation on both sides of the pending/request-cancelled/worker-owned commit point;
+- parent/final/staging exchange races, target mode/size/identity races, every post-consumption failure boundary, non-destructive exchange rollback despite a changed displaced identity, no staging residue, and in-process foreign-object preservation;
 - oversized actual JSON-RPC ID preflight followed by successful reuse of the same unconsumed grant;
 - private responses and aggregate audits;
 - default and all-feature Rust suites, fixture parity, validator v8, device harness v8, every optional emulated posture, Android cross-builds, native official-Termux ARM64 execution, exact-head CI/Security, and direct physical observation when required by release classification.
