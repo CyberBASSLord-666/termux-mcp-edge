@@ -635,6 +635,10 @@ async fn capability_header_rejects_wrong_context_duplicate_oversized_non_ascii_a
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
         .header(header::ACCEPT, "text/event-stream")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, &session_id)
         .header(COPY_FILE_GRANT_HEADER, &grant)
@@ -945,6 +949,10 @@ fn _request_shape_compile_guard(session_id: &str, grant: &str) -> Request<Body> 
         .header(header::ORIGIN, "http://localhost:8000")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::ACCEPT, MCP_POST_ACCEPT)
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
         .header(MCP_SESSION_ID_HEADER, session_id)
         .header(COPY_FILE_GRANT_HEADER, grant)

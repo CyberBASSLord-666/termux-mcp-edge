@@ -192,6 +192,18 @@ impl AndroidVolumeGrantAuthority {
         })
     }
 
+    pub(crate) fn binds_static_principal(&self, principal: Option<&str>) -> bool {
+        let Some(principal) = principal else {
+            return false;
+        };
+        let mut candidate =
+            HmacSha256::new_from_slice(self.key.as_ref()).expect("fixed-size HMAC key is valid");
+        candidate.update(PRINCIPAL_BINDING_DOMAIN);
+        candidate.update(principal.as_bytes());
+        let candidate: [u8; DIGEST_BYTES] = candidate.finalize().into_bytes().into();
+        candidate == self.principal_digest
+    }
+
     pub fn issue_at(
         &self,
         session_id: &str,

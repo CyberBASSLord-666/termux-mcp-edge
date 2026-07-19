@@ -233,7 +233,7 @@ Expected enabled evidence:
 - Runtime status reports `fixed_read_only_server_diagnostics` while arbitrary execution and high-impact controls remain false.
 - Audit counters record three allowed fixed profiles and stable denied reasons without profile text, argv, cwd, environment, or output.
 
-The native ARM64 official-Termux command gate automates these deterministic checks and publishes strict v2 evidence with exactly 34 MCP requests. Its combined phase starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and calls `execution_boundary` to prove both retained identities. Command schema v1 is historical-only. The deterministic gate does not run or require a long monitoring window.
+The native ARM64 official-Termux command gate automates these deterministic checks and publishes strict v2 evidence with exactly 29 MCP requests plus a separate wrong-name construction-failure phase. That phase requires `McpRouterBuildError::CommandClientUnavailable`, probes health while construction is live, proves the already-bound listener never serves and no service-start log appears, and rejects bearer-token or filesystem-path disclosure. The combined phase starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and calls `execution_boundary` to prove both retained identities. Command schema v1 is historical-only. The deterministic gate does not run or require a long monitoring window.
 
 ## Capability-token boundary checks
 

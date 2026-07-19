@@ -167,14 +167,18 @@ pub struct AndroidVolumeControlClient {
 
 impl AndroidVolumeControlClient {
     pub fn termux() -> Self {
-        Self {
-            status: AndroidVolumeClient::termux(),
+        Self::try_termux().expect("fixed volume-control provider configuration must be valid")
+    }
+
+    pub(crate) fn try_termux() -> Result<Self, ()> {
+        Ok(Self {
+            status: AndroidVolumeClient::try_termux()?,
             program: PathBuf::from(TERMUX_VOLUME_PROGRAM),
             timeout: VOLUME_CONTROL_TIMEOUT,
             max_stdout_bytes: MAX_VOLUME_STDOUT_BYTES,
             max_stderr_bytes: MAX_VOLUME_STDERR_BYTES,
             mutation_lane: Arc::new(Semaphore::new(VOLUME_CONTROL_CONCURRENCY)),
-        }
+        })
     }
 
     pub async fn preview(

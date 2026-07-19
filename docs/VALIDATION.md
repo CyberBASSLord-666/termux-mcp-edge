@@ -14,7 +14,9 @@ Run the same Rust gates enforced by `.github/workflows/ci.yml`:
 
 ```bash
 cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features mcp-runtime -- -D warnings
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --features mcp-runtime
 cargo test --workspace --all-targets --all-features
 ```
 
@@ -33,13 +35,49 @@ Validate the exact release candidate on an AArch64 Termux device with the no-clo
 
 Validate downloaded default, `mcp-runtime`, and `android-volume-control` artifacts with [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). CI runs `tests/package_android_artifact_test.sh` for exact-source manifest/checksum bundle construction and `tests/termux_release_validate_test.sh` against deterministic default/MCP/control HTTP fixtures and deployment-manager fixture mode. Coverage includes preflight success, three-way provenance/digest/architecture/symlink/metadata failures, artifact-change detection, wrong feature posture, the volume-control compile/default-disabled truth table without device mutation, the independent file-write disabled/enabled/grant/replay/create/replace truth table, confirmation gates, transport/response/safe-root contracts, failed upgrade/rollback recovery, interruption cleanup, redaction, and the versioned JSON evidence contract.
 
-The CI workflow enforces format, Clippy, and all-feature tests. The Security workflow validates the locked dependency graph with `cargo audit` and fails on audit findings.
+The CI workflow enforces format plus default, minimal `mcp-runtime`, and all-feature Clippy/tests. The Security workflow validates the locked dependency graph with `cargo audit` and fails on audit findings.
+
+## Secure Embedding Boundary Validation
+
+The minimal `mcp-runtime` and all-feature suites must both exercise the single
+public `McpRouterBuilder` path used by the package binary:
+
+1. Construction receives an actually bound listener plus validated auth,
+   request-limit, transport-security, and safe-root inputs. A wildcard listener
+   is rejected for unauthenticated development, while request-time missing or
+   non-loopback peer metadata is independently rejected.
+2. Authentication remains the outer route layer. Unauthenticated oversized,
+   malformed, wrong-origin, fake-session, discovery, read, malformed-grant,
+   and mutation requests all return the same HTTP 401 boundary without session
+   allocation, limit admission, parsing, disclosure, grant consumption, or
+   filesystem change.
+3. Invalid root classes return exact `McpRouterBuildError` variants without a
+   configured path, token, descriptor, identity, or raw operating-system error.
+   Minimal-feature tests request uncompiled battery and volume clients and
+   require typed `CapabilityUnavailable` errors rather than panic or silent
+   downgrade.
+4. Mutation-authority setters reject a principal different from the selected
+   static bearer and reject all authorities in unauthenticated mode. Matching
+   principals still require the normal runtime gates and exact single-use
+   grants.
+5. Ordinary dependency and selected-workspace compile probes can use
+   `McpRouterBuilder` but cannot import raw state, legacy router constructors,
+   `McpTransportOptions`, `McpRouterProtection`, capability-authority bundles,
+   binary command switches, raw command clients, or forged profiles.
+6. Documentation examples compile, the package binary serves the exact
+   listener supplied to the builder with `ConnectInfo<SocketAddr>`, and all
+   requested but unavailable optional clients fail startup.
+
+The exact order under test is authentication; authenticated `Content-Length`,
+concurrency, and timeout enforcement; streaming body limit and extraction;
+Host/Origin; method/media and JSON-RPC; lifecycle/session; discovery; grant
+context; tool dispatch; mutation. See [`EMBEDDING.md`](EMBEDDING.md).
 
 ## Safe-Root Lifetime-Pinning Validation
 
 The all-feature suite must prove the safe-root authority boundary directly and deterministically:
 
-1. Fallible construction rejects an empty set, more than 64 configured entries, empty/relative/traversing paths, filesystem root, missing objects, regular files, and a symlink in the root or any ancestor before runtime state or a listener can exist. Because the retained root uses a path descriptor, final-directory read/write/search permission is validated by the operation that needs it rather than overclaimed as a startup invariant.
+1. Fallible construction rejects an empty set, more than 64 configured entries, empty/relative/traversing paths, filesystem root, missing objects, regular files, and a symlink in the root or any ancestor after the exact listener is bound but before runtime state, router construction, or request serving can proceed. Because the retained root uses a path descriptor, final-directory read/write/search permission is validated by the operation that needs it rather than overclaimed as a startup invariant.
 2. Valid labels are normalized, sorted, and deduplicated deterministically. The input-entry ceiling is enforced before deduplication, and no best-effort canonicalization fallback is permitted.
 3. Construction retains one no-follow directory descriptor and device/inode identity per distinct normalized root label; `FileSystemTools` clones share the same pins and operations duplicate and re-verify them instead of reopening pathnames. Lexical deduplication must not silently collapse different labels solely because bind-mount aliases share an identity.
 4. Renaming or replacing a root, or renaming/replacing an ancestor, cannot redirect a running instance. Reads and mutations remain attached to the original pinned directory and leave replacement objects at the configured path untouched.
@@ -49,7 +87,7 @@ The all-feature suite must prove the safe-root authority boundary directly and d
 
 Host unit/integration tests provide the adversarial rename/replacement and redaction proof. Exact-artifact validators and native ARM64 official-Termux emulation provide normal startup, readiness, confined operation, grant, and deployment evidence. These deterministic gates are sufficient for development and merge validation; safe-root lifetime pinning does not require an arbitrary 60-minute idle monitoring run. Direct physical observation is reserved for a release-evidence classifier finding about battery, thermal, OEM process management, Android storage/mount behavior, or another device-only property that the focused gates cannot establish.
 
-For `command-execution` changes, validation must run both ordinary path-dependency and two-member selected-workspace compile/API probes. Each first builds a valid safe public consumer, then proves profile construction, resolved-handle access, raw execution-client access, removed authority symbols, both crate-private binary builders, and former public copy/all-filesystem command-flag signatures are unreachable; all twelve public routers remain command-disabled. Runtime tests must prove raw program/argv and every override field are rejected before spawn; wrong-name, symlink, non-regular, non-executable, and wrong-device/inode candidates disable the effective posture; the independently opened `/proc/self/exe` pins executable identity; no-follow cwd descriptors reject root aliases and survive pathname replacement; and maximum-plus-one timeout/stdout/stderr configurations fail before spawn. The supervisor ceilings are exactly 5 seconds, 16 KiB stdout, and 4 KiB stderr independently of profile data. Output capacity may grow fallibly only for bytes actually read, never from a selected limit. Run both default-feature and all-feature Clippy/tests so the private execution surface is correct in every compile posture.
+For `command-execution` changes, validation must run both ordinary path-dependency and two-member selected-workspace compile/API probes. Each first builds a valid consumer of the single public builder, then proves profile construction, resolved-handle access, raw execution-client access, removed authority symbols, the binary-only command switch, every legacy router constructor, and the former public option/authority bundle types are unreachable; the public builder remains command-disabled. Runtime tests must prove raw program/argv and every override field are rejected before spawn; wrong-name, symlink, non-regular, non-executable, and wrong-device/inode candidates return `McpRouterBuildError::CommandClientUnavailable` before the already-bound listener serves any request; the independently opened `/proc/self/exe` pins executable identity; no-follow cwd descriptors reject root aliases and survive pathname replacement; and maximum-plus-one timeout/stdout/stderr configurations fail before spawn. The native wrong-name phase must probe health while construction is in flight, require non-timeout process failure and the exact non-sensitive construction error, and reject token/path disclosure or a service-start log. The supervisor ceilings are exactly 5 seconds, 16 KiB stdout, and 4 KiB stderr independently of profile data. Output capacity may grow fallibly only for bytes actually read, never from a selected limit. Run default, minimal `mcp-runtime`, and all-feature Clippy/tests so the private execution surface is correct in every compile posture.
 
 ## Dependency Update Validation
 
@@ -340,7 +378,7 @@ BUILD_FEATURES=command-execution \
   ./scripts/cross_compile.sh
 ```
 
-The `Android Cross Compile` workflow validates all six postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` artifacts before treating a release run that publishes the optional features as complete. Verify their commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md). The MCP artifact evidence includes the independent file-write gate, exact issuer, authorized create/replace, mismatch/replay denials, fixed limits/mode, `recoveryArtifactRetained`, no-retention create, bounded retained replacement recovery, reserved-namespace isolation, capacity/lock denial, and redaction contract. Provider and control evidence requires prompt endless-output rejection plus process-group, pipe-holder, client-cancellation, and bounded-supervisor cleanup attestations; control additionally proves exact authorization, verification, and recovery. Host compile/unit evidence proves ordinary-dependency and selected-workspace API closure, public embedding disablement including copy/all-filesystem constructors, exact candidate/loaded device-inode attestation, descriptor-pinned cwd, exact supervisor maxima, maximum-plus-one pre-spawn rejection, incremental allocation, and private-value redaction. Strict-v2 native command evidence proves default-artifact compile rejection, runtime-disabled hiding, exact profiles/schema, `/proc/self/exe` and cwd-descriptor replacement isolation, boundary isolation, override/unknown-profile rejection, and audit counters in exactly 34 MCP requests without a long observation. Host regressions separately force cleanup-reserve exhaustion on timeout, both output-limit paths, and caller cancellation, requiring the stable wait failure to override the primary result only after direct-child reaping.
+The `Android Cross Compile` workflow validates all six postures on relevant pull requests and also supports manual dispatch and `v*` tag builds. Require the posture-specific default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` artifacts before treating a release run that publishes the optional features as complete. Verify their commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md). The MCP artifact evidence includes the independent file-write gate, exact issuer, authorized create/replace, mismatch/replay denials, fixed limits/mode, `recoveryArtifactRetained`, no-retention create, bounded retained replacement recovery, reserved-namespace isolation, capacity/lock denial, and redaction contract. Provider and control evidence requires prompt endless-output rejection plus process-group, pipe-holder, client-cancellation, and bounded-supervisor cleanup attestations; control additionally proves exact authorization, verification, and recovery. Host compile/unit evidence proves use of the single public builder, ordinary-dependency and selected-workspace API closure, binary-only command enablement, exact candidate/loaded device-inode attestation, descriptor-pinned cwd, exact supervisor maxima, maximum-plus-one pre-spawn rejection, incremental allocation, and private-value redaction. Strict-v2 native command evidence proves default-artifact compile rejection, runtime-disabled hiding, exact profiles/schema, `/proc/self/exe` and cwd-descriptor replacement isolation, boundary isolation, override/unknown-profile rejection, audit counters in exactly 29 MCP requests, and a separate wrong-name `CommandClientUnavailable` failure before request serving, all without a long observation. Host regressions separately force cleanup-reserve exhaustion on timeout, both output-limit paths, and caller cancellation, requiring the stable wait failure to override the primary result only after direct-child reaping.
 
 ## MCP Runtime Gate
 

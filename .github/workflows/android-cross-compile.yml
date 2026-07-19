@@ -547,13 +547,14 @@ jobs:
               and .environment.imageDigest == $digest
               and .environment.androidLinker == true
               and .validation.status == "pass"
-              and .validation.requests == 34
+              and .validation.requests == 29
               and .validation.exactArtifact == true
               and .validation.compileGate == true
               and .validation.runtimeDefaultDisabled == true
               and .validation.disabledDiscovery == true
               and .validation.fixedCurrentExecutable == true
               and .validation.wrongExecutableNameFailsClosed == true
+              and .validation.wrongExecutableNameRejectedBeforeServing == true
               and .validation.runningInodePinned == true
               and .validation.workingDirectoryDescriptorPinned == true
               and .validation.fixedArgvProfiles == true

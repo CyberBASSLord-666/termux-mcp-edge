@@ -28,7 +28,12 @@ use crate::config::{AuthConfig, AuthPosture};
 pub const MAX_BEARER_TOKEN_BYTES: usize = 4_096;
 
 #[derive(Clone)]
-pub enum McpAuthPolicy {
+pub struct McpAuthPolicy {
+    kind: McpAuthPolicyKind,
+}
+
+#[derive(Clone)]
+enum McpAuthPolicyKind {
     StaticBearer { token: Arc<str> },
     UnauthenticatedLocalhostOnly,
 }
@@ -42,7 +47,7 @@ impl McpAuthPolicy {
                 })?;
                 Self::static_bearer(token)
             }
-            AuthPosture::UnauthenticatedLocalhostOnly => Ok(Self::UnauthenticatedLocalhostOnly),
+            AuthPosture::UnauthenticatedLocalhostOnly => Ok(Self::unauthenticated_localhost_only()),
         }
     }
 
@@ -50,24 +55,43 @@ impl McpAuthPolicy {
         let token = token.as_ref();
         validate_bearer_token(token)?;
 
-        Ok(Self::StaticBearer {
-            token: Arc::from(token),
+        Ok(Self {
+            kind: McpAuthPolicyKind::StaticBearer {
+                token: Arc::from(token),
+            },
         })
     }
 
     pub const fn unauthenticated_localhost_only() -> Self {
-        Self::UnauthenticatedLocalhostOnly
+        Self {
+            kind: McpAuthPolicyKind::UnauthenticatedLocalhostOnly,
+        }
+    }
+
+    #[cfg(feature = "mcp-runtime")]
+    pub(crate) const fn is_unauthenticated_localhost_only(&self) -> bool {
+        matches!(&self.kind, McpAuthPolicyKind::UnauthenticatedLocalhostOnly)
+    }
+
+    /// Return the exact authenticated principal for startup-only authority
+    /// compatibility checks. The value is never serialized or logged.
+    #[cfg(feature = "mcp-runtime")]
+    pub(crate) fn static_principal(&self) -> Option<&str> {
+        match &self.kind {
+            McpAuthPolicyKind::StaticBearer { token } => Some(token),
+            McpAuthPolicyKind::UnauthenticatedLocalhostOnly => None,
+        }
     }
 }
 
 impl fmt::Debug for McpAuthPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::StaticBearer { .. } => formatter
+        match &self.kind {
+            McpAuthPolicyKind::StaticBearer { .. } => formatter
                 .debug_struct("McpAuthPolicy::StaticBearer")
                 .field("token", &"<redacted>")
                 .finish(),
-            Self::UnauthenticatedLocalhostOnly => {
+            McpAuthPolicyKind::UnauthenticatedLocalhostOnly => {
                 formatter.write_str("McpAuthPolicy::UnauthenticatedLocalhostOnly")
             }
         }
@@ -85,8 +109,8 @@ pub async fn require_mcp_auth(
     request: Request,
     next: Next,
 ) -> Response {
-    match &policy {
-        McpAuthPolicy::UnauthenticatedLocalhostOnly => {
+    match &policy.kind {
+        McpAuthPolicyKind::UnauthenticatedLocalhostOnly => {
             let peer_is_loopback = request
                 .extensions()
                 .get::<ConnectInfo<SocketAddr>>()
@@ -98,7 +122,7 @@ pub async fn require_mcp_auth(
                 localhost_peer_required_response()
             }
         }
-        McpAuthPolicy::StaticBearer { token } => {
+        McpAuthPolicyKind::StaticBearer { token } => {
             let authorized = extract_bearer_token(request.headers())
                 .is_some_and(|provided| constant_time_eq(provided.as_bytes(), token.as_bytes()));
 

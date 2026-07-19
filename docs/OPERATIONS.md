@@ -17,6 +17,24 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Fixed `mcp_runtime` runit service only.
 - Dedicated safe-root defaults plus independent default-disabled directory, file-copy, and file-write mutation gates, with request-scoped authorization for each exact live mutation.
 
+## Secure router construction
+
+The package binary and downstream Rust embeddings use the same
+`McpRouterBuilder` path. The listener is bound first. The builder then reads
+that socket's actual local address, validates and lifetime-pins the safe roots,
+requires the authentication, request-limit, and Host/Origin policies, and
+returns either a complete protected router or a typed non-sensitive startup
+error. The listener is not served until construction succeeds.
+
+The fixed request order is authentication; authenticated `Content-Length`,
+concurrency, and timeout enforcement; streaming body limit and extraction;
+Host/Origin validation; then method/media, JSON-RPC, lifecycle/session,
+discovery, grant, tool, and mutation work. There is no public raw-router path
+that an embedding can use to omit or reorder these controls. Explicit
+unauthenticated development also requires both an actually loopback-bound
+listener and request-time proof of an actual loopback peer. See
+[`EMBEDDING.md`](EMBEDDING.md) for the supported integration flow.
+
 ## Android hardening
 
 1. Set Termux battery usage to unrestricted.
@@ -243,7 +261,7 @@ An `android-volume-status` binary with `MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 
 An `android-volume-control` binary with `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true`, static-token authentication, and the capability key pair exposes `set_android_volume`. It defaults to fresh validated preview. Explicit mutation requires one exact request grant and performs fixed execution, verification, and restoration on failure; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
 
-A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. Command-capable construction is binary-crate-private; public library routers hard-code disabled. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
+A `command-execution` binary with `MCP__COMMAND__ENABLED=true` exposes `run_command_profile` after the sixteen baseline tools. It offers only `server_version`, `server_help`, and `execution_boundary` against the attested already-loaded server image. Command enablement is a crate-private method available only to the package binary; the single public builder defaults disabled and exposes no enabling method. Initialization matches the exact-name no-follow candidate to `/proc/self/exe` by device/inode and retains the first safe root by no-follow directory descriptor; children spawn `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. It remains hidden when disabled; see [`command-execution-gate.md`](command-execution-gate.md). An all-feature validation build exposes twenty tools only when all four optional runtime flags are explicitly enabled.
 
 The runtime does not expose Android platform control beyond exact request-authorized volume, an arbitrary shell or command runner, global process inventory, arbitrary service inspection, service mutation, package management, network mutation, or unrelated high-impact controls.
 
@@ -272,7 +290,7 @@ The default filesystem root is:
 /data/data/com.termux/files/home/mcp-files
 ```
 
-Keep configured roots limited to dedicated project directories. Configuration accepts one through 64 entries and deterministically normalizes, sorts, and deduplicates valid labels. Empty or relative entries, filesystem root `/`, traversal, missing/non-directory objects, and symlinks in a root or any ancestor are rejected before the listener opens. Broad shared Android storage is not a default.
+Keep configured roots limited to dedicated project directories. Configuration accepts one through 64 entries and deterministically normalizes, sorts, and deduplicates valid labels. Empty or relative entries, filesystem root `/`, traversal, missing/non-directory objects, and symlinks in a root or any ancestor are rejected after the exact listener is bound but before a router exists or any request is served. Broad shared Android storage is not a default.
 
 Fallible startup pins every distinct normalized root label with a retained no-follow directory descriptor and device/inode identity. Tool clones share those pins. Each descendant operation duplicates and verifies the selected descriptor, then walks below it with descriptor-relative no-follow operations; configured path labels are selection metadata, not authority, and are never reopened for a live request. Renaming or replacing a root or ancestor cannot redirect the running service: it continues against the original pinned directory and leaves the pathname replacement untouched. Offline grant issuers pin independently and sign the same identity contract, so issuance against a later replacement does not authorize the runtime's original root.
 

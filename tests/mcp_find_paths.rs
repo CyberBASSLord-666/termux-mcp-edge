@@ -5,11 +5,12 @@ mod support;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::symlink;
-use std::os::unix::net::UnixListener;
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
+use support::{
+    create_fifo, empty_test_file_tools, initialize_session, post_json_to_session, test_router,
+};
 use termux_mcp_server::{
     error::AppError,
     tools::{
@@ -224,7 +225,7 @@ async fn find_paths_skips_unsafe_and_invalid_names_and_rejects_linked_parents() 
         root.path().join("symlink-needle"),
     )
     .unwrap();
-    let _socket = UnixListener::bind(root.path().join("socket-needle")).unwrap();
+    create_fifo(&root.path().join("fifo-needle"));
     let invalid_name = OsString::from_vec(vec![b'i', b'n', b'v', 0xff, b'n']);
     std::fs::write(root.path().join(&invalid_name), "invalid-name-private").unwrap();
     symlink(outside.path(), root.path().join("linked-parent")).unwrap();

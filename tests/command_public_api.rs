@@ -48,6 +48,19 @@ fn dependency_consumers_cannot_forge_command_execution_authority() {
 
     let rejected = [
         (
+            "bearer principal extraction",
+            r#"
+use termux_mcp_server::auth::McpAuthPolicy;
+
+fn main() {
+    let policy = McpAuthPolicy::static_bearer("opaque-principal").unwrap();
+    let McpAuthPolicy { kind } = policy;
+    let _ = kind;
+}
+"#,
+            "kind",
+        ),
+        (
             "forged profile",
             r#"
 use std::time::Duration;
@@ -126,14 +139,15 @@ fn main() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains(expected_symbol) && stderr.contains("private"),
+            stderr.contains(expected_symbol)
+                && (stderr.contains("private") || stderr.contains("unresolved import")),
             "{name} failed for the wrong reason:\n{stderr}"
         );
     }
 }
 
 #[test]
-fn public_router_constructors_reject_removed_command_enablement_argument() {
+fn dependency_consumers_cannot_restore_legacy_router_construction_surfaces() {
     let probe = tempfile::tempdir().unwrap();
     fs::create_dir(probe.path().join("src")).unwrap();
     let package_path = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -145,42 +159,45 @@ fn public_router_constructors_reject_removed_command_enablement_argument() {
     )
     .unwrap();
 
-    // Each count is the former vulnerable public signature, including the
-    // removed command_execution_enabled argument. A regression that restores
-    // that argument makes its probe compile and fails this test.
+    // These former public entry points could be mixed and matched in ways that
+    // omitted a mandatory boundary. They must remain absent now that the sole
+    // public entry point is `McpRouterBuilder::try_new`.
     let rejected = [
-        ("protected_router", 6),
-        ("protected_router_with_options", 7),
-        ("protected_router_with_create_directory_authority", 7),
-        (
-            "protected_router_with_create_directory_authority_and_options",
-            8,
-        ),
-        ("protected_router_with_copy_file_authority", 7),
-        ("protected_router_with_copy_file_authority_and_options", 8),
-        ("protected_router_with_filesystem_authorities", 8),
-        (
-            "protected_router_with_filesystem_authorities_and_options",
-            9,
-        ),
-        ("protected_router_with_all_filesystem_authorities", 9),
-        (
-            "protected_router_with_all_filesystem_authorities_and_options",
-            10,
-        ),
-        ("protected_router_with_capability_authorities", 8),
-        (
-            "protected_router_with_capability_authorities_and_options",
-            8,
-        ),
+        "McpTransportState",
+        "FilesystemMutationAuthorities",
+        "router",
+        "router_with_options",
+        "router_with_create_directory_authority",
+        "router_with_create_directory_authority_and_options",
+        "router_with_filesystem_authorities",
+        "router_with_filesystem_authorities_and_options",
+        "router_with_capability_authorities",
+        "router_with_capability_authorities_and_options",
+        "router_from_state",
+        "binary_server_router_with_filesystem_authorities_and_options",
+        "binary_server_router_with_capability_authorities_and_options",
+        "protected_router",
+        "protected_router_with_options",
+        "protected_router_with_create_directory_authority",
+        "protected_router_with_create_directory_authority_and_options",
+        "protected_router_with_copy_file_authority",
+        "protected_router_with_copy_file_authority_and_options",
+        "protected_router_with_filesystem_authorities",
+        "protected_router_with_filesystem_authorities_and_options",
+        "protected_router_with_all_filesystem_authorities",
+        "protected_router_with_all_filesystem_authorities_and_options",
+        "protected_router_with_capability_authorities",
+        "protected_router_with_capability_authorities_and_options",
+        "McpRouterProtection",
+        "McpTransportOptions",
+        "McpCapabilityAuthorities",
     ];
 
-    for (function, former_argument_count) in rejected {
-        let arguments = vec!["todo!()"; former_argument_count].join(", ");
+    for symbol in rejected {
         write_probe_source(
             probe.path(),
             &format!(
-                "use termux_mcp_server::mcp_transport::{function};\n\nfn main() {{\n    let _ = {function}({arguments});\n}}\n"
+                "use termux_mcp_server::mcp_transport::{symbol};\n\nfn main() {{\n    let _ = std::mem::size_of::<{symbol}>();\n}}\n"
             ),
         );
         let output = run_cargo(
@@ -190,12 +207,13 @@ fn public_router_constructors_reject_removed_command_enablement_argument() {
         );
         assert!(
             !output.status.success(),
-            "{function} unexpectedly accepted the removed command-enable argument"
+            "legacy public construction surface {symbol} unexpectedly compiled"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains(function) && stderr.contains("arguments"),
-            "{function} failed for the wrong reason:\n{stderr}"
+            stderr.contains(symbol)
+                && (stderr.contains("unresolved import") || stderr.contains("private")),
+            "{symbol} failed for the wrong reason:\n{stderr}"
         );
     }
 }
@@ -231,7 +249,7 @@ fn selected_workspace_consumer_cannot_reach_binary_command_router() {
 use termux_mcp_server::mcp_transport;
 
 fn main() {
-    let _ = std::mem::size_of::<mcp_transport::McpTransportOptions>();
+    let _ = std::mem::size_of::<mcp_transport::McpRouterBuilder>();
 }
 "#,
     );
@@ -294,7 +312,7 @@ fn main() {
         stderr.contains("consumer/src/main.rs")
             && stderr.contains("binary_server_router_with_filesystem_authorities_and_options")
             && stderr.contains("binary_server_router_with_capability_authorities_and_options")
-            && stderr.contains("private"),
+            && (stderr.contains("private") || stderr.contains("unresolved import")),
         "selected-workspace probe failed for the wrong reason:\n{stderr}"
     );
 }

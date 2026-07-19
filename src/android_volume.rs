@@ -84,15 +84,19 @@ pub struct AndroidVolumeClient {
 
 impl AndroidVolumeClient {
     pub fn termux() -> Self {
-        Self {
+        Self::try_termux().expect("fixed volume provider configuration must be valid")
+    }
+
+    pub(crate) fn try_termux() -> Result<Self, ()> {
+        Ok(Self {
             provider: BoundedAndroidProvider::new(
                 PathBuf::from(TERMUX_VOLUME_PROGRAM),
                 VOLUME_STATUS_TIMEOUT,
                 MAX_VOLUME_STDOUT_BYTES,
                 MAX_VOLUME_STDERR_BYTES,
             )
-            .expect("fixed volume provider timeout must reserve cleanup time"),
-        }
+            .map_err(|_| ())?,
+        })
     }
 
     pub async fn collect(&self) -> Result<AndroidVolumeStatus, AndroidVolumeError> {

@@ -22,6 +22,13 @@ pub(crate) const MAX_REQUEST_GRANT_HEADER_BYTES: usize = 384;
 pub(crate) enum RequestGrantCapability {
     CreateDirectory = 1,
     WriteFile = 2,
+    #[cfg_attr(
+        not(feature = "android-volume-control"),
+        allow(
+            dead_code,
+            reason = "wire code remains reserved when volume control is absent"
+        )
+    )]
     AndroidVolume = 3,
     CopyFile = 4,
 }

@@ -8,7 +8,7 @@ The default build exposes unauthenticated coarse `GET /health` and `GET /ready` 
 
 The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `DELETE /mcp` handling with:
 
-- bearer authentication, except for explicit loopback-only development mode whose declared bind and actual TCP peer must both be loopback;
+- bearer authentication, except for explicit loopback-only development mode whose already-bound listener and actual TCP peer must both be loopback;
 - bounded concurrency, request duration, and body size;
 - exact Host and browser Origin validation;
 - strict single-message JSON-RPC request, notification, and response classification;
@@ -40,9 +40,10 @@ An untrusted local, LAN, tunnel, or browser-originated caller may attempt to enu
 Current controls:
 
 - static bearer authentication wraps the complete MCP route before resource accounting, transport validation, parsing, discovery, and dispatch;
+- the single public `McpRouterBuilder` requires an already-bound listener plus validated authentication, request-limit, transport-security, and safe-root inputs; no raw public router or state constructor can omit those boundaries;
 - credential parsing and comparison are bounded;
 - failures return one non-sensitive 401 contract with `WWW-Authenticate: Bearer` and `Cache-Control: no-store`;
-- unauthenticated mode requires explicit configuration and a loopback bind;
+- unauthenticated mode requires explicit policy and proof from the actual bound listener that its local address is loopback;
 - request-time `ConnectInfo<SocketAddr>` must prove the actual TCP peer is IPv4 or IPv6 loopback. Missing metadata and non-loopback peers receive the same private denial before request resource accounting; `Host`, `Origin`, and forwarded headers are never substitutes for the socket peer.
 
 Preserved boundary:
@@ -106,7 +107,7 @@ An authenticated caller may attempt traversal, symlink escape, race-based path r
 
 Current controls:
 
-- fallible pre-listener construction of one through 64 configured safe-root entries, with deterministic normalization, sorting, and deduplication;
+- fallible pre-service construction of one through 64 configured safe-root entries after the actual listener is bound, with deterministic normalization, sorting, and deduplication;
 - absolute dedicated roots with no filesystem-root default and rejection of explicit parent traversal, NUL bytes, unsafe missing parents, non-directories, and symlinks in a root or any ancestor;
 - lifetime-retained no-follow directory descriptors plus device/inode identities shared by every tools clone; configured path labels select pins but are not authority;
 - per-operation duplication and identity verification of the selected pin followed by component-by-component no-follow descendant resolution, never pathname reopening;
@@ -137,7 +138,7 @@ Current controls:
 - grants are issued only by the local exact binary after fallible construction independently lifetime-pins the configured safe root and validates the capability-specific target. The signed binding uses that pin's device/inode identity, and runtime consumption compares it with the identity retained by the running process; a grant issued after pathname replacement cannot authorize the earlier pin. The file-write issuer additionally reads exact UTF-8 bytes from an absolute stable no-follow private regular file of at most 1 MiB and validates the requested `create`/`replace` target state;
 - create-directory grants use their own fixed-shape signed binding. A write grant instead has an opaque 65-byte payload (random JTI, signed write-family byte, keyed domain-separated operation binding, issued/expiry timestamps) plus its outer signature: principal, canonical session, capability, root/target, posture, content digest, disposition, and replacement device/inode/size/high-resolution ctime/link count are binding inputs and are not serialized;
 - a single internal registry assigns stable globally unique family codes—directory `1`, write `2`, volume `3`, and copy `4`. Callers cannot select a code, and exhaustive all-pairs tests with one key/principal/session prove every live grant is privately rejected by every other family without consuming the source grant;
-- route authentication is outermost. Host/Origin, HTTP method, media/header shape, JSON-RPC envelope, session/lifecycle, `tools/call`, exact grant-aware tool name, closed argument schema, runtime gate, complete-response preflight, safe-root/target classification, and grant binding are checked in that order before the first state change;
+- route authentication is outermost. Authenticated `Content-Length`, concurrency, timeout, streaming body extraction, Host/Origin, HTTP method, media/header shape, JSON-RPC envelope, session/lifecycle, `tools/call`, exact grant-aware tool name, closed argument schema, runtime gate, complete-response preflight, safe-root/target classification, and grant binding are checked in that order before the first state change;
 - only one bounded ASCII `MCP-Capability-Grant` header is accepted. It is rejected on initialization, GET, DELETE, ping, discovery, notifications, client responses, and unrelated tools; an active-session `tools/call` still authorizes nothing unless its exact capability authority validates it;
 - malformed, unknown-key/version, invalid-signature, expired, future, excessive-lifetime, mismatched, replayed, clock-rollback, full-state, and poisoned-state cases fail closed with non-sensitive stable reasons;
 - a bounded process-global registry gives every equivalent same-family/key-id/key/principal authority one shared replay set, last-observed clock, and capacity; validation plus replay insertion is atomic, so independently constructed routers and concurrent callers in this process reach at most one mutation attempt, while other families, keys, and principals remain isolated and poisoned or exhausted state fails closed;
@@ -170,7 +171,7 @@ Command execution, Android control, service/package/network mutation, broad stor
 
 Current controls:
 
-- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; the package binary compiles the module graph in its own crate and alone can call the two crate-private enabling builders, while all twelve public library routers hard-code disabled and ordinary dependency plus selected-workspace probes enforce that boundary;
+- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; the package binary compiles the module graph in its own crate and alone can call the crate-private command switch on `McpRouterBuilder`, while the single public builder defaults disabled and exposes no enabling method. Ordinary dependency and selected-workspace probes prove raw command types, the binary-only switch, legacy router constructors, and their option/authority bundles remain unreachable;
 - initialization opens the exact-name absolute candidate without following its final component, opens `/proc/self/exe` independently, requires an executable regular candidate plus a regular loaded image with equal device/inode identity, and later spawns only `/proc/self/exe`;
 - the first canonical safe root is held by a no-follow directory descriptor, filesystem-root aliases are rejected by device/inode, and the child uses `/proc/self/fd/<fd>` while the guard remains alive through execution;
 - its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input, while crate-private profiles, resolved handles, and raw execution types prevent downstream Rust embeddings from forging or inspecting those values;

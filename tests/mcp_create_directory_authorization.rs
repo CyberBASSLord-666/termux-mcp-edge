@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use support::{
     create_directory_authorized_test_router, empty_test_file_tools, initialize_session,
     issue_create_directory_grant, post_json_to_session, post_json_to_session_with_grant,
-    test_router, TEST_CAPABILITY_KEY,
+    test_router, TEST_CAPABILITY_KEY, TEST_STATIC_PRINCIPAL,
 };
 use termux_mcp_server::{
     create_directory_grant::{CreateDirectoryGrantAuthority, CREATE_DIRECTORY_GRANT_HEADER},
@@ -505,6 +505,10 @@ async fn capability_header_is_rejected_outside_exact_tool_context_without_consum
             .header(header::HOST, "localhost:8000")
             .header(header::ORIGIN, "http://localhost:8000")
             .header(header::ACCEPT, "text/event-stream")
+            .header(
+                header::AUTHORIZATION,
+                format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+            )
             .header(MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION)
             .header(MCP_SESSION_ID_HEADER, &session_id)
             .header(CREATE_DIRECTORY_GRANT_HEADER, &grant)

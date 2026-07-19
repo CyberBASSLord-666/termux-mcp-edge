@@ -109,15 +109,19 @@ pub struct AndroidBatteryClient {
 
 impl AndroidBatteryClient {
     pub fn termux() -> Self {
-        Self {
+        Self::try_termux().expect("fixed battery provider configuration must be valid")
+    }
+
+    pub(crate) fn try_termux() -> Result<Self, ()> {
+        Ok(Self {
             provider: BoundedAndroidProvider::new(
                 PathBuf::from(TERMUX_BATTERY_STATUS_PROGRAM),
                 BATTERY_STATUS_TIMEOUT,
                 MAX_BATTERY_STDOUT_BYTES,
                 MAX_BATTERY_STDERR_BYTES,
             )
-            .expect("fixed battery provider timeout must reserve cleanup time"),
-        }
+            .map_err(|_| ())?,
+        })
     }
 
     pub async fn collect(&self) -> Result<AndroidBatteryStatus, AndroidBatteryError> {

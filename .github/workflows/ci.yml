@@ -86,11 +86,17 @@ jobs:
       - name: Clippy (default posture)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Clippy (MCP runtime posture)
+        run: cargo clippy --workspace --all-targets --features mcp-runtime -- -D warnings
+
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests (default posture)
         run: cargo test --workspace --all-targets
+
+      - name: Tests (MCP runtime posture)
+        run: cargo test --workspace --all-targets --features mcp-runtime
 
       - name: Tests (all features)
         run: cargo test --workspace --all-targets --all-features

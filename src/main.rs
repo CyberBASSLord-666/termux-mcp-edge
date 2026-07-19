@@ -81,7 +81,7 @@ use crate::{
     auth::McpAuthPolicy,
     copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::CreateDirectoryGrantAuthority,
-    mcp_transport::McpRouterProtection,
+    mcp_transport::McpRouterBuilder,
     request_limits::McpRequestLimits,
     transport_security::TransportSecurityPolicy,
     write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
@@ -179,11 +179,33 @@ async fn main() -> anyhow::Result<()> {
 
     let display_addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr = (config.server.host.as_str(), config.server.port);
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
-    // Validate and lifetime-pin every configured jail root before any listener
-    // is opened. Termux storage permissions and mount availability can change
-    // independently of configuration; unresolved roots must fail closed.
+    #[cfg(feature = "mcp-runtime")]
+    let transport_security = TransportSecurityPolicy::new(
+        config.transport.allowed_hosts.clone(),
+        config.transport.allowed_origins.clone(),
+        config.transport.allow_missing_origin,
+    )?;
+
+    // The secure builder reads this exact bound listener, then validates and
+    // lifetime-pins every configured jail root before the socket is served.
+    #[cfg(feature = "mcp-runtime")]
+    let mcp_router_builder = McpRouterBuilder::try_new(
+        &listener,
+        mcp_auth_policy,
+        mcp_request_limits,
+        transport_security,
+        config.file.safe_roots.clone(),
+    )?;
+
+    #[cfg(feature = "mcp-runtime")]
+    let safe_root_count = mcp_router_builder.safe_root_count();
+
+    #[cfg(not(feature = "mcp-runtime"))]
     let file_tools = FileSystemTools::try_new(config.file.safe_roots.clone())?;
+
+    #[cfg(not(feature = "mcp-runtime"))]
     let safe_root_count = file_tools.safe_root_count();
 
     #[cfg(feature = "mcp-runtime")]
@@ -218,53 +240,25 @@ async fn main() -> anyhow::Result<()> {
 
     #[cfg(feature = "mcp-runtime")]
     let app = {
-        let transport_security = TransportSecurityPolicy::new(
-            config.transport.allowed_hosts.clone(),
-            config.transport.allowed_origins.clone(),
-            config.transport.allow_missing_origin,
-        )?;
-        let transport_options = crate::mcp_transport::McpTransportOptions::default()
-            .with_sse_enabled(config.transport.sse_enabled);
-        let mcp_router_protection =
-            McpRouterProtection::new(&config.server.host, mcp_auth_policy, mcp_request_limits)?;
+        let mut builder = mcp_router_builder
+            .with_sse_enabled(config.transport.sse_enabled)
+            .with_android_battery_status_enabled(config.android.battery_status_enabled)
+            .with_android_volume_status_enabled(config.android.volume_status_enabled)
+            .with_command_execution_enabled(config.command.enabled);
+        if let Some(authority) = create_directory_authority {
+            builder = builder.try_with_create_directory_authority(authority)?;
+        }
+        if let Some(authority) = copy_file_authority {
+            builder = builder.try_with_copy_file_authority(authority)?;
+        }
+        if let Some(authority) = write_file_authority {
+            builder = builder.try_with_write_file_authority(authority)?;
+        }
         #[cfg(feature = "android-volume-control")]
-        let capability_authorities = {
-            let authorities = crate::mcp_transport::McpCapabilityAuthorities::new(
-                create_directory_authority,
-                write_file_authority,
-                android_volume_control_authority,
-            );
-            match copy_file_authority {
-                Some(authority) => authorities.with_copy_file_authority(authority),
-                None => authorities,
-            }
-        };
-        #[cfg(not(feature = "android-volume-control"))]
-        let mcp_app =
-            crate::mcp_transport::binary_server_router_with_filesystem_authorities_and_options(
-                mcp_router_protection,
-                transport_security,
-                file_tools,
-                config.android.battery_status_enabled,
-                config.android.volume_status_enabled,
-                config.command.enabled,
-                create_directory_authority,
-                copy_file_authority,
-                write_file_authority,
-                transport_options,
-            );
-        #[cfg(feature = "android-volume-control")]
-        let mcp_app =
-            crate::mcp_transport::binary_server_router_with_capability_authorities_and_options(
-                mcp_router_protection,
-                transport_security,
-                file_tools,
-                config.android.battery_status_enabled,
-                config.android.volume_status_enabled,
-                config.command.enabled,
-                capability_authorities,
-                transport_options,
-            );
+        if let Some(authority) = android_volume_control_authority {
+            builder = builder.try_with_android_volume_control_authority(authority)?;
+        }
+        let mcp_app = builder.build()?;
         app.merge(mcp_app)
     };
 
@@ -272,7 +266,6 @@ async fn main() -> anyhow::Result<()> {
     let _ = file_tools;
 
     info!("Listening on http://{}", display_addr);
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
 
     // Supplying peer connection metadata is part of the MCP authentication
     // boundary. Explicit localhost-only development mode rejects every `/mcp`

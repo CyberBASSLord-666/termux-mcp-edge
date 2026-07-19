@@ -207,14 +207,16 @@ jq -e '
   and .properties.candidate."$ref" == "#/$defs/candidate"
   and ."$defs".candidate.required == ["commit","version","ciRunId","securityRunId","androidRunId","artifact","defaultArtifact"]
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
-  and ."$defs".validation.properties.requests.const == 34
+  and ."$defs".validation.properties.requests.const == 29
   and ."$defs".validation.properties.compileGate.const == true
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.fixedCurrentExecutable.const == true
   and ."$defs".validation.properties.wrongExecutableNameFailsClosed.const == true
+  and ."$defs".validation.properties.wrongExecutableNameRejectedBeforeServing.const == true
   and ."$defs".validation.properties.runningInodePinned.const == true
   and ."$defs".validation.properties.workingDirectoryDescriptorPinned.const == true
   and (."$defs".validation.required | index("wrongExecutableNameFailsClosed") != null)
+  and (."$defs".validation.required | index("wrongExecutableNameRejectedBeforeServing") != null)
   and (."$defs".validation.required | index("workingDirectoryDescriptorPinned") != null)
   and ."$defs".validation.properties.fixedArgvProfiles.const == true
   and ."$defs".validation.properties.closedInputSchema.const == true
@@ -227,7 +229,7 @@ jq -e '
   and ."$defs".validation.properties.arbitraryCommandExecutionDisabled.const == true
   and ."$defs".validation.properties.longObservationRequired.const == false
 ' "$ROOT/docs/command-emulated-evidence-schema-v2.json" >/dev/null
-grep -Fq 'EXPECTED_REQUEST_COUNT=34' "$COMMAND_GATE" \
+grep -Fq 'EXPECTED_REQUEST_COUNT=29' "$COMMAND_GATE" \
   || fail_test 'command gate omits its exact request-count contract'
 grep -Fq '((REQUEST_COUNT == EXPECTED_REQUEST_COUNT)) || fail request_count_invalid' "$COMMAND_GATE" \
   || fail_test 'command gate omits its runtime exact-count assertion'
@@ -245,12 +247,29 @@ grep -Fq 'working_directory_path_replacement_used' "$COMMAND_GATE" \
   || fail_test 'command gate omits cwd replacement-content assertion'
 grep -Fq 'wrongExecutableNameFailsClosed: true' "$COMMAND_GATE" \
   || fail_test 'command report omits precise wrong-name fail-closed evidence'
+grep -Fq 'wrongExecutableNameRejectedBeforeServing: true' "$COMMAND_GATE" \
+  || fail_test 'command report omits pre-service wrong-name rejection evidence'
 grep -Fq 'workingDirectoryDescriptorPinned: true' "$COMMAND_GATE" \
   || fail_test 'command report omits descriptor-pinned cwd evidence'
-grep -Fq "validating wrong executable name fails closed" "$COMMAND_GATE" \
-  || fail_test 'command gate omits wrong-name fail-closed posture'
-grep -Fq 'wrong_name_direct_contract_invalid' "$COMMAND_GATE" \
-  || fail_test 'command gate omits wrong-name direct-call denial'
+grep -Fq "validating wrong executable name is rejected before serving" "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name pre-service rejection posture'
+grep -Fq 'the command execution client could not be initialized' "$COMMAND_GATE" \
+  || fail_test 'command gate omits the typed command-client construction error'
+grep -Fq 'wrong_name_construction_error_leaked_token' "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name token-redaction evidence'
+grep -Fq 'wrong_name_construction_error_leaked_path' "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name path-redaction evidence'
+grep -Fq 'wrong_name_service_announced' "$COMMAND_GATE" \
+  || fail_test 'command gate omits pre-service log evidence'
+grep -Fq 'wrong_name_service_reachable' "$COMMAND_GATE" \
+  || fail_test 'command gate omits pre-service reachability evidence'
+grep -Fq 'wrong_name_reachable=false' "$COMMAND_GATE" \
+  || fail_test 'command gate omits the bounded live reachability probe'
+grep -Fq 'wrong_name_reachable=true' "$COMMAND_GATE" \
+  || fail_test 'command gate cannot record a live service failure'
+if grep -Fq '"id":"wrong-name-' "$COMMAND_GATE"; then
+  fail_test 'command gate still treats invalid command-client initialization as a live MCP posture'
+fi
 
 jq -e '
   .properties.releaseQualificationEligible.const == false
@@ -399,10 +418,11 @@ for contract in \
   '.environment.image == "termux/termux-docker:aarch64"' \
   '.environment.imageDigest == $digest' \
   '.environment.androidLinker == true' \
-  '.validation.requests == 34' \
+  '.validation.requests == 29' \
   '.validation.exactArtifact == true' \
   '.validation.compileGate == true' \
   '.validation.wrongExecutableNameFailsClosed == true' \
+  '.validation.wrongExecutableNameRejectedBeforeServing == true' \
   '.validation.runningInodePinned == true' \
   '.validation.workingDirectoryDescriptorPinned == true'; do
   grep -Fq "$contract" "$ANDROID_WORKFLOW" || fail_test "command evidence workflow omits: $contract"

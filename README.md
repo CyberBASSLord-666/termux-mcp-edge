@@ -17,7 +17,7 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in.
 - **Filesystem surface:** deterministic bounded directory listing, content-free literal basename discovery, single-object metadata, streaming SHA-256 hashing, canonical base64 whole-file and range reads, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, and file writes. Mutations are descriptor-relative, crash-durable, dry-run by default, independently default-disabled, and each requires its own 60-second request-scoped single-use grant. A copy grant binds the authenticated principal, active session, both anchored roots and normalized paths, exact single-link source identity/size/high-resolution ctime, SHA-256 of the exact bytes, absent destination, and no-replace posture. A write grant additionally binds exact UTF-8 content, create-or-replace disposition, and—when replacing—the exact existing file identity. Live copy and writes cap content at 1 MiB and publish mode `0600`; copy and write-create use atomic no-replace, while write-replace uses one irreversible exchange and retains the displaced prior inode/content in a private bounded per-parent recovery quarantine. Copy staging is hidden in that mode-`0700` quarantine and successful results return neither endpoint path nor content. Path discovery examines at most 8,192 entries through no-follow directory descriptors and returns at most 512 literal basename matches under a 262,144-byte response ceiling. Whole-file binary read accepts one no-follow regular file up to 1 MiB. Binary range read accepts a 256 KiB slice from one no-follow regular file up to 64 MiB. Both return canonical padded RFC 4648 base64 without path or host metadata. Hashing accepts one no-follow regular file up to 16 MiB and returns only its lowercase SHA-256 digest and byte count. Metadata, hashing, path discovery, and text search remain content-private under fixed response and traversal ceilings.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
-- **Transport ordering:** authentication precedes MCP resource limits, exact Host/Origin validation, body parsing, and dispatch.
+- **Transport ordering:** the single public `McpRouterBuilder` enforces authentication before MCP resource limits, body extraction, exact Host/Origin validation, lifecycle work, discovery, grants, and dispatch.
 - **Mobile defaults:** four concurrent authenticated MCP requests, a 30-second request timeout, and a 2 MiB request body.
 - **Session bounds:** 64 in-memory UUID sessions with a 30-minute idle expiry; client initialization metadata is validated but not retained. Opt-in SSE state is owned by the session and bounded to 8 streams, 2 events per stream, 128 KiB per event, 256 KiB retained per session, and 64-byte cursors.
 - **Default filesystem root:** `/data/data/com.termux/files/home/mcp-files`.
@@ -42,6 +42,14 @@ Authorization: Bearer <configured-token>
 ```
 
 Missing, malformed, oversized, or incorrect credentials receive HTTP 401 before MCP resource consumption or discovery. `/health` and `/ready` remain unauthenticated coarse operational probes.
+
+Downstream Rust integrations must use the same secure construction path as the
+package binary. Bind the TCP listener first, pass that exact listener plus
+validated authentication, request-limit, transport, and safe-root policies to
+`McpRouterBuilder::try_new`, and serve the resulting router with socket
+`ConnectInfo`. Raw MCP state and legacy router constructors are not public API.
+See [`docs/EMBEDDING.md`](docs/EMBEDDING.md) for the complete compilable flow,
+typed startup errors, optional-capability rules, and exact middleware order.
 
 ## Directory mutation authorization
 
@@ -190,7 +198,7 @@ cargo build --release --features command-execution
 export MCP__COMMAND__ENABLED=true
 ```
 
-The feature includes `mcp-runtime`. A default build rejects the runtime flag, while a command build with the flag unset hides `run_command_profile` and denies direct calls without spawning. Only the package binary's crate-private transport builders may honor the runtime command flag; all twelve public library routers, including copy-file and all-filesystem variants, hard-code command execution disabled. Ordinary dependency and selected-workspace compile probes enforce this structural boundary. Initialization opens the exact-name absolute `current_exe` candidate without following its final component, independently opens `/proc/self/exe`, and requires an executable regular candidate plus a regular loaded image with identical device/inode identity. Every profile then launches only `/proc/self/exe`. The first canonical safe root is held by a no-follow directory descriptor; root aliases are rejected by device/inode, and the child uses `/proc/self/fd/<fd>` while the descriptor remains alive through execution. Enabled MCP callers may choose only `server_version`, `server_help`, or `execution_boundary`. Fixed argv, empty environment, null stdin, immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr, a two-permit non-queueing concurrency limit, process-group cleanup, zero-exit enforcement, and UTF-8-only bounded output remain mandatory. Crate-private profile and execution types prevent forged raw execution. Callers cannot supply a command, program, argv, path, environment, stdin, timeout, or limit.
+The feature includes `mcp-runtime`. A default build rejects the runtime flag, while a command build with the flag unset hides `run_command_profile` and denies direct calls without spawning. Only the package binary can call the crate-private `McpRouterBuilder` command-enablement method; the single public builder defaults the lane off and exposes no method that can turn it on. Legacy public router constructors and their option/authority bundles are absent. Ordinary dependency and selected-workspace compile probes enforce this structural boundary. Initialization opens the exact-name absolute `current_exe` candidate without following its final component, independently opens `/proc/self/exe`, and requires an executable regular candidate plus a regular loaded image with identical device/inode identity. Every profile then launches only `/proc/self/exe`. The first canonical safe root is held by a no-follow directory descriptor; root aliases are rejected by device/inode, and the child uses `/proc/self/fd/<fd>` while the descriptor remains alive through execution. Enabled MCP callers may choose only `server_version`, `server_help`, or `execution_boundary`. Fixed argv, empty environment, null stdin, immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr, a two-permit non-queueing concurrency limit, process-group cleanup, zero-exit enforcement, and UTF-8-only bounded output remain mandatory. Crate-private profile and execution types prevent forged raw execution. Callers cannot supply a command, program, argv, path, environment, stdin, timeout, or limit.
 
 See [`docs/command-execution-gate.md`](docs/command-execution-gate.md) for the complete request, response, failure, audit, and native validation contract.
 
@@ -200,7 +208,9 @@ Run the exact CI gates:
 
 ```bash
 cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --features mcp-runtime -- -D warnings
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --features mcp-runtime
 cargo test --workspace --all-targets --all-features
 ```
 

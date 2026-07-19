@@ -1,5 +1,7 @@
 #![cfg(feature = "mcp-runtime")]
 
+use std::net::SocketAddr;
+
 use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
@@ -10,8 +12,8 @@ use serde_json::{json, Value};
 use termux_mcp_server::{
     auth::McpAuthPolicy,
     mcp_transport::{
-        self, McpRouterProtection, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION,
-        MCP_PROTOCOL_VERSION_HEADER, MCP_SESSION_ID_HEADER,
+        McpRouterBuilder, MCP_POST_ACCEPT, MCP_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION_HEADER,
+        MCP_SESSION_ID_HEADER,
     },
     request_limits::McpRequestLimits,
     tools::FileSystemTools,
@@ -24,21 +26,25 @@ fn protected_limited_router(max_body_bytes: usize) -> Router {
     let file_tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
         .expect("test safe root must validate");
     let limits = McpRequestLimits::from_seconds(2, 5, max_body_bytes).unwrap();
-    let protection = McpRouterProtection::new(
-        "127.0.0.1",
+    let listener = bound_loopback_listener();
+
+    McpRouterBuilder::try_new(
+        &listener,
         McpAuthPolicy::static_bearer("expected-token").unwrap(),
         limits,
-    )
-    .unwrap();
-
-    mcp_transport::protected_router(
-        protection,
         TransportSecurityPolicy::localhost(8000, false)
             .expect("test localhost policy must be valid"),
-        file_tools,
-        false,
-        false,
+        file_tools.safe_roots().to_vec(),
     )
+    .unwrap()
+    .build()
+    .unwrap()
+}
+
+fn bound_loopback_listener() -> tokio::net::TcpListener {
+    let listener = std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    tokio::net::TcpListener::from_std(listener).expect("test listener requires a Tokio runtime")
 }
 
 fn request(body: impl Into<Body>, authorization: Option<&str>) -> Request<Body> {

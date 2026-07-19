@@ -10,7 +10,7 @@ This runbook governs changes to the implemented `run_command_profile` registry. 
 | `server_help` | Server-owned running image | `--help` | None |
 | `execution_boundary` | Server-owned running image | `--self-check-command-boundary` | None |
 
-These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Command enablement is structurally confined to the binary target: `src/main.rs` compiles the module graph in the binary crate and calls two crate-private command-capable router builders, while all twelve public library routers—including copy-file and all-filesystem variants—hard-code the lane disabled. No mintable command-authority token exists.
+These profiles have no parameters, placeholders, request-derived paths, environment input, stdin input, or configurable limits. Their fields, resolved decision handle, lookup function, execution client, and raw request/result types are crate-private. Command enablement is structurally confined to the binary target: `src/main.rs` compiles the module graph in the binary crate and alone can call the crate-private command switch on `McpRouterBuilder`, while the single public builder defaults the lane disabled and exposes no enabling method. No mintable command-authority token exists.
 
 ## Review record
 
@@ -55,7 +55,7 @@ Such work belongs in a separate threat-modeled capability gate. It must not be d
 
 Profile identifiers must be short stable ASCII-style names no longer than 64 bytes. They must not contain path syntax, whitespace, NUL, shell tokens, or command text. The public schema remains a one-property closed object whose enum is derived from the canonical registry.
 
-Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must first build a valid safe public consumer and then prove that ordinary dependencies and selected workspace members cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, recover removed authority symbols, call binary-private builders, or use former public copy/all-filesystem command-flag signatures. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
+Tests must prove that missing arguments, unknown identifiers, oversized identifiers, shell-shaped values, and each attempted override field fail before spawn. Compile/API coverage must first build a valid consumer of `McpRouterBuilder` and then prove that ordinary dependencies and selected workspace members cannot import or construct `CommandProfile`, inspect the resolved handle, reach the raw execution client, recover removed authority symbols, call the binary-only builder switch, or restore legacy router constructors and option/authority bundle types. Runtime-disabled evaluation must not disclose whether a supplied identifier is known.
 
 ## Executable and argv review
 
@@ -120,8 +120,8 @@ The exact PR head must also pass:
 - six Android artifact builds;
 - native ARM64 official-Termux execution of `termux_command_emulated_gate.sh`;
 - evidence validation against `command-emulated-evidence-schema-v2.json`;
-- ordinary-dependency and selected-workspace API compile failures for removed authority symbols, private builders, raw types, and former public copy/all-filesystem command-flag signatures;
+- ordinary-dependency and selected-workspace API compile failures for removed authority symbols, the private command switch, raw types, legacy constructors, and former public option/authority bundle types;
 - runtime pre-spawn rejection for wrong name, wrong inode, symlink/non-regular/non-executable candidates, forged/raw input shapes, root/cwd aliases, and every hard-limit maximum-plus-one case;
-- exact 34-request native v2 evidence whose combined phase proves `/proc/self/exe` continues to execute the already-running image and the retained safe-root descriptor survives pathname rename/replacement.
+- strict native v2 evidence with exactly 29 MCP requests plus a separate wrong-name construction-failure phase; the combined phase proves `/proc/self/exe` continues to execute the already-running image and the retained safe-root descriptor survives pathname rename/replacement, while the separate phase proves typed rejection before request serving without sensitive diagnostics.
 
 Do not substitute a long idle observation for these deterministic boundary tests. Physical observation, when release governance requires it for changed runtime inputs, is a separate release-qualification decision and does not replace command-policy evidence.

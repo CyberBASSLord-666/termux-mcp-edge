@@ -4,7 +4,9 @@ mod support;
 
 use axum::{body::to_bytes, http::StatusCode};
 use serde_json::{json, Value};
-use support::{empty_test_file_tools, initialize_session, post_json_to_session, test_router};
+use support::{
+    create_fifo, empty_test_file_tools, initialize_session, post_json_to_session, test_router,
+};
 use termux_mcp_server::{
     error::{AppError, INVALID_BINARY_RANGE_PUBLIC_MESSAGE},
     tools::{
@@ -236,7 +238,7 @@ async fn range_read_enforces_exact_range_and_sparse_file_limits() {
 #[cfg(unix)]
 #[tokio::test]
 async fn range_read_rejects_missing_outside_symlinked_and_unsupported_targets() {
-    use std::os::unix::{fs::symlink, net::UnixListener};
+    use std::os::unix::fs::symlink;
 
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
@@ -244,8 +246,8 @@ async fn range_read_rejects_missing_outside_symlinked_and_unsupported_targets() 
     std::fs::write(&outside_file, b"outside-secret").unwrap();
     let link = root.path().join("link.bin");
     symlink(&outside_file, &link).unwrap();
-    let socket = root.path().join("socket");
-    let _listener = UnixListener::bind(&socket).unwrap();
+    let fifo = root.path().join("fifo");
+    create_fifo(&fifo);
     let linked_parent = root.path().join("linked-parent");
     symlink(outside.path(), &linked_parent).unwrap();
     let tools = FileSystemTools::try_new(vec![root.path().to_path_buf()])
@@ -269,7 +271,7 @@ async fn range_read_rejects_missing_outside_symlinked_and_unsupported_targets() 
             Err(AppError::PathTraversal { .. })
         ));
     }
-    for target in [root.path().to_path_buf(), socket] {
+    for target in [root.path().to_path_buf(), fifo] {
         assert!(matches!(
             tools
                 .read_binary_range(target.to_string_lossy().to_string(), 0, 1)

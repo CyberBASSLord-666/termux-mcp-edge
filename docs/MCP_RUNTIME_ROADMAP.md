@@ -155,12 +155,12 @@ Completed prerequisites:
 
 - Command-execution gate design and profile-review runbook.
 - Separate compile-time feature and disabled-by-default runtime flag.
-- Closed `run_command_profile` schema with three fixed already-loaded-image profiles and binary-crate-only enablement; public library routers hard-code disabled.
+- Closed `run_command_profile` schema with three fixed already-loaded-image profiles and binary-crate-only enablement; the single public builder defaults disabled and exposes no enabling method.
 - Exact-name candidate/`/proc/self/exe` device-inode attestation followed by `/proc/self/exe` spawning.
 - No-follow descriptor-pinned safe-root cwd with filesystem-root alias rejection, empty environment, and null stdin.
 - Immutable 5-second/16 KiB stdout/4 KiB stderr maxima, two non-queueing permits, fallible bytes-as-read allocation, process-group cleanup, and authoritative reaping.
 - Stable non-sensitive failures and aggregate allowed/denied audit coverage.
-- Exact-source sixth Android artifact with strict-v2, exact-34-request native ARM64 official-Termux evidence, including executable/cwd pathname replacement and complete provenance checks.
+- Exact-source sixth Android artifact with strict-v2 native ARM64 official-Termux evidence comprising exactly 29 MCP requests plus a separate typed wrong-name construction-failure phase, including executable/cwd pathname replacement, pre-service rejection and redaction evidence, and complete provenance checks.
 - High-impact controls threat model.
 - Inert capability-token policy primitives with no token issuance, persistence, or live authorization surface.
 - Backend-neutral audit event/counter primitives and capability-policy audit contract tests.
