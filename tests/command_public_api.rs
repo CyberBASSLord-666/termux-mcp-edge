@@ -41,7 +41,7 @@ fn dependency_consumers_cannot_forge_command_execution_authority() {
     fs::write(
         probe.path().join("Cargo.toml"),
         format!(
-            "[package]\nname = \"command-api-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = {{ path = {package_path:?}, features = [\"command-execution\"] }}\n\n[workspace]\n"
+            "[package]\nname = \"command-api-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = {{ path = {package_path:?}, features = [\"command-execution\", \"android-volume-control\"] }}\n\n[workspace]\n"
         ),
     )
     .unwrap();
@@ -100,6 +100,17 @@ fn main() {
 "#,
             "binary_server_router_with_filesystem_authorities_and_options",
         ),
+        (
+            "binary-owned all-capabilities command router",
+            r#"
+use termux_mcp_server::mcp_transport::binary_server_router_with_capability_authorities_and_options;
+
+fn main() {
+    let _ = binary_server_router_with_capability_authorities_and_options;
+}
+"#,
+            "binary_server_router_with_capability_authorities_and_options",
+        ),
     ];
 
     for (name, source, expected_symbol) in rejected {
@@ -117,6 +128,77 @@ fn main() {
         assert!(
             stderr.contains(expected_symbol) && stderr.contains("private"),
             "{name} failed for the wrong reason:\n{stderr}"
+        );
+    }
+}
+
+#[test]
+fn public_router_constructors_reject_removed_command_enablement_argument() {
+    let probe = tempfile::tempdir().unwrap();
+    fs::create_dir(probe.path().join("src")).unwrap();
+    let package_path = Path::new(env!("CARGO_MANIFEST_DIR"));
+    fs::write(
+        probe.path().join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"command-router-arity-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = {{ path = {package_path:?}, features = [\"command-execution\", \"android-volume-control\"] }}\n\n[workspace]\n"
+        ),
+    )
+    .unwrap();
+
+    // Each count is the former vulnerable public signature, including the
+    // removed command_execution_enabled argument. A regression that restores
+    // that argument makes its probe compile and fails this test.
+    let rejected = [
+        ("protected_router", 6),
+        ("protected_router_with_options", 7),
+        ("protected_router_with_create_directory_authority", 7),
+        (
+            "protected_router_with_create_directory_authority_and_options",
+            8,
+        ),
+        ("protected_router_with_copy_file_authority", 7),
+        (
+            "protected_router_with_copy_file_authority_and_options",
+            8,
+        ),
+        ("protected_router_with_filesystem_authorities", 8),
+        (
+            "protected_router_with_filesystem_authorities_and_options",
+            9,
+        ),
+        ("protected_router_with_all_filesystem_authorities", 9),
+        (
+            "protected_router_with_all_filesystem_authorities_and_options",
+            10,
+        ),
+        ("protected_router_with_capability_authorities", 8),
+        (
+            "protected_router_with_capability_authorities_and_options",
+            8,
+        ),
+    ];
+
+    for (function, former_argument_count) in rejected {
+        let arguments = vec!["todo!()"; former_argument_count].join(", ");
+        write_probe_source(
+            probe.path(),
+            &format!(
+                "use termux_mcp_server::mcp_transport::{function};\n\nfn main() {{\n    let _ = {function}({arguments});\n}}\n"
+            ),
+        );
+        let output = run_cargo(
+            probe.path(),
+            &probe.path().join("target"),
+            &["check", "--quiet", "--offline", "--jobs", "1"],
+        );
+        assert!(
+            !output.status.success(),
+            "{function} unexpectedly accepted the removed command-enable argument"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(function) && stderr.contains("arguments"),
+            "{function} failed for the wrong reason:\n{stderr}"
         );
     }
 }
@@ -143,7 +225,7 @@ fn selected_workspace_consumer_cannot_reach_binary_command_router() {
     .unwrap();
     fs::write(
         consumer.join("Cargo.toml"),
-        "[package]\nname = \"command-workspace-consumer\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = { path = \"../server\", features = [\"command-execution\"] }\n",
+        "[package]\nname = \"command-workspace-consumer\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ntermux-mcp-server = { path = \"../server\", features = [\"command-execution\", \"android-volume-control\"] }\n",
     )
     .unwrap();
     write_probe_source(
@@ -168,7 +250,7 @@ fn main() {
             "1",
             "--workspace",
             "--features",
-            "termux-mcp-server/command-execution",
+            "termux-mcp-server/command-execution,termux-mcp-server/android-volume-control",
         ],
     );
     assert!(
@@ -180,10 +262,14 @@ fn main() {
     write_probe_source(
         &consumer,
         r#"
-use termux_mcp_server::mcp_transport::binary_server_router_with_filesystem_authorities_and_options;
+use termux_mcp_server::mcp_transport::{
+    binary_server_router_with_capability_authorities_and_options,
+    binary_server_router_with_filesystem_authorities_and_options,
+};
 
 fn main() {
     let _ = binary_server_router_with_filesystem_authorities_and_options;
+    let _ = binary_server_router_with_capability_authorities_and_options;
 }
 "#,
     );
@@ -199,7 +285,7 @@ fn main() {
             "1",
             "--workspace",
             "--features",
-            "termux-mcp-server/command-execution",
+            "termux-mcp-server/command-execution,termux-mcp-server/android-volume-control",
         ],
     );
     assert!(
@@ -210,6 +296,7 @@ fn main() {
     assert!(
         stderr.contains("consumer/src/main.rs")
             && stderr.contains("binary_server_router_with_filesystem_authorities_and_options")
+            && stderr.contains("binary_server_router_with_capability_authorities_and_options")
             && stderr.contains("private"),
         "selected-workspace probe failed for the wrong reason:\n{stderr}"
     );
