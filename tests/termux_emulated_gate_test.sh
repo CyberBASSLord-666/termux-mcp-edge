@@ -191,8 +191,8 @@ jq -e '
 ' "$ROOT/docs/android-volume-control-emulated-evidence-schema-v1.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 1
-  and .properties.gateVersion.const == "1"
+  .properties.schemaVersion.const == 2
+  and .properties.gateVersion.const == "2"
   and .properties.releaseQualificationEligible.const == false
   and .properties.candidate."$ref" == "#/$defs/candidate"
   and ."$defs".candidate.required == ["commit","version","ciRunId","securityRunId","androidRunId","artifact","defaultArtifact"]
@@ -200,6 +200,8 @@ jq -e '
   and ."$defs".validation.properties.compileGate.const == true
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.fixedCurrentExecutable.const == true
+  and ."$defs".validation.properties.wrongExecutableNameRejected.const == true
+  and ."$defs".validation.properties.runningInodePinned.const == true
   and ."$defs".validation.properties.fixedArgvProfiles.const == true
   and ."$defs".validation.properties.closedInputSchema.const == true
   and ."$defs".validation.properties.overrideFieldsRejected.const == true
@@ -210,7 +212,16 @@ jq -e '
   and ."$defs".validation.properties.auditCounters.const == true
   and ."$defs".validation.properties.arbitraryCommandExecutionDisabled.const == true
   and ."$defs".validation.properties.longObservationRequired.const == false
-' "$ROOT/docs/command-emulated-evidence-schema-v1.json" >/dev/null
+' "$ROOT/docs/command-emulated-evidence-schema-v2.json" >/dev/null
+grep -Fq "validating loaded executable inode replacement isolation" "$COMMAND_GATE" \
+  || fail_test 'command gate omits loaded-inode replacement isolation'
+grep -Fq 'executable_path_replacement_ran' "$COMMAND_GATE" \
+  || fail_test 'command gate omits replacement marker assertion'
+grep -Fq "validating wrong executable name fails closed" "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name fail-closed posture'
+grep -Fq 'wrong_name_direct_contract_invalid' "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name direct-call denial'
+
 
 jq -e '
   .properties.releaseQualificationEligible.const == false
