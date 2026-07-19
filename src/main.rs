@@ -69,6 +69,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::auth::McpConnectionInfo;
 #[cfg(feature = "mcp-runtime")]
 use crate::health::McpRequestLimitReadiness;
 #[cfg(feature = "android-volume-control")]
@@ -76,7 +77,6 @@ use crate::{
     android_volume_control::AndroidVolumeStreamName,
     android_volume_grant::{AndroidVolumeGrantAuthority, AndroidVolumeGrantTarget},
 };
-use crate::auth::McpConnectionInfo;
 #[cfg(feature = "mcp-runtime")]
 use crate::{
     auth::McpAuthPolicy,
