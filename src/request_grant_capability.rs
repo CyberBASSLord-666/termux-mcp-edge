@@ -4,6 +4,15 @@
 //! reserved request-grant family in this one registry so independently
 //! developed grant modules cannot silently reuse a wire identifier.
 
+/// Canonical header used by every live request-grant family.
+pub(crate) const REQUEST_GRANT_HEADER: &str = "mcp-capability-grant";
+/// Maximum ASCII bytes admitted for any request-grant token.
+///
+/// The longest live format is the create-directory token: a 260-hex-character
+/// payload plus version, separators, the bounded key identifier, and MAC fits
+/// within this fixed service-wide ceiling.
+pub(crate) const MAX_REQUEST_GRANT_HEADER_BYTES: usize = 384;
+
 /// One globally allocated request-grant capability family.
 ///
 /// The discriminants are wire compatibility commitments. `ReservedCopyFile`
@@ -41,6 +50,8 @@ mod tests {
 
     #[test]
     fn capability_registry_preserves_exact_unique_wire_codes() {
+        assert_eq!(REQUEST_GRANT_HEADER, "mcp-capability-grant");
+        assert_eq!(MAX_REQUEST_GRANT_HEADER_BYTES, 384);
         assert_eq!(RequestGrantCapability::CreateDirectory.wire_code(), 1);
         assert_eq!(RequestGrantCapability::WriteFile.wire_code(), 2);
         assert_eq!(RequestGrantCapability::AndroidVolume.wire_code(), 3);
