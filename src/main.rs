@@ -32,7 +32,7 @@ use termux_mcp_server::{
 use termux_mcp_server::{
     auth::McpAuthPolicy,
     create_directory_grant::CreateDirectoryGrantAuthority,
-    mcp_transport::McpRouterProtection,
+    mcp_transport::{McpRouterProtection, ServerCommandAuthority},
     request_limits::McpRequestLimits,
     transport_security::TransportSecurityPolicy,
     write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
@@ -168,9 +168,12 @@ async fn main() -> anyhow::Result<()> {
             .with_sse_enabled(config.transport.sse_enabled);
         let mcp_router_protection =
             McpRouterProtection::new(&config.server.host, mcp_auth_policy, mcp_request_limits)?;
+        let server_command_authority = ServerCommandAuthority::for_primary_package()
+            .ok_or_else(|| anyhow::anyhow!("primary-package command authority unavailable"))?;
         #[cfg(not(feature = "android-volume-control"))]
         let mcp_app =
-            termux_mcp_server::mcp_transport::protected_router_with_filesystem_authorities_and_options(
+            termux_mcp_server::mcp_transport::protected_primary_server_router_with_filesystem_authorities_and_options(
+                server_command_authority,
                 mcp_router_protection,
                 transport_security,
                 file_tools,
@@ -183,7 +186,8 @@ async fn main() -> anyhow::Result<()> {
             );
         #[cfg(feature = "android-volume-control")]
         let mcp_app =
-            termux_mcp_server::mcp_transport::protected_router_with_capability_authorities_and_options(
+            termux_mcp_server::mcp_transport::protected_primary_server_router_with_capability_authorities_and_options(
+                server_command_authority,
                 mcp_router_protection,
                 transport_security,
                 file_tools,
