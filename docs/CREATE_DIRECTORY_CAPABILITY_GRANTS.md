@@ -104,11 +104,11 @@ For mutation, the runtime performs this order:
 4. validate the closed tool schema and preflight the complete 16 KiB response;
 5. acquire the one shared non-queueing filesystem-mutation worker permit or return private HTTP 503 / JSON-RPC `-32007` without consuming the grant;
 6. inside that permit-owned blocking worker, resolve safe-root confinement, open and hold the exact parent descriptor, prove the final target is absent, and compute the target binding;
-7. atomically resolve request cancellation against worker commit ownership. A cancellation winner stops here without consuming the JTI or changing the filesystem;
-8. if the worker owns commit, verify and atomically consume the JTI under the replay lock;
-9. immediately attempt the first filesystem mutation using the held descriptor and complete independently of later request cancellation.
+7. acquire the process-global filesystem-publication lock shared by every embedded router and live create/write transaction, then revalidate absence through the held parent descriptor;
+8. only after successful revalidation, atomically resolve request cancellation against worker commit ownership. A cancellation winner stops here without consuming the JTI or changing the filesystem;
+9. if the worker owns commit, verify and atomically consume the JTI under the replay lock, publish with `NOREPLACE`, verify and sync the exact directory, then release the publication lock.
 
-A target mismatch, malformed grant, wrong request context, worker-capacity denial, dry run, or cancellation that wins before commit does not consume a valid grant. Once step 8 succeeds, the grant remains consumed even if directory staging, verification, sync, publication, response serialization, timeout, disconnect, or cleanup later fails. Concurrent replay permits at most one mutation attempt.
+A target mismatch, malformed grant, wrong request context, worker-capacity denial, stale prepared target, dry run, or cancellation that wins before commit does not consume a valid grant. Once step 9 consumes the JTI, the grant remains consumed even if directory staging, verification, sync, publication, response serialization, timeout, disconnect, or cleanup later fails. Two distinct prepared grants for one absent target serialize: the winner consumes and publishes; the stale loser fails revalidation before consumption and remains reusable after fresh preparation. Concurrent replay permits at most one mutation attempt.
 
 ## Stable denials
 
