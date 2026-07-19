@@ -69,10 +69,9 @@ use crate::{
     },
     tools::{
         AuthorizedCreateDirectoryError, AuthorizedWriteFileError, FileSystemTools, FindPathFilter,
-        PreparedCreateDirectoryMutation,
-        MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES,
-        MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES,
-        MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
+        PreparedCreateDirectoryMutation, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
+        MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
+        MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
         MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH, MAX_FIND_ENTRIES, MAX_FIND_MATCHES,
         MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES, MAX_HASH_FILE_BYTES,
         MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES,
@@ -3603,8 +3602,7 @@ async fn handle_set_android_volume_call(
         // The prepared operation and its terminal audit guard move into one
         // detached task. Dropping the HTTP waiter cannot abandon or duplicate
         // the verified mutation/recovery outcome.
-        let audit =
-            AndroidVolumeMutationAuditGuard::new(Arc::clone(&state.audit_counters));
+        let audit = AndroidVolumeMutationAuditGuard::new(Arc::clone(&state.audit_counters));
         let worker = tokio::spawn(async move {
             let outcome = prepared.execute().await;
             audit.finish(&outcome);
@@ -3617,10 +3615,9 @@ async fn handle_set_android_volume_call(
                 json!(result),
             ),
             Ok(Err(error)) => volume_control_worker_error_response(id, error),
-            Err(_error) => volume_control_worker_error_response(
-                id,
-                AndroidVolumeControlError::WorkerFailed,
-            ),
+            Err(_error) => {
+                volume_control_worker_error_response(id, AndroidVolumeControlError::WorkerFailed)
+            }
         }
     }
 }
