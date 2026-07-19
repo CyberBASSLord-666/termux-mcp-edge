@@ -9,6 +9,57 @@
 //! - Graceful shutdown under runit supervision
 //! - Single-binary deployment optimized for Android Termux
 
+#![recursion_limit = "256"]
+
+#[cfg(feature = "android-battery-status")]
+pub mod android_battery;
+#[cfg(any(feature = "android-battery-status", feature = "android-volume-status"))]
+mod android_provider;
+pub mod android_status;
+#[cfg(feature = "android-volume-status")]
+pub mod android_volume;
+#[cfg(feature = "android-volume-control")]
+pub mod android_volume_control;
+#[cfg(feature = "android-volume-control")]
+pub mod android_volume_grant;
+pub mod audit;
+pub mod auth;
+#[cfg(any(
+    feature = "android-battery-status",
+    feature = "android-volume-status",
+    feature = "android-volume-control",
+    feature = "command-execution"
+))]
+mod bounded_process;
+pub mod capability_token;
+#[cfg(feature = "command-execution")]
+mod command_execution;
+pub mod command_policy;
+pub mod config;
+#[cfg(feature = "mcp-runtime")]
+pub mod copy_file_grant;
+#[cfg(feature = "mcp-runtime")]
+pub mod create_directory_grant;
+pub mod error;
+#[cfg(feature = "mcp-runtime")]
+mod grant_replay;
+pub mod health;
+pub mod json_rpc;
+#[cfg(feature = "mcp-runtime")]
+mod mcp_session;
+#[cfg(feature = "mcp-runtime")]
+pub mod mcp_transport;
+pub mod platform_info;
+#[cfg(feature = "mcp-runtime")]
+mod request_grant_capability;
+pub mod request_limits;
+pub mod service_status;
+pub mod tools;
+pub mod transport_security;
+#[cfg(feature = "mcp-runtime")]
+pub mod write_file_grant;
+pub mod write_policy;
+
 use std::ffi::OsStr;
 
 #[cfg(feature = "mcp-runtime")]
@@ -18,18 +69,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use axum::{extract::State, routing::get, Json, Router};
 #[cfg(feature = "mcp-runtime")]
-use rustix::fs::{fstat, open, FileType, Mode, OFlags};
-#[cfg(feature = "mcp-runtime")]
-use termux_mcp_server::health::McpRequestLimitReadiness;
+use crate::health::McpRequestLimitReadiness;
 #[cfg(feature = "android-volume-control")]
-use termux_mcp_server::{
+use crate::{
     android_volume_control::AndroidVolumeStreamName,
     android_volume_grant::{AndroidVolumeGrantAuthority, AndroidVolumeGrantTarget},
 };
 #[cfg(feature = "mcp-runtime")]
-use termux_mcp_server::{
+use crate::{
     auth::McpAuthPolicy,
     copy_file_grant::CopyFileGrantAuthority,
     create_directory_grant::CreateDirectoryGrantAuthority,
@@ -39,11 +87,14 @@ use termux_mcp_server::{
     write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
     write_policy::DEFAULT_MAX_WRITE_BYTES,
 };
-use termux_mcp_server::{
+use crate::{
     config::{validate_runtime_auth_posture, AppConfig, AuthPosture},
     health::{build_readiness_response, ReadinessResponse},
     tools::FileSystemTools,
 };
+use axum::{extract::State, routing::get, Json, Router};
+#[cfg(feature = "mcp-runtime")]
+use rustix::fs::{fstat, open, FileType, Mode, OFlags};
 use tokio::signal;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -172,13 +223,13 @@ async fn main() -> anyhow::Result<()> {
             config.transport.allowed_origins.clone(),
             config.transport.allow_missing_origin,
         )?;
-        let transport_options = termux_mcp_server::mcp_transport::McpTransportOptions::default()
+        let transport_options = crate::mcp_transport::McpTransportOptions::default()
             .with_sse_enabled(config.transport.sse_enabled);
         let mcp_router_protection =
             McpRouterProtection::new(&config.server.host, mcp_auth_policy, mcp_request_limits)?;
         #[cfg(feature = "android-volume-control")]
         let capability_authorities = {
-            let authorities = termux_mcp_server::mcp_transport::McpCapabilityAuthorities::new(
+            let authorities = crate::mcp_transport::McpCapabilityAuthorities::new(
                 create_directory_authority,
                 write_file_authority,
                 android_volume_control_authority,
@@ -190,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
         };
         #[cfg(not(feature = "android-volume-control"))]
         let mcp_app =
-            termux_mcp_server::mcp_transport::protected_router_with_all_filesystem_authorities_and_options(
+            crate::mcp_transport::binary_server_router_with_filesystem_authorities_and_options(
                 mcp_router_protection,
                 transport_security,
                 file_tools,
@@ -204,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
             );
         #[cfg(feature = "android-volume-control")]
         let mcp_app =
-            termux_mcp_server::mcp_transport::protected_router_with_capability_authorities_and_options(
+            crate::mcp_transport::binary_server_router_with_capability_authorities_and_options(
                 mcp_router_protection,
                 transport_security,
                 file_tools,
