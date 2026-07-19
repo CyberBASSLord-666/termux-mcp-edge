@@ -3,9 +3,10 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-GATE_VERSION=1
+GATE_VERSION=2
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
 DEFAULT_PORT=18769
+EXPECTED_REQUEST_COUNT=34
 
 ARTIFACT_DIR=''
 DEFAULT_ARTIFACT_DIR=''
@@ -46,7 +47,9 @@ Usage: termux_command_emulated_gate.sh \
 Run an exact command-execution artifact natively in the pinned official ARM64
 Termux environment. This validates the compile/runtime truth table, fixed
 profile registry, closed schema, cleared environment, null stdin, safe-rooted
-working directory, bounded structured output, stable errors, and audit counters.
+descriptor-pinned working directory, bounded structured output, wrong-name
+fail-closed behavior, loaded-inode replacement isolation, stable errors, and
+audit counters.
 It does not run a long observation window or enable arbitrary commands.
 EOF
 }
@@ -100,7 +103,7 @@ IMAGE_DIGEST="${TERMUX_MCP_TERMUX_IMAGE_DIGEST:-}"
 [[ "${HOME:-}" == /data/data/com.termux/files/home ]] || fail termux_home_invalid
 [[ -x /system/bin/linker64 ]] || fail android_linker_missing
 
-for command in awk cat chmod curl date dd dirname file find grep install jq kill mkdir mktemp realpath rm seq sha256sum sleep stat timeout uname wc; do
+for command in awk cat chmod curl date dd dirname file find grep install jq kill mkdir mktemp mv realpath rm seq sha256sum sleep stat timeout uname wc; do
   command -v "$command" >/dev/null 2>&1 || fail "required_command_missing_$command"
 done
 
@@ -218,22 +221,29 @@ curl_local() {
 
 start_server() {
   local enabled="$1"
-  MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
-  MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
-  MCP__COMMAND__ENABLED="$enabled" \
-  MCP__SERVER__HOST=127.0.0.1 \
-  MCP__SERVER__PORT="$PORT" \
-  MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT" \
-  MCP__TRANSPORT__ALLOWED_ORIGINS="http://localhost:$PORT,http://127.0.0.1:$PORT" \
-  MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false \
-  MCP__TRANSPORT__SSE_ENABLED=false \
-  MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4 \
-  MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
-  MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
-  MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
-  MCP__FILE__WRITE_MUTATION_ENABLED=false \
-  RUST_LOG=termux_mcp_server=info \
-    "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
+  local candidate="${2:-$ARTIFACT}"
+  local launch_directory="${3:-}"
+  (
+    if [[ -n "$launch_directory" ]]; then
+      cd "$launch_directory"
+    fi
+    MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
+    MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
+    MCP__COMMAND__ENABLED="$enabled" \
+    MCP__SERVER__HOST=127.0.0.1 \
+    MCP__SERVER__PORT="$PORT" \
+    MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT" \
+    MCP__TRANSPORT__ALLOWED_ORIGINS="http://localhost:$PORT,http://127.0.0.1:$PORT" \
+    MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false \
+    MCP__TRANSPORT__SSE_ENABLED=false \
+    MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4 \
+    MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
+    MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
+    MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+    MCP__FILE__WRITE_MUTATION_ENABLED=false \
+    RUST_LOG=termux_mcp_server=info \
+      exec "$candidate"
+  ) >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
   local attempt
   for attempt in $(seq 1 100); do
@@ -432,6 +442,66 @@ jq -e '
 ' "$BODY_FILE" >/dev/null || fail audit_counter_contract_invalid
 stop_server
 
+log 'validating loaded executable and working-directory inode replacement isolation'
+PINNED_DIR="$WORK_ROOT/pinned-server"
+PINNED_ARTIFACT="$PINNED_DIR/termux-mcp-server"
+PINNED_MARKER="$WORK_ROOT/replacement-marker"
+PINNED_SAFE_ROOT="$WORK_ROOT/pinned-safe-root"
+PINNED_SAFE_ROOT_MARKER="$SAFE_ROOT/original-directory-marker"
+SAFE_ROOT_REPLACEMENT_CONTENT='replacement-path-must-not-be-used'
+mkdir -m 700 "$PINNED_DIR"
+printf '%s' 'original-directory' >"$PINNED_SAFE_ROOT_MARKER"
+install -m 700 "$ARTIFACT" "$PINNED_ARTIFACT"
+start_server true "$PINNED_ARTIFACT" /
+initialize_session
+mv "$SAFE_ROOT" "$PINNED_SAFE_ROOT"
+printf '%s' "$SAFE_ROOT_REPLACEMENT_CONTENT" >"$SAFE_ROOT"
+rm -f -- "$PINNED_ARTIFACT"
+{
+  printf '#!/data/data/com.termux/files/usr/bin/bash\n'
+  printf ': > %q\n' "$PINNED_MARKER"
+  printf "printf 'replacement-executed\\n'\n"
+} >"$PINNED_ARTIFACT"
+chmod 700 "$PINNED_ARTIFACT"
+post_mcp '{"jsonrpc":"2.0","id":"pinned-boundary","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"execution_boundary"}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail pinned_boundary_http_invalid
+jq -e '
+  .result.isError == false
+  and .result.structuredContent.profile == "execution_boundary"
+  and .result.structuredContent.stdout == "termux-mcp-command-boundary ok\n"
+  and .result.structuredContent.stderr == ""
+' "$BODY_FILE" >/dev/null || fail pinned_boundary_contract_invalid
+[[ ! -e "$PINNED_MARKER" && ! -L "$PINNED_MARKER" ]] || fail executable_path_replacement_ran
+[[ "$(cat "$PINNED_SAFE_ROOT/original-directory-marker")" == original-directory ]] || fail working_directory_original_inode_lost
+[[ "$(cat "$SAFE_ROOT")" == "$SAFE_ROOT_REPLACEMENT_CONTENT" ]] || fail working_directory_path_replacement_used
+stop_server
+rm -f -- "$SAFE_ROOT"
+mv "$PINNED_SAFE_ROOT" "$SAFE_ROOT"
+
+log 'validating wrong executable name fails closed'
+RENAMED_ARTIFACT="$WORK_ROOT/renamed-command-server"
+install -m 700 "$ARTIFACT" "$RENAMED_ARTIFACT"
+start_server true "$RENAMED_ARTIFACT"
+initialize_session
+post_mcp '{"jsonrpc":"2.0","id":"wrong-name-tools","method":"tools/list"}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_tools_http_invalid
+jq -e '[.result.tools[].name] | index("run_command_profile") == null' "$BODY_FILE" >/dev/null || fail wrong_name_tool_discovered
+post_mcp '{"jsonrpc":"2.0","id":"wrong-name-runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_runtime_http_invalid
+jq -e '
+  .result.structuredContent.commandExecutionCompiled == true
+  and .result.structuredContent.commandExecution == false
+  and .result.structuredContent.commandExecutionMode == "disabled"
+  and .result.structuredContent.arbitraryCommandExecution == false
+' "$BODY_FILE" >/dev/null || fail wrong_name_runtime_contract_invalid
+post_mcp '{"jsonrpc":"2.0","id":"wrong-name-direct","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail wrong_name_direct_http_invalid
+jq -e '
+  .result.isError == true
+  and .result.structuredContent.reasonCode == "command_runtime_disabled"
+' "$BODY_FILE" >/dev/null || fail wrong_name_direct_contract_invalid
+stop_server
+
 log 'validating disabled fixed-profile command posture'
 start_server false
 initialize_session
@@ -477,6 +547,8 @@ jq -e '
 ' "$BODY_FILE" >/dev/null || fail disabled_call_contract_invalid
 stop_server
 
+((REQUEST_COUNT == EXPECTED_REQUEST_COUNT)) || fail request_count_invalid
+
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 REPORT_NEXT="$WORK_ROOT/command-emulated-evidence.json"
 jq -n \
@@ -497,7 +569,7 @@ jq -n \
   --arg image_digest "$IMAGE_DIGEST" \
   --argjson requests "$REQUEST_COUNT" '
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     gateVersion: $gate_version,
     status: "pass",
     failureCode: null,
@@ -528,6 +600,9 @@ jq -n \
       runtimeDefaultDisabled: true,
       disabledDiscovery: true,
       fixedCurrentExecutable: true,
+      wrongExecutableNameFailsClosed: true,
+      runningInodePinned: true,
+      workingDirectoryDescriptorPinned: true,
       fixedArgvProfiles: true,
       closedInputSchema: true,
       overrideFieldsRejected: true,
@@ -550,12 +625,13 @@ jq -n \
   }' >"$REPORT_NEXT" || fail report_generation_failed
 chmod 600 "$REPORT_NEXT" || fail report_mode_failed
 
-jq -e '
-  .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+jq -e --argjson expected_requests "$EXPECTED_REQUEST_COUNT" '
+  .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
   and .failureCode == null and .releaseQualificationEligible == false
   and .environment.executionMode == "official-termux-docker-native-arm64"
   and .environment.androidLinker == true
   and .validation.status == "pass"
+  and .validation.requests == $expected_requests
   and .validation.longObservationRequired == false
   and ([
     .validation

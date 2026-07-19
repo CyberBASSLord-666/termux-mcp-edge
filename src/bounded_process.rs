@@ -19,6 +19,9 @@ use tokio::{
 const MIN_PROCESS_CLEANUP_RESERVE: Duration = Duration::from_millis(1);
 const MAX_PROCESS_CLEANUP_RESERVE: Duration = Duration::from_millis(250);
 const MIN_PROVIDER_TIMEOUT: Duration = Duration::from_millis(4);
+pub(crate) const MAX_BOUNDED_PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const MAX_BOUNDED_PROCESS_STDOUT_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_BOUNDED_PROCESS_STDERR_BYTES: usize = 4 * 1024;
 
 #[cfg(test)]
 pub(crate) static BOUNDED_PROCESS_TEST_LOCK: tokio::sync::Mutex<()> =
@@ -41,6 +44,9 @@ pub(crate) enum BoundedProcessError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundedProcessConfigError {
     TimeoutTooShort,
+    TimeoutTooLong,
+    StdoutLimitTooLarge,
+    StderrLimitTooLarge,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +79,15 @@ impl BoundedProcess {
     ) -> Result<Self, BoundedProcessConfigError> {
         if timeout < MIN_PROVIDER_TIMEOUT {
             return Err(BoundedProcessConfigError::TimeoutTooShort);
+        }
+        if timeout > MAX_BOUNDED_PROCESS_TIMEOUT {
+            return Err(BoundedProcessConfigError::TimeoutTooLong);
+        }
+        if max_stdout_bytes > MAX_BOUNDED_PROCESS_STDOUT_BYTES {
+            return Err(BoundedProcessConfigError::StdoutLimitTooLarge);
+        }
+        if max_stderr_bytes > MAX_BOUNDED_PROCESS_STDERR_BYTES {
+            return Err(BoundedProcessConfigError::StderrLimitTooLarge);
         }
 
         Ok(Self {
@@ -412,7 +427,10 @@ async fn read_bounded(
     mut reader: impl AsyncRead + Unpin + Send + 'static,
     limit: usize,
 ) -> Result<BoundedRead, BoundedProcessError> {
-    let mut bytes = Vec::with_capacity(limit);
+    // Capacity follows bytes actually read, never the selected ceiling. This
+    // avoids even attempting an excessive up-front allocation if an internal
+    // caller supplies a forged limit.
+    let mut bytes = Vec::new();
     let mut chunk = [0_u8; 4 * 1024];
 
     loop {
@@ -428,6 +446,9 @@ async fn read_bounded(
         if read > remaining {
             return Ok(BoundedRead::LimitExceeded);
         }
+        bytes
+            .try_reserve_exact(read)
+            .map_err(|_| BoundedProcessError::WaitFailed)?;
         bytes.extend_from_slice(&chunk[..read]);
     }
 }
@@ -451,6 +472,13 @@ mod tests {
             BoundedProcess::new(program, Vec::new(), PathBuf::from("/"), timeout, 1024, 1024)
                 .unwrap(),
         )
+    }
+
+    #[test]
+    fn hard_resource_maxima_match_the_reviewed_command_contract() {
+        assert_eq!(MAX_BOUNDED_PROCESS_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(MAX_BOUNDED_PROCESS_STDOUT_BYTES, 16 * 1024);
+        assert_eq!(MAX_BOUNDED_PROCESS_STDERR_BYTES, 4 * 1024);
     }
 
     #[test]
@@ -484,6 +512,91 @@ mod tests {
             1,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn construction_enforces_hard_resource_maxima_before_spawn() {
+        let program = PathBuf::from("/definitely/not/a/program");
+        let valid = || {
+            (
+                program.clone(),
+                Vec::new(),
+                PathBuf::from("/"),
+                MAX_BOUNDED_PROCESS_TIMEOUT,
+                MAX_BOUNDED_PROCESS_STDOUT_BYTES,
+                MAX_BOUNDED_PROCESS_STDERR_BYTES,
+            )
+        };
+
+        let (program, arguments, working_directory, _, stdout, stderr) = valid();
+        assert_eq!(
+            BoundedProcess::new(
+                program,
+                arguments,
+                working_directory,
+                MAX_BOUNDED_PROCESS_TIMEOUT + Duration::from_millis(1),
+                stdout,
+                stderr,
+            )
+            .unwrap_err(),
+            BoundedProcessConfigError::TimeoutTooLong
+        );
+
+        let (program, arguments, working_directory, timeout, _, stderr) = valid();
+        assert_eq!(
+            BoundedProcess::new(
+                program,
+                arguments,
+                working_directory,
+                timeout,
+                MAX_BOUNDED_PROCESS_STDOUT_BYTES + 1,
+                stderr,
+            )
+            .unwrap_err(),
+            BoundedProcessConfigError::StdoutLimitTooLarge
+        );
+
+        let (program, arguments, working_directory, timeout, stdout, _) = valid();
+        assert_eq!(
+            BoundedProcess::new(
+                program,
+                arguments,
+                working_directory,
+                timeout,
+                stdout,
+                MAX_BOUNDED_PROCESS_STDERR_BYTES + 1,
+            )
+            .unwrap_err(),
+            BoundedProcessConfigError::StderrLimitTooLarge
+        );
+
+        let (program, arguments, working_directory, timeout, stdout, stderr) = valid();
+        assert!(BoundedProcess::new(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            stdout,
+            stderr,
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_never_preallocates_a_selected_capacity() {
+        match read_bounded(tokio::io::empty(), usize::MAX).await.unwrap() {
+            BoundedRead::Complete(bytes) => assert!(bytes.is_empty()),
+            BoundedRead::LimitExceeded => panic!("empty input cannot exceed any limit"),
+        }
+
+        match read_bounded(&b"1234"[..], 4).await.unwrap() {
+            BoundedRead::Complete(bytes) => assert_eq!(bytes, b"1234"),
+            BoundedRead::LimitExceeded => panic!("exact-limit input must succeed"),
+        }
+        assert!(matches!(
+            read_bounded(&b"1234"[..], 3).await.unwrap(),
+            BoundedRead::LimitExceeded
+        ));
     }
 
     async fn wait_for_supervisor_count(expected: usize) {

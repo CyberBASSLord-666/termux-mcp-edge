@@ -27,6 +27,7 @@ pub(crate) enum AndroidProviderError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AndroidProviderConfigError {
     TimeoutTooShort,
+    BoundsTooLarge,
 }
 
 impl From<BoundedProcessError> for AndroidProviderError {
@@ -66,6 +67,11 @@ impl BoundedAndroidProvider {
         .map_err(|error| match error {
             BoundedProcessConfigError::TimeoutTooShort => {
                 AndroidProviderConfigError::TimeoutTooShort
+            }
+            BoundedProcessConfigError::TimeoutTooLong
+            | BoundedProcessConfigError::StdoutLimitTooLarge
+            | BoundedProcessConfigError::StderrLimitTooLarge => {
+                AndroidProviderConfigError::BoundsTooLarge
             }
         })?;
         Ok(Self { process })

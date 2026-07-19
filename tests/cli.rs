@@ -820,3 +820,91 @@ fn non_utf8_argument_fails_without_echoing_raw_input() {
     assert!(stderr.contains("unsupported command-line arguments"));
     assert!(!stderr.contains('�'));
 }
+
+#[test]
+fn command_boundary_self_check_fails_under_ambient_process_context() {
+    let output = binary()
+        .arg("--self-check-command-boundary")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("command execution boundary check failed"));
+    assert!(!stderr.contains("MCP__"));
+}
+
+#[cfg(all(feature = "mcp-runtime", unix))]
+#[test]
+fn write_cli_content_file_validation_is_bounded_no_follow_and_utf8_only() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    use termux_mcp_server::write_policy::DEFAULT_MAX_WRITE_BYTES;
+
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("private-content-validation-target");
+    let exact = root.path().join("private-content-validation-exact");
+    let invalid = root.path().join("private-content-validation-invalid");
+    let oversized = root.path().join("private-content-validation-oversized");
+    let linked = root.path().join("private-content-validation-linked");
+
+    std::fs::write(&exact, vec![b'x'; DEFAULT_MAX_WRITE_BYTES]).unwrap();
+    std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
+    std::fs::write(
+        &oversized,
+        vec![b'x'; DEFAULT_MAX_WRITE_BYTES.saturating_add(1)],
+    )
+    .unwrap();
+    for path in [&exact, &invalid, &oversized] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    symlink(&exact, &linked).unwrap();
+
+    let exact_output = configured_write_issuer(root.path(), &target, &exact, "create")
+        .output()
+        .unwrap();
+    assert!(exact_output.status.success());
+    assert!(exact_output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(exact_output.stdout)
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+
+    let cases = [
+        (
+            std::path::Path::new("relative-private-content"),
+            "must be absolute",
+        ),
+        (&linked, "could not be opened"),
+        (&invalid, "valid UTF-8"),
+        (&oversized, "byte limit"),
+        (root.path(), "regular non-symlink file"),
+    ];
+    for (content_file, expected_reason) in cases {
+        let output = configured_write_issuer(root.path(), &target, content_file, "create")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains(expected_reason),
+            "content-file rejection used the wrong reason: {stderr}"
+        );
+        for private in [
+            "private-content-validation",
+            "relative-private-content",
+            "0123456789abcdef",
+            "0194f9f9",
+        ] {
+            assert!(
+                !stderr.contains(private),
+                "content-file rejection leaked {private}"
+            );
+        }
+    }
+}

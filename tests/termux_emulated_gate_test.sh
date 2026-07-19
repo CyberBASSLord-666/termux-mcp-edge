@@ -191,15 +191,21 @@ jq -e '
 ' "$ROOT/docs/android-volume-control-emulated-evidence-schema-v1.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 1
-  and .properties.gateVersion.const == "1"
+  .properties.schemaVersion.const == 2
+  and .properties.gateVersion.const == "2"
   and .properties.releaseQualificationEligible.const == false
   and .properties.candidate."$ref" == "#/$defs/candidate"
   and ."$defs".candidate.required == ["commit","version","ciRunId","securityRunId","androidRunId","artifact","defaultArtifact"]
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and ."$defs".validation.properties.requests.const == 34
   and ."$defs".validation.properties.compileGate.const == true
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.fixedCurrentExecutable.const == true
+  and ."$defs".validation.properties.wrongExecutableNameFailsClosed.const == true
+  and ."$defs".validation.properties.runningInodePinned.const == true
+  and ."$defs".validation.properties.workingDirectoryDescriptorPinned.const == true
+  and (."$defs".validation.required | index("wrongExecutableNameFailsClosed") != null)
+  and (."$defs".validation.required | index("workingDirectoryDescriptorPinned") != null)
   and ."$defs".validation.properties.fixedArgvProfiles.const == true
   and ."$defs".validation.properties.closedInputSchema.const == true
   and ."$defs".validation.properties.overrideFieldsRejected.const == true
@@ -210,7 +216,31 @@ jq -e '
   and ."$defs".validation.properties.auditCounters.const == true
   and ."$defs".validation.properties.arbitraryCommandExecutionDisabled.const == true
   and ."$defs".validation.properties.longObservationRequired.const == false
-' "$ROOT/docs/command-emulated-evidence-schema-v1.json" >/dev/null
+' "$ROOT/docs/command-emulated-evidence-schema-v2.json" >/dev/null
+grep -Fq 'EXPECTED_REQUEST_COUNT=34' "$COMMAND_GATE" \
+  || fail_test 'command gate omits its exact request-count contract'
+grep -Fq '((REQUEST_COUNT == EXPECTED_REQUEST_COUNT)) || fail request_count_invalid' "$COMMAND_GATE" \
+  || fail_test 'command gate omits its runtime exact-count assertion'
+grep -Fq "validating loaded executable and working-directory inode replacement isolation" "$COMMAND_GATE" \
+  || fail_test 'command gate omits combined executable/cwd inode isolation'
+grep -Fq 'start_server true "$PINNED_ARTIFACT" /' "$COMMAND_GATE" \
+  || fail_test 'combined inode phase does not launch from filesystem root'
+grep -Fq "printf '%s' \"\$SAFE_ROOT_REPLACEMENT_CONTENT\" >\"\$SAFE_ROOT\"" "$COMMAND_GATE" \
+  || fail_test 'combined inode phase does not replace the cwd pathname with a file'
+grep -Fq '"profile":"execution_boundary"' "$COMMAND_GATE" \
+  || fail_test 'combined inode phase does not exercise the cwd boundary self-check'
+grep -Fq 'executable_path_replacement_ran' "$COMMAND_GATE" \
+  || fail_test 'command gate omits executable replacement marker assertion'
+grep -Fq 'working_directory_path_replacement_used' "$COMMAND_GATE" \
+  || fail_test 'command gate omits cwd replacement-content assertion'
+grep -Fq 'wrongExecutableNameFailsClosed: true' "$COMMAND_GATE" \
+  || fail_test 'command report omits precise wrong-name fail-closed evidence'
+grep -Fq 'workingDirectoryDescriptorPinned: true' "$COMMAND_GATE" \
+  || fail_test 'command report omits descriptor-pinned cwd evidence'
+grep -Fq "validating wrong executable name fails closed" "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name fail-closed posture'
+grep -Fq 'wrong_name_direct_contract_invalid' "$COMMAND_GATE" \
+  || fail_test 'command gate omits wrong-name direct-call denial'
 
 jq -e '
   .properties.releaseQualificationEligible.const == false
@@ -338,6 +368,29 @@ grep -Fq 'termux_volume_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'volu
 grep -Fq 'termux_volume_control_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'volume control native emulation gate missing'
 grep -Fq -- '--volume-control-dir /workspace/artifacts/android-volume-control' "$ANDROID_WORKFLOW" || fail_test 'canonical runtime validator is missing the volume control artifact'
 grep -Fq 'termux_command_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'command native emulation gate missing'
+for contract in \
+  '.failureCode == null' \
+  '.candidate.version == $version' \
+  '.candidate.ciRunId == $ci' \
+  '.candidate.securityRunId == $security' \
+  '.candidate.artifact.bytes >= 1' \
+  '.candidate.artifact.bytes <= 67108864' \
+  '.candidate.defaultArtifact.bytes >= 1' \
+  '.candidate.defaultArtifact.bytes <= 67108864' \
+  '.candidate.androidRunId == $android' \
+  '.environment.architecture == "aarch64"' \
+  '.environment.executionMode == "official-termux-docker-native-arm64"' \
+  '.environment.image == "termux/termux-docker:aarch64"' \
+  '.environment.imageDigest == $digest' \
+  '.environment.androidLinker == true' \
+  '.validation.requests == 34' \
+  '.validation.exactArtifact == true' \
+  '.validation.compileGate == true' \
+  '.validation.wrongExecutableNameFailsClosed == true' \
+  '.validation.runningInodePinned == true' \
+  '.validation.workingDirectoryDescriptorPinned == true'; do
+  grep -Fq "$contract" "$ANDROID_WORKFLOW" || fail_test "command evidence workflow omits: $contract"
+done
 grep -Fq 'docs/android-volume-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'volume evidence schema does not trigger CI'
 grep -Fq 'docs/android-volume-control-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'volume control evidence schema does not trigger CI'
 grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'command evidence schema does not trigger CI'

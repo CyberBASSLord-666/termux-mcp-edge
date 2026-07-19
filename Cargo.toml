@@ -55,3 +55,5 @@ opt-level = 1
 [[bin]]
 name = "termux-mcp-server"
 path = "src/main.rs"
+test = false
+bench = false

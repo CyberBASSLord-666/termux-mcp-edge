@@ -29,10 +29,11 @@ cargo build --release
 cargo build --release --features mcp-runtime
 cargo build --release --features android-battery-status
 cargo build --release --features android-volume-status
+cargo build --release --features android-volume-control
 cargo build --release --features command-execution
 ```
 
-CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, and `command-execution` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
+CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
 
 ## Dependency gate
 

@@ -85,7 +85,7 @@ An artifact built with `--features command-execution` may opt into fixed read-on
 MCP__COMMAND__ENABLED=true
 ```
 
-Do not add this setting to a build without the matching feature; startup fails closed. The tool accepts only the reviewed `server_version`, `server_help`, and `execution_boundary` profiles and does not authorize a shell or caller-selected program, argv, path, environment, stdin, timeout, or output limit. See [`command-execution-gate.md`](command-execution-gate.md).
+Do not add this setting to a build without the matching feature; startup fails closed. Command enablement is available only through crate-private builders compiled into the package binary; every public library router hard-codes it disabled. Startup opens the exact-name candidate without following its final component, matches its device/inode to independently opened `/proc/self/exe`, opens the first canonical safe root as a no-follow directory descriptor, and rejects filesystem-root aliases. The reviewed `server_version`, `server_help`, and `execution_boundary` profiles then spawn only `/proc/self/exe` with cwd `/proc/self/fd/<fd>`, empty environment, null stdin, and immutable maxima of 5 seconds, 16 KiB stdout, and 4 KiB stderr. They do not authorize a shell or caller-selected program, argv, path, environment, stdin, timeout, or output limit. See [`command-execution-gate.md`](command-execution-gate.md).
 
 Static-token mode requires a non-empty token without whitespace. A tokenless configuration is valid only for explicit localhost-only development with a loopback server host.
 

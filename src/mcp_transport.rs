@@ -1114,7 +1114,7 @@ struct McpTransportState {
     #[cfg(feature = "android-volume-control")]
     android_volume_control_client: AndroidVolumeControlClient,
     #[cfg(feature = "command-execution")]
-    command_execution_client: CommandExecutionClient,
+    command_execution_client: Option<CommandExecutionClient>,
 }
 
 impl McpTransportState {
@@ -1128,14 +1128,13 @@ impl McpTransportState {
         write_file_authority: Option<WriteFileGrantAuthority>,
     ) -> Self {
         #[cfg(feature = "command-execution")]
-        let command_execution_client = CommandExecutionClient::current_server(
-            file_tools
-                .safe_roots()
-                .first()
-                .cloned()
-                .expect("validated MCP filesystem tools own at least one safe root"),
-        )
-        .expect("current server executable and anchored command safe root must be usable");
+        let command_execution_client = command_execution_enabled
+            .then(|| file_tools.safe_roots().first().cloned())
+            .flatten()
+            .and_then(|safe_root| CommandExecutionClient::current_server(safe_root).ok());
+        #[cfg(feature = "command-execution")]
+        let command_execution_enabled =
+            command_execution_enabled && command_execution_client.is_some();
 
         Self {
             security_policy,
@@ -1194,16 +1193,6 @@ impl McpTransportState {
         android_battery_status_enabled: bool,
         android_battery_client: AndroidBatteryClient,
     ) -> Self {
-        #[cfg(feature = "command-execution")]
-        let command_execution_client = CommandExecutionClient::current_server(
-            file_tools
-                .safe_roots()
-                .first()
-                .cloned()
-                .expect("test filesystem tools own a safe root"),
-        )
-        .expect("test command client construction must succeed");
-
         Self {
             security_policy,
             file_tools,
@@ -1226,7 +1215,7 @@ impl McpTransportState {
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
-            command_execution_client,
+            command_execution_client: None,
         }
     }
 
@@ -1237,16 +1226,6 @@ impl McpTransportState {
         android_volume_status_enabled: bool,
         android_volume_client: AndroidVolumeClient,
     ) -> Self {
-        #[cfg(feature = "command-execution")]
-        let command_execution_client = CommandExecutionClient::current_server(
-            file_tools
-                .safe_roots()
-                .first()
-                .cloned()
-                .expect("test filesystem tools own a safe root"),
-        )
-        .expect("test command client construction must succeed");
-
         Self {
             security_policy,
             file_tools,
@@ -1269,7 +1248,7 @@ impl McpTransportState {
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
-            command_execution_client,
+            command_execution_client: None,
         }
     }
 
@@ -1302,7 +1281,7 @@ impl McpTransportState {
             android_volume_control_authority: None,
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
-            command_execution_client,
+            command_execution_client: Some(command_execution_client),
         }
     }
 
@@ -1498,276 +1477,18 @@ struct SetAndroidVolumeArguments {
     dry_run: Option<bool>,
 }
 
-/// Build a publicly embeddable MCP router with mandatory authentication and
-/// request-resource protections.
-#[rustfmt::skip]
-pub fn protected_router(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-) -> Router {
-    protect_router(
-        router(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected MCP router with explicit additive transport options.
-#[rustfmt::skip]
-pub fn protected_router_with_options(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    options: McpTransportOptions,
-) -> Router {
-    protect_router(
-        router_with_options(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            options,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected MCP router with the request-authorized directory mutation
-/// capability enabled.
-#[rustfmt::skip]
-pub fn protected_router_with_create_directory_authority(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    create_directory_authority: CreateDirectoryGrantAuthority,
-) -> Router {
-    protect_router(
-        router_with_create_directory_authority(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            create_directory_authority,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected directory-authorized MCP router with explicit additive
-/// transport options.
+/// Build the binary target's protected MCP router with filesystem authorities.
+///
+/// The same source file is compiled independently by the library and binary
+/// targets. This constructor is crate-private, so only the binary target's own
+/// crate can select the command lane; downstream library consumers have no
+/// enabling symbol, including when Cargo selects this package in a workspace.
 #[expect(
     clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
+    reason = "the package binary constructor carries explicit protection boundaries"
 )]
 #[rustfmt::skip]
-pub fn protected_router_with_create_directory_authority_and_options(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    create_directory_authority: CreateDirectoryGrantAuthority,
-    options: McpTransportOptions,
-) -> Router {
-    protect_router(
-        router_with_create_directory_authority_and_options(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            create_directory_authority,
-            options,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected MCP router with the request-authorized `copy_file`
-/// mutation capability enabled. Preview calls remain available without a
-/// grant, while every live copy requires an exact single-use grant.
-#[rustfmt::skip]
-pub fn protected_router_with_copy_file_authority(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    copy_file_authority: CopyFileGrantAuthority,
-) -> Router {
-    protect_router(
-        router_with_filesystem_authorities_and_options(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            FilesystemMutationAuthorities::new(None, None)
-                .with_copy_file(Some(copy_file_authority)),
-            McpTransportOptions::default(),
-        ),
-        protection,
-    )
-}
-
-/// Build a protected copy-authorized MCP router with explicit additive
-/// transport options.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
-#[rustfmt::skip]
-pub fn protected_router_with_copy_file_authority_and_options(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    copy_file_authority: CopyFileGrantAuthority,
-    options: McpTransportOptions,
-) -> Router {
-    protect_router(
-        router_with_filesystem_authorities_and_options(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            FilesystemMutationAuthorities::new(None, None)
-                .with_copy_file(Some(copy_file_authority)),
-            options,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected MCP router with independently optional filesystem
-/// mutation authorities.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
-#[rustfmt::skip]
-pub fn protected_router_with_filesystem_authorities(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    write_file_authority: Option<WriteFileGrantAuthority>,
-) -> Router {
-    protect_router(
-        router_with_filesystem_authorities(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            create_directory_authority,
-            write_file_authority,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected filesystem-authorized MCP router with explicit additive
-/// transport options.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
-#[rustfmt::skip]
-pub fn protected_router_with_filesystem_authorities_and_options(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    write_file_authority: Option<WriteFileGrantAuthority>,
-    options: McpTransportOptions,
-) -> Router {
-    protect_router(
-        router_with_filesystem_authorities_and_options(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            FilesystemMutationAuthorities::new(
-                create_directory_authority,
-                write_file_authority,
-            ),
-            options,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected MCP router with all independently optional filesystem
-/// mutation authorities. This additive constructor preserves the established
-/// two-authority API while making the copy gate explicit.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
-#[rustfmt::skip]
-pub fn protected_router_with_all_filesystem_authorities(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    copy_file_authority: Option<CopyFileGrantAuthority>,
-    write_file_authority: Option<WriteFileGrantAuthority>,
-) -> Router {
-    protected_router_with_all_filesystem_authorities_and_options(
-        protection,
-        security_policy,
-        file_tools,
-        android_battery_status_enabled,
-        android_volume_status_enabled,
-        command_execution_enabled,
-        create_directory_authority,
-        copy_file_authority,
-        write_file_authority,
-        McpTransportOptions::default(),
-    )
-}
-
-/// Build a protected MCP router with all independently optional filesystem
-/// mutation authorities and explicit additive transport options.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
-#[rustfmt::skip]
-pub fn protected_router_with_all_filesystem_authorities_and_options(
+pub(crate) fn binary_server_router_with_filesystem_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1797,47 +1518,15 @@ pub fn protected_router_with_all_filesystem_authorities_and_options(
     )
 }
 
-/// Build a protected MCP router with independently optional directory and
-/// Android-volume mutation authorities.
+/// Build the binary target's protected MCP router with every optional mutation
+/// authority.
 #[cfg(feature = "android-volume-control")]
 #[expect(
     clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
+    reason = "the package binary constructor carries explicit protection boundaries"
 )]
 #[rustfmt::skip]
-pub fn protected_router_with_capability_authorities(
-    protection: McpRouterProtection,
-    security_policy: TransportSecurityPolicy,
-    file_tools: FileSystemTools,
-    android_battery_status_enabled: bool,
-    android_volume_status_enabled: bool,
-    command_execution_enabled: bool,
-    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
-    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
-) -> Router {
-    protect_router(
-        router_with_capability_authorities(
-            security_policy,
-            file_tools,
-            android_battery_status_enabled,
-            android_volume_status_enabled,
-            command_execution_enabled,
-            create_directory_authority,
-            android_volume_control_authority,
-        ),
-        protection,
-    )
-}
-
-/// Build a protected MCP router with all independently optional mutation
-/// authorities and explicit additive transport options.
-#[cfg(feature = "android-volume-control")]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each constructor argument represents an explicit protection boundary"
-)]
-#[rustfmt::skip]
-pub fn protected_router_with_capability_authorities_and_options(
+pub(crate) fn binary_server_router_with_capability_authorities_and_options(
     protection: McpRouterProtection,
     security_policy: TransportSecurityPolicy,
     file_tools: FileSystemTools,
@@ -1858,6 +1547,331 @@ pub fn protected_router_with_capability_authorities_and_options(
             options,
         ),
         protection,
+    )
+}
+
+/// Build a publicly embeddable MCP router with mandatory authentication and
+/// request-resource protections.
+///
+/// Public embeddings cannot enable the process-execution lane. Command
+/// diagnostics are initialized only by this package's crate-owned server startup,
+/// which prevents a downstream binary from substituting its own `current_exe`.
+#[rustfmt::skip]
+pub fn protected_router(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+) -> Router {
+    protect_router(
+        router(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected MCP router with explicit additive transport options.
+#[rustfmt::skip]
+pub fn protected_router_with_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    options: McpTransportOptions,
+) -> Router {
+    protect_router(
+        router_with_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            options,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected MCP router with the request-authorized directory mutation
+/// capability enabled.
+#[rustfmt::skip]
+pub fn protected_router_with_create_directory_authority(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: CreateDirectoryGrantAuthority,
+) -> Router {
+    protect_router(
+        router_with_create_directory_authority(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            create_directory_authority,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected directory-authorized MCP router with explicit additive
+/// transport options.
+#[rustfmt::skip]
+pub fn protected_router_with_create_directory_authority_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: CreateDirectoryGrantAuthority,
+    options: McpTransportOptions,
+) -> Router {
+    protect_router(
+        router_with_create_directory_authority_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            create_directory_authority,
+            options,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected MCP router with the request-authorized `copy_file`
+/// mutation capability enabled. Preview calls remain available without a
+/// grant, while every live copy requires an exact single-use grant.
+#[rustfmt::skip]
+pub fn protected_router_with_copy_file_authority(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    copy_file_authority: CopyFileGrantAuthority,
+) -> Router {
+    protect_router(
+        router_with_filesystem_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            FilesystemMutationAuthorities::new(None, None)
+                .with_copy_file(Some(copy_file_authority)),
+            McpTransportOptions::default(),
+        ),
+        protection,
+    )
+}
+
+/// Build a protected copy-authorized MCP router with explicit additive
+/// transport options.
+#[rustfmt::skip]
+pub fn protected_router_with_copy_file_authority_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    copy_file_authority: CopyFileGrantAuthority,
+    options: McpTransportOptions,
+) -> Router {
+    protect_router(
+        router_with_filesystem_authorities_and_options(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            FilesystemMutationAuthorities::new(None, None)
+                .with_copy_file(Some(copy_file_authority)),
+            options,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected MCP router with independently optional filesystem
+/// mutation authorities.
+#[rustfmt::skip]
+pub fn protected_router_with_filesystem_authorities(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+) -> Router {
+    protect_router(
+        router_with_filesystem_authorities(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            create_directory_authority,
+            write_file_authority,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected filesystem-authorized MCP router with explicit additive
+/// transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
+#[rustfmt::skip]
+pub fn protected_router_with_filesystem_authorities_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+    options: McpTransportOptions,
+) -> Router {
+    binary_server_router_with_filesystem_authorities_and_options(
+        protection,
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        false,
+        create_directory_authority,
+        None,
+        write_file_authority,
+        options,
+    )
+}
+
+/// Build a protected MCP router with all independently optional filesystem
+/// mutation authorities. This additive constructor preserves the established
+/// two-authority API while making the copy gate explicit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
+#[rustfmt::skip]
+pub fn protected_router_with_all_filesystem_authorities(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    copy_file_authority: Option<CopyFileGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+) -> Router {
+    protected_router_with_all_filesystem_authorities_and_options(
+        protection,
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        create_directory_authority,
+        copy_file_authority,
+        write_file_authority,
+        McpTransportOptions::default(),
+    )
+}
+
+/// Build a protected MCP router with all independently optional filesystem
+/// mutation authorities and explicit additive transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
+#[rustfmt::skip]
+pub fn protected_router_with_all_filesystem_authorities_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    copy_file_authority: Option<CopyFileGrantAuthority>,
+    write_file_authority: Option<WriteFileGrantAuthority>,
+    options: McpTransportOptions,
+) -> Router {
+    binary_server_router_with_filesystem_authorities_and_options(
+        protection,
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        false,
+        create_directory_authority,
+        copy_file_authority,
+        write_file_authority,
+        options,
+    )
+}
+
+/// Build a protected MCP router with independently optional directory and
+/// Android-volume mutation authorities.
+#[cfg(feature = "android-volume-control")]
+#[rustfmt::skip]
+pub fn protected_router_with_capability_authorities(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    create_directory_authority: Option<CreateDirectoryGrantAuthority>,
+    android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
+) -> Router {
+    protect_router(
+        router_with_capability_authorities(
+            security_policy,
+            file_tools,
+            android_battery_status_enabled,
+            android_volume_status_enabled,
+            false,
+            create_directory_authority,
+            android_volume_control_authority,
+        ),
+        protection,
+    )
+}
+
+/// Build a protected MCP router with all independently optional mutation
+/// authorities and explicit additive transport options.
+#[cfg(feature = "android-volume-control")]
+#[rustfmt::skip]
+pub fn protected_router_with_capability_authorities_and_options(
+    protection: McpRouterProtection,
+    security_policy: TransportSecurityPolicy,
+    file_tools: FileSystemTools,
+    android_battery_status_enabled: bool,
+    android_volume_status_enabled: bool,
+    authorities: McpCapabilityAuthorities,
+    options: McpTransportOptions,
+) -> Router {
+    binary_server_router_with_capability_authorities_and_options(
+        protection,
+        security_policy,
+        file_tools,
+        android_battery_status_enabled,
+        android_volume_status_enabled,
+        false,
+        authorities,
+        options,
     )
 }
 
@@ -4134,14 +4148,28 @@ async fn handle_run_command_profile_call(
         let profile = decision
             .profile
             .expect("allowed command policy decisions own a fixed profile");
-        match state.command_execution_client.execute(profile).await {
+        let Some(command_execution_client) = state.command_execution_client.as_ref() else {
+            let failure = CommandPolicyDecision {
+                allowed: false,
+                reason_code: COMMAND_PROGRAM_UNAVAILABLE_REASON,
+                profile: Some(profile),
+            };
+            record_command_policy_decision(&state.audit_counters, &failure);
+            return tool_error_result(
+                id,
+                RUN_COMMAND_PROFILE_TOOL,
+                COMMAND_EXECUTION_ERROR,
+                COMMAND_PROGRAM_UNAVAILABLE_REASON,
+            );
+        };
+        match command_execution_client.execute(profile).await {
             Ok(result) => {
                 record_command_policy_decision(&state.audit_counters, &decision);
                 ok_result(
                     id,
                     format!(
                         "run_command_profile: fixed read-only profile {} completed within all bounds.",
-                        profile.id,
+                        profile.id(),
                     ),
                     json!(result),
                 )
@@ -7985,7 +8013,6 @@ mod tests {
             FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).expect("test safe root must validate"),
             false,
             false,
-            false,
         );
 
         let unauthenticated = app
@@ -9815,6 +9842,8 @@ printf '%s\n' "$2" >"$level"
     #[cfg(feature = "command-execution")]
     #[tokio::test]
     async fn raw_command_override_fields_are_rejected_before_spawn() {
+        use axum::body::to_bytes;
+
         let safe_root = tempfile::tempdir().unwrap();
         let marker = safe_root.path().join("must-not-exist");
         let script = format!("touch '{}'", marker.display());
@@ -9828,11 +9857,14 @@ printf '%s\n' "$2" >"$level"
 
         for arguments in [
             json!({"profile": "server_version", "command": "sh -c id"}),
-            json!({"profile": "server_version", "argv": ["--help"]}),
-            json!({"profile": "server_version", "workingDirectory": "/"}),
-            json!({"profile": "server_version", "environment": {"TOKEN": "secret"}}),
-            json!({"profile": "server_version", "timeout": 999}),
-            json!({"profile": "server_version", "stdoutLimit": 999999}),
+            json!({"profile": "server_version", "program": "/private/program"}),
+            json!({"profile": "server_version", "argv": ["--private-argument"]}),
+            json!({"profile": "server_version", "workingDirectory": "/private/cwd"}),
+            json!({"profile": "server_version", "environment": {"TOKEN": "secret-token-value"}}),
+            json!({"profile": "server_version", "stdin": "private-stdin"}),
+            json!({"profile": "server_version", "timeout": 998877}),
+            json!({"profile": "server_version", "stdoutLimit": 998878}),
+            json!({"profile": "server_version", "stderrLimit": 998879}),
         ] {
             let response = handle_run_command_profile_call(
                 Some(json!("command-invalid")),
@@ -9841,12 +9873,77 @@ printf '%s\n' "$2" >"$level"
             )
             .await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+            let response = String::from_utf8(response.to_vec()).unwrap();
+            for private in [
+                "sh -c id",
+                "/private/program",
+                "--private-argument",
+                "/private/cwd",
+                "secret-token-value",
+                "private-stdin",
+                "998877",
+                "998878",
+                "998879",
+            ] {
+                assert!(!response.contains(private), "response reflected {private}");
+            }
         }
         assert!(!marker.exists());
         let counters = state.audit_counters.lock().unwrap().clone();
         assert_eq!(
             counters.by_reason_code[COMMAND_INVALID_ARGUMENTS_REASON].denied,
-            6
+            9
+        );
+        let audit = serde_json::to_string(&counters).unwrap();
+        for private in [
+            "sh -c id",
+            "/private/program",
+            "--private-argument",
+            "/private/cwd",
+            "secret-token-value",
+            "private-stdin",
+            "998877",
+            "998878",
+            "998879",
+        ] {
+            assert!(!audit.contains(private), "audit reflected {private}");
+        }
+    }
+
+    #[cfg(feature = "command-execution")]
+    #[tokio::test]
+    async fn unapproved_profile_is_rejected_before_spawn() {
+        use axum::body::to_bytes;
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let marker = safe_root.path().join("must-not-exist");
+        let script = format!("touch '{}'", marker.display());
+        let (_program_root, client) = test_command_client(safe_root.path(), &script);
+        let state = McpTransportState::with_command_execution_client(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).expect("test safe root must validate"),
+            true,
+            client,
+        );
+
+        let response = handle_run_command_profile_call(
+            Some(json!("command-unapproved")),
+            Some(json!({"profile": "sh -c private-command"})),
+            &state,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        assert!(!String::from_utf8(response.to_vec())
+            .unwrap()
+            .contains("private-command"));
+        assert!(!marker.exists());
+        assert_eq!(
+            state.audit_counters.lock().unwrap().by_reason_code
+                [COMMAND_PROFILE_NOT_ALLOWLISTED_REASON]
+                .denied,
+            1
         );
     }
 }

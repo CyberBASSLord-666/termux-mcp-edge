@@ -103,4 +103,4 @@ jobs:
           bash tests/setup_named_tunnel_test.sh
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
-            docs/command-emulated-evidence-schema-v1.json >/dev/null
+            docs/command-emulated-evidence-schema-v2.json >/dev/null
