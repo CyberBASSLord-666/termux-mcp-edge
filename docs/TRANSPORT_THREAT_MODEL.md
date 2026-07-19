@@ -17,6 +17,8 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - the sixteen-tool baseline allowlist, including bounded content-free path discovery and code-point-safe UTF-8 range pagination, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
 
+The package binary and downstream crates receive that boundary only through the one public [`McpRouterBuilder`](EMBEDDING.md). Its immutable outer-to-inner execution order is authentication; early `Content-Length`, fail-fast concurrency, and total timeout enforcement; streaming body limiting and extraction; exact `Host`/`Origin`; method/media/protocol/session/grant validation; then JSON-RPC lifecycle, discovery, tool dispatch, and authorized mutation. Raw state and router constructors are crate-private or test-only.
+
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. The default transport returns JSON and the specification-permitted HTTP 405 for GET. `MCP__TRANSPORT__SSE_ENABLED=true` permits finite two-event SSE request responses and cursor-bearing GET resumption. Each response stream receives an unguessable UUID-derived identity, an empty priming event, and one terminal JSON-RPC event. Replay is held inside the originating session only, never broadcast, and bounded to 8 streams, 2 events per stream, 128 KiB per event, 256 KiB per session, and a 64-byte `Last-Event-ID`. Every HTTP 200 response is preflighted under the aggregate collector ceiling, and canonical serialized JSON-RPC request IDs are capped at 1 MiB before dispatch or session allocation. Oldest streams are evicted deterministically; oversized eligible responses remain JSON. DELETE and idle expiry remove both lifecycle and replay state.
 
 ## Assets to Protect
@@ -49,6 +51,18 @@ Preserved boundary:
 
 - lifecycle and session identifiers never replace request authentication;
 - authentication failures must not allocate MCP sessions, consume tool concurrency, or enter tool audit counters.
+
+### Incomplete downstream router composition
+
+An embedding may accidentally expose transport handlers without authentication, limits, listener validation, or pinned filesystem roots.
+
+Current controls:
+
+- `McpRouterBuilder` is the complete public construction surface and requires sealed authentication, validated request limits, a transport-security policy, a declared listener host, and safe roots;
+- builder construction rejects invalid listener text, non-loopback development declarations, empty/relative/filesystem-root/missing/non-directory/symlinked roots, uncompiled requested capabilities, and unavailable optional clients through typed non-sensitive errors;
+- explicit unauthenticated development access independently requires request-time `ConnectInfo<SocketAddr>` proving an actual loopback peer, so declaration text, `Host`, `Origin`, and forwarding headers cannot create authority;
+- the package binary uses the same builder as embedders, while raw/legacy constructors and the command-enablement setter remain inaccessible downstream;
+- integration and compile probes cover the one public path and prove unauthorized POST, GET, DELETE, discovery, reads, sessions, grants, and mutations cannot cross authentication.
 
 ### Browser rebinding and ambient browser access
 
@@ -170,7 +184,7 @@ Command execution, Android control, service/package/network mutation, broad stor
 
 Current controls:
 
-- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; the package binary compiles the module graph in its own crate and alone can call the two crate-private enabling builders, while all twelve public library routers hard-code disabled and ordinary dependency plus selected-workspace probes enforce that boundary;
+- the only live process-execution surface is a separately compiled and runtime-enabled `run_command_profile` tool for three read-only diagnostics; the package binary and downstream crates use the same public builder, but only the package binary can call its crate-private command-enablement setter, and ordinary dependency plus selected-workspace probes enforce that boundary;
 - initialization opens the exact-name absolute candidate without following its final component, opens `/proc/self/exe` independently, requires an executable regular candidate plus a regular loaded image with equal device/inode identity, and later spawns only `/proc/self/exe`;
 - the first canonical safe root is held by a no-follow directory descriptor, filesystem-root aliases are rejected by device/inode, and the child uses `/proc/self/fd/<fd>` while the guard remains alive through execution;
 - its closed schema accepts no program, argv, path, environment, stdin, timeout, or limit input, while crate-private profiles, resolved handles, and raw execution types prevent downstream Rust embeddings from forging or inspecting those values;
