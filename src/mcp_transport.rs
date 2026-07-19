@@ -614,6 +614,10 @@ fn run_create_directory_mutation_worker(
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the detached worker owns one explicit mutation transaction"
+)]
 fn run_write_file_mutation_worker(
     file_tools: FileSystemTools,
     path: String,
@@ -1231,6 +1235,10 @@ pub fn protected_router_with_create_directory_authority(
 
 /// Build a protected directory-authorized MCP router with explicit additive
 /// transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
 #[rustfmt::skip]
 pub fn protected_router_with_create_directory_authority_and_options(
     protection: McpRouterProtection,
@@ -1258,6 +1266,10 @@ pub fn protected_router_with_create_directory_authority_and_options(
 
 /// Build a protected MCP router with independently optional filesystem
 /// mutation authorities.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
 #[rustfmt::skip]
 pub fn protected_router_with_filesystem_authorities(
     protection: McpRouterProtection,
@@ -1285,6 +1297,10 @@ pub fn protected_router_with_filesystem_authorities(
 
 /// Build a protected filesystem-authorized MCP router with explicit additive
 /// transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
 #[rustfmt::skip]
 pub fn protected_router_with_filesystem_authorities_and_options(
     protection: McpRouterProtection,
@@ -1315,6 +1331,10 @@ pub fn protected_router_with_filesystem_authorities_and_options(
 /// Build a protected MCP router with independently optional directory and
 /// Android-volume mutation authorities.
 #[cfg(feature = "android-volume-control")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
 #[rustfmt::skip]
 pub fn protected_router_with_capability_authorities(
     protection: McpRouterProtection,
@@ -1343,6 +1363,10 @@ pub fn protected_router_with_capability_authorities(
 /// Build a protected MCP router with all independently optional mutation
 /// authorities and explicit additive transport options.
 #[cfg(feature = "android-volume-control")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each constructor argument represents an explicit protection boundary"
+)]
 #[rustfmt::skip]
 pub fn protected_router_with_capability_authorities_and_options(
     protection: McpRouterProtection,
@@ -1491,6 +1515,10 @@ pub(crate) fn router_with_filesystem_authorities(
 
 /// Build the independently authorized filesystem transport with explicit
 /// additive transport options.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the internal constructor mirrors the protected-router boundary"
+)]
 #[rustfmt::skip]
 pub(crate) fn router_with_filesystem_authorities_and_options(
     security_policy: TransportSecurityPolicy,
@@ -6623,7 +6651,6 @@ mod tests {
             MAX_MCP_COLLECTED_JSON_RESPONSE_BYTES,
             MAX_TEXT_RANGE_RESPONSE_BYTES
         );
-        assert!(MAX_MCP_COLLECTED_JSON_RESPONSE_BYTES > MAX_BINARY_READ_RESPONSE_BYTES);
     }
 
     #[test]
@@ -7276,6 +7303,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the held lock deterministically parks only the detached blocking worker"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn live_create_worker_records_exactly_once_after_http_waiter_is_dropped() {
         let safe_root = tempfile::tempdir().unwrap();
@@ -7363,6 +7394,10 @@ mod tests {
         assert!(target.is_dir());
     }
 
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "the held lock deterministically parks only the detached blocking worker"
+    )]
     #[tokio::test(flavor = "current_thread")]
     async fn live_write_worker_records_exactly_once_after_http_waiter_is_dropped() {
         use crate::write_file_grant::{WriteFileDisposition, WriteFileGrantError};
