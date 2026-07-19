@@ -1,10 +1,16 @@
 //! Bounded execution client for reviewed read-only command profiles.
 //!
-//! Production profiles invoke only the currently running server executable with
-//! project-owned argv. The caller cannot select a program, argument, working
-//! directory, environment value, timeout, or output limit.
+//! Production profiles invoke only the kernel-pinned currently running server
+//! image with project-owned argv. The caller cannot select a program, argument,
+//! working directory, environment value, timeout, or output limit.
 
-use std::{ffi::OsString, path::PathBuf, sync::Arc};
+use std::{
+    ffi::{OsStr, OsString},
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use serde::Serialize;
 use tokio::sync::Semaphore;
@@ -15,16 +21,19 @@ use crate::{
 };
 
 pub const MAX_CONCURRENT_COMMAND_PROFILES: usize = 2;
+const EXPECTED_SERVER_EXECUTABLE_NAME: &str = env!("CARGO_PKG_NAME");
+const PINNED_CURRENT_EXECUTABLE: &str = "/proc/self/exe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandClientConfigError {
+pub(crate) enum CommandClientConfigError {
     CurrentExecutableUnavailable,
+    CurrentExecutableIdentityMismatch,
     ProgramMustBeAbsolute,
     WorkingDirectoryMustBeSafeRooted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandExecutionError {
+pub(crate) enum CommandExecutionError {
     ProgramUnavailable,
     SpawnFailed,
     WaitFailed,
@@ -38,7 +47,7 @@ pub enum CommandExecutionError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CommandExecutionResult {
+pub(crate) struct CommandExecutionResult {
     pub profile: String,
     pub exit_code: i32,
     pub stdout: String,
@@ -63,17 +72,38 @@ impl From<BoundedProcessError> for CommandExecutionError {
 }
 
 #[derive(Debug, Clone)]
-pub struct CommandExecutionClient {
+pub(crate) struct CommandExecutionClient {
     program: PathBuf,
     working_directory: PathBuf,
     concurrency: Arc<Semaphore>,
 }
 
 impl CommandExecutionClient {
-    pub fn current_server(working_directory: PathBuf) -> Result<Self, CommandClientConfigError> {
+    pub(crate) fn current_server(
+        working_directory: PathBuf,
+    ) -> Result<Self, CommandClientConfigError> {
         let program = std::env::current_exe()
             .map_err(|_| CommandClientConfigError::CurrentExecutableUnavailable)?;
-        Self::new(program, working_directory)
+        Self::exact_server_program(program, working_directory)
+    }
+
+    fn exact_server_program(
+        program: PathBuf,
+        working_directory: PathBuf,
+    ) -> Result<Self, CommandClientConfigError> {
+        if program.file_name() != Some(OsStr::new(EXPECTED_SERVER_EXECUTABLE_NAME)) {
+            return Err(CommandClientConfigError::CurrentExecutableIdentityMismatch);
+        }
+        let metadata = fs::symlink_metadata(&program)
+            .map_err(|_| CommandClientConfigError::CurrentExecutableIdentityMismatch)?;
+        if !metadata.file_type().is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            return Err(CommandClientConfigError::CurrentExecutableIdentityMismatch);
+        }
+        // Retain no reopenable installation path. On Linux and Android,
+        // /proc/self/exe resolves to the caller's already-running executable
+        // image, so a same-UID rename or replacement after initialization cannot
+        // redirect a later profile spawn.
+        Self::new(PathBuf::from(PINNED_CURRENT_EXECUTABLE), working_directory)
     }
 
     fn new(program: PathBuf, working_directory: PathBuf) -> Result<Self, CommandClientConfigError> {
@@ -94,7 +124,7 @@ impl CommandExecutionClient {
         })
     }
 
-    pub async fn execute(
+    pub(crate) async fn execute(
         &self,
         profile: &'static CommandProfile,
     ) -> Result<CommandExecutionResult, CommandExecutionError> {
@@ -105,14 +135,17 @@ impl CommandExecutionClient {
             .map_err(|_| CommandExecutionError::ConcurrencyLimitExceeded)?;
         let process = BoundedProcess::new(
             self.program.clone(),
-            profile.argv.iter().map(OsString::from).collect(),
+            profile.argv().iter().map(OsString::from).collect(),
             self.working_directory.clone(),
-            profile.timeout,
-            profile.max_stdout_bytes,
-            profile.max_stderr_bytes,
+            profile.timeout(),
+            profile.max_stdout_bytes(),
+            profile.max_stderr_bytes(),
         )
         .map_err(|error| match error {
-            BoundedProcessConfigError::TimeoutTooShort => CommandExecutionError::WaitFailed,
+            BoundedProcessConfigError::TimeoutTooShort
+            | BoundedProcessConfigError::TimeoutTooLong
+            | BoundedProcessConfigError::StdoutLimitTooLarge
+            | BoundedProcessConfigError::StderrLimitTooLarge => CommandExecutionError::WaitFailed,
         })?;
         let output = process.run().await?;
         let stdout_bytes = output.stdout.len();
@@ -124,7 +157,7 @@ impl CommandExecutionClient {
         let duration_milliseconds = u64::try_from(output.duration.as_millis()).unwrap_or(u64::MAX);
 
         Ok(CommandExecutionResult {
-            profile: profile.id.to_owned(),
+            profile: profile.id().to_owned(),
             exit_code: 0,
             stdout,
             stderr,
@@ -154,8 +187,13 @@ mod tests {
 
     use super::*;
     use crate::{
-        bounded_process::BOUNDED_PROCESS_TEST_LOCK,
-        command_policy::{command_profile, CommandProfile},
+        bounded_process::{
+            BOUNDED_PROCESS_TEST_LOCK, MAX_BOUNDED_PROCESS_STDERR_BYTES,
+            MAX_BOUNDED_PROCESS_STDOUT_BYTES, MAX_BOUNDED_PROCESS_TIMEOUT,
+        },
+        command_policy::{
+            command_profile, command_profile_ids, test_command_profile, CommandProfile,
+        },
     };
 
     fn executable(script: &str) -> (TempDir, PathBuf) {
@@ -172,14 +210,119 @@ mod tests {
         stdout: usize,
         stderr: usize,
     ) -> &'static CommandProfile {
-        Box::leak(Box::new(CommandProfile {
-            id: "test_profile",
-            ordinal: 99,
-            argv,
-            timeout,
-            max_stdout_bytes: stdout,
-            max_stderr_bytes: stderr,
-        }))
+        test_command_profile(argv, timeout, stdout, stderr)
+    }
+
+    #[test]
+    fn current_server_candidate_requires_exact_regular_executable_identity() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let program_root = tempfile::tempdir().unwrap();
+        let wrong_name = program_root.path().join("embedding-binary");
+        fs::write(&wrong_name, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&wrong_name, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            CommandExecutionClient::exact_server_program(
+                wrong_name,
+                safe_root.path().to_path_buf(),
+            )
+            .unwrap_err(),
+            CommandClientConfigError::CurrentExecutableIdentityMismatch
+        );
+
+        let non_regular_root = tempfile::tempdir().unwrap();
+        let exact_directory = non_regular_root
+            .path()
+            .join(EXPECTED_SERVER_EXECUTABLE_NAME);
+        fs::create_dir(&exact_directory).unwrap();
+        assert_eq!(
+            CommandExecutionClient::exact_server_program(
+                exact_directory,
+                safe_root.path().to_path_buf(),
+            )
+            .unwrap_err(),
+            CommandClientConfigError::CurrentExecutableIdentityMismatch
+        );
+
+        let symlink_root = tempfile::tempdir().unwrap();
+        let symlink_target = symlink_root.path().join("target");
+        fs::write(&symlink_target, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&symlink_target, fs::Permissions::from_mode(0o700)).unwrap();
+        let exact_symlink = symlink_root.path().join(EXPECTED_SERVER_EXECUTABLE_NAME);
+        std::os::unix::fs::symlink(&symlink_target, &exact_symlink).unwrap();
+        assert_eq!(
+            CommandExecutionClient::exact_server_program(
+                exact_symlink,
+                safe_root.path().to_path_buf(),
+            )
+            .unwrap_err(),
+            CommandClientConfigError::CurrentExecutableIdentityMismatch
+        );
+
+        let exact = program_root.path().join(EXPECTED_SERVER_EXECUTABLE_NAME);
+        fs::write(&exact, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&exact, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            CommandExecutionClient::exact_server_program(
+                exact.clone(),
+                safe_root.path().to_path_buf(),
+            )
+            .unwrap_err(),
+            CommandClientConfigError::CurrentExecutableIdentityMismatch
+        );
+
+        fs::set_permissions(&exact, fs::Permissions::from_mode(0o700)).unwrap();
+        let client = CommandExecutionClient::exact_server_program(
+            exact,
+            safe_root.path().to_path_buf(),
+        )
+        .unwrap();
+        assert_eq!(client.program, PathBuf::from(PINNED_CURRENT_EXECUTABLE));
+    }
+
+    #[test]
+    fn every_policy_profile_fits_the_supervisor_hard_maxima() {
+        for profile_id in command_profile_ids() {
+            let profile = command_profile(profile_id).expect("registry IDs resolve");
+            assert!(profile.timeout() <= MAX_BOUNDED_PROCESS_TIMEOUT);
+            assert!(profile.max_stdout_bytes() <= MAX_BOUNDED_PROCESS_STDOUT_BYTES);
+            assert!(profile.max_stderr_bytes() <= MAX_BOUNDED_PROCESS_STDERR_BYTES);
+        }
+    }
+
+    #[tokio::test]
+    async fn forged_profile_bounds_fail_before_program_spawn() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let marker = safe_root.path().join("must-not-exist");
+        let script = format!("touch '{}'", marker.display());
+        let (_program_root, program) = executable(&script);
+        let client = CommandExecutionClient::new(program, safe_root.path().to_path_buf()).unwrap();
+
+        for profile in [
+            profile_with_bounds(
+                &[],
+                MAX_BOUNDED_PROCESS_TIMEOUT + Duration::from_millis(1),
+                MAX_BOUNDED_PROCESS_STDOUT_BYTES,
+                MAX_BOUNDED_PROCESS_STDERR_BYTES,
+            ),
+            profile_with_bounds(
+                &[],
+                MAX_BOUNDED_PROCESS_TIMEOUT,
+                MAX_BOUNDED_PROCESS_STDOUT_BYTES + 1,
+                MAX_BOUNDED_PROCESS_STDERR_BYTES,
+            ),
+            profile_with_bounds(
+                &[],
+                MAX_BOUNDED_PROCESS_TIMEOUT,
+                MAX_BOUNDED_PROCESS_STDOUT_BYTES,
+                MAX_BOUNDED_PROCESS_STDERR_BYTES + 1,
+            ),
+        ] {
+            assert_eq!(
+                client.execute(profile).await.unwrap_err(),
+                CommandExecutionError::WaitFailed
+            );
+        }
+        assert!(!marker.exists());
     }
 
     #[test]
