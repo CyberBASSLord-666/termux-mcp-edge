@@ -10,6 +10,8 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
+#[cfg(feature = "android-volume-control")]
+use termux_mcp_server::android_volume_grant::AndroidVolumeGrantAuthority;
 use termux_mcp_server::{
     auth::McpAuthPolicy,
     copy_file_grant::CopyFileGrantAuthority,
@@ -408,6 +410,73 @@ fn public_builder_returns_typed_errors_for_every_invalid_root_class() {
         assert_eq!(
             builder_error_for_roots(safe_roots),
             McpRouterBuildError::SafeRoots(expected)
+        );
+    }
+}
+
+fn builder_build_error(builder: McpRouterBuilder) -> McpRouterBuildError {
+    match builder.build() {
+        Ok(_) => panic!("invalid builder authority posture unexpectedly built a router"),
+        Err(error) => error,
+    }
+}
+
+#[test]
+fn unauthenticated_builder_rejects_every_mutation_authority() {
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const PRINCIPAL: &str = "mutation-auth-builder-test-principal";
+
+    let root = tempfile::tempdir().unwrap();
+    let builder = || {
+        McpRouterBuilder::new(
+            "127.0.0.1",
+            McpAuthPolicy::unauthenticated_localhost_only(),
+            McpRequestLimits::from_seconds(
+                DEFAULT_MAX_CONCURRENT_REQUESTS,
+                DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                DEFAULT_MAX_BODY_BYTES,
+            )
+            .unwrap(),
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            vec![root.path().to_path_buf()],
+        )
+        .unwrap()
+    };
+
+    let create =
+        CreateDirectoryGrantAuthority::from_hex_key("builder-auth-1", KEY, PRINCIPAL).unwrap();
+    assert_eq!(
+        builder_build_error(builder().with_create_directory_authority(create)),
+        McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+            capability: "create_directory"
+        }
+    );
+
+    let copy = CopyFileGrantAuthority::from_hex_key("builder-auth-1", KEY, PRINCIPAL).unwrap();
+    assert_eq!(
+        builder_build_error(builder().with_copy_file_authority(copy)),
+        McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+            capability: "copy_file"
+        }
+    );
+
+    let write = WriteFileGrantAuthority::from_hex_key("builder-auth-1", KEY, PRINCIPAL).unwrap();
+    assert_eq!(
+        builder_build_error(builder().with_write_file_authority(write)),
+        McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+            capability: "write_file"
+        }
+    );
+
+    #[cfg(feature = "android-volume-control")]
+    {
+        let volume =
+            AndroidVolumeGrantAuthority::from_hex_key("builder-auth-1", KEY, PRINCIPAL).unwrap();
+        assert_eq!(
+            builder_build_error(builder().with_android_volume_control_authority(volume)),
+            McpRouterBuildError::CapabilityRequiresStaticAuthentication {
+                capability: "set_android_volume"
+            }
         );
     }
 }
