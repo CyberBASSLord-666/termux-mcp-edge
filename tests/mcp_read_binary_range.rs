@@ -353,7 +353,7 @@ async fn range_read_arguments_response_preflight_and_audits_are_bounded_and_priv
         if index == 3 {
             let payload = response_json(response).await;
             assert_eq!(
-                payload["error"]["message"],
+                payload["error"]["data"],
                 "Requested binary range is not valid"
             );
         }

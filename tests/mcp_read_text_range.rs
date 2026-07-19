@@ -389,7 +389,7 @@ async fn text_range_arguments_expansion_preflight_and_audits_are_bounded_and_pri
         if index >= 3 {
             let payload = response_json(response).await;
             assert_eq!(
-                payload["error"]["message"],
+                payload["error"]["data"],
                 "Requested text range is not valid"
             );
         }
