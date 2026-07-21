@@ -162,7 +162,7 @@ jobs:
     name: Native ARM64 Termux emulation
     needs: android-aarch64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 50
     env:
       TERMUX_IMAGE: termux/termux-docker:aarch64@sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
       TERMUX_IMAGE_DIGEST: sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
@@ -256,8 +256,26 @@ jobs:
           api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&per_page=100"
           ci_run_id=''
           security_run_id=''
-          for attempt in $(seq 1 60); do
+          monotonic_seconds() {
+            local uptime
+            read -r uptime _ </proc/uptime
+            printf '%s\n' "${uptime%%.*}"
+          }
+          readonly max_wait_seconds=1500
+          readonly deadline=$(( $(monotonic_seconds) + max_wait_seconds ))
+          attempt=0
+          while :; do
+            now="$(monotonic_seconds)"
+            remaining=$((deadline - now))
+            (( remaining > 0 )) || break
+            attempt=$((attempt + 1))
+            curl_timeout=15
+            (( remaining < curl_timeout )) && curl_timeout="$remaining"
+            connect_timeout=5
+            (( curl_timeout < connect_timeout )) && connect_timeout="$curl_timeout"
             response="$(curl --fail --silent --show-error --location \
+              --connect-timeout "$connect_timeout" \
+              --max-time "$curl_timeout" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
@@ -285,9 +303,14 @@ jobs:
               printf 'latest exact-head Security is not successful: %s\n' "$security_state" >&2
               exit 1
             fi
-            printf 'waiting for exact companion workflows (attempt %s/60): CI=%s Security=%s\n' \
-              "$attempt" "$ci_state" "$security_state"
-            sleep 5
+            now="$(monotonic_seconds)"
+            remaining=$((deadline - now))
+            (( remaining > 0 )) || break
+            sleep_seconds=5
+            (( remaining < sleep_seconds )) && sleep_seconds="$remaining"
+            printf 'waiting for exact companion workflows (attempt %s; %ss remaining): CI=%s Security=%s\n' \
+              "$attempt" "$remaining" "$ci_state" "$security_state"
+            sleep "$sleep_seconds"
           done
           [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$security_run_id" =~ ^[1-9][0-9]*$ ]]

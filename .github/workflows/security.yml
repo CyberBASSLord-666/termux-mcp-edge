@@ -6,8 +6,13 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "build.rs"
       - "src/**"
       - "tests/**"
+      - "benches/**"
+      - "examples/**"
+      - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
       - "scripts/termux_device_smoke.sh"
@@ -26,14 +31,21 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
+      - ".github/actions/**"
       - ".github/workflows/*"
   pull_request:
     branches: [ main ]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "build.rs"
       - "src/**"
       - "tests/**"
+      - "benches/**"
+      - "examples/**"
+      - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
       - "scripts/termux_device_smoke.sh"
@@ -52,6 +64,8 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
+      - ".github/actions/**"
       - ".github/workflows/*"
   schedule:
     - cron: "17 9 * * 1"
@@ -108,3 +122,35 @@ jobs:
           retention-days: 3
       - name: Fail on audit findings
         run: test "$(cat cargo-audit.status)" = "0"
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - rust
+          - actions
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.0 resolved 2026-07-10
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        # github/codeql-action@v4.37.2 resolved 2026-07-21
+        uses: github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+      - name: Analyze
+        # github/codeql-action@v4.37.2 resolved 2026-07-21
+        uses: github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1
+        with:
+          category: "/language:${{ matrix.language }}"
