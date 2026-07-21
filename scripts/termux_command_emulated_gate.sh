@@ -197,6 +197,9 @@ BODY_FILE="$WORK_ROOT/body.json"
 HEADER_FILE="$WORK_ROOT/headers.txt"
 REQUEST_FILE="$WORK_ROOT/request.json"
 mkdir -m 700 "$SAFE_ROOT"
+TRASH_TARGET="$SAFE_ROOT/command-trash-disabled.txt"
+printf '%s' command-trash-retained >"$TRASH_TARGET"
+chmod 600 "$TRASH_TARGET"
 
 MCP_TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
 [[ "$MCP_TOKEN" =~ ^[0-9a-f]{64}$ ]] || fail token_generation_failed
@@ -205,6 +208,7 @@ log 'validating compile-time default deny posture'
 set +e
 MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
 MCP__COMMAND__ENABLED=true \
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
 MCP__SERVER__HOST=127.0.0.1 \
 MCP__SERVER__PORT="$PORT" \
 MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
@@ -240,6 +244,7 @@ start_server() {
     MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
     MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
     MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+    MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
     MCP__FILE__WRITE_MUTATION_ENABLED=false \
     RUST_LOG=termux_mcp_server=info \
       exec "$candidate"
@@ -315,6 +320,7 @@ jq -e '
     "project_service_status",
     "create_directory",
     "copy_file",
+    "trash_file",
     "find_paths",
     "hash_file",
     "list_directory",
@@ -334,27 +340,28 @@ jq -e '
         required:["profile"],
         additionalProperties:false
       }
+  and ((.result.tools[] | select(.name == "trash_file")) as $trash
+    | $trash.inputSchema.type == "object"
+      and ($trash.inputSchema.properties | keys) == ["dry_run","path"]
+      and $trash.inputSchema.properties.path.type == "string"
+      and $trash.inputSchema.properties.dry_run.type == "boolean"
+      and $trash.inputSchema.properties.dry_run.const == true
+      and $trash.inputSchema.required == ["path"]
+      and $trash.inputSchema.additionalProperties == false
+      and ($trash.description | contains("dedicated trash mutation gate is disabled")))
   and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail enabled_tool_discovery_invalid
-
-post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
-[[ "$MCP_STATUS" == 200 ]] || fail runtime_status_http_invalid
-jq -e '
-  .result.structuredContent.commandExecutionCompiled == true
-  and .result.structuredContent.commandExecution == true
-  and .result.structuredContent.commandExecutionMode == "fixed_read_only_server_diagnostics"
-  and .result.structuredContent.arbitraryCommandExecution == false
-  and .result.structuredContent.androidDeviceControl == false
-  and .result.structuredContent.fileWriteMutationEnabled == false
-  and .result.structuredContent.fileWriteGrantRequired == false
-  and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
-  and .result.structuredContent.highImpactTools == false
-' "$BODY_FILE" >/dev/null || fail runtime_status_gate_invalid
 
 post_mcp "$(jq -cn --arg path "$SAFE_ROOT/command-write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
 [[ "$MCP_STATUS" == 403 ]] || fail write_file_disabled_http_invalid
 jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail write_file_disabled_contract_invalid
 [[ ! -e "$SAFE_ROOT/command-write-disabled.txt" && ! -L "$SAFE_ROOT/command-write-disabled.txt" ]] || fail write_file_disabled_mutated
+
+post_mcp "$(jq -cn --arg path "$TRASH_TARGET" '{jsonrpc:"2.0",id:"trash-disabled",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 403 ]] || fail trash_file_disabled_http_invalid
+jq -e '.error.code == -32003 and .error.data.reason == "trash_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail trash_file_disabled_contract_invalid
+[[ -f "$TRASH_TARGET" && "$(cat "$TRASH_TARGET")" == command-trash-retained ]] || fail trash_file_disabled_target_mutated
+[[ ! -e "$SAFE_ROOT/.termux-mcp-trash-quarantine" && ! -L "$SAFE_ROOT/.termux-mcp-trash-quarantine" ]] || fail trash_file_disabled_quarantine_mutated
 
 post_mcp '{"jsonrpc":"2.0","id":"android","method":"tools/call","params":{"name":"android_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail android_status_http_invalid
@@ -433,7 +440,27 @@ jq -e '.error.code == -32602 and (.result | not)' "$BODY_FILE" >/dev/null || fai
 post_mcp '{"jsonrpc":"2.0","id":"audit","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail audit_status_http_invalid
 jq -e '
-  .result.structuredContent.auditCounters.by_tool.run_command_profile.allowed == 3
+  .result.structuredContent.commandExecutionCompiled == true
+  and .result.structuredContent.commandExecution == true
+  and .result.structuredContent.commandExecutionMode == "fixed_read_only_server_diagnostics"
+  and .result.structuredContent.arbitraryCommandExecution == false
+  and .result.structuredContent.androidDeviceControl == false
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.trashFileGrantRequired == false
+  and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+  and .result.structuredContent.trashFileGrantTtlSeconds == 60
+  and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+  and .result.structuredContent.trashFileMaxBytes == 1048576
+  and .result.structuredContent.trashFileMaxResponseBytes == 16384
+  and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+  and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+  and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
+  and .result.structuredContent.fileWriteMutationEnabled == false
+  and .result.structuredContent.fileWriteGrantRequired == false
+  and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.highImpactTools == false
+  and .result.structuredContent.auditCounters.by_tool.run_command_profile.allowed == 3
   and .result.structuredContent.auditCounters.by_tool.run_command_profile.denied == 11
   and .result.structuredContent.auditCounters.by_reason_code.command_profile_execution_allowed.allowed == 3
   and .result.structuredContent.auditCounters.by_reason_code.command_profile_invalid_arguments.denied == 9
@@ -484,6 +511,7 @@ install -m 700 "$ARTIFACT" "$RENAMED_ARTIFACT"
 MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
 MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false \
 MCP__COMMAND__ENABLED=true \
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
 MCP__SERVER__HOST=127.0.0.1 \
 MCP__SERVER__PORT="$PORT" \
 MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT" \
@@ -545,6 +573,7 @@ jq -e '
     "project_service_status",
     "create_directory",
     "copy_file",
+    "trash_file",
     "find_paths",
     "hash_file",
     "list_directory",
@@ -556,15 +585,36 @@ jq -e '
     "search_text",
     "write_file"
   ]
+  and ((.result.tools[] | select(.name == "trash_file")) as $trash
+    | $trash.inputSchema.type == "object"
+      and ($trash.inputSchema.properties | keys) == ["dry_run","path"]
+      and $trash.inputSchema.properties.path.type == "string"
+      and $trash.inputSchema.properties.dry_run.type == "boolean"
+      and $trash.inputSchema.properties.dry_run.const == true
+      and $trash.inputSchema.required == ["path"]
+      and $trash.inputSchema.additionalProperties == false
+      and ($trash.description | contains("dedicated trash mutation gate is disabled")))
   and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail disabled_tool_discovery_invalid
 
 post_mcp '{"jsonrpc":"2.0","id":"runtime-disabled","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail disabled_runtime_status_http_invalid
 jq -e '
   .result.structuredContent.commandExecutionCompiled == true
   and .result.structuredContent.commandExecution == false
   and .result.structuredContent.commandExecutionMode == "disabled"
   and .result.structuredContent.arbitraryCommandExecution == false
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.trashFileGrantRequired == false
+  and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+  and .result.structuredContent.trashFileGrantTtlSeconds == 60
+  and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+  and .result.structuredContent.trashFileMaxBytes == 1048576
+  and .result.structuredContent.trashFileMaxResponseBytes == 16384
+  and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+  and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+  and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
   and .result.structuredContent.fileWriteMutationEnabled == false
   and .result.structuredContent.fileWriteGrantRequired == false
 ' "$BODY_FILE" >/dev/null || fail disabled_runtime_status_invalid

@@ -89,6 +89,8 @@ POSTURE = sys.argv[1]
 VERSION = sys.argv[2] if len(sys.argv) > 2 else ""
 MCP_ENABLED = POSTURE in {"mcp", "volume-control"}
 WRITE_QUARANTINE_COMPONENT = ".termux-mcp-write-quarantine"
+TRASH_QUARANTINE_COMPONENT = ".termux-mcp-trash-quarantine"
+TRASH_ARTIFACT_PREFIX = ".termux-mcp-trash-artifact-"
 VOLUME_CONTROL_COMPILED = POSTURE == "volume-control"
 PORT = int(runtime_value("MCP__SERVER__PORT", "0") or "0")
 TOKEN = runtime_value("MCP__AUTH__STATIC_TOKEN")
@@ -105,6 +107,9 @@ CREATE_DIRECTORY_CAPABILITY_ENABLED = (
 COPY_FILE_CAPABILITY_ENABLED = (
     runtime_value("MCP__FILE__COPY_FILE_MUTATION_ENABLED", "false") == "true"
 )
+TRASH_FILE_CAPABILITY_ENABLED = (
+    runtime_value("MCP__FILE__TRASH_FILE_MUTATION_ENABLED", "false") == "true"
+)
 WRITE_FILE_CAPABILITY_ENABLED = (
     runtime_value("MCP__FILE__WRITE_MUTATION_ENABLED", "false") == "true"
 )
@@ -119,6 +124,7 @@ TOOLS = [
     "project_service_status",
     "create_directory",
     "copy_file",
+    "trash_file",
     "find_paths",
     "hash_file",
     "list_directory",
@@ -134,14 +140,29 @@ MAX_WRITE_FILE_BYTES = 1_048_576
 MAX_WRITE_FILE_RESPONSE_BYTES = 16_384
 MAX_COPY_FILE_BYTES = 1_048_576
 MAX_COPY_FILE_RESPONSE_BYTES = 16_384
+MAX_TRASH_FILE_BYTES = 1_048_576
+MAX_TRASH_FILE_RESPONSE_BYTES = 16_384
+MAX_TRASH_ARTIFACTS = 32
+MAX_TRASH_BYTES = MAX_TRASH_ARTIFACTS * MAX_TRASH_FILE_BYTES
 COPY_AUDIT: dict[str, dict[str, dict[str, int]]] = {
-    "by_tool": {"copy_file": {"allowed": 0, "denied": 0}},
+    "by_tool": {
+        "copy_file": {"allowed": 0, "denied": 0},
+        "trash_file": {"allowed": 0, "denied": 0},
+    },
     "by_reason_code": {},
 }
 
 
 def record_copy_audit(outcome: str, reason: str) -> None:
     COPY_AUDIT["by_tool"]["copy_file"][outcome] += 1
+    counters = COPY_AUDIT["by_reason_code"].setdefault(
+        reason, {"allowed": 0, "denied": 0}
+    )
+    counters[outcome] += 1
+
+
+def record_trash_audit(outcome: str, reason: str) -> None:
+    COPY_AUDIT["by_tool"]["trash_file"][outcome] += 1
     counters = COPY_AUDIT["by_reason_code"].setdefault(
         reason, {"allowed": 0, "denied": 0}
     )
@@ -184,8 +205,11 @@ def capability_error(identifier: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def is_write_quarantine_component(component: str) -> bool:
-    return component.isascii() and component.lower() == WRITE_QUARANTINE_COMPONENT
+def is_quarantine_component(component: str) -> bool:
+    return component.isascii() and component.lower() in {
+        WRITE_QUARANTINE_COMPONENT,
+        TRASH_QUARANTINE_COMPONENT,
+    }
 
 
 def safe_path(raw: str) -> pathlib.Path | None:
@@ -198,7 +222,7 @@ def safe_path(raw: str) -> pathlib.Path | None:
         if os.path.commonpath((str(SAFE_ROOT), str(resolved))) != str(SAFE_ROOT):
             return None
         relative = resolved.relative_to(SAFE_ROOT)
-        if any(is_write_quarantine_component(part) for part in relative.parts):
+        if any(is_quarantine_component(part) for part in relative.parts):
             return None
         return resolved
     except (OSError, ValueError):
@@ -328,6 +352,96 @@ def publish_fixture_write(
                 staging.unlink()
             except FileNotFoundError:
                 pass
+
+
+def validate_trash_quarantine(quarantine: pathlib.Path) -> tuple[int, int]:
+    metadata = quarantine.stat(follow_symlinks=False)
+    if (
+        quarantine.is_symlink()
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise OSError("fixture trash quarantine is invalid")
+    count = 0
+    total_bytes = 0
+    for artifact in quarantine.iterdir():
+        artifact_metadata = artifact.stat(follow_symlinks=False)
+        identifier = artifact.name.removeprefix(TRASH_ARTIFACT_PREFIX)
+        try:
+            canonical_identifier = str(uuid.UUID(identifier))
+        except ValueError:
+            canonical_identifier = ""
+        if (
+            not artifact.name.startswith(TRASH_ARTIFACT_PREFIX)
+            or artifact.is_symlink()
+            or not stat.S_ISREG(artifact_metadata.st_mode)
+            or canonical_identifier != identifier
+            or artifact_metadata.st_nlink != 1
+            or artifact_metadata.st_size > MAX_TRASH_FILE_BYTES
+        ):
+            raise OSError("fixture trash quarantine entry is invalid")
+        count += 1
+        total_bytes += artifact_metadata.st_size
+    if count > MAX_TRASH_ARTIFACTS or total_bytes > MAX_TRASH_BYTES:
+        raise OSError("fixture trash quarantine capacity exceeded")
+    return count, total_bytes
+
+
+def publish_fixture_trash(target: pathlib.Path) -> pathlib.Path:
+    target_metadata = target.stat(follow_symlinks=False)
+    target_content = target.read_bytes()
+    quarantine = target.parent / TRASH_QUARANTINE_COMPONENT
+    try:
+        quarantine.mkdir(mode=0o700)
+        quarantine.chmod(0o700)
+    except FileExistsError:
+        pass
+    count, total_bytes = validate_trash_quarantine(quarantine)
+    if (
+        count >= MAX_TRASH_ARTIFACTS
+        or total_bytes + target_metadata.st_size > MAX_TRASH_BYTES
+    ):
+        raise OSError("fixture trash quarantine capacity exceeded")
+
+    artifact = quarantine / f"{TRASH_ARTIFACT_PREFIX}{uuid.uuid4()}"
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError("fixture requires atomic no-replace rename support")
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(target), -100, os.fsencode(artifact), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+    retained = artifact.stat(follow_symlinks=False)
+    if (
+        target.exists()
+        or target.is_symlink()
+        or not stat.S_ISREG(retained.st_mode)
+        or retained.st_nlink != 1
+        or (retained.st_dev, retained.st_ino, retained.st_size)
+        != (target_metadata.st_dev, target_metadata.st_ino, target_metadata.st_size)
+        or artifact.read_bytes() != target_content
+    ):
+        raise OSError("fixture trash publication verification failed")
+    for directory in (target.parent, quarantine):
+        descriptor = os.open(
+            directory,
+            os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    validate_trash_quarantine(quarantine)
+    return artifact
 
 
 def grant_binding(
@@ -524,6 +638,71 @@ def copy_grant_binding(
     return hmac.new(key, operation, hashlib.sha256).digest()
 
 
+def trash_path_digest(path: pathlib.Path) -> bytes:
+    relative = path.relative_to(SAFE_ROOT)
+    digest = hashlib.sha256()
+    digest.update(b"termux-mcp:trash-file-target:v1\0")
+    count = 0
+    for component in relative.parts:
+        encoded = os.fsencode(component)
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+        count += 1
+    if count == 0:
+        raise ValueError("empty trash path")
+    digest.update(struct.pack(">I", count))
+    return digest.digest()
+
+
+def trash_grant_binding(
+    grant_id: bytes,
+    session_id: str,
+    target: pathlib.Path,
+) -> bytes:
+    key = bytes.fromhex(CAPABILITY_KEY_HEX)
+    principal = hmac.new(
+        key,
+        b"termux-mcp:trash-file-principal:v1\0" + TOKEN.encode(),
+        hashlib.sha256,
+    ).digest()
+    parsed_session = uuid.UUID(session_id)
+    if str(parsed_session) != session_id:
+        raise ValueError("invalid canonical session")
+    metadata = target.stat(follow_symlinks=False)
+    if (
+        target.is_symlink()
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_size > MAX_TRASH_FILE_BYTES
+    ):
+        raise ValueError("invalid trash target")
+    content = target.read_bytes()
+    if len(content) != metadata.st_size:
+        raise ValueError("trash target changed")
+    root_metadata = SAFE_ROOT.stat(follow_symlinks=False)
+    ctime_seconds, ctime_nanoseconds = divmod(metadata.st_ctime_ns, 1_000_000_000)
+    operation = (
+        b"termux-mcp:trash-file-operation-binding:v1\0"
+        + grant_id
+        + principal
+        + parsed_session.bytes
+        + bytes([5, 1, 1])
+        + struct.pack(">QQ", root_metadata.st_dev, root_metadata.st_ino)
+        + trash_path_digest(target)
+        + hashlib.sha256(content).digest()
+        + struct.pack(
+            ">QQQqqQ",
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            ctime_seconds,
+            ctime_nanoseconds,
+            metadata.st_nlink,
+        )
+    )
+    return hmac.new(key, operation, hashlib.sha256).digest()
+
+
 def read_private_write_content() -> tuple[bytes, os.stat_result]:
     raw_path = os.environ.get("MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE", "")
     path = pathlib.Path(raw_path)
@@ -584,6 +763,7 @@ def issue_fixture_grant(purpose: str) -> str:
     enabled = {
         "create_directory": CREATE_DIRECTORY_CAPABILITY_ENABLED,
         "copy_file": COPY_FILE_CAPABILITY_ENABLED,
+        "trash_file": TRASH_FILE_CAPABILITY_ENABLED,
         "write_file": WRITE_FILE_CAPABILITY_ENABLED,
     }.get(purpose, False)
     if not enabled:
@@ -613,6 +793,14 @@ def issue_fixture_grant(purpose: str) -> str:
         disposition = None
         payload_size = 65
         content_identity = None
+    elif purpose == "trash_file":
+        target = safe_path(os.environ.get("MCP__CAPABILITY__TRASH_FILE_TARGET", ""))
+        content = None
+        disposition = None
+        payload_size = 65
+        content_identity = None
+        source = None
+        destination = None
     elif purpose == "write_file":
         target = safe_path(os.environ.get("MCP__CAPABILITY__WRITE_FILE_TARGET", ""))
         content, content_identity = read_private_write_content()
@@ -637,6 +825,14 @@ def issue_fixture_grant(purpose: str) -> str:
             or source.stat(follow_symlinks=False).st_size > MAX_COPY_FILE_BYTES
             or destination.exists()
             or destination.is_symlink()
+        ):
+            raise SystemExit(2)
+    if purpose == "trash_file":
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat(follow_symlinks=False).st_nlink != 1
+            or target.stat(follow_symlinks=False).st_size > MAX_TRASH_FILE_BYTES
         ):
             raise SystemExit(2)
     if purpose == "write_file":
@@ -677,6 +873,9 @@ def issue_fixture_grant(purpose: str) -> str:
     elif purpose == "copy_file":
         binding = copy_grant_binding(grant_id, session_id, source, destination)
         payload = grant_id + bytes([4]) + binding + timestamps
+    elif purpose == "trash_file":
+        binding = trash_grant_binding(grant_id, session_id, target)
+        payload = grant_id + bytes([5]) + binding + timestamps
     else:
         binding = grant_binding(purpose, session_id, target, content, disposition)
         payload = grant_id + binding + timestamps
@@ -721,11 +920,15 @@ def consume_fixture_grant(
     if not hmac.compare_digest(signature, expected):
         return "capability_grant_signature_invalid"
     grant_id = payload[:16]
-    if purpose in {"write_file", "copy_file"}:
+    if purpose in {"write_file", "copy_file", "trash_file"}:
         capability = payload[16]
         binding = payload[17:49]
         issued, expires = struct.unpack(">QQ", payload[49:65])
-        expected_capability = 2 if purpose == "write_file" else 4
+        expected_capability = {
+            "write_file": 2,
+            "copy_file": 4,
+            "trash_file": 5,
+        }[purpose]
     else:
         capability = payload[64]
         binding = payload[16:48]
@@ -743,6 +946,8 @@ def consume_fixture_grant(
             expected_binding = copy_grant_binding(
                 grant_id, session_id, target, disposition
             )
+        elif purpose == "trash_file":
+            expected_binding = trash_grant_binding(grant_id, session_id, target)
         else:
             expected_binding = grant_binding(
                 purpose,
@@ -1019,6 +1224,29 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name == "trash_file":
+                    trash_dry_run: dict[str, Any] = {"type": "boolean"}
+                    if not TRASH_FILE_CAPABILITY_ENABLED:
+                        trash_dry_run["const"] = True
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": (
+                                "Fixture trash_file requires an identity/content-bound MCP-Capability-Grant and retains recovery for explicit mutation."
+                                if TRASH_FILE_CAPABILITY_ENABLED
+                                else "Fixture trash_file mutation gate is disabled."
+                            ),
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "dry_run": trash_dry_run,
+                                },
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 elif name == "find_paths":
                     tools.append(
                         {
@@ -1179,7 +1407,12 @@ class Handler(BaseHTTPRequestHandler):
         params = request.get("params") or {}
         name = params.get("name")
         arguments = params.get("arguments") or {}
-        if grant is not None and name not in {"create_directory", "copy_file", "write_file"}:
+        if grant is not None and name not in {
+            "create_directory",
+            "copy_file",
+            "trash_file",
+            "write_file",
+        }:
             self.send_json(
                 400,
                 rpc_error(
@@ -1272,6 +1505,21 @@ class Handler(BaseHTTPRequestHandler):
                         "copyFileMaxBytes": MAX_COPY_FILE_BYTES,
                         "copyFileMaxResponseBytes": MAX_COPY_FILE_RESPONSE_BYTES,
                         "copyFileResponsePosture": "path_free_bounded_metadata_only",
+                        "trashFileMutationEnabled": TRASH_FILE_CAPABILITY_ENABLED,
+                        "trashFileMode": (
+                            "dry_run_or_identity_content_scoped_single_use_grant_with_recovery_retained"
+                            if TRASH_FILE_CAPABILITY_ENABLED
+                            else "dry_run_only_mutation_disabled"
+                        ),
+                        "trashFileGrantRequired": TRASH_FILE_CAPABILITY_ENABLED,
+                        "trashFileGrantHeader": "mcp-capability-grant",
+                        "trashFileGrantTtlSeconds": 60,
+                        "trashFileGrantBinding": "root_path_single_link_identity_size_ctime_sha256_recovery_retained",
+                        "trashFileMaxBytes": MAX_TRASH_FILE_BYTES,
+                        "trashFileMaxResponseBytes": MAX_TRASH_FILE_RESPONSE_BYTES,
+                        "trashFileQuarantineMaxArtifacts": MAX_TRASH_ARTIFACTS,
+                        "trashFileQuarantineMaxBytes": MAX_TRASH_BYTES,
+                        "trashFileResponsePosture": "path_and_artifact_free_bounded_metadata_only",
                         "fileWrites": True,
                         "fileWriteMode": (
                             "dry_run_or_target_content_disposition_scoped_single_use_grant"
@@ -1513,6 +1761,130 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if name == "trash_file":
+            raw_path = arguments.get("path")
+            dry_run = arguments.get("dry_run", True)
+            if (
+                not isinstance(raw_path, str)
+                or not isinstance(dry_run, bool)
+                or set(arguments) not in ({"path"}, {"path", "dry_run"})
+            ):
+                record_trash_audit("denied", "invalid_arguments")
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Tool arguments are invalid."),
+                )
+                return
+            if grant is not None and dry_run:
+                record_trash_audit("denied", "invalid_arguments")
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32600,
+                        "Invalid Request",
+                        "Capability context is not allowed.",
+                    ),
+                )
+                return
+            if not dry_run and not TRASH_FILE_CAPABILITY_ENABLED:
+                record_trash_audit("denied", "trash_file_mutation_disabled")
+                self.send_json(
+                    403,
+                    capability_error(identifier, "trash_file_mutation_disabled"),
+                )
+                return
+            if not dry_run and grant is None:
+                record_trash_audit("denied", "capability_grant_missing")
+                self.send_json(403, capability_error(identifier, "capability_grant_missing"))
+                return
+
+            response_preflight = result(
+                identifier,
+                {
+                    "dryRun": dry_run,
+                    "sizeBytes": MAX_TRASH_FILE_BYTES,
+                    "recoveryArtifactRetained": not dry_run,
+                    "maxFileBytes": MAX_TRASH_FILE_BYTES,
+                    "maxResponseBytes": MAX_TRASH_FILE_RESPONSE_BYTES,
+                },
+            )
+            if len(payload_bytes(response_preflight)) > MAX_TRASH_FILE_RESPONSE_BYTES:
+                error = rpc_error(
+                    identifier,
+                    -32001,
+                    "Payload too large",
+                    "Trash response exceeds the bounded response byte limit.",
+                )
+                if len(payload_bytes(error)) > MAX_TRASH_FILE_RESPONSE_BYTES:
+                    error = rpc_error(
+                        None,
+                        -32001,
+                        "Payload too large",
+                        "Trash response exceeds the bounded response byte limit.",
+                    )
+                record_trash_audit("denied", "response_limit_exceeded")
+                self.send_json(413, error)
+                return
+
+            target = safe_path(raw_path)
+            if (
+                target is None
+                or target == SAFE_ROOT
+                or target.is_symlink()
+                or not target.is_file()
+                or target.stat(follow_symlinks=False).st_nlink != 1
+            ):
+                record_trash_audit("denied", "filesystem_trash_target_type_unsupported")
+                self.send_json(
+                    400,
+                    rpc_error(identifier, -32602, "Invalid params", "Trash target invalid."),
+                )
+                return
+            content = target.read_bytes()
+            if len(content) > MAX_TRASH_FILE_BYTES:
+                record_trash_audit("denied", "filesystem_trash_target_too_large")
+                self.send_json(
+                    413,
+                    rpc_error(
+                        identifier,
+                        -32001,
+                        "Payload too large",
+                        "Trash target exceeds the bounded file limit.",
+                    ),
+                )
+                return
+            if not dry_run:
+                denial = consume_fixture_grant(
+                    grant,
+                    "trash_file",
+                    SESSION_ID,
+                    target,
+                )
+                if denial is not None:
+                    record_trash_audit("denied", denial)
+                    self.send_json(403, capability_error(identifier, denial))
+                    return
+                publish_fixture_trash(target)
+                record_trash_audit(
+                    "allowed", "safe_root_file_trashed_recovery_retained"
+                )
+            else:
+                record_trash_audit("allowed", "dry_run_preview")
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "dryRun": dry_run,
+                        "sizeBytes": len(content),
+                        "recoveryArtifactRetained": not dry_run,
+                        "maxFileBytes": MAX_TRASH_FILE_BYTES,
+                        "maxResponseBytes": MAX_TRASH_FILE_RESPONSE_BYTES,
+                    },
+                ),
+            )
+            return
         if name == "find_paths":
             target = safe_path(str(arguments.get("path", "")))
             query = arguments.get("query")
@@ -1551,7 +1923,7 @@ class Handler(BaseHTTPRequestHandler):
                     skipped_unreadable_entries += 1
                     continue
                 for entry in entries:
-                    if is_write_quarantine_component(entry.name):
+                    if is_quarantine_component(entry.name):
                         continue
                     if entries_examined >= 8192 or len(matches) >= 512:
                         truncated = True
@@ -1676,7 +2048,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             entries = []
             for child in sorted(target.iterdir(), key=lambda item: str(item)):
-                if is_write_quarantine_component(child.name):
+                if is_quarantine_component(child.name):
                     continue
                 metadata = child.stat()
                 entries.append(
@@ -2042,7 +2414,7 @@ class Handler(BaseHTTPRequestHandler):
             truncated = False
             match_limit_reached = False
             for child in sorted(target.iterdir(), key=lambda item: str(item)):
-                if is_write_quarantine_component(child.name):
+                if is_quarantine_component(child.name):
                     continue
                 entries_examined += 1
                 if child.is_symlink():
@@ -2249,6 +2621,10 @@ if POSTURE == "issue-create":
 
 if POSTURE == "issue-copy":
     print(issue_fixture_grant("copy_file"))
+    raise SystemExit(0)
+
+if POSTURE == "issue-trash":
+    print(issue_fixture_grant("trash_file"))
     raise SystemExit(0)
 
 if POSTURE == "issue-write":

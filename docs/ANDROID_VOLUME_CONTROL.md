@@ -109,7 +109,7 @@ and expiry.
 
 The signed family code is allocated by the single project-wide request-grant
 registry: directory creation is `1`, file write is `2`, Android volume is `3`,
-and file copy reserves `4` for any future separately reviewed grant gate. The
+file copy is `4`, and reversible file trash is `5`. The
 registry is an internal wire-compatibility boundary; callers cannot select or
 override a family code.
 

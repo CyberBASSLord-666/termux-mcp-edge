@@ -2,14 +2,14 @@
 
 Termux MCP Edge treats the general high-impact capability-token model as future authorization metadata, not as an enabled runtime surface. The primitives in `src/capability_token.rs` remain intentionally inert: they model decisions for later review without accepting, generating, persisting, serializing, or validating raw bearer tokens or secrets.
 
-This module is distinct from the live, purpose-built request grants in `src/create_directory_grant.rs`, `src/copy_file_grant.rs`, and `src/write_file_grant.rs`. The directory primitive authorizes one already-confined absent directory target. The copy primitive authorizes one exact confined source identity and byte digest to one absent no-replace destination. The write primitive authorizes one confined target, exact content digest, create-or-replace disposition, and mutating posture. They are specified in [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md), and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md), use distinct capability codes, and do not activate this general high-impact framework.
+This module is distinct from the live, purpose-built request grants in `src/create_directory_grant.rs`, `src/copy_file_grant.rs`, `src/trash_file_grant.rs`, and `src/write_file_grant.rs`. The directory primitive authorizes one already-confined absent directory target. The copy primitive authorizes one exact confined source identity and byte digest to one absent no-replace destination. The trash primitive authorizes recovery-retained movement of one exact confined single-link file identity/content into a private bounded quarantine. The write primitive authorizes one confined target, exact content digest, create-or-replace disposition, and mutating posture. They are specified in [`CREATE_DIRECTORY_CAPABILITY_GRANTS.md`](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [`COPY_FILE_CAPABILITY_GRANTS.md`](COPY_FILE_CAPABILITY_GRANTS.md), [`TRASH_FILE_CAPABILITY_GRANTS.md`](TRASH_FILE_CAPABILITY_GRANTS.md), and [`WRITE_FILE_CAPABILITY_GRANTS.md`](WRITE_FILE_CAPABILITY_GRANTS.md), use distinct capability codes, and do not activate this general high-impact framework.
 
 This contract defines the minimum integration boundary for any later PR that evaluates high-impact capability grants.
 
 ## Current status
 
 - Capability-token policy primitives exist for review and tests.
-- No tool is exposed by the general capability-token primitives; the separate directory, file-write, and exact-stream volume grants authorize only their documented narrow live operations.
+- No tool is exposed by the general capability-token primitives; the separate directory, file-copy, file-trash, file-write, and exact-stream volume grants authorize only their documented narrow live operations.
 - No command execution, package management, Android device control, network mutation, or project-service mutation is enabled by these primitives.
 - Runtime behavior remains default-deny unless a later focused PR explicitly changes a narrowly scoped gate.
 

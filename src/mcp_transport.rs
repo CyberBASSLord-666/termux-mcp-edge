@@ -71,20 +71,26 @@ use crate::{
         collect_project_service_status, ProjectServiceStatusError, PROJECT_SERVICE_ALLOWLIST,
     },
     tools::{
-        AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedWriteFileError,
-        FileSystemTools, FindPathFilter, PreparedCopyFileMutation, PreparedCreateDirectoryMutation,
-        SafeRootConfigurationError, COPY_FILE_MODE, MAX_BINARY_RANGE_BASE64_BYTES,
-        MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES,
-        MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES,
-        MAX_COPY_FILE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
-        MAX_FIND_DEPTH, MAX_FIND_ENTRIES, MAX_FIND_MATCHES, MAX_FIND_QUERY_BYTES,
-        MAX_FIND_RESPONSE_BYTES, MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES,
-        MAX_LIST_RESPONSE_BYTES, MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES,
-        MAX_SEARCH_DEPTH, MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES,
+        AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedTrashFileError,
+        AuthorizedWriteFileError, FileSystemTools, FindPathFilter, PreparedCopyFileMutation,
+        PreparedCreateDirectoryMutation, PreparedTrashFileMutation, SafeRootConfigurationError,
+        COPY_FILE_MODE, MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES,
+        MAX_BINARY_RANGE_FILE_BYTES, MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES,
+        MAX_BINARY_READ_BYTES, MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_BYTES,
+        MAX_COPY_FILE_RESPONSE_BYTES, MAX_CREATE_DIRECTORY_RESPONSE_BYTES, MAX_FIND_DEPTH,
+        MAX_FIND_ENTRIES, MAX_FIND_MATCHES, MAX_FIND_QUERY_BYTES, MAX_FIND_RESPONSE_BYTES,
+        MAX_HASH_FILE_BYTES, MAX_HASH_FILE_RESPONSE_BYTES, MAX_LIST_RESPONSE_BYTES,
+        MAX_PATH_METADATA_RESPONSE_BYTES, MAX_READ_RESPONSE_BYTES, MAX_SEARCH_DEPTH,
+        MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_TEXT_RANGE_BYTES,
         MAX_TEXT_RANGE_ESCAPED_BYTES, MAX_TEXT_RANGE_FILE_BYTES, MAX_TEXT_RANGE_RESPONSE_BYTES,
-        MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
+        MAX_TRASH_FILE_BYTES, MAX_TRASH_FILE_QUARANTINE_ARTIFACTS, MAX_TRASH_FILE_QUARANTINE_BYTES,
+        MAX_TRASH_FILE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH,
+        MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
     transport_security::TransportSecurityPolicy,
+    trash_file_grant::{
+        TrashFileGrantAuthority, TrashFileGrantError, TRASH_FILE_GRANT_TTL_SECONDS,
+    },
     write_file_grant::{
         WriteFileGrantAuthority, WriteFileGrantError, WRITE_FILE_GRANT_TTL_SECONDS,
     },
@@ -128,6 +134,7 @@ const SET_ANDROID_VOLUME_TOOL: &str = "set_android_volume";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const COPY_FILE_TOOL: &str = "copy_file";
+const TRASH_FILE_TOOL: &str = "trash_file";
 const FIND_PATHS_TOOL: &str = "find_paths";
 const HASH_FILE_TOOL: &str = "hash_file";
 const LIST_DIRECTORY_TOOL: &str = "list_directory";
@@ -138,13 +145,14 @@ const READ_FILE_TOOL: &str = "read_file";
 const READ_TEXT_RANGE_TOOL: &str = "read_text_range";
 const SEARCH_TEXT_TOOL: &str = "search_text";
 const WRITE_FILE_TOOL: &str = "write_file";
-const BASE_AVAILABLE_TOOLS: [&str; 16] = [
+const BASE_AVAILABLE_TOOLS: [&str; 17] = [
     RUNTIME_STATUS_TOOL,
     PLATFORM_INFO_TOOL,
     ANDROID_STATUS_TOOL,
     PROJECT_SERVICE_STATUS_TOOL,
     CREATE_DIRECTORY_TOOL,
     COPY_FILE_TOOL,
+    TRASH_FILE_TOOL,
     FIND_PATHS_TOOL,
     HASH_FILE_TOOL,
     LIST_DIRECTORY_TOOL,
@@ -186,6 +194,7 @@ const MAX_MCP_COLLECTED_JSON_RESPONSE_BYTES: usize = maximum_response_contract(&
     MAX_PATH_METADATA_RESPONSE_BYTES,
     MAX_CREATE_DIRECTORY_RESPONSE_BYTES,
     MAX_COPY_FILE_RESPONSE_BYTES,
+    MAX_TRASH_FILE_RESPONSE_BYTES,
     MAX_WRITE_FILE_RESPONSE_BYTES,
     MAX_FIND_RESPONSE_BYTES,
     MAX_SEARCH_RESPONSE_BYTES,
@@ -293,6 +302,15 @@ const FILESYSTEM_COPY_MUTATION_DISABLED: &str = "copy_file_mutation_disabled";
 const FILESYSTEM_COPY_QUARANTINE_FULL: &str = "filesystem_copy_quarantine_capacity_exceeded";
 const FILESYSTEM_COPY_QUARANTINE_BUSY: &str = "filesystem_copy_quarantine_busy";
 const FILESYSTEM_COPY_FAILED: &str = "filesystem_copy_failed";
+const FILESYSTEM_TRASH_ALLOWED: &str = "safe_root_file_trashed_recovery_retained";
+const FILESYSTEM_TRASH_NOT_FOUND: &str = "filesystem_trash_target_not_found";
+const FILESYSTEM_TRASH_UNSUPPORTED: &str = "filesystem_trash_target_type_unsupported";
+const FILESYSTEM_TRASH_TOO_LARGE: &str = "filesystem_trash_target_too_large";
+const FILESYSTEM_TRASH_TARGET_CHANGED: &str = "filesystem_trash_target_changed";
+const FILESYSTEM_TRASH_MUTATION_DISABLED: &str = "trash_file_mutation_disabled";
+const FILESYSTEM_TRASH_QUARANTINE_FULL: &str = "trash_quarantine_capacity_exceeded";
+const FILESYSTEM_TRASH_QUARANTINE_BUSY: &str = "trash_quarantine_busy";
+const FILESYSTEM_TRASH_FAILED: &str = "filesystem_trash_failed";
 const FILESYSTEM_FIND_ALLOWED: &str = "safe_root_paths_found";
 const FILESYSTEM_FIND_INVALID_QUERY: &str = "find_query_invalid";
 const FILESYSTEM_FIND_FAILED: &str = "filesystem_find_failed";
@@ -470,6 +488,81 @@ impl Drop for CopyFileMutationAuditGuard {
                 FILESYSTEM_WRITE_GATE,
                 AuditMode::Mutating,
                 FILESYSTEM_COPY_FAILED,
+            );
+            self.recorded = true;
+        }
+    }
+}
+
+/// Owns the single path-free terminal audit decision for one trash worker.
+struct TrashFileMutationAuditGuard {
+    counters: SharedAuditCounters,
+    recorded: bool,
+}
+
+impl TrashFileMutationAuditGuard {
+    fn new(counters: SharedAuditCounters) -> Self {
+        Self {
+            counters,
+            recorded: false,
+        }
+    }
+
+    fn finish<T>(mut self, outcome: &Result<T, AuthorizedTrashFileError>) {
+        match outcome {
+            Ok(_) => record_filesystem_allowed(
+                &self.counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_TRASH_ALLOWED,
+            ),
+            Err(AuthorizedTrashFileError::Authorization(error)) => record_filesystem_denied(
+                &self.counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                error.reason_code(),
+            ),
+            Err(AuthorizedTrashFileError::Filesystem(error)) => record_filesystem_denied(
+                &self.counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                trash_file_filesystem_reason(error),
+            ),
+            Err(AuthorizedTrashFileError::Cancelled) => record_filesystem_denied(
+                &self.counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_MUTATION_REQUEST_CANCELLED,
+            ),
+        }
+        self.recorded = true;
+    }
+
+    fn cancelled(mut self) {
+        record_filesystem_denied(
+            &self.counters,
+            TRASH_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            AuditMode::Mutating,
+            FILESYSTEM_MUTATION_REQUEST_CANCELLED,
+        );
+        self.recorded = true;
+    }
+}
+
+impl Drop for TrashFileMutationAuditGuard {
+    fn drop(&mut self) {
+        if !self.recorded {
+            record_filesystem_denied(
+                &self.counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::Mutating,
+                FILESYSTEM_TRASH_FAILED,
             );
             self.recorded = true;
         }
@@ -875,6 +968,95 @@ fn run_prepared_copy_file_mutation(
     FilesystemMutationWorkerOutcome::Completed(outcome)
 }
 
+struct TrashFileMutationWorker {
+    file_tools: FileSystemTools,
+    path: String,
+    authority: TrashFileGrantAuthority,
+    capability_grant: Option<String>,
+    session_id: String,
+    commit: FilesystemMutationWorkerCommitGuard,
+    audit: TrashFileMutationAuditGuard,
+}
+
+fn run_trash_file_mutation_worker(
+    worker: TrashFileMutationWorker,
+) -> FilesystemMutationWorkerOutcome<crate::tools::TrashFileResult, AuthorizedTrashFileError> {
+    run_trash_file_mutation_worker_inner(worker, None::<fn()>)
+}
+
+#[cfg(test)]
+fn run_trash_file_mutation_worker_with_lock_contention_hook(
+    worker: TrashFileMutationWorker,
+    on_lock_contention: impl FnOnce(),
+) -> FilesystemMutationWorkerOutcome<crate::tools::TrashFileResult, AuthorizedTrashFileError> {
+    run_trash_file_mutation_worker_inner(worker, Some(on_lock_contention))
+}
+
+fn run_trash_file_mutation_worker_inner(
+    worker: TrashFileMutationWorker,
+    on_lock_contention: Option<impl FnOnce()>,
+) -> FilesystemMutationWorkerOutcome<crate::tools::TrashFileResult, AuthorizedTrashFileError> {
+    let TrashFileMutationWorker {
+        file_tools,
+        path,
+        authority,
+        capability_grant,
+        session_id,
+        commit,
+        audit,
+    } = worker;
+    let prepared = match file_tools.prepare_trash_file_mutation_blocking(path) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let outcome = Err(AuthorizedTrashFileError::Filesystem(error));
+            audit.finish(&outcome);
+            return FilesystemMutationWorkerOutcome::Completed(outcome);
+        }
+    };
+    run_prepared_trash_file_mutation(
+        prepared,
+        authority,
+        capability_grant,
+        session_id,
+        commit,
+        audit,
+        on_lock_contention,
+    )
+}
+
+fn run_prepared_trash_file_mutation(
+    prepared: PreparedTrashFileMutation,
+    authority: TrashFileGrantAuthority,
+    capability_grant: Option<String>,
+    session_id: String,
+    commit: FilesystemMutationWorkerCommitGuard,
+    audit: TrashFileMutationAuditGuard,
+    on_lock_contention: Option<impl FnOnce()>,
+) -> FilesystemMutationWorkerOutcome<crate::tools::TrashFileResult, AuthorizedTrashFileError> {
+    let authorize_and_commit = |target: &crate::trash_file_grant::TrashFileGrantTarget| {
+        if !commit.claim() {
+            return Err(AuthorizedTrashFileError::Cancelled);
+        }
+        authority
+            .consume(capability_grant.as_deref(), &session_id, target)
+            .map_err(AuthorizedTrashFileError::Authorization)
+    };
+    let outcome = match on_lock_contention {
+        Some(on_lock_contention) => prepared
+            .execute_authorized_with_commit_and_lock_contention_hook(
+                authorize_and_commit,
+                on_lock_contention,
+            ),
+        None => prepared.execute_authorized_with_commit(authorize_and_commit),
+    };
+    if matches!(outcome, Err(AuthorizedTrashFileError::Cancelled)) {
+        audit.cancelled();
+        return FilesystemMutationWorkerOutcome::Cancelled;
+    }
+    audit.finish(&outcome);
+    FilesystemMutationWorkerOutcome::Completed(outcome)
+}
+
 struct WriteFileMutationWorker {
     file_tools: FileSystemTools,
     path: String,
@@ -962,6 +1144,7 @@ impl McpTransportOptions {
 struct FilesystemMutationAuthorities {
     create_directory: Option<CreateDirectoryGrantAuthority>,
     copy_file: Option<CopyFileGrantAuthority>,
+    trash_file: Option<TrashFileGrantAuthority>,
     write_file: Option<WriteFileGrantAuthority>,
 }
 
@@ -1047,6 +1230,10 @@ impl std::fmt::Debug for McpRouterBuilder {
             .field(
                 "copy_file_authority",
                 &self.filesystem_authorities.copy_file.is_some(),
+            )
+            .field(
+                "trash_file_authority",
+                &self.filesystem_authorities.trash_file.is_some(),
             )
             .field(
                 "write_file_authority",
@@ -1136,6 +1323,18 @@ impl McpRouterBuilder {
         Ok(self)
     }
 
+    pub fn try_with_trash_file_authority(
+        mut self,
+        authority: TrashFileGrantAuthority,
+    ) -> Result<Self, McpRouterBuildError> {
+        self.ensure_authority_principal(
+            "trash_file",
+            authority.binds_static_principal(self.auth_policy.static_principal()),
+        )?;
+        self.filesystem_authorities.trash_file = Some(authority);
+        Ok(self)
+    }
+
     pub fn try_with_write_file_authority(
         mut self,
         authority: WriteFileGrantAuthority,
@@ -1201,6 +1400,7 @@ impl McpRouterBuilder {
         let FilesystemMutationAuthorities {
             create_directory,
             copy_file,
+            trash_file,
             write_file,
         } = filesystem_authorities;
         let state = McpTransportState::try_new(
@@ -1213,6 +1413,7 @@ impl McpRouterBuilder {
             write_file,
         )?
         .with_copy_file_authority(copy_file)
+        .with_trash_file_authority(trash_file)
         .with_options(options);
         #[cfg(feature = "android-volume-control")]
         let state = state.with_android_volume_control_authority(android_volume_control_authority);
@@ -1239,6 +1440,7 @@ struct McpTransportState {
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     copy_file_authority: Option<CopyFileGrantAuthority>,
+    trash_file_authority: Option<TrashFileGrantAuthority>,
     write_file_authority: Option<WriteFileGrantAuthority>,
     #[cfg(feature = "android-battery-status")]
     android_battery_client: AndroidBatteryClient,
@@ -1324,6 +1526,7 @@ impl McpTransportState {
             command_execution_enabled,
             create_directory_authority,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority,
             #[cfg(feature = "android-battery-status")]
             android_battery_client,
@@ -1370,6 +1573,11 @@ impl McpTransportState {
         self
     }
 
+    fn with_trash_file_authority(mut self, authority: Option<TrashFileGrantAuthority>) -> Self {
+        self.trash_file_authority = authority;
+        self
+    }
+
     #[cfg(feature = "android-volume-control")]
     fn with_android_volume_control_authority(
         mut self,
@@ -1400,6 +1608,7 @@ impl McpTransportState {
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority: None,
             android_battery_client,
             #[cfg(feature = "android-volume-status")]
@@ -1433,6 +1642,7 @@ impl McpTransportState {
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
@@ -1466,6 +1676,7 @@ impl McpTransportState {
             command_execution_enabled,
             create_directory_authority: None,
             copy_file_authority: None,
+            trash_file_authority: None,
             write_file_authority: None,
             #[cfg(feature = "android-battery-status")]
             android_battery_client: AndroidBatteryClient::termux(),
@@ -1623,6 +1834,14 @@ struct CreateDirectoryArguments {
 struct CopyFileArguments {
     source_path: String,
     destination_path: String,
+    #[serde(default)]
+    dry_run: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrashFileArguments {
+    path: String,
     #[serde(default)]
     dry_run: Option<bool>,
 }
@@ -2647,6 +2866,25 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
                         },
                     },
                     {
+                        "name": TRASH_FILE_TOOL,
+                        "description": "Validate one bounded single-link safe-rooted regular file for reversible trashing without returning its path or contents. Defaults to dry-run; mutation requires explicit dry_run=false.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": "Absolute single-link regular-file path inside one configured safe root; size must not exceed 1 MiB.",
+                                },
+                                "dry_run": {
+                                    "type": "boolean",
+                                    "description": "Defaults to true. Set explicitly to false to atomically retain exactly one file in the private recovery quarantine.",
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    {
                         "name": FIND_PATHS_TOOL,
                         "description": "Locate bounded case-sensitive literal basename matches below one configured filesystem safe root without reading file contents.",
                         "inputSchema": {
@@ -2953,6 +3191,38 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
         );
     }
 
+    let trash_file_tool = body
+        .pointer_mut("/result/tools")
+        .and_then(Value::as_array_mut)
+        .and_then(|tools| {
+            tools
+                .iter_mut()
+                .find(|tool| tool.get("name") == Some(&json!(TRASH_FILE_TOOL)))
+        })
+        .expect("baseline discovery owns trash_file");
+    if state.trash_file_authority.is_some() {
+        trash_file_tool["description"] = json!(
+            "Validate one bounded single-link safe-rooted regular file, or atomically retain it in a private recovery quarantine only when dry_run=false and one identity/content-bound MCP-Capability-Grant is valid."
+        );
+        let dry_run_schema = trash_file_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("trash_file owns a dry_run schema");
+        dry_run_schema["description"] = json!(
+            "Defaults to true. Explicit false additionally requires the enabled trash mutation gate and one exact request-scoped grant."
+        );
+    } else {
+        trash_file_tool["description"] = json!(
+            "Validate one bounded single-link safe-rooted regular file for reversible trashing without mutation; the dedicated trash mutation gate is disabled."
+        );
+        let dry_run_schema = trash_file_tool
+            .pointer_mut("/inputSchema/properties/dry_run")
+            .expect("trash_file owns a dry_run schema");
+        dry_run_schema["const"] = json!(true);
+        dry_run_schema["description"] = json!(
+            "Mutation is disabled in this runtime posture; omitted dry_run and explicit true are accepted."
+        );
+    }
+
     let write_file_tool = body
         .pointer_mut("/result/tools")
         .and_then(Value::as_array_mut)
@@ -3096,7 +3366,11 @@ async fn handle_tool_call(
     if capability_grant.is_some()
         && !matches!(
             call.name.as_str(),
-            CREATE_DIRECTORY_TOOL | COPY_FILE_TOOL | WRITE_FILE_TOOL | SET_ANDROID_VOLUME_TOOL
+            CREATE_DIRECTORY_TOOL
+                | COPY_FILE_TOOL
+                | TRASH_FILE_TOOL
+                | WRITE_FILE_TOOL
+                | SET_ANDROID_VOLUME_TOOL
         )
     {
         return capability_context_not_allowed(id);
@@ -3165,6 +3439,16 @@ async fn handle_tool_call(
         }
         COPY_FILE_TOOL => {
             handle_copy_file_call(
+                id,
+                call.arguments.into_value(),
+                state,
+                session_id,
+                capability_grant,
+            )
+            .await
+        }
+        TRASH_FILE_TOOL => {
+            handle_trash_file_call(
                 id,
                 call.arguments.into_value(),
                 state,
@@ -3857,6 +4141,7 @@ fn runtime_status_response(
     let audit_counters_snapshot = audit_counters_snapshot(&state.audit_counters);
     let create_directory_mutation_enabled = state.create_directory_authority.is_some();
     let copy_file_mutation_enabled = state.copy_file_authority.is_some();
+    let trash_file_mutation_enabled = state.trash_file_authority.is_some();
     let write_file_mutation_enabled = state.write_file_authority.is_some();
     let android_battery_status_enabled = state.android_battery_status_enabled;
     let android_volume_status_enabled = state.android_volume_status_enabled;
@@ -3915,6 +4200,11 @@ fn runtime_status_response(
     } else {
         "dry_run_only_mutation_disabled"
     };
+    let trash_file_mode = if trash_file_mutation_enabled {
+        "dry_run_or_identity_content_scoped_single_use_grant_with_recovery_retained"
+    } else {
+        "dry_run_only_mutation_disabled"
+    };
     let write_file_mode = if write_file_mutation_enabled {
         "dry_run_or_target_content_disposition_scoped_single_use_grant"
     } else {
@@ -3951,7 +4241,7 @@ fn runtime_status_response(
         "projectServiceStatus": true,
         "projectServiceStatusMode": "read_only_allowlisted_project_service_status",
         "filesystemTools": true,
-        "filesystemToolMode": "default_dry_run_grant_gated_create_directory_copy_file_write_file_plus_bounded_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text",
+        "filesystemToolMode": "default_dry_run_grant_gated_create_directory_copy_file_trash_file_write_file_plus_bounded_find_paths_hash_file_list_directory_path_metadata_read_binary_file_read_binary_range_read_file_read_text_range_search_text",
         "pathDiscovery": true,
         "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
         "pathDiscoveryMaxDepth": MAX_FIND_DEPTH,
@@ -3995,6 +4285,17 @@ fn runtime_status_response(
         "copyFileMaxBytes": MAX_COPY_FILE_BYTES,
         "copyFileMaxResponseBytes": MAX_COPY_FILE_RESPONSE_BYTES,
         "copyFileResponsePosture": "path_free_bounded_metadata_only",
+        "trashFileMutationEnabled": trash_file_mutation_enabled,
+        "trashFileMode": trash_file_mode,
+        "trashFileGrantRequired": trash_file_mutation_enabled,
+        "trashFileGrantHeader": REQUEST_GRANT_HEADER,
+        "trashFileGrantTtlSeconds": TRASH_FILE_GRANT_TTL_SECONDS,
+        "trashFileGrantBinding": "root_path_single_link_identity_size_ctime_sha256_recovery_retained",
+        "trashFileMaxBytes": MAX_TRASH_FILE_BYTES,
+        "trashFileMaxResponseBytes": MAX_TRASH_FILE_RESPONSE_BYTES,
+        "trashFileQuarantineMaxArtifacts": MAX_TRASH_FILE_QUARANTINE_ARTIFACTS,
+        "trashFileQuarantineMaxBytes": MAX_TRASH_FILE_QUARANTINE_BYTES,
+        "trashFileResponsePosture": "path_and_artifact_free_bounded_metadata_only",
         "fileWrites": true,
         "fileWriteMode": write_file_mode,
         "fileWriteMutationEnabled": write_file_mutation_enabled,
@@ -4038,7 +4339,7 @@ fn runtime_status_response(
                 {
                     "type": "text",
                     "text": format!(
-                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, copy_file_mutation={}, write_file_mutation={}, filesystem=default-dry-run-grant-gated-create-directory-copy-file-write-file-plus-bounded-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, copy_file_mutation={}, trash_file_mutation={}, write_file_mutation={}, filesystem=default-dry-run-grant-gated-create-directory-copy-file-trash-file-write-file-plus-bounded-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                         transport_mode,
                         android_platform_mode,
                         battery_mode,
@@ -4046,6 +4347,7 @@ fn runtime_status_response(
                         volume_control_mode,
                         create_directory_mode,
                         copy_file_mode,
+                        trash_file_mode,
                         write_file_mode,
                         if android_volume_control_enabled { "bounded_request_authorized_volume" } else { "disabled" },
                         command_execution_mode,
@@ -5628,6 +5930,296 @@ fn copy_file_filesystem_error_response(id: Option<Value>, error: AppError) -> Re
     }
 }
 
+#[rustfmt::skip]
+async fn handle_trash_file_call(
+    id: Option<Value>,
+    arguments: Option<Value>,
+    state: &McpTransportState,
+    session_id: &str,
+    capability_grant: Option<&str>,
+) -> Response {
+    let file_tools = &state.file_tools;
+    let audit_counters = &state.audit_counters;
+    let arguments = match arguments {
+        Some(arguments) => arguments,
+        None => {
+            record_filesystem_denied(
+                audit_counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_MISSING_ARGUMENTS,
+            );
+            if capability_grant.is_some() {
+                return capability_context_not_allowed(id);
+            }
+            return invalid_params(id, "trash_file requires a path argument.");
+        }
+    };
+
+    let args = match serde_json::from_value::<TrashFileArguments>(arguments) {
+        Ok(args) => args,
+        Err(_error) => {
+            record_filesystem_denied(
+                audit_counters,
+                TRASH_FILE_TOOL,
+                FILESYSTEM_WRITE_GATE,
+                AuditMode::DryRun,
+                FILESYSTEM_INVALID_ARGUMENTS,
+            );
+            if capability_grant.is_some() {
+                return capability_context_not_allowed(id);
+            }
+            return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+        }
+    };
+
+    let dry_run = args.dry_run.unwrap_or(true);
+    let mode = filesystem_write_mode(dry_run);
+    // A request grant has meaning only for an explicit live trash request.
+    // Reject preview smuggling before path resolution or filesystem access.
+    if capability_grant.is_some() && args.dry_run != Some(false) {
+        record_filesystem_denied(
+            audit_counters,
+            TRASH_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_INVALID_ARGUMENTS,
+        );
+        return capability_context_not_allowed(id);
+    }
+    if !dry_run && state.trash_file_authority.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            TRASH_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_TRASH_MUTATION_DISABLED,
+        );
+        return bounded_capability_authorization_denied(
+            id,
+            FILESYSTEM_TRASH_MUTATION_DISABLED,
+            MAX_TRASH_FILE_RESPONSE_BYTES,
+        );
+    }
+    if !dry_run && capability_grant.is_none() {
+        let reason = TrashFileGrantError::Missing.reason_code();
+        record_filesystem_denied(
+            audit_counters,
+            TRASH_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            reason,
+        );
+        return bounded_capability_authorization_denied(
+            id,
+            reason,
+            MAX_TRASH_FILE_RESPONSE_BYTES,
+        );
+    }
+
+    let success_text = if dry_run {
+        "Validated one bounded safe-rooted file for reversible trashing without mutation."
+    } else {
+        "Moved one bounded safe-rooted file into the private recovery quarantine."
+    };
+    // Preflight the longest valid result envelope with the caller's exact id
+    // before descriptor preparation, worker admission, grant consumption, or
+    // mutation. Neither success shape exposes the source or artifact path.
+    let response_preflight = crate::tools::TrashFileResult {
+        dry_run,
+        size_bytes: MAX_TRASH_FILE_BYTES,
+        recovery_artifact_retained: !dry_run,
+        max_file_bytes: MAX_TRASH_FILE_BYTES,
+        max_response_bytes: MAX_TRASH_FILE_RESPONSE_BYTES,
+    };
+    if bounded_ok_result(
+        id.clone(),
+        success_text.to_owned(),
+        json!(response_preflight),
+        MAX_TRASH_FILE_RESPONSE_BYTES,
+    )
+    .is_none()
+    {
+        record_filesystem_denied(
+            audit_counters,
+            TRASH_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            FILESYSTEM_RESPONSE_TOO_LARGE,
+        );
+        return bounded_payload_too_large(
+            id,
+            "File trash response exceeds the staged response byte limit.",
+            MAX_TRASH_FILE_RESPONSE_BYTES,
+        );
+    }
+
+    let operation = if dry_run {
+        file_tools.trash_file(args.path, Some(true)).await
+    } else {
+        let worker_permit = match state.mutation_worker_capacity.try_acquire() {
+            Some(permit) => permit,
+            None => {
+                record_filesystem_denied(
+                    audit_counters,
+                    TRASH_FILE_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_MUTATION_WORKER_CAPACITY_EXCEEDED,
+                );
+                return filesystem_mutation_worker_capacity_exhausted(id);
+            }
+        };
+        let authority = state
+            .trash_file_authority
+            .clone()
+            .expect("enabled trash_file mutation owns an authority");
+        let worker_audit = TrashFileMutationAuditGuard::new(Arc::clone(audit_counters));
+        let (waiter_guard, worker_commit) = filesystem_mutation_commit_guards();
+        let worker = TrashFileMutationWorker {
+            file_tools: file_tools.clone(),
+            path: args.path,
+            authority,
+            capability_grant: capability_grant.map(str::to_owned),
+            session_id: session_id.to_owned(),
+            commit: worker_commit,
+            audit: worker_audit,
+        };
+        let joined = spawn_filesystem_mutation_worker(worker_permit, move || {
+            run_trash_file_mutation_worker(worker)
+        })
+        .await;
+        waiter_guard.complete();
+        match joined {
+            Ok(FilesystemMutationWorkerOutcome::Completed(Ok(result))) => Ok(result),
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedTrashFileError::Authorization(error),
+            ))) => {
+                return bounded_capability_authorization_denied(
+                    id,
+                    error.reason_code(),
+                    MAX_TRASH_FILE_RESPONSE_BYTES,
+                );
+            }
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedTrashFileError::Filesystem(error),
+            ))) => Err(error),
+            Ok(FilesystemMutationWorkerOutcome::Completed(Err(
+                AuthorizedTrashFileError::Cancelled,
+            )))
+            | Ok(FilesystemMutationWorkerOutcome::Cancelled) => {
+                return filesystem_mutation_request_cancelled(id);
+            }
+            Err(_error) => Err(AppError::Io(std::io::Error::other(
+                "trash file worker failed",
+            ))),
+        }
+    };
+
+    match operation {
+        Ok(result) => {
+            let error_id = id.clone();
+            let Some(response) = bounded_ok_result(
+                id,
+                success_text.to_owned(),
+                json!(result),
+                MAX_TRASH_FILE_RESPONSE_BYTES,
+            ) else {
+                if dry_run {
+                    record_filesystem_denied(
+                        audit_counters,
+                        TRASH_FILE_TOOL,
+                        FILESYSTEM_WRITE_GATE,
+                        mode,
+                        FILESYSTEM_RESPONSE_TOO_LARGE,
+                    );
+                }
+                return bounded_payload_too_large(
+                    error_id,
+                    "File trash response exceeds the staged response byte limit.",
+                    MAX_TRASH_FILE_RESPONSE_BYTES,
+                );
+            };
+            if dry_run {
+                record_filesystem_allowed(
+                    audit_counters,
+                    TRASH_FILE_TOOL,
+                    FILESYSTEM_WRITE_GATE,
+                    mode,
+                    FILESYSTEM_DRY_RUN_ALLOWED,
+                );
+            }
+            response
+        }
+        Err(error) if dry_run => trash_file_filesystem_error(id, audit_counters, mode, error),
+        Err(error) => trash_file_filesystem_error_response(id, error),
+    }
+}
+
+fn trash_file_filesystem_reason(error: &AppError) -> &'static str {
+    match error {
+        AppError::PathTraversal { .. } => FILESYSTEM_SAFE_ROOT_REJECTED,
+        AppError::PathNotFound => FILESYSTEM_TRASH_NOT_FOUND,
+        AppError::UnsupportedPathType => FILESYSTEM_TRASH_UNSUPPORTED,
+        AppError::FileTooLarge { .. } => FILESYSTEM_TRASH_TOO_LARGE,
+        AppError::TrashTargetChanged => FILESYSTEM_TRASH_TARGET_CHANGED,
+        AppError::TrashMutationAuthorizationRequired => FILESYSTEM_TRASH_MUTATION_DISABLED,
+        AppError::TrashQuarantineCapacityExceeded => FILESYSTEM_TRASH_QUARANTINE_FULL,
+        AppError::TrashQuarantineBusy => FILESYSTEM_TRASH_QUARANTINE_BUSY,
+        _ => FILESYSTEM_TRASH_FAILED,
+    }
+}
+
+#[rustfmt::skip]
+fn trash_file_filesystem_error(
+    id: Option<Value>,
+    audit_counters: &SharedAuditCounters,
+    mode: AuditMode,
+    error: AppError,
+) -> Response {
+    record_filesystem_denied(
+        audit_counters,
+        TRASH_FILE_TOOL,
+        FILESYSTEM_WRITE_GATE,
+        mode,
+        trash_file_filesystem_reason(&error),
+    );
+    trash_file_filesystem_error_response(id, error)
+}
+
+#[rustfmt::skip]
+fn trash_file_filesystem_error_response(id: Option<Value>, error: AppError) -> Response {
+    match error {
+        AppError::PathTraversal { .. } => invalid_params(
+            id,
+            "Filesystem safe-root validation failed: requested path is outside the configured safe roots.",
+        ),
+        AppError::PathNotFound => {
+            invalid_params(id, "Filesystem trash target does not exist.")
+        }
+        AppError::UnsupportedPathType => {
+            invalid_params(id, "Filesystem trash target must be a single-link regular file.")
+        }
+        AppError::FileTooLarge { .. } => {
+            payload_too_large(id, "File exceeds the staged trash_file byte limit.")
+        }
+        AppError::TrashTargetChanged => {
+            resource_changed(id, "Filesystem trash target changed after validation.")
+        }
+        AppError::TrashMutationAuthorizationRequired => {
+            bounded_capability_authorization_denied(
+                id,
+                FILESYSTEM_TRASH_MUTATION_DISABLED,
+                MAX_TRASH_FILE_RESPONSE_BYTES,
+            )
+        }
+        AppError::TrashQuarantineCapacityExceeded => trash_recovery_capacity_exhausted(id),
+        AppError::TrashQuarantineBusy => trash_recovery_busy(id),
+        _error => internal_error(id, "Filesystem trash failed."),
+    }
+}
+
 fn find_paths_success_envelope_fits(id: Option<Value>) -> bool {
     let structured = json!({
         "path": "",
@@ -6663,6 +7255,40 @@ fn copy_staging_busy(id: Option<Value>) -> Response {
 }
 
 #[rustfmt::skip]
+fn trash_recovery_capacity_exhausted(id: Option<Value>) -> Response {
+    (
+        StatusCode::INSUFFICIENT_STORAGE,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32005,
+                "message": "Trash recovery capacity exhausted",
+                "data": "Private trash recovery quarantine capacity is exhausted.",
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
+fn trash_recovery_busy(id: Option<Value>) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32006,
+                "message": "Trash recovery busy",
+                "data": "Another cooperating filesystem publisher owns the private trash recovery lock.",
+            },
+        })),
+    )
+        .into_response()
+}
+
+#[rustfmt::skip]
 fn filesystem_mutation_worker_capacity_exhausted(id: Option<Value>) -> Response {
     let mut response = (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -6977,6 +7603,9 @@ mod tests {
     const COPY_TEST_KEY: &str =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
+    const TRASH_TEST_KEY: &str =
+        "123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0";
+
     fn copy_test_authority(principal: &str) -> CopyFileGrantAuthority {
         CopyFileGrantAuthority::from_hex_key("copy-transport-test-1", COPY_TEST_KEY, principal)
             .expect("test copy authority must validate")
@@ -7014,6 +7643,259 @@ mod tests {
         authority
             .issue(session_id, &target)
             .expect("test copy grant must issue")
+    }
+
+    fn trash_test_authority(principal: &str) -> TrashFileGrantAuthority {
+        TrashFileGrantAuthority::from_hex_key(
+            "trash-transport-test-1",
+            TRASH_TEST_KEY,
+            principal,
+        )
+        .expect("test trash authority must validate")
+    }
+
+    fn trash_test_state(
+        file_tools: FileSystemTools,
+        authority: Option<TrashFileGrantAuthority>,
+    ) -> McpTransportState {
+        McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            file_tools,
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .with_trash_file_authority(authority)
+    }
+
+    fn issue_trash_test_grant(
+        authority: &TrashFileGrantAuthority,
+        file_tools: &FileSystemTools,
+        session_id: &str,
+        target: &std::path::Path,
+    ) -> String {
+        let binding = file_tools
+            .trash_file_grant_target(target.to_string_lossy().as_ref())
+            .expect("test trash target must validate");
+        authority
+            .issue(session_id, &binding)
+            .expect("test trash grant must issue")
+    }
+
+    #[tokio::test]
+    async fn trash_discovery_runtime_preview_and_live_paths_are_exact_and_path_free() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let target = safe_root.path().join("trash.bin");
+        std::fs::write(&target, b"transport-trash-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let disabled = trash_test_state(file_tools.clone(), None);
+
+        let tools = response_json(tools_list_response(Some(json!("tools")), &disabled)).await;
+        let disabled_tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == TRASH_FILE_TOOL)
+            .unwrap();
+        assert_eq!(disabled_tool["inputSchema"]["properties"]["dry_run"]["const"], true);
+        let disabled_status =
+            response_json(runtime_status_response(Some(json!("status")), &disabled)).await;
+        assert_eq!(
+            disabled_status["result"]["structuredContent"]["trashFileMutationEnabled"],
+            false
+        );
+
+        let authority = trash_test_authority("trash-transport-principal");
+        let enabled = trash_test_state(file_tools.clone(), Some(authority.clone()));
+        let enabled_tools =
+            response_json(tools_list_response(Some(json!("tools")), &enabled)).await;
+        let enabled_tool = enabled_tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == TRASH_FILE_TOOL)
+            .unwrap();
+        assert!(enabled_tool["inputSchema"]["properties"]["dry_run"]
+            .get("const")
+            .is_none());
+        let enabled_status =
+            response_json(runtime_status_response(Some(json!("status")), &enabled)).await;
+        assert_eq!(
+            enabled_status["result"]["structuredContent"]["trashFileMutationEnabled"],
+            true
+        );
+        assert_eq!(
+            enabled_status["result"]["structuredContent"]["trashFileGrantTtlSeconds"],
+            TRASH_FILE_GRANT_TTL_SECONDS
+        );
+
+        let session_id = Uuid::new_v4().to_string();
+        let grant = issue_trash_test_grant(&authority, &file_tools, &session_id, &target);
+        let smuggled = handle_trash_file_call(
+            Some(json!("smuggled")),
+            Some(json!({"path": target, "dry_run": true})),
+            &enabled,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(smuggled.status(), StatusCode::BAD_REQUEST);
+        assert!(target.exists());
+
+        let preview = handle_trash_file_call(
+            Some(json!("preview")),
+            Some(json!({"path": target})),
+            &enabled,
+            &session_id,
+            None,
+        )
+        .await;
+        assert_eq!(preview.status(), StatusCode::OK);
+        let preview = response_json(preview).await;
+        assert_eq!(preview["result"]["structuredContent"]["dryRun"], true);
+        assert!(preview["result"]["structuredContent"].get("path").is_none());
+        assert!(target.exists());
+
+        let live = handle_trash_file_call(
+            Some(json!("live")),
+            Some(json!({"path": target, "dry_run": false})),
+            &enabled,
+            &session_id,
+            Some(&grant),
+        )
+        .await;
+        assert_eq!(live.status(), StatusCode::OK);
+        let live = response_json(live).await;
+        assert_eq!(live["result"]["structuredContent"]["dryRun"], false);
+        assert_eq!(
+            live["result"]["structuredContent"]["recoveryArtifactRetained"],
+            true
+        );
+        assert!(live["result"]["structuredContent"].get("path").is_none());
+        assert!(!target.exists());
+        let serialized = live.to_string();
+        assert!(!serialized.contains(safe_root.path().to_string_lossy().as_ref()));
+        assert!(!serialized.contains(TRASH_TEST_KEY));
+        assert!(!serialized.contains(&grant));
+    }
+
+    #[test]
+    fn trash_lock_contention_cancellation_preserves_grant_and_retry_commits_once() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let target = safe_root.path().join("trash-cancel.bin");
+        std::fs::write(&target, b"trash-cancel-content").unwrap();
+        let file_tools = FileSystemTools::try_new(vec![safe_root.path().to_path_buf()]).unwrap();
+        let retry_tools = file_tools.clone();
+        let authority = trash_test_authority("trash-lock-cancel-principal");
+        let retry_authority = authority.clone();
+        let session_id = Uuid::new_v4().to_string();
+        let retry_session = session_id.clone();
+        let grant = issue_trash_test_grant(&authority, &file_tools, &session_id, &target);
+        let retry_grant = grant.clone();
+        let counters = Arc::new(Mutex::new(AuditCounters::default()));
+        let waiting_counters = Arc::clone(&counters);
+        let publication_lock = crate::tools::acquire_filesystem_publication_lock_for_test();
+        let (waiter, worker_commit) = filesystem_mutation_commit_guards();
+        let (contended_tx, contended_rx) = std::sync::mpsc::channel();
+        let waiting_target = target.to_string_lossy().to_string();
+        let worker = std::thread::spawn(move || {
+            run_trash_file_mutation_worker_with_lock_contention_hook(
+                TrashFileMutationWorker {
+                    file_tools,
+                    path: waiting_target,
+                    authority,
+                    capability_grant: Some(grant),
+                    session_id,
+                    commit: worker_commit,
+                    audit: TrashFileMutationAuditGuard::new(waiting_counters),
+                },
+                || contended_tx.send(()).unwrap(),
+            )
+        });
+        contended_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("trash worker did not contend on publication lock");
+        drop(waiter);
+        drop(publication_lock);
+        assert!(matches!(
+            worker.join().unwrap(),
+            FilesystemMutationWorkerOutcome::Cancelled
+        ));
+        assert!(target.exists());
+        assert!(!safe_root
+            .path()
+            .join(crate::tools::TRASH_FILE_QUARANTINE_DIRECTORY)
+            .exists());
+
+        let (retry_waiter, retry_commit) = filesystem_mutation_commit_guards();
+        let retry = run_trash_file_mutation_worker(TrashFileMutationWorker {
+            file_tools: retry_tools,
+            path: target.to_string_lossy().to_string(),
+            authority: retry_authority,
+            capability_grant: Some(retry_grant),
+            session_id: retry_session,
+            commit: retry_commit,
+            audit: TrashFileMutationAuditGuard::new(Arc::clone(&counters)),
+        });
+        retry_waiter.complete();
+        assert!(matches!(
+            retry,
+            FilesystemMutationWorkerOutcome::Completed(Ok(_))
+        ));
+        assert!(!target.exists());
+        let counters = counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[TRASH_FILE_TOOL].allowed, 1);
+        assert_eq!(counters.by_tool[TRASH_FILE_TOOL].denied, 1);
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_MUTATION_REQUEST_CANCELLED].denied,
+            1
+        );
+        assert_eq!(
+            counters.by_reason_code[FILESYSTEM_TRASH_ALLOWED].allowed,
+            1
+        );
+    }
+
+    #[test]
+    fn trash_changed_capacity_and_busy_errors_are_stable_and_path_free() {
+        assert_eq!(
+            trash_file_filesystem_reason(&AppError::TrashTargetChanged),
+            FILESYSTEM_TRASH_TARGET_CHANGED
+        );
+        assert_eq!(
+            trash_file_filesystem_reason(&AppError::TrashQuarantineCapacityExceeded),
+            FILESYSTEM_TRASH_QUARANTINE_FULL
+        );
+        assert_eq!(
+            trash_file_filesystem_reason(&AppError::TrashQuarantineBusy),
+            FILESYSTEM_TRASH_QUARANTINE_BUSY
+        );
+        assert_eq!(
+            trash_file_filesystem_error_response(
+                Some(json!("changed")),
+                AppError::TrashTargetChanged,
+            )
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            trash_file_filesystem_error_response(
+                Some(json!("capacity")),
+                AppError::TrashQuarantineCapacityExceeded,
+            )
+            .status(),
+            StatusCode::INSUFFICIENT_STORAGE
+        );
+        assert_eq!(
+            trash_file_filesystem_error_response(
+                Some(json!("busy")),
+                AppError::TrashQuarantineBusy,
+            )
+            .status(),
+            StatusCode::CONFLICT
+        );
     }
 
     #[tokio::test]
@@ -7684,6 +8566,7 @@ mod tests {
                 "project_service_status",
                 "create_directory",
                 "copy_file",
+                "trash_file",
                 "find_paths",
                 "hash_file",
                 "list_directory",
@@ -7713,7 +8596,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            18
+            19
         );
     }
 

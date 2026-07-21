@@ -120,7 +120,7 @@ bash scripts/termux_release_validate.sh \
   --confirm-runtime-mutation
 ```
 
-The phase starts each artifact directly on loopback, one at a time, using a private token and a unique validation child below `SAFE_ROOT`. Child environments are rebuilt from an explicit allowlist so ambient `MCP__*` settings cannot broaden the test. The validator creates a private random capability key, enables only the `mcp-runtime` candidate's directory-mutation gate, invokes that exact binary's offline issuer, and destroys grant material with its isolated workspace.
+The phase starts each artifact directly on loopback, one at a time, using a private token and a unique validation child below `SAFE_ROOT`. Child environments are rebuilt from an explicit allowlist so ambient `MCP__*` settings cannot broaden the test. The validator creates a private random capability key, enables only the `mcp-runtime` candidate's four filesystem-mutation gates, invokes that exact binary's operation-specific offline issuers, and destroys grant material with its isolated workspace.
 
 The default artifact must:
 
@@ -135,7 +135,7 @@ The `mcp-runtime` artifact must prove:
 - authentication before Host/Origin validation, plus rejected unexpected Host, missing Origin, and unexpected Origin values;
 - stable `2025-11-25` initialize/initialized lifecycle;
 - required protocol and session headers plus unknown-session rejection;
-- the exact sixteen-tool allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, content-free bounded literal `find_paths`, bounded SHA-256 `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, content-free `path_metadata`, and bounded literal `search_text`;
+- the exact 17-tool allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, reversible recovery-retained `trash_file`, content-free bounded literal `find_paths`, bounded SHA-256 `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, content-free `path_metadata`, and bounded literal `search_text`;
 - command execution, Android control, and high-impact gates disabled;
 - bounded read-only platform, Android, and project-service metadata with the project-service allowlist enforced;
 - enabled directory-mutation discovery/status, missing-grant denial, wrong-target binding denial, dry-run non-consumption, one locally issued exact-target mode-`0700` creation, and replay denial;
@@ -143,12 +143,15 @@ The `mcp-runtime` artifact must prove:
 - exact bounded SHA-256 hashing plus symlink/oversize rejection without path, content, or digest reflection;
 - bounded safe-root read plus rejection of JSON expansion beyond the response ceiling;
 - default-preview and explicit binary `copy_file`, fixed mode `0600`, exact content, existing-destination preservation, symlink denial, one-byte-over rejection, and content-free results;
+- default-preview and exact-grant `trash_file`, identity/content mismatch and oversized-response preflight denial before mutation, exact 1 MiB acceptance and one-byte-over rejection, atomic no-replace movement of the exact inode into a mode-`0700` bounded recovery quarantine, namespace hiding, and path/content/artifact-free results and audits;
 - disabled-posture write discovery and live-mutation denial; enabled-posture grant-free dry run; missing-grant and content-binding denial; exact mode-`0600` grant-authorized create and replace; `recoveryArtifactRetained:false` for preview/create and `true` for replacement; one bounded preserved recovery artifact; reserved-quarantine isolation/capacity; and replay denial;
 - lexical out-of-root and in-root symlink-escape denial without path/content reflection;
 - unavailable shell/high-impact invocation;
 - authenticated HTTP 413 and unauthenticated-first HTTP 401 ordering;
 - documented default JSON/GET-405 posture and default-disabled bounded SSE option;
 - explicit session deletion.
+
+Trash-grant replay and concurrent-replay denial remain required automated core/integration-test evidence. Validator v10 directly proves issuance, binding denial, preflight preservation, and successful recovery retention, but it does not reuse a consumed trash grant.
 
 The `android-volume-control` artifact must additionally prove:
 
@@ -158,7 +161,7 @@ The `android-volume-control` artifact must additionally prove:
 - a direct call returns the stable `volume_control_runtime_disabled` result;
 - no control grant is issued, `termux-volume` is never invoked, and device audio is never changed by the canonical validator.
 
-Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v8 runtime result includes `request_scoped_single_use_grant_enforced`, `request_scoped_write_grant_enforced`, `safe_root_path_discovery_verified`, `safe_root_file_hash_verified`, `safe_root_binary_read_verified`, `safe_root_binary_range_read_verified`, `incompatible_volume_control_artifact_rejected`, `volume_control_hidden_while_disabled`, and `volume_control_disabled_call_rejected`.
+Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v10 runtime result includes `request_scoped_single_use_grant_enforced`, `request_scoped_single_use_copy_grant_enforced`, `request_scoped_trash_grant_enforced`, `trash_identity_content_binding_enforced`, `trash_recovery_quarantine_verified`, `request_scoped_single_use_write_grant_enforced`, `safe_root_path_discovery_verified`, `safe_root_file_hash_verified`, `safe_root_binary_read_verified`, `safe_root_binary_range_read_verified`, `incompatible_volume_control_artifact_rejected`, `volume_control_hidden_while_disabled`, and `volume_control_disabled_call_rejected`.
 
 ## Phase 3: deployment validation
 

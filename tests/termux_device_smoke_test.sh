@@ -19,11 +19,12 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
-assert_contains 'HARNESS_VERSION="9"' "$SCRIPT"
+assert_contains 'HARNESS_VERSION="10"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
 assert_contains 'capability_grant_has_signed_byte "$grant" 260 64 01' "$SCRIPT"
 assert_contains 'capability_grant_has_signed_byte "$grant" 130 16 02' "$SCRIPT"
 assert_contains 'capability_grant_has_signed_byte "$grant" 130 16 04' "$SCRIPT"
+assert_contains 'capability_grant_has_signed_byte "$grant" 130 16 05' "$SCRIPT"
 assert_contains "--proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$SCRIPT"
 if grep -Fq -- '{260}' "$SCRIPT"; then
   fail "device harness uses a non-portable ERE repetition above Android RE_DUP_MAX"
@@ -71,13 +72,14 @@ done
 
 for protocol_marker in \
   '"notifications/initialized"' \
-  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
   'create_directory_missing_grant_http' \
   'create_directory_replay_http' \
   '--issue-create-directory-grant' \
   '--issue-copy-file-grant' \
+  '--issue-trash-file-grant' \
   '--issue-write-file-grant' \
   'MCP__CAPABILITY__CONFIG_FILE="$CONFIG_ROOT/runtime.env"' \
   'MCP__CAPABILITY__WRITE_FILE_TARGET="$target"' \
@@ -85,7 +87,9 @@ for protocol_marker in \
   'MCP__CAPABILITY__WRITE_FILE_DISPOSITION="$disposition"' \
   'MCP__CAPABILITY__COPY_FILE_SOURCE="$source"' \
   'MCP__CAPABILITY__COPY_FILE_DESTINATION="$destination"' \
+  'MCP__CAPABILITY__TRASH_FILE_TARGET="$target"' \
   'MCP__FILE__COPY_FILE_MUTATION_ENABLED=true' \
+  'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true' \
   'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
   'MCP__TRANSPORT__MAX_BODY_BYTES=2097152' \
   'mcp_post_file()' \
@@ -154,6 +158,49 @@ for protocol_marker in \
   'write_mode'
 do
   assert_contains "$protocol_marker" "$SCRIPT"
+done
+
+for trash_marker in \
+  'trash_file_grant_discovery' \
+  'trash_file_schema' \
+  'trashFileMutationEnabled == true' \
+  'dry_run_or_identity_content_scoped_single_use_grant_with_recovery_retained' \
+  'root_path_single_link_identity_size_ctime_sha256_recovery_retained' \
+  'trashFileQuarantineMaxArtifacts == 32' \
+  'trashFileQuarantineMaxBytes == 33554432' \
+  'trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"' \
+  'trash_preview_http' \
+  'trash_missing_grant_http' \
+  'trash_grant_preview_http' \
+  'trash_grant_mismatch_http' \
+  'trash_stale_target_http' \
+  'trash_identity_content_binding=exact' \
+  'trash_oversized_http' \
+  'trash_response_preflight_http' \
+  'trash_response_preflight_grant=reusable' \
+  'trash_authorized_http' \
+  'trash_quarantine_mode' \
+  'trash_recovery_identity_content_mode=preserved' \
+  'trash_exact_1mib_http' \
+  'trash_boundary=exact-1mib-and-plus-one-denied' \
+  'trash_recovery_list=private' \
+  'trash_recovery_find' \
+  'trash_grant=identity-content-bound' \
+  'trash_audit=private' \
+  'safe_root_file_trashed_recovery_retained' \
+  'filesystem_trash_target_too_large' \
+  'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false' \
+  'volume_control_disabled_trash_discovery' \
+  'volume_control_disabled_trash_status' \
+  'trashFileMutationEnabled == false' \
+  'dry_run_only_mutation_disabled' \
+  'volume_control_disabled_trash_http' \
+  'trash_file_mutation_disabled' \
+  'volume_control_disabled_trash=verified_without_device_mutation' \
+  '.termux-mcp-trash-quarantine' \
+  '^\.termux-mcp-trash-artifact-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+do
+  assert_contains "$trash_marker" "$SCRIPT"
 done
 
 printf 'Termux device smoke harness contract tests passed\n'

@@ -14,11 +14,13 @@ use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 pub(crate) const WRITE_FILE_QUARANTINE_DIRECTORY: &str = ".termux-mcp-write-quarantine";
+pub(crate) const TRASH_FILE_QUARANTINE_DIRECTORY: &str = ".termux-mcp-trash-quarantine";
 pub const MAX_SAFE_ROOTS: usize = 64;
 
-pub(crate) fn is_write_quarantine_name(name: &OsStr) -> bool {
-    name.as_encoded_bytes()
-        .eq_ignore_ascii_case(WRITE_FILE_QUARANTINE_DIRECTORY.as_bytes())
+pub(crate) fn is_runtime_quarantine_name(name: &OsStr) -> bool {
+    let name = name.as_encoded_bytes();
+    name.eq_ignore_ascii_case(WRITE_FILE_QUARANTINE_DIRECTORY.as_bytes())
+        || name.eq_ignore_ascii_case(TRASH_FILE_QUARANTINE_DIRECTORY.as_bytes())
 }
 
 /// A non-sensitive reason that a filesystem safe-root configuration was rejected.
@@ -77,7 +79,7 @@ fn validated_safe_root_labels(
         if root == Path::new("/") {
             return Err(SafeRootConfigurationError::FilesystemRoot);
         }
-        if contains_write_quarantine_component(&root) {
+        if contains_runtime_quarantine_component(&root) {
             return Err(SafeRootConfigurationError::ReservedNamespace);
         }
 
@@ -94,7 +96,7 @@ fn validated_safe_root_labels(
         if normalized == Path::new("/") {
             return Err(SafeRootConfigurationError::FilesystemRoot);
         }
-        if contains_write_quarantine_component(&normalized) {
+        if contains_runtime_quarantine_component(&normalized) {
             return Err(SafeRootConfigurationError::ReservedNamespace);
         }
 
@@ -125,11 +127,11 @@ fn validated_safe_root_labels(
     Ok(validated_roots)
 }
 
-fn contains_write_quarantine_component(path: &Path) -> bool {
+fn contains_runtime_quarantine_component(path: &Path) -> bool {
     path.components().any(|component| {
         matches!(
             component,
-            Component::Normal(name) if is_write_quarantine_name(name)
+            Component::Normal(name) if is_runtime_quarantine_name(name)
         )
     })
 }
@@ -138,7 +140,7 @@ fn contains_write_quarantine_component(path: &Path) -> bool {
 pub use filesystem::{
     CopyFileResult, CreateDirectoryResult, FileSystemTools, FindPathFilter, FindPathKind,
     FindPathMatch, FindPathsResult, HashFileResult, PathMetadataKind, PathMetadataResult,
-    ReadTextRangeResult, WriteFileResult, COPY_FILE_MODE, CREATE_DIRECTORY_MODE,
+    ReadTextRangeResult, TrashFileResult, WriteFileResult, COPY_FILE_MODE, CREATE_DIRECTORY_MODE,
     MAX_BINARY_RANGE_BASE64_BYTES, MAX_BINARY_RANGE_BYTES, MAX_BINARY_RANGE_FILE_BYTES,
     MAX_BINARY_RANGE_RESPONSE_BYTES, MAX_BINARY_READ_BASE64_BYTES, MAX_BINARY_READ_BYTES,
     MAX_BINARY_READ_RESPONSE_BYTES, MAX_COPY_FILE_BYTES, MAX_COPY_FILE_RESPONSE_BYTES,
@@ -149,14 +151,16 @@ pub use filesystem::{
     MAX_SEARCH_ENTRIES, MAX_SEARCH_FILES, MAX_SEARCH_FILE_BYTES, MAX_SEARCH_MATCHES,
     MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESPONSE_BYTES, MAX_SEARCH_TOTAL_BYTES,
     MAX_TEXT_RANGE_BYTES, MAX_TEXT_RANGE_ESCAPED_BYTES, MAX_TEXT_RANGE_FILE_BYTES,
-    MAX_TEXT_RANGE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH, MIN_SEARCH_DEPTH,
-    MIN_TEXT_RANGE_BYTES, WRITE_FILE_MODE,
+    MAX_TEXT_RANGE_RESPONSE_BYTES, MAX_TRASH_FILE_BYTES, MAX_TRASH_FILE_QUARANTINE_ARTIFACTS,
+    MAX_TRASH_FILE_QUARANTINE_BYTES, MAX_TRASH_FILE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES,
+    MIN_FIND_DEPTH, MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES, WRITE_FILE_MODE,
 };
 
 #[cfg(feature = "mcp-runtime")]
 pub(crate) use filesystem::{
-    AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedWriteFileError,
-    PreparedCopyFileMutation, PreparedCreateDirectoryMutation,
+    AuthorizedCopyFileError, AuthorizedCreateDirectoryError, AuthorizedTrashFileError,
+    AuthorizedWriteFileError, PreparedCopyFileMutation, PreparedCreateDirectoryMutation,
+    PreparedTrashFileMutation,
 };
 
 #[cfg(all(feature = "mcp-runtime", test))]
@@ -191,7 +195,10 @@ pub struct SystemTools;
 
 #[cfg(test)]
 mod tests {
-    use super::{FileSystemTools, SafeRootConfigurationError, WRITE_FILE_QUARANTINE_DIRECTORY};
+    use super::{
+        FileSystemTools, SafeRootConfigurationError, TRASH_FILE_QUARANTINE_DIRECTORY,
+        WRITE_FILE_QUARANTINE_DIRECTORY,
+    };
     use std::path::PathBuf;
 
     fn construction_error(safe_roots: Vec<PathBuf>) -> SafeRootConfigurationError {
@@ -248,29 +255,41 @@ mod tests {
     #[test]
     fn safe_roots_reject_reserved_quarantine_roots_and_overlaps() {
         let parent = tempfile::tempdir().unwrap();
-        let quarantine = parent.path().join(WRITE_FILE_QUARANTINE_DIRECTORY);
-        std::fs::create_dir(&quarantine).unwrap();
+        for name in [
+            WRITE_FILE_QUARANTINE_DIRECTORY,
+            TRASH_FILE_QUARANTINE_DIRECTORY,
+        ] {
+            let quarantine = parent.path().join(name);
+            std::fs::create_dir(&quarantine).unwrap();
 
-        let direct = construction_error(vec![quarantine.clone()]);
-        assert_eq!(direct, SafeRootConfigurationError::ReservedNamespace);
+            let direct = construction_error(vec![quarantine.clone()]);
+            assert_eq!(direct, SafeRootConfigurationError::ReservedNamespace);
 
-        let overlap = construction_error(vec![parent.path().to_path_buf(), quarantine]);
-        assert_eq!(overlap, SafeRootConfigurationError::ReservedNamespace);
+            let overlap = construction_error(vec![parent.path().to_path_buf(), quarantine.clone()]);
+            assert_eq!(overlap, SafeRootConfigurationError::ReservedNamespace);
+
+            std::fs::remove_dir(quarantine).unwrap();
+        }
     }
 
     #[test]
     fn safe_roots_reject_mixed_case_reserved_components() {
-        let parent = tempfile::tempdir().unwrap();
-        let mixed_case = parent.path().join(".TeRmUx-McP-WrItE-qUaRaNtInE");
-        std::fs::create_dir(&mixed_case).unwrap();
+        for name in [
+            ".TeRmUx-McP-WrItE-qUaRaNtInE",
+            ".TeRmUx-McP-TrAsH-qUaRaNtInE",
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let mixed_case = parent.path().join(name);
+            std::fs::create_dir(&mixed_case).unwrap();
 
-        let direct = construction_error(vec![mixed_case.clone()]);
-        assert_eq!(direct, SafeRootConfigurationError::ReservedNamespace);
+            let direct = construction_error(vec![mixed_case.clone()]);
+            assert_eq!(direct, SafeRootConfigurationError::ReservedNamespace);
 
-        let descendant = mixed_case.join("child");
-        std::fs::create_dir(&descendant).unwrap();
-        let nested = construction_error(vec![descendant]);
-        assert_eq!(nested, SafeRootConfigurationError::ReservedNamespace);
+            let descendant = mixed_case.join("child");
+            std::fs::create_dir(&descendant).unwrap();
+            let nested = construction_error(vec![descendant]);
+            assert_eq!(nested, SafeRootConfigurationError::ReservedNamespace);
+        }
     }
 
     #[test]

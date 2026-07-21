@@ -59,6 +59,18 @@ pub enum AppError {
     #[error("Copy mutation requires request-scoped authorization")]
     CopyMutationAuthorizationRequired,
 
+    #[error("Trash target changed after validation")]
+    TrashTargetChanged,
+
+    #[error("Trash mutation requires request-scoped authorization")]
+    TrashMutationAuthorizationRequired,
+
+    #[error("Trash recovery quarantine capacity is exhausted")]
+    TrashQuarantineCapacityExceeded,
+
+    #[error("Trash recovery quarantine is busy")]
+    TrashQuarantineBusy,
+
     #[error("Write payload is too large: {size} bytes exceeds {max_size} byte limit")]
     WritePayloadTooLarge { size: u64, max_size: u64 },
 
@@ -156,6 +168,21 @@ impl AppError {
                 StatusCode::FORBIDDEN,
                 "Copy mutation requires request-scoped authorization",
             ),
+            AppError::TrashTargetChanged => (
+                StatusCode::CONFLICT,
+                "Trash target changed after validation",
+            ),
+            AppError::TrashMutationAuthorizationRequired => (
+                StatusCode::FORBIDDEN,
+                "Trash mutation requires request-scoped authorization",
+            ),
+            AppError::TrashQuarantineCapacityExceeded => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "Trash recovery quarantine capacity is exhausted",
+            ),
+            AppError::TrashQuarantineBusy => {
+                (StatusCode::CONFLICT, "Trash recovery quarantine is busy")
+            }
             AppError::WritePayloadTooLarge { .. } => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Write payload exceeds the configured limit",
@@ -255,6 +282,39 @@ mod tests {
                 StatusCode::FORBIDDEN,
                 "Directory mutation requires request-scoped authorization",
             )
+        );
+    }
+
+    #[test]
+    fn direct_trash_mutation_denial_has_a_stable_non_sensitive_response() {
+        assert_eq!(
+            AppError::TrashMutationAuthorizationRequired.public_response(),
+            (
+                StatusCode::FORBIDDEN,
+                "Trash mutation requires request-scoped authorization",
+            )
+        );
+    }
+
+    #[test]
+    fn trash_failures_have_stable_non_sensitive_responses() {
+        assert_eq!(
+            AppError::TrashTargetChanged.public_response(),
+            (
+                StatusCode::CONFLICT,
+                "Trash target changed after validation"
+            )
+        );
+        assert_eq!(
+            AppError::TrashQuarantineCapacityExceeded.public_response(),
+            (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "Trash recovery quarantine capacity is exhausted",
+            )
+        );
+        assert_eq!(
+            AppError::TrashQuarantineBusy.public_response(),
+            (StatusCode::CONFLICT, "Trash recovery quarantine is busy")
         );
     }
 

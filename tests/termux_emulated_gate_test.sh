@@ -43,6 +43,32 @@ for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$CO
     || fail_test "live write denial missing for $(basename "$script")"
   grep -Fq 'inputSchema.properties.dry_run.const' "$script" \
     || fail_test "write discovery const missing for $(basename "$script")"
+  grep -Fq 'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false' "$script" \
+    || fail_test "trash_file mutation is not pinned disabled for $(basename "$script")"
+  grep -Fq 'dedicated trash mutation gate is disabled' "$script" \
+    || fail_test "trash_file disabled discovery schema is not asserted for $(basename "$script")"
+  grep -Fq 'inputSchema.properties | keys) == ["dry_run","path"]' "$script" \
+    || fail_test "trash_file closed discovery properties are not asserted for $(basename "$script")"
+  grep -Fq 'inputSchema.required == ["path"]' "$script" \
+    || fail_test "trash_file discovery required path is not asserted for $(basename "$script")"
+  grep -Fq 'inputSchema.additionalProperties == false' "$script" \
+    || fail_test "trash_file discovery additional properties are not rejected for $(basename "$script")"
+  grep -Fq 'trashFileMutationEnabled == false' "$script" \
+    || fail_test "trash_file disabled runtime status is not asserted for $(basename "$script")"
+  grep -Fq 'trashFileMode == "dry_run_only_mutation_disabled"' "$script" \
+    || fail_test "trash_file disabled runtime mode is not asserted for $(basename "$script")"
+  grep -Fq 'trashFileGrantRequired == false' "$script" \
+    || fail_test "trash_file disabled grant status is not asserted for $(basename "$script")"
+  grep -Fq 'trashFileQuarantineMaxArtifacts == 32' "$script" \
+    || fail_test "trash_file bounded quarantine status is not asserted for $(basename "$script")"
+  grep -Fq 'params:{name:"trash_file"' "$script" \
+    || fail_test "trash_file disabled direct call is not exercised for $(basename "$script")"
+  grep -Fq 'trash_file_mutation_disabled' "$script" \
+    || fail_test "trash_file live disabled denial is not asserted for $(basename "$script")"
+  grep -Fq '.termux-mcp-trash-quarantine' "$script" \
+    || fail_test "trash_file disabled quarantine non-mutation is not asserted for $(basename "$script")"
+  grep -Fq 'target_mutated' "$script" \
+    || fail_test "trash_file disabled target non-mutation is not asserted for $(basename "$script")"
 done
 grep -Fq 'MCP__FILE__COPY_FILE_MUTATION_ENABLED=false' "$GATE" \
   || fail_test 'baseline native gate does not pin copy_file mutation disabled'
@@ -69,13 +95,25 @@ for code in \
   exact_binary_copy_verified \
   copy_file_boundary_denials_verified \
   copy_file_private_audit_verified \
-  copy_file_disabled_posture_verified
+  copy_file_disabled_posture_verified \
+  safe_root_file_trash_verified \
+  request_scoped_trash_grant_enforced \
+  trash_identity_content_binding_enforced \
+  bounded_trash_file_response_preflight_verified \
+  exact_trash_file_byte_limit_verified \
+  trash_recovery_quarantine_verified \
+  trash_file_private_audit_verified \
+  trash_file_disabled_posture_verified
 do
   grep -Fq "$code" "$GATE" \
     || fail_test "canonical emulation gate omits required validator evidence: $code"
   grep -Fq "$code" "$VALIDATOR" \
     || fail_test "release validator cannot emit canonical emulation evidence: $code"
 done
+grep -Fq '.validatorVersion == "10"' "$GATE" \
+  || fail_test 'canonical emulation gate does not require release validator v10'
+grep -Fq 'readonly VALIDATOR_VERSION="10"' "$VALIDATOR" \
+  || fail_test 'release validator version does not match canonical emulation gate requirement'
 
 if bash "$GATE" >"$ROOT/.termux-emulated-test.stdout" 2>"$ROOT/.termux-emulated-test.stderr"; then
   fail_test 'gate without required arguments unexpectedly succeeded'

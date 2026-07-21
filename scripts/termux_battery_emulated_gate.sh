@@ -163,6 +163,9 @@ REQUEST_FILE="$WORK_ROOT/request.json"
 BATTERY_DIRECT_PID_FILE="$WORK_ROOT/battery-direct.pid"
 BATTERY_DESCENDANT_PID_FILE="$WORK_ROOT/battery-descendant.pid"
 mkdir -m 700 "$SAFE_ROOT"
+TRASH_TARGET="$SAFE_ROOT/battery-trash-disabled.txt"
+printf '%s' battery-trash-retained >"$TRASH_TARGET"
+chmod 600 "$TRASH_TARGET"
 
 MCP_TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
 [[ "$MCP_TOKEN" =~ ^[0-9a-f]{64}$ ]] || fail token_generation_failed
@@ -305,6 +308,7 @@ start_server() {
   MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
   MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+  MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
   MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
@@ -424,6 +428,7 @@ jq -e '
     "project_service_status",
     "create_directory",
     "copy_file",
+    "trash_file",
     "find_paths",
     "hash_file",
     "list_directory",
@@ -438,6 +443,15 @@ jq -e '
   ]
   and (.result.tools[] | select(.name == "android_battery_status") | .inputSchema)
       == {"type":"object","properties":{},"additionalProperties":false}
+  and ((.result.tools[] | select(.name == "trash_file")) as $trash
+    | $trash.inputSchema.type == "object"
+      and ($trash.inputSchema.properties | keys) == ["dry_run","path"]
+      and $trash.inputSchema.properties.path.type == "string"
+      and $trash.inputSchema.properties.dry_run.type == "boolean"
+      and $trash.inputSchema.properties.dry_run.const == true
+      and $trash.inputSchema.required == ["path"]
+      and $trash.inputSchema.additionalProperties == false
+      and ($trash.description | contains("dedicated trash mutation gate is disabled")))
   and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail enabled_tool_discovery_invalid
 
@@ -450,6 +464,17 @@ jq -e '
   and .result.structuredContent.androidBatteryStatusEnabled == true
   and .result.structuredContent.androidDeviceControl == false
   and .result.structuredContent.commandExecution == false
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.trashFileGrantRequired == false
+  and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+  and .result.structuredContent.trashFileGrantTtlSeconds == 60
+  and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+  and .result.structuredContent.trashFileMaxBytes == 1048576
+  and .result.structuredContent.trashFileMaxResponseBytes == 16384
+  and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+  and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+  and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
   and .result.structuredContent.fileWriteMutationEnabled == false
   and .result.structuredContent.fileWriteGrantRequired == false
   and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
@@ -460,6 +485,12 @@ post_mcp "$(jq -cn --arg path "$SAFE_ROOT/battery-write-disabled.txt" '{jsonrpc:
 [[ "$MCP_STATUS" == 403 ]] || fail write_file_disabled_http_invalid
 jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail write_file_disabled_contract_invalid
 [[ ! -e "$SAFE_ROOT/battery-write-disabled.txt" && ! -L "$SAFE_ROOT/battery-write-disabled.txt" ]] || fail write_file_disabled_mutated
+
+post_mcp "$(jq -cn --arg path "$TRASH_TARGET" '{jsonrpc:"2.0",id:"trash-disabled",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 403 ]] || fail trash_file_disabled_http_invalid
+jq -e '.error.code == -32003 and .error.data.reason == "trash_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail trash_file_disabled_contract_invalid
+[[ -f "$TRASH_TARGET" && "$(cat "$TRASH_TARGET")" == battery-trash-retained ]] || fail trash_file_disabled_target_mutated
+[[ ! -e "$SAFE_ROOT/.termux-mcp-trash-quarantine" && ! -L "$SAFE_ROOT/.termux-mcp-trash-quarantine" ]] || fail trash_file_disabled_quarantine_mutated
 
 post_mcp '{"jsonrpc":"2.0","id":"battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}' "$SESSION_ID"
 [[ "$MCP_STATUS" == 200 ]] || fail battery_status_http_invalid
@@ -563,6 +594,7 @@ jq -e '
     "project_service_status",
     "create_directory",
     "copy_file",
+    "trash_file",
     "find_paths",
     "hash_file",
     "list_directory",
@@ -574,6 +606,15 @@ jq -e '
     "search_text",
     "write_file"
   ]
+  and ((.result.tools[] | select(.name == "trash_file")) as $trash
+    | $trash.inputSchema.type == "object"
+      and ($trash.inputSchema.properties | keys) == ["dry_run","path"]
+      and $trash.inputSchema.properties.path.type == "string"
+      and $trash.inputSchema.properties.dry_run.type == "boolean"
+      and $trash.inputSchema.properties.dry_run.const == true
+      and $trash.inputSchema.required == ["path"]
+      and $trash.inputSchema.additionalProperties == false
+      and ($trash.description | contains("dedicated trash mutation gate is disabled")))
   and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail disabled_tool_discovery_invalid
 
@@ -583,6 +624,17 @@ jq -e '
   and .result.structuredContent.androidBatteryStatusCompiled == true
   and .result.structuredContent.androidBatteryStatusEnabled == false
   and .result.structuredContent.androidDeviceControl == false
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.trashFileGrantRequired == false
+  and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+  and .result.structuredContent.trashFileGrantTtlSeconds == 60
+  and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+  and .result.structuredContent.trashFileMaxBytes == 1048576
+  and .result.structuredContent.trashFileMaxResponseBytes == 16384
+  and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+  and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+  and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
   and .result.structuredContent.fileWriteMutationEnabled == false
   and .result.structuredContent.fileWriteGrantRequired == false
 ' "$BODY_FILE" >/dev/null || fail disabled_runtime_status_invalid

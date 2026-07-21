@@ -71,20 +71,23 @@ The harness records and verifies:
 10. health and readiness;
 11. unauthenticated MCP rejection;
 12. stable `2025-11-25` initialization, notification, and session deletion;
-13. the exact sixteen-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, content-free bounded `find_paths`, bounded content-private `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, and bounded `path_metadata` and `search_text`;
+13. the exact 17-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, reversible recovery-retained `trash_file`, content-free bounded `find_paths`, bounded content-private `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, and bounded `path_metadata` and `search_text`;
 14. volume-control compile-gate rejection by the incompatible `mcp-runtime` artifact, plus disabled-by-default control-artifact discovery, runtime truth, and direct-call rejection without invoking `termux-volume` or changing device audio;
 15. disabled command, Android-control, and high-impact gates;
 16. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, SHA-256 hashing, and UTF-8 read;
 17. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
-18. disabled/enabled/grant/replay file-write truth, preview/create `recoveryArtifactRetained:false`, mode-`0600` no-replace create, irreversible replace with `recoveryArtifactRetained:true`, one preserved bounded recovery artifact, and reserved-quarantine isolation;
-19. out-of-root read denial without content reflection;
-20. unavailable shell/high-impact invocation;
-21. authenticated request-body limiting and unauthenticated-before-limit ordering;
-22. rollback dry-run immutability;
-23. injected rollback-readiness failure with original-candidate restoration;
-24. successful rollback;
-25. uninstall with configuration-preservation behavior;
-26. isolated-state cleanup.
+18. default-preview and exact-grant reversible file trashing, target identity/content binding, exact 1 MiB retention, `recoveryArtifactRetained:true`, private bounded quarantine isolation, and content/path/artifact-free results and audits;
+19. disabled/enabled/grant/replay file-write truth, preview/create `recoveryArtifactRetained:false`, mode-`0600` no-replace create, irreversible replace with `recoveryArtifactRetained:true`, one preserved bounded recovery artifact, and reserved-quarantine isolation;
+20. out-of-root read denial without content reflection;
+21. unavailable shell/high-impact invocation;
+22. authenticated request-body limiting and unauthenticated-before-limit ordering;
+23. rollback dry-run immutability;
+24. injected rollback-readiness failure with original-candidate restoration;
+25. successful rollback;
+26. uninstall with configuration-preservation behavior;
+27. isolated-state cleanup.
+
+The trash evidence in item 18 covers exact-binary issuance, binding/preflight preservation, and successful retained recovery. Trash-grant replay and concurrent-replay denial are proven by automated core/integration tests and are not direct claims of this device harness.
 
 The final report must contain all of:
 

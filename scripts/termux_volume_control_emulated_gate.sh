@@ -187,6 +187,9 @@ VOLUME_MODE="$WORK_ROOT/fixture-mode"
 VOLUME_CALLS="$WORK_ROOT/volume-calls"
 VOLUME_STARTED="$WORK_ROOT/volume-started"
 mkdir -m 700 "$SAFE_ROOT"
+TRASH_TARGET="$SAFE_ROOT/volume-control-trash-disabled.txt"
+printf '%s' volume-control-trash-retained >"$TRASH_TARGET"
+chmod 600 "$TRASH_TARGET"
 printf '5\n' >"$VOLUME_STATE"
 printf 'success\n' >"$VOLUME_MODE"
 chmod 600 "$VOLUME_STATE" "$VOLUME_MODE"
@@ -197,6 +200,7 @@ CAPABILITY_KEY="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk
 cat >"$CAPABILITY_CONFIG" <<EOF
 MCP__AUTH__STATIC_TOKEN=$MCP_TOKEN
 MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false
 MCP__FILE__WRITE_MUTATION_ENABLED=false
 MCP__CAPABILITY__KEY_ID=native-volume-1
 MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY
@@ -245,6 +249,7 @@ log 'validating compile-time default deny posture'
 set +e
 MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
 MCP__ANDROID__VOLUME_CONTROL_ENABLED=true \
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
 MCP__CAPABILITY__KEY_ID=native-volume-1 \
 MCP__CAPABILITY__HMAC_KEY_HEX="$CAPABILITY_KEY" \
 MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT="$PORT" \
@@ -259,6 +264,7 @@ log 'validating privileged startup requirements'
 set +e
 MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=true \
 MCP__ANDROID__VOLUME_CONTROL_ENABLED=true \
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
 MCP__CAPABILITY__KEY_ID=native-volume-1 \
 MCP__CAPABILITY__HMAC_KEY_HEX="$CAPABILITY_KEY" \
 MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT="$PORT" \
@@ -266,6 +272,7 @@ MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT="$PORT" \
 missing_token_rc=$?
 MCP__AUTH__STATIC_TOKEN="$MCP_TOKEN" \
 MCP__ANDROID__VOLUME_CONTROL_ENABLED=true \
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
 MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT="$PORT" \
   timeout -k 2 5 "$ARTIFACT" >"$WORK_ROOT/missing-capability-key.log" 2>&1
 missing_key_rc=$?
@@ -318,6 +325,7 @@ start_server() {
   MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30 \
   MCP__TRANSPORT__MAX_BODY_BYTES=32768 \
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
+  MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
   MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
@@ -398,9 +406,41 @@ log 'validating disabled runtime posture'
 start_server false
 initialize_session
 post_mcp '{"jsonrpc":"2.0","id":"tools-disabled","method":"tools/list"}' "$SESSION_ID"
-jq -e '([.result.tools[].name] | index("set_android_volume") == null) and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)' "$BODY_FILE" >/dev/null || fail disabled_discovery_invalid
+[[ "$MCP_STATUS" == 200 ]] || fail disabled_discovery_http_invalid
+jq -e '
+  ([.result.tools[].name] | index("set_android_volume") == null)
+  and ((.result.tools[] | select(.name == "trash_file")) as $trash
+    | $trash.inputSchema.type == "object"
+      and ($trash.inputSchema.properties | keys) == ["dry_run","path"]
+      and $trash.inputSchema.properties.path.type == "string"
+      and $trash.inputSchema.properties.dry_run.type == "boolean"
+      and $trash.inputSchema.properties.dry_run.const == true
+      and $trash.inputSchema.required == ["path"]
+      and $trash.inputSchema.additionalProperties == false
+      and ($trash.description | contains("dedicated trash mutation gate is disabled")))
+  and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
+' "$BODY_FILE" >/dev/null || fail disabled_discovery_invalid
 post_mcp '{"jsonrpc":"2.0","id":"runtime-disabled","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
-jq -e '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.highImpactTools == false' "$BODY_FILE" >/dev/null || fail disabled_runtime_invalid
+[[ "$MCP_STATUS" == 200 ]] || fail disabled_runtime_http_invalid
+jq -e '
+  .result.structuredContent.androidVolumeControlCompiled == true
+  and .result.structuredContent.androidVolumeControlEnabled == false
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.trashFileGrantRequired == false
+  and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+  and .result.structuredContent.trashFileGrantTtlSeconds == 60
+  and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+  and .result.structuredContent.trashFileMaxBytes == 1048576
+  and .result.structuredContent.trashFileMaxResponseBytes == 16384
+  and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+  and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+  and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
+  and .result.structuredContent.fileWriteMutationEnabled == false
+  and .result.structuredContent.fileWriteGrantRequired == false
+  and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.highImpactTools == false
+' "$BODY_FILE" >/dev/null || fail disabled_runtime_invalid
 post_mcp "$(jq -cn --arg path "$SAFE_ROOT/volume-control-write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled-shared-key",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
 [[ "$MCP_STATUS" == 403 ]] || fail disabled_write_file_http_invalid
 jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail disabled_write_file_contract_invalid
@@ -413,17 +453,28 @@ log 'validating enabled request-authorized volume posture'
 start_server true
 initialize_session
 post_mcp '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail enabled_discovery_http_invalid
 jq -e '
-  [.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","set_android_volume"]
+  [.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","set_android_volume"]
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.type) == "object"
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.required) == ["stream","level"]
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.additionalProperties) == false
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.properties.stream.enum) == ["alarm","call","music","notification","ring","system"]
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.properties.level.type) == "integer"
   and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.properties.level.minimum) == 0
+  and ((.result.tools[] | select(.name == "trash_file")) as $trash
+    | $trash.inputSchema.type == "object"
+      and ($trash.inputSchema.properties | keys) == ["dry_run","path"]
+      and $trash.inputSchema.properties.path.type == "string"
+      and $trash.inputSchema.properties.dry_run.type == "boolean"
+      and $trash.inputSchema.properties.dry_run.const == true
+      and $trash.inputSchema.required == ["path"]
+      and $trash.inputSchema.additionalProperties == false
+      and ($trash.description | contains("dedicated trash mutation gate is disabled")))
   and ((.result.tools[] | select(.name == "write_file") | .inputSchema.properties.dry_run.const) == true)
 ' "$BODY_FILE" >/dev/null || fail enabled_discovery_invalid
 post_mcp '{"jsonrpc":"2.0","id":"runtime","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' "$SESSION_ID"
+[[ "$MCP_STATUS" == 200 ]] || fail enabled_runtime_http_invalid
 jq -e '
   .result.structuredContent.androidVolumeControlEnabled == true
   and .result.structuredContent.androidVolumeControlMode == "preview_or_request_scoped_single_use_grant"
@@ -431,6 +482,17 @@ jq -e '
   and .result.structuredContent.androidVolumeGrantHeader == "mcp-capability-grant"
   and .result.structuredContent.androidVolumeGrantTtlSeconds == 60
   and .result.structuredContent.androidDeviceControl == true
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+  and .result.structuredContent.trashFileGrantRequired == false
+  and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+  and .result.structuredContent.trashFileGrantTtlSeconds == 60
+  and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+  and .result.structuredContent.trashFileMaxBytes == 1048576
+  and .result.structuredContent.trashFileMaxResponseBytes == 16384
+  and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+  and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+  and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
   and .result.structuredContent.fileWriteMutationEnabled == false
   and .result.structuredContent.fileWriteGrantRequired == false
   and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
@@ -442,6 +504,12 @@ post_mcp "$(jq -cn --arg path "$SAFE_ROOT/volume-control-write-key-isolation.txt
 [[ "$MCP_STATUS" == 403 ]] || fail shared_key_enabled_write_file_http_invalid
 jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail shared_key_enabled_write_file_contract_invalid
 [[ ! -e "$SAFE_ROOT/volume-control-write-key-isolation.txt" && ! -L "$SAFE_ROOT/volume-control-write-key-isolation.txt" ]] || fail shared_key_enabled_write_file_mutated
+
+post_mcp "$(jq -cn --arg path "$TRASH_TARGET" '{jsonrpc:"2.0",id:"trash-key-isolation",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')" "$SESSION_ID"
+[[ "$MCP_STATUS" == 403 ]] || fail shared_key_enabled_trash_file_http_invalid
+jq -e '.error.code == -32003 and .error.data.reason == "trash_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail shared_key_enabled_trash_file_contract_invalid
+[[ -f "$TRASH_TARGET" && "$(cat "$TRASH_TARGET")" == volume-control-trash-retained ]] || fail shared_key_enabled_trash_file_target_mutated
+[[ ! -e "$SAFE_ROOT/.termux-mcp-trash-quarantine" && ! -L "$SAFE_ROOT/.termux-mcp-trash-quarantine" ]] || fail shared_key_enabled_trash_file_quarantine_mutated
 
 GRANT_MAIN="$WORK_ROOT/grant-main"
 issue_grant music 9 "$GRANT_MAIN"

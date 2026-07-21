@@ -306,7 +306,7 @@ jq -e \
   --arg android "$ANDROID_RUN_ID" '
     .status == "pass"
     and .failureCode == null
-    and .validatorVersion == "9"
+    and .validatorVersion == "10"
     and .releaseEligible == false
     and .repository == {commit:$commit,version:$version,ciRunId:$ci,securityRunId:$security,androidRunId:$android}
     and .phases == {preflight:"pass",runtime:"pass",deployment:"not_run"}
@@ -324,6 +324,14 @@ jq -e \
     and ([.results[].code] | index("copy_file_boundary_denials_verified") != null)
     and ([.results[].code] | index("copy_file_private_audit_verified") != null)
     and ([.results[].code] | index("copy_file_disabled_posture_verified") != null)
+    and ([.results[].code] | index("safe_root_file_trash_verified") != null)
+    and ([.results[].code] | index("request_scoped_trash_grant_enforced") != null)
+    and ([.results[].code] | index("trash_identity_content_binding_enforced") != null)
+    and ([.results[].code] | index("bounded_trash_file_response_preflight_verified") != null)
+    and ([.results[].code] | index("exact_trash_file_byte_limit_verified") != null)
+    and ([.results[].code] | index("trash_recovery_quarantine_verified") != null)
+    and ([.results[].code] | index("trash_file_private_audit_verified") != null)
+    and ([.results[].code] | index("trash_file_disabled_posture_verified") != null)
     and ([.results[].code] | index("expanded_body_posture_verified") != null)
     and ([.results[].code] | index("safe_root_file_create_replace_verified") != null)
     and ([.results[].code] | index("request_scoped_single_use_write_grant_enforced") != null)
@@ -354,6 +362,7 @@ start_stress_server() {
   MCP__FILE__SAFE_ROOTS="$SAFE_ROOT" \
   MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false \
   MCP__FILE__COPY_FILE_MUTATION_ENABLED=false \
+  MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
   MCP__FILE__WRITE_MUTATION_ENABLED=false \
   RUST_LOG=termux_mcp_server=info \
     "$MCP_ARTIFACT" >"$STRESS_LOG" 2>&1 &
@@ -446,7 +455,7 @@ for sample in $(seq 1 "$SAMPLES"); do
 
   post_mcp '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}' "$SESSION_ID"
   [[ "$MCP_STATUS" == 200 ]] || fail stress_tools_status_invalid
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$BODY_FILE" >/dev/null || fail stress_tool_allowlist_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$BODY_FILE" >/dev/null || fail stress_tool_allowlist_invalid
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -459,6 +468,18 @@ for sample in $(seq 1 "$SAMPLES"); do
     | $tool.inputSchema.properties.dry_run.const == true
       and ($tool.description | contains("copy mutation gate is disabled"))
   ' "$BODY_FILE" >/dev/null || fail stress_copy_file_disabled_posture_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "trash_file"))[0] as $tool
+    | $tool.inputSchema.type == "object"
+      and ($tool.inputSchema.properties | keys) == ["dry_run","path"]
+      and $tool.inputSchema.properties.path.type == "string"
+      and $tool.inputSchema.properties.dry_run.type == "boolean"
+      and $tool.inputSchema.properties.dry_run.const == true
+      and $tool.inputSchema.required == ["path"]
+      and $tool.inputSchema.additionalProperties == false
+      and ($tool.description | contains("dedicated trash mutation gate is disabled"))
+  ' "$BODY_FILE" >/dev/null || fail stress_trash_file_disabled_posture_invalid
   jq -e '
     .result.tools
     | map(select(.name == "write_file"))[0] as $tool
@@ -489,6 +510,17 @@ for sample in $(seq 1 "$SAMPLES"); do
       and .result.structuredContent.copyFileMaxBytes == 1048576
       and .result.structuredContent.copyFileMaxResponseBytes == 16384
       and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only"
+      and .result.structuredContent.trashFileMutationEnabled == false
+      and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+      and .result.structuredContent.trashFileGrantRequired == false
+      and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+      and .result.structuredContent.trashFileGrantTtlSeconds == 60
+      and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+      and .result.structuredContent.trashFileMaxBytes == 1048576
+      and .result.structuredContent.trashFileMaxResponseBytes == 16384
+      and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+      and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+      and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
       and .result.structuredContent.fileWrites == true
       and .result.structuredContent.fileWriteMutationEnabled == false
       and .result.structuredContent.fileWriteGrantRequired == false
@@ -507,6 +539,14 @@ for sample in $(seq 1 "$SAMPLES"); do
     jq -e '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_copy_file_disabled_contract_invalid
     [[ ! -e "$SAFE_ROOT/copy-disabled.txt" && ! -L "$SAFE_ROOT/copy-disabled.txt" ]] || fail stress_copy_file_disabled_replacement_mutated
     [[ ! -e "$PINNED_PARENT/original-safe-root/copy-disabled.txt" && ! -L "$PINNED_PARENT/original-safe-root/copy-disabled.txt" ]] || fail stress_copy_file_disabled_pinned_root_mutated
+
+    post_mcp "$(jq -cn --arg path "$SAFE_ROOT/visible.txt" '{jsonrpc:"2.0",id:"trash-disabled",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')" "$SESSION_ID"
+    [[ "$MCP_STATUS" == 403 ]] || fail stress_trash_file_disabled_status_invalid
+    jq -e '.error.code == -32003 and .error.data.reason == "trash_file_mutation_disabled"' "$BODY_FILE" >/dev/null || fail stress_trash_file_disabled_contract_invalid
+    [[ -f "$SAFE_ROOT/visible.txt" && "$(cat "$SAFE_ROOT/visible.txt")" == ancestor-replacement ]] || fail stress_trash_file_disabled_replacement_target_mutated
+    [[ -f "$PINNED_PARENT/original-safe-root/visible.txt" && "$(cat "$PINNED_PARENT/original-safe-root/visible.txt")" == emulated-visible ]] || fail stress_trash_file_disabled_pinned_target_mutated
+    [[ ! -e "$SAFE_ROOT/.termux-mcp-trash-quarantine" && ! -L "$SAFE_ROOT/.termux-mcp-trash-quarantine" ]] || fail stress_trash_file_disabled_replacement_quarantine_mutated
+    [[ ! -e "$PINNED_PARENT/original-safe-root/.termux-mcp-trash-quarantine" && ! -L "$PINNED_PARENT/original-safe-root/.termux-mcp-trash-quarantine" ]] || fail stress_trash_file_disabled_pinned_quarantine_mutated
 
     post_mcp "$(jq -cn --arg path "$SAFE_ROOT/write-disabled.txt" '{jsonrpc:"2.0",id:"write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}}}')" "$SESSION_ID"
     [[ "$MCP_STATUS" == 403 ]] || fail stress_write_file_disabled_status_invalid

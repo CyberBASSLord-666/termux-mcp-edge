@@ -31,15 +31,17 @@ pub(crate) enum RequestGrantCapability {
     )]
     AndroidVolume = 3,
     CopyFile = 4,
+    TrashFile = 5,
 }
 
 impl RequestGrantCapability {
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::CreateDirectory,
         Self::WriteFile,
         Self::AndroidVolume,
         Self::CopyFile,
+        Self::TrashFile,
     ];
 
     pub(crate) const fn wire_code(self) -> u8 {
@@ -61,9 +63,10 @@ mod tests {
         assert_eq!(RequestGrantCapability::WriteFile.wire_code(), 2);
         assert_eq!(RequestGrantCapability::AndroidVolume.wire_code(), 3);
         assert_eq!(RequestGrantCapability::CopyFile.wire_code(), 4);
+        assert_eq!(RequestGrantCapability::TrashFile.wire_code(), 5);
         assert_eq!(
             RequestGrantCapability::ALL.map(RequestGrantCapability::wire_code),
-            [1, 2, 3, 4]
+            [1, 2, 3, 4, 5]
         );
 
         let unique = RequestGrantCapability::ALL
@@ -90,6 +93,10 @@ mod tests {
                 CreateDirectoryGrantAuthority, CreateDirectoryGrantError,
                 CreateDirectoryGrantTarget,
             },
+            trash_file_grant::{
+                TrashFileGrantAuthority, TrashFileGrantError, TrashFileGrantTarget,
+                TrashFileIdentity,
+            },
             write_file_grant::{
                 WriteFileDisposition, WriteFileGrantAuthority, WriteFileGrantError,
                 WriteFileGrantTarget,
@@ -112,6 +119,7 @@ mod tests {
                 "payload",
                 "source.bin",
                 "destination.bin",
+                "trash.bin",
             ] {
                 assert!(!rendered.contains(private));
             }
@@ -125,6 +133,7 @@ mod tests {
                 AndroidVolumeGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap();
             let write = WriteFileGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap();
             let copy = CopyFileGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap();
+            let trash = TrashFileGrantAuthority::from_hex_key("primary-1", KEY, PRINCIPAL).unwrap();
 
             let create_target = CreateDirectoryGrantTarget::from_normalized_components(
                 41,
@@ -154,11 +163,20 @@ mod tests {
                 [b"archive".as_slice(), b"destination.bin".as_slice()],
             )
             .unwrap();
+            let trash_target = TrashFileGrantTarget::from_normalized_components(
+                41,
+                73,
+                [b"projects".as_slice(), b"trash.bin".as_slice()],
+                TrashFileIdentity::new(303, 404, 7, 1_700_000_001, 987_654_321, 1).unwrap(),
+                Sha256::digest(b"payload").into(),
+            )
+            .unwrap();
 
             let create_token = create.issue_at(SESSION, &create_target, NOW).unwrap();
             let volume_token = volume.issue_at(SESSION, volume_target, NOW).unwrap();
             let write_token = write.issue_at(SESSION, &write_target, NOW).unwrap();
             let copy_token = copy.issue_at(SESSION, &copy_target, NOW).unwrap();
+            let trash_token = trash.issue_at(SESSION, &trash_target, NOW).unwrap();
 
             for error in [
                 create
@@ -169,6 +187,9 @@ mod tests {
                     .unwrap_err(),
                 create
                     .consume_at(Some(&copy_token), SESSION, &create_target, NOW + 1)
+                    .unwrap_err(),
+                create
+                    .consume_at(Some(&trash_token), SESSION, &create_target, NOW + 1)
                     .unwrap_err(),
             ] {
                 assert_eq!(error, CreateDirectoryGrantError::Malformed);
@@ -187,6 +208,9 @@ mod tests {
                     .unwrap_err(),
                 volume
                     .consume_at(Some(&copy_token), SESSION, volume_target, NOW + 1)
+                    .unwrap_err(),
+                volume
+                    .consume_at(Some(&trash_token), SESSION, volume_target, NOW + 1)
                     .unwrap_err(),
             ] {
                 assert_eq!(error, AndroidVolumeGrantError::Malformed);
@@ -220,6 +244,15 @@ mod tests {
                 write_rejects_copy.reason_code(),
                 &write_rejects_copy.to_string(),
             );
+            let write_rejects_trash = write
+                .consume_at(Some(&trash_token), SESSION, &write_target, NOW + 1)
+                .unwrap_err();
+            assert_eq!(write_rejects_trash, WriteFileGrantError::BindingMismatch);
+            assert_private_rejection(
+                "capability_grant_binding_mismatch",
+                write_rejects_trash.reason_code(),
+                &write_rejects_trash.to_string(),
+            );
 
             for error in [
                 copy.consume_at(Some(&create_token), SESSION, &copy_target, NOW + 1)
@@ -243,6 +276,42 @@ mod tests {
                 copy_rejects_write.reason_code(),
                 &copy_rejects_write.to_string(),
             );
+            let copy_rejects_trash = copy
+                .consume_at(Some(&trash_token), SESSION, &copy_target, NOW + 1)
+                .unwrap_err();
+            assert_eq!(copy_rejects_trash, CopyFileGrantError::BindingMismatch);
+            assert_private_rejection(
+                "capability_grant_binding_mismatch",
+                copy_rejects_trash.reason_code(),
+                &copy_rejects_trash.to_string(),
+            );
+
+            for error in [
+                trash
+                    .consume_at(Some(&create_token), SESSION, &trash_target, NOW + 1)
+                    .unwrap_err(),
+                trash
+                    .consume_at(Some(&volume_token), SESSION, &trash_target, NOW + 1)
+                    .unwrap_err(),
+            ] {
+                assert_eq!(error, TrashFileGrantError::Malformed);
+                assert_private_rejection(
+                    "capability_grant_malformed",
+                    error.reason_code(),
+                    &error.to_string(),
+                );
+            }
+            for token in [&write_token, &copy_token] {
+                let error = trash
+                    .consume_at(Some(token), SESSION, &trash_target, NOW + 1)
+                    .unwrap_err();
+                assert_eq!(error, TrashFileGrantError::BindingMismatch);
+                assert_private_rejection(
+                    "capability_grant_binding_mismatch",
+                    error.reason_code(),
+                    &error.to_string(),
+                );
+            }
 
             // Wrong-family attempts must not consume the source grant. Each
             // exact family can still accept its token once, then rejects only
@@ -257,6 +326,9 @@ mod tests {
                 .consume_at(Some(&write_token), SESSION, &write_target, NOW + 1)
                 .unwrap();
             copy.consume_at(Some(&copy_token), SESSION, &copy_target, NOW + 1)
+                .unwrap();
+            trash
+                .consume_at(Some(&trash_token), SESSION, &trash_target, NOW + 1)
                 .unwrap();
 
             assert_eq!(
@@ -281,6 +353,12 @@ mod tests {
                 copy.consume_at(Some(&copy_token), SESSION, &copy_target, NOW + 1)
                     .unwrap_err(),
                 CopyFileGrantError::Replayed
+            );
+            assert_eq!(
+                trash
+                    .consume_at(Some(&trash_token), SESSION, &trash_target, NOW + 1)
+                    .unwrap_err(),
+                TrashFileGrantError::Replayed
             );
         }
     }

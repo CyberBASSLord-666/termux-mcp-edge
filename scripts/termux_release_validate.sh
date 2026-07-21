@@ -5,7 +5,7 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="9"
+readonly VALIDATOR_VERSION="10"
 readonly EVIDENCE_SCHEMA_VERSION=1
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
@@ -27,7 +27,7 @@ Options:
   --confirm-runtime-mutation
       Permit creation of a dedicated temporary directory below the configured safe root,
       direct candidate process startup, and bounded isolated filesystem mutations,
-      including one request-granted directory creation, inside that directory.
+      including request-granted reversible file retention, inside that directory.
   --confirm-deployment-mutation
       Permit termux_deploy.sh to exercise install/upgrade/recovery/rollback/uninstall.
   --production-action install|upgrade|upgrade-failure|rollback|uninstall
@@ -161,6 +161,7 @@ CAPABILITY_KEY_ID="release-validator-1"
 CAPABILITY_KEY_HEX=""
 CAPABILITY_GRANT_FILE=""
 COPY_CAPABILITY_GRANT_FILE=""
+TRASH_CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_GRANT_FILE=""
 WRITE_CAPABILITY_CONTENT_FILE=""
 CAPABILITY_RUNTIME_CONFIG_FILE=""
@@ -702,6 +703,7 @@ prepare_runtime_inputs() {
     SESSION_HEADER_FILE="$TEMP_ROOT/session-headers.txt"
     CAPABILITY_GRANT_FILE="$TEMP_ROOT/create-directory-grant.txt"
     COPY_CAPABILITY_GRANT_FILE="$TEMP_ROOT/copy-file-grant.txt"
+    TRASH_CAPABILITY_GRANT_FILE="$TEMP_ROOT/trash-file-grant.txt"
     WRITE_CAPABILITY_GRANT_FILE="$TEMP_ROOT/write-file-grant.txt"
     WRITE_CAPABILITY_CONTENT_FILE="$TEMP_ROOT/write-file-content.txt"
     CAPABILITY_RUNTIME_CONFIG_FILE="$TEMP_ROOT/capability-runtime.env"
@@ -710,10 +712,11 @@ prepare_runtime_inputs() {
     : >"$SESSION_HEADER_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$COPY_CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
+    : >"$TRASH_CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$WRITE_CAPABILITY_GRANT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$WRITE_CAPABILITY_CONTENT_FILE" 2>/dev/null || fail private_request_staging_failed
     : >"$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
-    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$COPY_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
+    chmod 600 "$AUTH_HEADER_FILE" "$REQUEST_FILE" "$SESSION_HEADER_FILE" "$CAPABILITY_GRANT_FILE" "$COPY_CAPABILITY_GRANT_FILE" "$TRASH_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE" "$CAPABILITY_RUNTIME_CONFIG_FILE" 2>/dev/null || fail private_request_staging_failed
   fi
   [[ "$SAFE_ROOT" == /* && -d "$SAFE_ROOT" && ! -L "$SAFE_ROOT" ]] || fail safe_root_invalid
   SAFE_ROOT="${SAFE_ROOT%/}"
@@ -742,6 +745,7 @@ prepare_runtime_inputs() {
     "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT" \
     'MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true' \
     'MCP__FILE__COPY_FILE_MUTATION_ENABLED=true' \
+    'MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true' \
     'MCP__FILE__WRITE_MUTATION_ENABLED=true' \
     "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID" \
     "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX" \
@@ -848,6 +852,24 @@ issue_copy_file_grant() {
   unset grant
 }
 
+issue_trash_file_grant() {
+  local target="$1" grant
+  : >"$TRASH_CAPABILITY_GRANT_FILE" 2>/dev/null || fail trash_capability_grant_staging_failed
+  chmod 600 "$TRASH_CAPABILITY_GRANT_FILE" 2>/dev/null || fail trash_capability_grant_staging_failed
+  if ! MCP__CAPABILITY__CONFIG_FILE="$CAPABILITY_RUNTIME_CONFIG_FILE" \
+    MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
+    MCP__CAPABILITY__TRASH_FILE_TARGET="$target" \
+      "$MCP_PINNED_ARTIFACT" --issue-trash-file-grant >"$TRASH_CAPABILITY_GRANT_FILE" 2>/dev/null
+  then
+    fail trash_capability_grant_issue_failed
+  fi
+  [[ "$(wc -l <"$TRASH_CAPABILITY_GRANT_FILE" 2>/dev/null)" == 1 ]] || fail trash_capability_grant_output_invalid
+  grant="$(<"$TRASH_CAPABILITY_GRANT_FILE")"
+  valid_capability_grant "$grant" || fail trash_capability_grant_output_invalid
+  capability_grant_has_signed_byte "$grant" 130 16 05 || fail trash_file_capability_byte_invalid
+  unset grant
+}
+
 issue_write_file_grant() {
   local target="$1" content_file="$2" disposition="$3" grant
   validate_private_file "$content_file" write_capability_content_file_invalid
@@ -923,6 +945,7 @@ start_server() {
     "MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT"
     "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false"
     "MCP__FILE__COPY_FILE_MUTATION_ENABLED=false"
+    "MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false"
     "MCP__FILE__WRITE_MUTATION_ENABLED=false"
     "RUST_LOG=termux_mcp_server=info"
   )
@@ -930,6 +953,7 @@ start_server() {
     environment+=(
       "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true"
       "MCP__FILE__COPY_FILE_MUTATION_ENABLED=true"
+      "MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true"
       "MCP__FILE__WRITE_MUTATION_ENABLED=true"
       "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
       "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
@@ -1046,6 +1070,8 @@ run_mcp_runtime_checks() {
   local second="$TEMP_ROOT/mcp-second.json" status payload oversized bytes directory_target mismatch_target hash_digest
   local copy_source copy_target copy_mismatch_target copy_stale_source copy_stale_target
   local copy_oversized copy_retry_target copy_bytes copy_grant
+  local trash_target trash_mismatch_target trash_oversized trash_exact_target trash_bytes
+  local trash_quarantine trash_artifact trash_identity trash_digest trash_grant
   local replacement_content old_identity new_identity preflight_identity substitute_identity preserved_target
   local recovery_count_before recovery_count_after
   start_server "$MCP_PINNED_ARTIFACT" mcp
@@ -1134,7 +1160,7 @@ run_mcp_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"tools-list","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status tool_discovery "$status" 200 tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail tool_allowlist_mismatch
   jq -e '
     .result.tools
     | map(select(.name == "create_directory"))[0] as $tool
@@ -1150,6 +1176,16 @@ run_mcp_runtime_checks() {
       and ($tool.description | contains("MCP-Capability-Grant"))
       and ($tool.description | contains("source-identity/content/destination-bound"))
   ' "$body" >/dev/null 2>&1 || fail copy_file_grant_discovery_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "trash_file"))[0] as $tool
+    | ($tool.inputSchema.properties.dry_run | has("const") | not)
+      and ($tool.inputSchema.additionalProperties == false)
+      and ($tool.inputSchema.required == ["path"])
+      and ($tool.description | contains("MCP-Capability-Grant"))
+      and ($tool.description | contains("identity/content-bound"))
+      and ($tool.description | contains("recovery"))
+  ' "$body" >/dev/null 2>&1 || fail trash_file_grant_discovery_invalid
   jq -e '
     .result.tools
     | map(select(.name == "write_file"))[0] as $tool
@@ -1253,6 +1289,17 @@ run_mcp_runtime_checks() {
     and .result.structuredContent.copyFileMaxBytes == 1048576
     and .result.structuredContent.copyFileMaxResponseBytes == 16384
     and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only"
+    and .result.structuredContent.trashFileMutationEnabled == true
+    and .result.structuredContent.trashFileMode == "dry_run_or_identity_content_scoped_single_use_grant_with_recovery_retained"
+    and .result.structuredContent.trashFileGrantRequired == true
+    and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.trashFileGrantTtlSeconds == 60
+    and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+    and .result.structuredContent.trashFileMaxBytes == 1048576
+    and .result.structuredContent.trashFileMaxResponseBytes == 16384
+    and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+    and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+    and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
     and .result.structuredContent.fileWrites == true
     and .result.structuredContent.fileWriteMode == "dry_run_or_target_content_disposition_scoped_single_use_grant"
     and .result.structuredContent.fileWriteMutationEnabled == true
@@ -1806,6 +1853,127 @@ run_mcp_runtime_checks() {
   record_result runtime copy_file_boundaries pass copy_file_boundary_denials_verified
   record_result runtime copy_file_private_audit pass copy_file_private_audit_verified
 
+  trash_target="$VALIDATION_SAFE_ROOT/trash-target.bin"
+  trash_mismatch_target="$VALIDATION_SAFE_ROOT/trash-mismatch.bin"
+  trash_oversized="$VALIDATION_SAFE_ROOT/trash-oversized.bin"
+  trash_exact_target="$VALIDATION_SAFE_ROOT/trash-exact-1mib.bin"
+  trash_quarantine="$VALIDATION_SAFE_ROOT/.termux-mcp-trash-quarantine"
+  printf '%s' validation-trash-private >"$trash_target" 2>/dev/null || fail trash_file_fixture_create_failed
+  printf '%s' mismatch-private >"$trash_mismatch_target" 2>/dev/null || fail trash_file_fixture_create_failed
+  chmod 640 "$trash_target" "$trash_mismatch_target" 2>/dev/null || fail trash_file_fixture_create_failed
+  trash_bytes="$(stat -c '%s' "$trash_target" 2>/dev/null)" || fail trash_file_fixture_stat_failed
+  trash_identity="$(stat -c '%d:%i:%a' "$trash_target" 2>/dev/null)" || fail trash_file_fixture_stat_failed
+  trash_digest="$(sha256sum -- "$trash_target" 2>/dev/null | awk '{print $1}')" || fail trash_file_fixture_hash_failed
+
+  payload="$(jq -cn --arg path "$trash_target" '{jsonrpc:"2.0",id:"trash-preview",method:"tools/call",params:{name:"trash_file",arguments:{path:$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status trash_file_preview "$status" 200 trash_file_preview_succeeded
+  jq -e --argjson size "$trash_bytes" '
+    .result.structuredContent == {
+      dryRun:true,
+      sizeBytes:$size,
+      recoveryArtifactRetained:false,
+      maxFileBytes:1048576,
+      maxResponseBytes:16384
+    }
+  ' "$body" >/dev/null 2>&1 || fail trash_file_preview_contract_invalid
+  grep -Eq 'validation-trash-private|trash-target\.bin|termux-mcp-release-validation-|termux-mcp-trash' "$body" \
+    && fail trash_file_preview_private_data_reflected
+  [[ -f "$trash_target" && ! -e "$trash_quarantine" ]] || fail trash_file_preview_mutated
+
+  payload="$(jq -cn --arg path "$trash_target" '{jsonrpc:"2.0",id:"trash-missing-grant",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status trash_file_missing_grant "$status" 403 trash_file_missing_grant_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_missing"' "$body" >/dev/null 2>&1 || fail trash_file_missing_grant_body_invalid
+  [[ -f "$trash_target" && ! -e "$trash_quarantine" ]] || fail trash_file_missing_grant_mutated
+
+  issue_trash_file_grant "$trash_target"
+
+  payload="$(jq -cn --arg path "$trash_target" '{jsonrpc:"2.0",id:"trash-grant-preview",method:"tools/call",params:{name:"trash_file",arguments:{path:$path}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_grant_preview "$status" 400 trash_file_grant_preview_rejected
+  jq -e '.error.code == -32600' "$body" >/dev/null 2>&1 || fail trash_file_grant_preview_body_invalid
+  [[ -f "$trash_target" && ! -e "$trash_quarantine" ]] || fail trash_file_grant_preview_mutated
+
+  payload="$(jq -cn --arg path "$trash_mismatch_target" '{jsonrpc:"2.0",id:"trash-grant-mismatch",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_grant_binding "$status" 403 trash_file_grant_binding_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_binding_mismatch"' "$body" >/dev/null 2>&1 || fail trash_file_grant_binding_body_invalid
+  [[ -f "$trash_target" && -f "$trash_mismatch_target" && ! -e "$trash_quarantine" ]] || fail trash_file_grant_binding_mutated
+
+  dd if=/dev/zero of="$trash_oversized" bs=1048577 count=1 status=none 2>/dev/null || fail trash_file_oversized_fixture_create_failed
+  payload="$(jq -cn --arg path "$trash_oversized" '{jsonrpc:"2.0",id:"trash-oversized",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_oversized "$status" 413 trash_file_oversized_rejected
+  jq -e '.error.code == -32001' "$body" >/dev/null 2>&1 || fail trash_file_oversized_body_invalid
+  [[ -f "$trash_target" && -f "$trash_oversized" && ! -e "$trash_quarantine" ]] || fail trash_file_oversized_mutated
+
+  payload="$(jq -cn --arg path "$trash_target" '{jsonrpc:"2.0",id:"trash-authorized",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_authorized "$status" 200 trash_file_authorized_succeeded
+  jq -e --argjson size "$trash_bytes" '
+    .result.structuredContent == {
+      dryRun:false,
+      sizeBytes:$size,
+      recoveryArtifactRetained:true,
+      maxFileBytes:1048576,
+      maxResponseBytes:16384
+    }
+  ' "$body" >/dev/null 2>&1 || fail trash_file_contract_invalid
+  trash_grant="$(<"$TRASH_CAPABILITY_GRANT_FILE")"
+  if grep -Eq 'validation-trash-private|trash-target\.bin|termux-mcp-release-validation-|termux-mcp-trash' "$body" \
+    || grep -Fq "$trash_grant" "$body"; then
+    fail trash_file_private_data_reflected
+  fi
+  unset trash_grant
+  [[ ! -e "$trash_target" && ! -L "$trash_target" ]] || fail trash_file_target_retained_publicly
+  [[ -d "$trash_quarantine" && ! -L "$trash_quarantine" ]] || fail trash_recovery_namespace_invalid
+  [[ "$(stat -c '%a' "$trash_quarantine" 2>/dev/null)" == 700 ]] || fail trash_recovery_namespace_mode_invalid
+  [[ "$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" == 1 ]] || fail trash_recovery_artifact_count_invalid
+  trash_artifact="$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 -print -quit 2>/dev/null)"
+  [[ -n "$trash_artifact" && ! -L "$trash_artifact" ]] || fail trash_recovery_artifact_invalid
+  [[ "${trash_artifact##*/}" =~ ^\.termux-mcp-trash-artifact-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail trash_recovery_artifact_name_invalid
+  [[ "$(stat -c '%d:%i:%a' "$trash_artifact" 2>/dev/null)" == "$trash_identity" ]] || fail trash_recovery_identity_or_mode_invalid
+  [[ "$(sha256sum -- "$trash_artifact" 2>/dev/null | awk '{print $1}')" == "$trash_digest" ]] || fail trash_recovery_content_invalid
+
+  dd if=/dev/zero of="$trash_exact_target" bs=1048576 count=1 status=none 2>/dev/null || fail trash_file_exact_limit_fixture_create_failed
+  chmod 600 "$trash_exact_target" 2>/dev/null || fail trash_file_exact_limit_fixture_create_failed
+  issue_trash_file_grant "$trash_exact_target"
+  payload="$(jq -cn --arg path "$trash_exact_target" '{jsonrpc:"2.0",id:"trash-exact-1mib",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_exact_limit "$status" 200 trash_file_exact_limit_succeeded
+  jq -e '.result.structuredContent.sizeBytes == 1048576 and .result.structuredContent.recoveryArtifactRetained == true' "$body" >/dev/null 2>&1 || fail trash_file_exact_limit_body_invalid
+  [[ ! -e "$trash_exact_target" ]] || fail trash_file_exact_limit_target_present
+  [[ "$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" == 2 ]] || fail trash_recovery_exact_limit_count_invalid
+
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT" '{jsonrpc:"2.0",id:"trash-quarantine-hidden",method:"tools/call",params:{name:"list_directory",arguments:{path:$path,max_depth:1}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status trash_file_namespace_hiding "$status" 200 trash_file_namespace_hiding_succeeded
+  grep -Eq 'termux-mcp-trash|trash-target\.bin|validation-trash-private' "$body" && fail trash_recovery_namespace_reflected
+
+  payload='{"jsonrpc":"2.0","id":"trash-audit","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status trash_file_audit "$status" 200 trash_file_audit_read
+  jq -e '
+    .result.structuredContent.auditCounters as $audit
+    | $audit.by_tool.trash_file.allowed >= 3
+      and $audit.by_tool.trash_file.denied >= 3
+      and $audit.by_reason_code.dry_run_preview.allowed >= 1
+      and $audit.by_reason_code.safe_root_file_trashed_recovery_retained.allowed >= 2
+      and $audit.by_reason_code.capability_grant_missing.denied >= 1
+      and $audit.by_reason_code.capability_grant_binding_mismatch.denied >= 1
+      and $audit.by_reason_code.filesystem_trash_target_too_large.denied >= 1
+  ' "$body" >/dev/null 2>&1 || fail trash_file_audit_contract_invalid
+  grep -Eq 'validation-trash-private|trash-target\.bin|termux-mcp-release-validation-|termux-mcp-trash' "$body" \
+    && fail trash_file_audit_private_data_reflected
+
+  record_result runtime trash_file pass safe_root_file_trash_verified
+  record_result runtime trash_file_authorization pass request_scoped_trash_grant_enforced
+  record_result runtime trash_file_binding pass trash_identity_content_binding_enforced
+  record_result runtime trash_file_boundaries pass exact_trash_file_byte_limit_verified
+  record_result runtime trash_file_recovery pass trash_recovery_quarantine_verified
+  record_result runtime trash_file_private_audit pass trash_file_private_audit_verified
+
   dd if=/dev/zero of="$VALIDATION_SAFE_ROOT/expanded-response.bin" bs=200000 count=1 status=none 2>/dev/null || fail read_bound_fixture_create_failed
   chmod 600 "$VALIDATION_SAFE_ROOT/expanded-response.bin" 2>/dev/null || fail read_bound_fixture_create_failed
   payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/expanded-response.bin" '{"jsonrpc":"2.0","id":"read-expanded","method":"tools/call","params":{"name":"read_file","arguments":{"path":$path}}}')"
@@ -1986,7 +2154,9 @@ run_write_file_boundary_checks() {
   local exact_target="$VALIDATION_SAFE_ROOT/write-file-exact-limit.txt"
   local over_target="$VALIDATION_SAFE_ROOT/write-file-over-limit.txt"
   local preflight_target="$VALIDATION_SAFE_ROOT/write-file-response-preflight.txt"
-  local status payload bytes recovery_count_before
+  local trash_preflight_target="$VALIDATION_SAFE_ROOT/trash-file-response-preflight.txt"
+  local trash_quarantine="$VALIDATION_SAFE_ROOT/.termux-mcp-trash-quarantine"
+  local status payload bytes recovery_count_before trash_count_before trash_count_after
 
   WRITE_CAPABILITY_GRANT_FILE="$TEMP_ROOT/write-file-boundary-grant.txt"
   WRITE_CAPABILITY_CONTENT_FILE="$TEMP_ROOT/write-file-boundary-content.txt"
@@ -2036,6 +2206,45 @@ run_write_file_boundary_checks() {
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status write_file_boundary_initialized "$status" 202 write_file_boundary_initialized_accepted
   [[ ! -s "$body" ]] || fail write_file_boundary_initialized_body_present
+
+  printf '%s' validation-trash-response-preflight >"$trash_preflight_target" 2>/dev/null \
+    || fail trash_file_response_preflight_fixture_create_failed
+  chmod 600 "$trash_preflight_target" 2>/dev/null \
+    || fail trash_file_response_preflight_fixture_create_failed
+  issue_trash_file_grant "$trash_preflight_target"
+  trash_count_before="$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" \
+    || fail trash_file_response_preflight_inspection_failed
+  jq -cn \
+    --rawfile identifier "$oversized_identifier" \
+    --arg path "$trash_preflight_target" \
+    '{jsonrpc:"2.0",id:$identifier,method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}' \
+    >"$REQUEST_FILE" 2>/dev/null || fail trash_file_response_preflight_fixture_create_failed
+  chmod 600 "$REQUEST_FILE" 2>/dev/null || fail trash_file_response_preflight_fixture_create_failed
+  status="$(mcp_post_staged "$body" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_response_preflight "$status" 413 trash_file_response_preflight_rejected
+  jq -e '.error.code == -32001 and .id == null' "$body" >/dev/null 2>&1 \
+    || fail trash_file_response_preflight_body_invalid
+  bytes="$(wc -c <"$body" 2>/dev/null)" || fail trash_file_response_preflight_size_failed
+  ((bytes <= 16384)) || fail trash_file_response_preflight_error_too_large
+  trash_count_after="$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" \
+    || fail trash_file_response_preflight_inspection_failed
+  [[ -f "$trash_preflight_target" && "$trash_count_after" == "$trash_count_before" ]] \
+    || fail trash_file_response_preflight_mutated
+
+  payload="$(jq -cn --arg path "$trash_preflight_target" '{jsonrpc:"2.0",id:"trash-response-preflight-retry",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID" 1 "$TRASH_CAPABILITY_GRANT_FILE")"
+  expect_status trash_file_response_preflight_retry "$status" 200 trash_file_response_preflight_retry_succeeded
+  jq -e '
+    .result.structuredContent.dryRun == false
+    and .result.structuredContent.recoveryArtifactRetained == true
+    and .result.structuredContent.maxFileBytes == 1048576
+    and .result.structuredContent.maxResponseBytes == 16384
+  ' "$body" >/dev/null 2>&1 || fail trash_file_response_preflight_retry_body_invalid
+  trash_count_after="$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" \
+    || fail trash_file_response_preflight_inspection_failed
+  [[ ! -e "$trash_preflight_target" && "$trash_count_after" == "$((trash_count_before + 1))" ]] \
+    || fail trash_file_response_preflight_retry_mutated
+  record_result runtime trash_file_response_preflight pass bounded_trash_file_response_preflight_verified
 
   issue_write_file_grant "$exact_target" "$exact_content" create
   stage_write_file_request write-file-exact-limit "$exact_target" "$exact_content" false
@@ -2112,7 +2321,7 @@ run_write_file_boundary_checks() {
   MCP_SESSION_ID=""
   stop_server || fail write_file_boundary_runtime_stop_failed
 
-  rm -f -- "$exact_target" "$over_target" "$preflight_target" \
+  rm -f -- "$exact_target" "$over_target" "$preflight_target" "$trash_preflight_target" \
     "$WRITE_CAPABILITY_GRANT_FILE" "$WRITE_CAPABILITY_CONTENT_FILE" \
     "$exact_content" "$over_content" "$oversized_identifier" 2>/dev/null \
     || fail write_file_boundary_cleanup_failed
@@ -2124,7 +2333,9 @@ run_volume_control_runtime_checks() {
   local body="$TEMP_ROOT/volume-control-response.json"
   local headers="$TEMP_ROOT/volume-control-headers.txt"
   local compile_log="$TEMP_ROOT/volume-control-compile-gate.log"
-  local status payload compile_rc
+  local trash_quarantine="$VALIDATION_SAFE_ROOT/.termux-mcp-trash-quarantine"
+  local trash_count_before trash_count_after trash_quarantine_before trash_quarantine_after
+  local trash_target_before trash_target_after status payload compile_rc
 
   if timeout -k 2 5 env -i \
     "HOME=$HOME" \
@@ -2180,7 +2391,7 @@ run_volume_control_runtime_checks() {
   payload='{"jsonrpc":"2.0","id":"volume-control-tools","method":"tools/list"}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   expect_status volume_control_tool_discovery "$status" 200 volume_control_tool_discovery_succeeded
-  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
+  jq -e '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]' "$body" >/dev/null 2>&1 || fail volume_control_disabled_discovery_invalid
   jq -e '
     .result.tools
     | map(select(.name == "write_file"))[0] as $tool
@@ -2193,6 +2404,14 @@ run_volume_control_runtime_checks() {
     | $tool.inputSchema.properties.dry_run.const == true
       and ($tool.description | contains("copy mutation gate is disabled"))
   ' "$body" >/dev/null 2>&1 || fail volume_control_copy_discovery_invalid
+  jq -e '
+    .result.tools
+    | map(select(.name == "trash_file"))[0] as $tool
+    | $tool.inputSchema.properties.dry_run.const == true
+      and ($tool.inputSchema.additionalProperties == false)
+      and ($tool.description | contains("trash"))
+      and ($tool.description | contains("mutation gate is disabled"))
+  ' "$body" >/dev/null 2>&1 || fail volume_control_trash_discovery_invalid
   record_result runtime volume_control_disabled_discovery pass volume_control_hidden_while_disabled
 
   payload='{"jsonrpc":"2.0","id":"volume-control-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
@@ -2211,6 +2430,17 @@ run_volume_control_runtime_checks() {
     and .result.structuredContent.copyFileMaxBytes == 1048576
     and .result.structuredContent.copyFileMaxResponseBytes == 16384
     and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only"
+    and .result.structuredContent.trashFileMutationEnabled == false
+    and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled"
+    and .result.structuredContent.trashFileGrantRequired == false
+    and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant"
+    and .result.structuredContent.trashFileGrantTtlSeconds == 60
+    and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained"
+    and .result.structuredContent.trashFileMaxBytes == 1048576
+    and .result.structuredContent.trashFileMaxResponseBytes == 16384
+    and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32
+    and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432
+    and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"
     and .result.structuredContent.fileWrites == true
     and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled"
     and .result.structuredContent.fileWriteMutationEnabled == false
@@ -2236,6 +2466,28 @@ run_volume_control_runtime_checks() {
   jq -e '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"' "$body" >/dev/null 2>&1 || fail volume_control_copy_disabled_body_invalid
   [[ ! -e "$VALIDATION_SAFE_ROOT/volume-copy-disabled.txt" ]] || fail volume_control_copy_disabled_mutated
   record_result runtime copy_file_disabled_posture pass copy_file_disabled_posture_verified
+
+  trash_target_before="$(stat -c '%d:%i:%a:%s:%Y:%Z' "$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null)" \
+    || fail volume_control_trash_disabled_fixture_invalid
+  trash_quarantine_before="$(stat -c '%d:%i:%a:%s:%Y:%Z' "$trash_quarantine" 2>/dev/null)" \
+    || fail volume_control_trash_disabled_fixture_invalid
+  trash_count_before="$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" \
+    || fail volume_control_trash_disabled_fixture_invalid
+  payload="$(jq -cn --arg path "$VALIDATION_SAFE_ROOT/visible.txt" '{jsonrpc:"2.0",id:"volume-trash-disabled",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status volume_control_trash_disabled "$status" 403 trash_file_mutation_disabled
+  jq -e '.error.code == -32003 and .error.data.reason == "trash_file_mutation_disabled"' "$body" >/dev/null 2>&1 || fail volume_control_trash_disabled_body_invalid
+  trash_target_after="$(stat -c '%d:%i:%a:%s:%Y:%Z' "$VALIDATION_SAFE_ROOT/visible.txt" 2>/dev/null)" \
+    || fail volume_control_trash_disabled_mutated
+  trash_quarantine_after="$(stat -c '%d:%i:%a:%s:%Y:%Z' "$trash_quarantine" 2>/dev/null)" \
+    || fail volume_control_trash_disabled_mutated
+  trash_count_after="$(find "$trash_quarantine" -mindepth 1 -maxdepth 1 -type f -links 1 2>/dev/null | wc -l)" \
+    || fail volume_control_trash_disabled_mutated
+  [[ "$trash_target_after" == "$trash_target_before" \
+    && "$trash_quarantine_after" == "$trash_quarantine_before" \
+    && "$trash_count_after" == "$trash_count_before" ]] \
+    || fail volume_control_trash_disabled_mutated
+  record_result runtime trash_file_disabled_posture pass trash_file_disabled_posture_verified
 
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":1,"dry_run":false}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
@@ -2321,6 +2573,7 @@ MCP__TRANSPORT__MAX_BODY_BYTES=1024
 MCP__FILE__SAFE_ROOTS=$VALIDATION_SAFE_ROOT
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false
 MCP__FILE__COPY_FILE_MUTATION_ENABLED=false
+MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false
 MCP__FILE__WRITE_MUTATION_ENABLED=false
 RUST_LOG=termux_mcp_server=info
 EOF

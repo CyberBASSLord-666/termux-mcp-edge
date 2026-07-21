@@ -26,6 +26,7 @@ use termux_mcp_server::{
     },
     tools::FileSystemTools,
     transport_security::TransportSecurityPolicy,
+    trash_file_grant::TrashFileGrantAuthority,
     write_file_grant::{WriteFileDisposition, WriteFileGrantAuthority},
 };
 use tower::ServiceExt;
@@ -178,6 +179,30 @@ pub(super) fn copy_file_authorized_test_router(
     (router, authority)
 }
 
+pub(super) fn trash_file_authorized_test_router(
+    file_tools: FileSystemTools,
+) -> (Router, TrashFileGrantAuthority) {
+    let authority = TrashFileGrantAuthority::from_hex_key(
+        "test-trash-key-1",
+        TEST_CAPABILITY_KEY,
+        TEST_STATIC_PRINCIPAL,
+    )
+    .unwrap();
+    let limits =
+        McpRequestLimits::from_seconds(16, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_MAX_BODY_BYTES)
+            .expect("trash authorization tests require bounded parallel attempts");
+    let router = test_router_builder(
+        &file_tools,
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
+        limits,
+    )
+    .try_with_trash_file_authority(authority.clone())
+    .expect("test trash authority must match the transport principal")
+    .build()
+    .expect("trash-authorized test router must build");
+    (router, authority)
+}
+
 pub(super) fn issue_create_directory_grant(
     authority: &CreateDirectoryGrantAuthority,
     file_tools: &FileSystemTools,
@@ -218,6 +243,18 @@ pub(super) fn issue_copy_file_grant(
     let target = file_tools
         .copy_file_grant_target(source_path, destination_path)
         .expect("test copy grant target must be valid");
+    authority.issue(session_id, &target).unwrap()
+}
+
+pub(super) fn issue_trash_file_grant(
+    authority: &TrashFileGrantAuthority,
+    file_tools: &FileSystemTools,
+    session_id: &str,
+    target_path: &str,
+) -> String {
+    let target = file_tools
+        .trash_file_grant_target(target_path)
+        .expect("test trash grant target must be valid");
     authority.issue(session_id, &target).unwrap()
 }
 
