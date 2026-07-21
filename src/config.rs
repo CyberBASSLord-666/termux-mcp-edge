@@ -1795,7 +1795,7 @@ mod tests {
 
     #[test]
     fn unauthenticated_localhost_only_mode_rejects_non_loopback_hosts() {
-        for host in ["0.0.0.0", "192.168.1.10", "example.com"] {
+        for host in ["0.0.0.0", "192.168.1.10", "::ffff:127.0.0.1", "example.com"] {
             let config = app_config(host, None, true);
 
             let err = validate_runtime_auth_posture(&config)

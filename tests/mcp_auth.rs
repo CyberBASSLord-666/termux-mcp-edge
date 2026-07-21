@@ -257,6 +257,19 @@ async fn explicit_loopback_development_policy_accepts_the_exact_served_listener(
 }
 
 #[tokio::test]
+async fn explicit_ipv6_loopback_policy_accepts_the_exact_native_ipv6_listener() {
+    let root = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+    let app = unauthenticated_router(&listener, root.path().to_path_buf());
+    let response = live_initialize_response(listener, app).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "exact native IPv6 listener request was rejected: {response}"
+    );
+}
+
+#[tokio::test]
 async fn loopback_development_policy_rejects_listener_substitution() {
     let root = tempfile::tempdir().unwrap();
     let validated_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

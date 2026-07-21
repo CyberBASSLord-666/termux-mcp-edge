@@ -516,6 +516,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn localhost_development_policy_rejects_ipv4_mapped_ipv6_peer() {
+        let expected_listener_address = expected_listener();
+        let response = call_local_development_connection(
+            expected_listener_address,
+            Some(McpConnectionInfo {
+                peer_address: "[::ffff:127.0.0.1]:40003".parse().unwrap(),
+                local_address: Some(expected_listener_address),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let payload = json_body(response).await;
+        assert_eq!(payload["error"], "localhost_peer_required");
+        assert!(!payload.to_string().contains("127.0.0.1"));
+    }
+
+    #[tokio::test]
     async fn localhost_development_policy_rejects_missing_or_substituted_local_listener() {
         let expected_listener_address = expected_listener();
         for local_address in [
