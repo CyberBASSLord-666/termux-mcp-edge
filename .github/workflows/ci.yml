@@ -20,6 +20,7 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   pull_request:
     branches: [ main ]
@@ -40,6 +41,7 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v1.json"
       - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   workflow_dispatch:
 
