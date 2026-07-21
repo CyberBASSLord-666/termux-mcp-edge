@@ -115,6 +115,7 @@ async fn argument_bearing_tools_reject_omitted_arguments_with_bounded_errors() {
             "copy_file",
             "copy_file requires source_path and destination_path arguments.",
         ),
+        ("trash_file", "trash_file requires a path argument."),
         (
             "find_paths",
             "find_paths requires path and query arguments.",
@@ -523,6 +524,7 @@ async fn argument_bearing_tools_reject_invalid_json_classes_and_field_types() {
                 "dry_run": "false"
             }),
         ),
+        ("trash_file", json!({"path": false})),
         ("find_paths", json!({"path": false, "query": "source"})),
         (
             "find_paths",
