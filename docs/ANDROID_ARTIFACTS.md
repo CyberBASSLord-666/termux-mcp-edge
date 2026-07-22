@@ -1,6 +1,6 @@
 # Android Validation Artifacts
 
-The `Android Cross Compile` workflow validates the pinned Rust 1.88.0 toolchain and the `aarch64-linux-android` target against Android NDK r26d. Every artifact build and its package-version metadata query use the committed `Cargo.lock` and fail instead of resolving a different graph; packaging also verifies that `Cargo.toml` and `Cargo.lock` remain unchanged. Pull requests and pushes to `main` that change `src/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, the cross-compile script, the release-candidate validator, or the workflow itself trigger this validation; version-tag pushes also trigger it regardless of changed paths. Pull-request builds explicitly check out the pull-request head SHA; main/tag builds use the event SHA. This ensures that release evidence can be generated from artifacts rebuilt for the exact merged `main` commit instead of relying on pull-request artifacts.
+The `Android Cross Compile` workflow validates the pinned Rust 1.88.0 toolchain and the `aarch64-linux-android` target against Android NDK r26d. Every artifact build and its package-version metadata query use the committed `Cargo.lock` and fail instead of resolving a different graph; packaging also verifies that `Cargo.toml` and `Cargo.lock` remain unchanged. Pull requests and pushes to `main` that change release inputs trigger this validation. A version tag does not start a rebuild: public staging must preserve the already qualified exact-main bytes instead of manufacturing a second candidate. Pull-request builds explicitly check out the pull-request head SHA and main builds use the event SHA.
 
 The workflow builds seven governed feature postures. The first six preserve least-privilege deployment choices; the seventh is the explicit aggregate:
 
@@ -25,6 +25,8 @@ The workflow names above identify expiring validation bundles. Durable v0.6.0 Gi
 - `termux-mcp-server-v0.6.0-aarch64-linux-android-full-suite` for the governed aggregate posture.
 
 Each durable binary must be accompanied by its checksum/manifest material. A workflow bundle must not be presented as the durable release asset merely because its internal executable has the expected digest.
+
+All seven bundles and the combined native-emulation evidence are retained for 30 days so a real-device observation and protected staging review can finish against the same immutable inputs. They remain expiring validation inputs, not a distribution channel. [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) defines the exact-byte staging boundary.
 
 Each downloaded workflow artifact is a three-file bundle:
 

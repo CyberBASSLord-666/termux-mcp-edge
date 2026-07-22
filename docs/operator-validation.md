@@ -2,7 +2,7 @@
 
 This checklist gives advanced Termux MCP Edge operators a repeatable way to validate the stable MCP transport and staged tool authority without expanding the MCP surface.
 
-Use it after a local build, configuration change, release candidate, or manual dispatch/tag build when you need evidence that the runtime still matches the staged capability model.
+Use it after a local build, configuration change, release candidate, or deliberate workflow dispatch when you need evidence that the runtime still matches the staged capability model. Version tags do not build release candidates; protected publication must reuse the already qualified exact-main bytes.
 
 ## Validation posture
 

@@ -22,6 +22,8 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
+      - "docs/release-physical-qualification-schema-v*.json"
+      - "docs/release-staging-manifest-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   pull_request:
@@ -45,6 +47,8 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
+      - "docs/release-physical-qualification-schema-v*.json"
+      - "docs/release-staging-manifest-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   workflow_dispatch:
@@ -143,6 +147,9 @@ jobs:
           bash tests/setup_named_tunnel_test.sh
           bash tests/documentation_contract_test.sh
           bash tests/cross_compile_contract_test.sh
+          bash tests/package_physical_qualification_test.sh
+          bash tests/stage_release_assets_test.sh
+          bash tests/release_staging_workflow_test.sh
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
             docs/command-emulated-evidence-schema-v2.json >/dev/null

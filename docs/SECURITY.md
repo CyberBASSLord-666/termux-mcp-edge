@@ -203,6 +203,12 @@ Dependency advisories must be resolved by one of these paths:
 
 Cargo, lockfile, or security-workflow changes must remain separate from unrelated runtime behavior changes and require exact-head CI and Security validation before merge.
 
+## Release Supply-Chain Boundary
+
+Version tags never rebuild Android release candidates. The protected staging workflow downloads the exact first-attempt successful current-main Android artifacts by immutable artifact ID, treats every server digest mismatch as an error, revalidates all seven closed manifests and evidence chains, and copies the binaries byte-for-byte into their versioned names. It has only `actions: read` and `contents: read`; it cannot create a tag, GitHub Release, package, deployment, or OIDC identity. Its Actions artifact and dispatch inputs are not confidential in this public repository, so only sanitized evidence may cross this boundary.
+
+Physical evidence crosses into GitHub only as the sanitized validator report and a closed qualification envelope. The envelope binds the private raw harness report by SHA-256 but excludes its device-local content. Workflow and native-device full-suite digests remain separate lineages. Protected staging requires the pre-created `release-qualification` environment and repeats every check after approval. A missing or unprotected environment, moved `main`, rerun, expired artifact, evidence mismatch, or failed cleanup must block a qualified stage. A post-upload identity failure can leave an unqualified Actions artifact until administrative deletion or expiry because the read-only workflow has no delete authority. [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) defines the complete contract.
+
 ## Deployment Hardening
 
 - Bind to localhost unless a remote access path is explicitly required.
