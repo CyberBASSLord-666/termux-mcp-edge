@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    tags:
-      - "v*"
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
@@ -21,6 +19,8 @@ on:
       - "scripts/termux_command_emulated_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
+      - "scripts/package_physical_qualification.sh"
+      - "scripts/stage_release_assets.sh"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
@@ -29,6 +29,8 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
+      - "docs/release-physical-qualification-schema-v*.json"
+      - "docs/release-staging-manifest-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/android-cross-compile.yml"
   pull_request:
@@ -48,6 +50,8 @@ on:
       - "scripts/termux_command_emulated_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
+      - "scripts/package_physical_qualification.sh"
+      - "scripts/stage_release_assets.sh"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
@@ -56,6 +60,8 @@ on:
       - "docs/command-emulated-evidence-schema-v*.json"
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
+      - "docs/release-physical-qualification-schema-v*.json"
+      - "docs/release-staging-manifest-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/android-cross-compile.yml"
 
@@ -160,7 +166,7 @@ jobs:
           name: ${{ matrix.artifact }}
           path: target/aarch64-linux-android/release-candidate/
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 30
 
   termux-emulated:
     name: Native ARM64 Termux emulation
@@ -749,4 +755,4 @@ jobs:
             ${{ steps.output.outputs.root }}/termux-observation-requirement.json
             ${{ steps.output.outputs.root }}/termux-observation-inheritance.json
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30

@@ -105,7 +105,7 @@ grep -Fq 'harness v11' docs/DEVICE_PRODUCTION_GATE.md \
   || fail device_harness_v11_missing
 grep -Fq 'separately records the digest of its locked on-device native build' docs/DEVICE_PRODUCTION_GATE.md \
   || fail device_harness_native_digest_boundary_missing
-grep -Fq 'Validator v11 and aggregate v3 must bind the exact downloaded workflow full-suite digest' docs/DEVICE_PRODUCTION_GATE.md \
+grep -Fq 'Validator v11 verifies the downloaded workflow manifest and schema v2 binds the workflow full-suite binary digest' docs/DEVICE_PRODUCTION_GATE.md \
   || fail workflow_artifact_digest_boundary_missing
 if grep -Eiq 'device[- ]harness[^.]*bound to (the )?(exact )?full-suite digest|harness[^.]*same full-suite digest' \
   docs/DEVICE_PRODUCTION_GATE.md docs/RELEASE_GOVERNANCE.md \
@@ -118,6 +118,47 @@ grep -Fq 'cannot qualify' docs/V0.6.0_RELEASE_CANDIDATE.md \
   || fail release_candidate_historical_bridge_exclusion_missing
 grep -Fq 'No `v0.6.0` tag or GitHub Release exists or is authorized' docs/V0.6.0_RELEASE_CANDIDATE.md \
   || fail release_candidate_no_tag_boundary_missing
+grep -Fq 'publicationState: "staged_not_released"' docs/PUBLIC_RELEASE.md \
+  || fail public_release_staged_not_released_boundary_missing
+grep -Fq 'RELEASE_QUALIFICATION_PROTECTED=required-reviewer-main-only-v1' docs/PUBLIC_RELEASE.md \
+  || fail protected_environment_guard_documentation_missing
+grep -Fq 'organization and repository variable scopes must **not** define `RELEASE_QUALIFICATION_PROTECTED`' docs/PUBLIC_RELEASE.md \
+  || fail protected_environment_broader_scope_exclusion_missing
+grep -Fq 'retained for 30 days' docs/PUBLIC_RELEASE.md \
+  || fail qualification_retention_window_missing
+grep -Fq 'The staged Actions artifact is retained for 30 days' docs/PUBLIC_RELEASE.md \
+  || fail staging_retention_window_missing
+grep -Fq 'not confidential storage' docs/PUBLIC_RELEASE.md \
+  || fail public_repository_artifact_confidentiality_boundary_missing
+grep -Fq 'release-physical-qualification-schema-v1.json' docs/PUBLIC_RELEASE.md \
+  || fail physical_qualification_schema_link_missing
+grep -Fq 'release-staging-manifest-schema-v1.json' docs/PUBLIC_RELEASE.md \
+  || fail release_staging_schema_link_missing
+grep -Fq 'The current lane cannot accept one' docs/PUBLIC_RELEASE.md \
+  || fail oversized_dispatch_stop_condition_missing
+grep -Fq 'separate native-device full-suite digest' docs/PUBLIC_RELEASE.md \
+  || fail public_release_digest_lineage_missing
+grep -Fq 'first-attempt successful CI, Security, and Android push runs' docs/RELEASE_GOVERNANCE.md \
+  || fail release_first_attempt_only_boundary_missing
+grep -Fq 'Create a **draft** GitHub Release' docs/RELEASE_GOVERNANCE.md \
+  || fail draft_before_release_verification_missing
+grep -Fq 'Obtain the separate final publication approval' docs/RELEASE_GOVERNANCE.md \
+  || fail final_publication_approval_missing
+grep -Fq 'Staging cannot tag or publish' README.md \
+  || fail readme_staging_publication_boundary_missing
+grep -Fq 'cargo clippy --locked --workspace --all-targets -- -D warnings' README.md \
+  || fail readme_default_clippy_gate_missing
+grep -Fq 'cargo test --locked --workspace --all-targets' README.md \
+  || fail readme_default_test_gate_missing
+grep -Fq 'bash tests/release_staging_workflow_test.sh' README.md \
+  || fail readme_release_staging_gate_missing
+[[ "$(grep -Fc 'retention-days: 30' .github/workflows/android-cross-compile.yml)" -eq 2 ]] \
+  || fail android_qualification_retention_contract_changed
+if grep -Eq '^[[:space:]]+tags:' .github/workflows/android-cross-compile.yml; then
+  fail tag_triggered_android_rebuild_present
+fi
+grep -Fq 'name: Stage Release Assets' .github/workflows/stage-release-assets.yml \
+  || fail protected_release_staging_workflow_missing
 
 public_contract_docs=(
   README.md
@@ -135,6 +176,7 @@ public_contract_docs=(
   docs/DEVICE_PRODUCTION_GATE.md
   docs/EMULATED_RELEASE_GATE.md
   docs/V0.6.0_RELEASE_CANDIDATE.md
+  docs/PUBLIC_RELEASE.md
   docs/MCP_RESTORATION_VALIDATION.md
   docs/MCP_RUNTIME_ROADMAP.md
   docs/TRANSPORT_THREAT_MODEL.md

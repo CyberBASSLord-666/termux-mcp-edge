@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-physical-qualification-schema-v1.json",
+  "title": "Termux MCP Edge physical qualification envelope v1",
+  "description": "A compact, path-free dispatch envelope for a release-eligible validator-v11 report and its raw harness-v11 evidence. workflowFullSuiteSha256 identifies the workflow-built full-suite artifact, while nativeFullSuiteSha256 identifies the independently built physical-device artifact. They are separate provenance facts; byte equality is neither required nor asserted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "envelopeVersion",
+    "status",
+    "failureCode",
+    "releaseEligible",
+    "repository",
+    "commit",
+    "version",
+    "ciRunId",
+    "securityRunId",
+    "androidRunId",
+    "validatorVersion",
+    "harnessVersion",
+    "architecture",
+    "validatorReportSha256",
+    "rawHarnessReportSha256",
+    "workflowFullSuiteSha256",
+    "nativeFullSuiteSha256",
+    "harnessPassed",
+    "cleanupConfirmed"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "envelopeVersion": {
+      "const": "1"
+    },
+    "status": {
+      "const": "pass"
+    },
+    "failureCode": {
+      "const": null
+    },
+    "releaseEligible": {
+      "const": true
+    },
+    "repository": {
+      "const": "CyberBASSLord-666/termux-mcp-edge"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "ciRunId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "securityRunId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "androidRunId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "validatorVersion": {
+      "const": "11"
+    },
+    "harnessVersion": {
+      "const": "11"
+    },
+    "architecture": {
+      "const": "aarch64"
+    },
+    "validatorReportSha256": {
+      "description": "SHA-256 of the exact unchanged release-validator-v11.json file dispatched beside this envelope.",
+      "$ref": "#/$defs/sha256"
+    },
+    "rawHarnessReportSha256": {
+      "description": "SHA-256 of the exact private raw harness-v11 report. The raw report is intentionally excluded from the dispatch bundle.",
+      "$ref": "#/$defs/sha256"
+    },
+    "workflowFullSuiteSha256": {
+      "description": "SHA-256 of the workflow-built full-suite artifact recorded by validator v11. This is independent of nativeFullSuiteSha256; equality is not required or asserted.",
+      "$ref": "#/$defs/sha256"
+    },
+    "nativeFullSuiteSha256": {
+      "description": "SHA-256 of the full-suite artifact built and executed natively by harness v11. This is independent of workflowFullSuiteSha256; equality is not required or asserted.",
+      "$ref": "#/$defs/sha256"
+    },
+    "harnessPassed": {
+      "const": true
+    },
+    "cleanupConfirmed": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

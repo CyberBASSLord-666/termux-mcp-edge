@@ -63,6 +63,10 @@ curl -fsS http://127.0.0.1:8000/ready | jq
 
 Continue with [authenticated MCP validation](docs/OPERATIONS.md#authenticated-mcp-validation) to initialize a session and list the tools. The source tree is currently a `0.6.0` release candidate; do not treat expiring workflow artifacts as durable public releases. Production publication remains governed by the exact-main checks in the release documentation.
 
+### Release status in plain language
+
+The workflow builds and automatically validates seven Android postures, including the named full suite. Successful workflow binaries are retained for 30 days and can be copied byte-for-byte into a protected deterministic pre-release stage only after a fresh passing physical-device report and reviewer approval. Staging cannot tag or publish, and its Actions artifact is not confidential in this public repository. See [Public release staging](docs/PUBLIC_RELEASE.md) for the exact inputs, evidence boundaries, final filenames, and remaining publication approval.
+
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
@@ -276,17 +280,31 @@ See [`docs/command-execution-gate.md`](docs/command-execution-gate.md) for the c
 
 ## Build and validate
 
-Run the exact CI gates:
+Run the core local validation matrix below. The checked-in [CI workflow](.github/workflows/ci.yml) is authoritative and adds dependency-input and runner-specific invariants:
 
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
 cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --all-targets --features mcp-runtime
 cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
+cargo build --locked --release --features full-suite
+bash tests/package_android_artifact_test.sh
+bash tests/termux_deploy_test.sh
+bash tests/termux_device_smoke_test.sh
+bash tests/termux_emulated_gate_test.sh
+bash tests/termux_release_validate_test.sh
+bash tests/setup_named_tunnel_test.sh
+bash tests/documentation_contract_test.sh
+bash tests/cross_compile_contract_test.sh
+bash tests/package_physical_qualification_test.sh
+bash tests/stage_release_assets_test.sh
+bash tests/release_staging_workflow_test.sh
 ```
 
 Build all supported postures:
@@ -361,6 +379,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Downloaded release-candidate validation](docs/RELEASE_CANDIDATE_VALIDATION.md)
 - [Native ARM64 Termux emulated release gate](docs/EMULATED_RELEASE_GATE.md)
 - [v0.6.0 release-candidate record](docs/V0.6.0_RELEASE_CANDIDATE.md)
+- [Public release staging and publication boundary](docs/PUBLIC_RELEASE.md)
 - [Termux deployment and recovery](docs/TERMUX_DEPLOYMENT.md)
 - [Operator validation checklist](docs/operator-validation.md)
 

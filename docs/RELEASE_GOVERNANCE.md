@@ -48,7 +48,7 @@ Required evidence:
 7. Installation, upgrade, rollback, service restart, and operator smoke-test instructions are current for the candidate; filesystem authorization changes include exact disabled/enabled gate, grant-binding, boundary, race, cleanup, and private-evidence coverage.
 8. No unresolved blocking review thread, open merge-conflict state, or failed newer run exists for the same commit.
 
-A successful run on an older SHA is not transferable. A rerun is acceptable only when GitHub still identifies the same exact commit and the failure was transient rather than code-dependent.
+A successful run on an older SHA is not transferable. A same-SHA rerun may help diagnose a transient development or merge failure, but it never qualifies release staging or publication. Those lanes accept only first-attempt successful CI, Security, and Android push runs for the exact candidate.
 
 ## Supported release artifacts
 
@@ -67,6 +67,14 @@ Each binary must be accompanied by a SHA-256 checksum file. A combined `SHA256SU
 Artifacts must not contain bearer tokens, environment files, safe-root paths from a maintainer machine, private keys, tunnel credentials, logs, or other deployment-specific state.
 
 Workflow-retained artifacts are validation evidence and may expire. GitHub Release assets are the durable distribution channel. Documentation must not instruct operators to depend on an expiring workflow artifact.
+
+The Android workflow retains the seven bundles and native-emulation evidence for 30 days and does not rebuild on a version-tag push. A release stage must copy the qualified exact-main bytes without modification; a tag-triggered or local rebuild is a different, unqualified candidate.
+
+## Protected staging boundary
+
+[`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) defines the mandatory protected staging lane. Its manual workflow has only `actions: read` and `contents: read`, requires exact current-main source and first-attempt upstream run identity, consumes a sanitized physical-qualification envelope, and repeats every check after approval by the pre-created `release-qualification` environment. Its temporary Actions artifact is not confidential in this public repository.
+
+The stage contains final filenames and checksums but is not public authority. Its closed manifest must say `publicationState: "staged_not_released"` and `releaseEligible: false`. No staging code may create a tag, draft Release, public Release, package, deployment, or rebuilt binary.
 
 ## Reproducibility record
 
@@ -95,9 +103,13 @@ Every product and Android artifact build must use the committed `Cargo.lock`; a 
 5. Wait for post-merge CI, security, and Android validation on the resulting `main` SHA.
 6. Download all seven posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
 7. Run the default, `mcp-runtime`, `android-volume-control`, and `full-suite` bundles through validator v11 in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). Retain direct schema-v2 evidence, aggregate schema/gate-v3 evidence that binds the exact workflow full-suite digest/manifest, 17/18/21 truth table, independent runtime gates, and all four disabled filesystem dispatches, plus every posture's exact-source native ARM64 official-Termux evidence. For v0.6.0, complete a fresh device-harness-v11 physical observation of the same immutable commit and retain its separately recorded on-device native-build digest; do not assert byte equality between different toolchain builds.
-8. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the validated `main` SHA.
-9. Publish the GitHub Release from that immutable tag and attach all supported binaries, manifests, and checksum sidecars.
-10. Re-open the release page and independently verify every asset, checksum, link, version, and recorded SHA.
+8. Package the sanitized physical-qualification envelope while retaining the raw harness report privately by its digest.
+9. Run protected release staging from the exact qualifying Android run. Verify the deterministic tar, closed staging manifest, exact source-to-staged binary digest equality, and recorded Actions artifact ID/server digest.
+10. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the staged `main` SHA only after every remaining publication prerequisite is satisfied.
+11. Create a **draft** GitHub Release from that pre-existing immutable tag and upload only the exact staged bytes; never rebuild or allow the Release API to create the tag implicitly.
+12. Re-open the draft release page, re-download every asset, and independently verify every server digest, checksum, link, version, and recorded SHA.
+13. Obtain the separate final publication approval after the re-download verification is recorded.
+14. Publish the already-verified draft without replacing its tag or assets, then verify the public immutable Release identity once more.
 
 Do not publish a draft as final until every required artifact is attached and verified.
 

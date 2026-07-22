@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-staging-manifest-schema-v1.json",
+  "title": "Termux MCP Edge deterministic release staging manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "publicationState",
+    "releaseEligible",
+    "repository",
+    "commit",
+    "version",
+    "target",
+    "workflowRuns",
+    "checksums",
+    "license",
+    "evidence",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "publicationState": {"const": "staged_not_released"},
+    "releaseEligible": {"const": false},
+    "repository": {"const": "CyberBASSLord-666/termux-mcp-edge"},
+    "commit": {"$ref": "#/$defs/sha1"},
+    "version": {"$ref": "#/$defs/version"},
+    "target": {"const": "aarch64-linux-android"},
+    "workflowRuns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci", "security", "android"],
+      "properties": {
+        "ci": {"$ref": "#/$defs/runId"},
+        "security": {"$ref": "#/$defs/runId"},
+        "android": {"$ref": "#/$defs/runId"}
+      }
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "combinedFileName"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "combinedFileName": {"const": "SHA256SUMS"}
+      }
+    },
+    "license": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "LICENSE"}}}
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "aggregate",
+        "validator",
+        "physicalQualification",
+        "specialized"
+      ],
+      "properties": {
+        "aggregate": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/emulated-release-v3.json"}}}
+          ]
+        },
+        "validator": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/release-validator-v11.json"}}}
+          ]
+        },
+        "physicalQualification": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/physical-qualification-v1.json"}}}
+          ]
+        },
+        "specialized": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "prefixItems": [
+            {"$ref": "#/$defs/batteryEvidence"},
+            {"$ref": "#/$defs/volumeEvidence"},
+            {"$ref": "#/$defs/volumeControlEvidence"},
+            {"$ref": "#/$defs/commandEvidence"},
+            {"$ref": "#/$defs/observationRequirementEvidence"}
+          ],
+          "items": false
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/defaultArtifact"},
+        {"$ref": "#/$defs/mcpRuntimeArtifact"},
+        {"$ref": "#/$defs/batteryArtifact"},
+        {"$ref": "#/$defs/volumeArtifact"},
+        {"$ref": "#/$defs/volumeControlArtifact"},
+        {"$ref": "#/$defs/commandArtifact"},
+        {"$ref": "#/$defs/fullSuiteArtifact"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+    "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "fileName": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$"},
+    "fileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "bytes"],
+      "properties": {
+        "fileName": {"$ref": "#/$defs/fileName"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "posture",
+        "features",
+        "workflowArtifactName",
+        "workflowFileName",
+        "workflowManifestFileName",
+        "workflowManifestSha256",
+        "releaseFileName",
+        "checksumFileName",
+        "sha256",
+        "bytes",
+        "elf"
+      ],
+      "properties": {
+        "posture": {
+          "enum": [
+            "default",
+            "mcp-runtime",
+            "android-battery-status",
+            "android-volume-status",
+            "android-volume-control",
+            "command-execution",
+            "full-suite"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "mcp-runtime",
+              "android-battery-status",
+              "android-volume-status",
+              "android-volume-control",
+              "command-execution",
+              "full-suite"
+            ]
+          }
+        },
+        "workflowArtifactName": {"$ref": "#/$defs/fileName"},
+        "workflowFileName": {"const": "termux-mcp-server"},
+        "workflowManifestFileName": {"$ref": "#/$defs/fileName"},
+        "workflowManifestSha256": {"$ref": "#/$defs/sha256"},
+        "releaseFileName": {"$ref": "#/$defs/fileName"},
+        "checksumFileName": {"$ref": "#/$defs/fileName"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "elf": {"const": "aarch64-android-elf"}
+      }
+    },
+    "defaultArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "default"}, "features": {"const": []}}}
+      ]
+    },
+    "mcpRuntimeArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "mcp-runtime"}, "features": {"const": ["mcp-runtime"]}}}
+      ]
+    },
+    "batteryArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "android-battery-status"}, "features": {"const": ["android-battery-status"]}}}
+      ]
+    },
+    "volumeArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "android-volume-status"}, "features": {"const": ["android-volume-status"]}}}
+      ]
+    },
+    "volumeControlArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "android-volume-control"}, "features": {"const": ["android-volume-control"]}}}
+      ]
+    },
+    "commandArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "command-execution"}, "features": {"const": ["command-execution"]}}}
+      ]
+    },
+    "fullSuiteArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "object", "properties": {"posture": {"const": "full-suite"}, "features": {"const": ["full-suite"]}}}
+      ]
+    },
+    "batteryEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/android-battery-emulated-v2.json"}}}
+      ]
+    },
+    "volumeEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/android-volume-emulated-v1.json"}}}
+      ]
+    },
+    "volumeControlEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/android-volume-control-emulated-v1.json"}}}
+      ]
+    },
+    "commandEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/command-emulated-v2.json"}}}
+      ]
+    },
+    "observationRequirementEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/release-observation-requirement-v2.json"}}}
+      ]
+    }
+  }
+}
