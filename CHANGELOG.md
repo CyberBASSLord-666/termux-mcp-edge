@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — Release Candidate (Unreleased)
+
+### Changes after initial release-candidate preparation
 
 - Added pinned CodeQL `security-extended` analysis for Rust and GitHub Actions to the existing exact-head `Security` workflow, with least-privilege upload permissions, separate SARIF categories, bounded matrix jobs, and explicit alert-triage documentation while retaining the independent `cargo audit` gate. Aligned CI and Security companion triggers with every Android source/evidence trigger, and added a monotonic 25-minute companion deadline with bounded API calls inside a 50-minute native-evidence budget so the CodeQL ceiling cannot cause missing/stale evidence or consume the prior native-validation allowance.
 - Added preview-first `trash_file` as an independently default-disabled Class 2 capability. One 60-second opaque single-use HMAC grant binds the static principal, canonical session, family `5`, lifetime-pinned root, normalized target, exact single-link device/inode/size/high-resolution-ctime identity, SHA-256 content, and fixed recovery-retained posture.
@@ -55,7 +57,7 @@
 - Added schema-versioned observation-requirement classification so runtime-changing development candidates can pass complete automated CI while remaining explicitly ineligible to inherit old physical-device evidence; only protected-input-equivalent candidates proceed to the existing fail-closed inheritance verifier.
 - Added exact downloaded-artifact execution in the pinned official Termux environment on native ARM64 CI, including canonical runtime validation, a 256-sample MCP stress pass, sanitized schema-versioned evidence, and a fail-closed physical-observation inheritance verifier for metadata-only descendants with unchanged runtime, dependency, build, deployment, and bridge-digest inputs.
 
-## 2026-07-12 — v0.6.0 Production-Readiness and Stable MCP Release Candidate
+### Initial production-readiness candidate — 2026-07-12
 
 - Added exact-source Android artifact manifests/checksum sidecars and an offline downloaded-release-candidate validator with literal private configuration, default and `mcp-runtime` provenance/digest/ELF/version posture checks, explicit runtime/deployment mutation confirmations, isolated protocol and recovery exercises, action-specific production-root confirmations, deterministic failure/interruption/redaction fixtures, a versioned sanitized JSON schema, and a 60-minute operator observation contract.
 - Added a reusable no-clone, exact-commit AArch64 Termux production-gate harness with native artifact verification, isolated real-runit install/upgrade/rollback/uninstall, failed-readiness recovery, authenticated stable-MCP lifecycle and allowlist checks, safe-root allowed/denied calls, dry-run and mode-`0600` writes, request-limit ordering, private reports, cleanup, CI contract coverage, and operator documentation.

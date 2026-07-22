@@ -22,11 +22,19 @@ Install, upgrade, rollback, and uninstall are serialized by a project deployment
 
 ```bash
 pkg update
-pkg install bash coreutils curl file termux-services
+pkg install bash coreutils curl file procps termux-services
 chmod 700 scripts/termux_deploy.sh
 ```
 
 The deployment manager requires the standard Termux implementations of `realpath`, `stat`, `sha256sum`, `timeout`, `file`, `uname`, `install`, and `readlink`.
+
+After installing `termux-services` for the first time, close all Termux sessions and open a new one so its `runsvdir` supervisor starts. Confirm it before installation or upgrade:
+
+```bash
+pgrep -af "$PREFIX/bin/runsvdir"
+```
+
+Do not proceed when that command finds no supervisor; the deployment manager deliberately fails rather than claim a registered service that runit is not monitoring.
 
 ## Runtime configuration
 

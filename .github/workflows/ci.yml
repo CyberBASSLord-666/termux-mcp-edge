@@ -12,6 +12,8 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
+      - "*.md"
+      - "docs/**/*.md"
       - "docs/*release-evidence-schema-v1.json"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
@@ -33,6 +35,8 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
+      - "*.md"
+      - "docs/**/*.md"
       - "docs/*release-evidence-schema-v1.json"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
@@ -111,6 +115,7 @@ jobs:
           bash tests/termux_emulated_gate_test.sh
           bash tests/termux_release_validate_test.sh
           bash tests/setup_named_tunnel_test.sh
+          bash tests/documentation_contract_test.sh
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
             docs/command-emulated-evidence-schema-v2.json >/dev/null

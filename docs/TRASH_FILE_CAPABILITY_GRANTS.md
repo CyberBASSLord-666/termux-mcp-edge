@@ -37,7 +37,7 @@ chmod 600 "$GRANT_FILE"
 MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
 MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
 MCP__CAPABILITY__TRASH_FILE_TARGET="$ABSOLUTE_TARGET" \
-  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  "$HOME/.local/share/termux-mcp-edge/current/termux-mcp-server" \
   --issue-trash-file-grant >"$GRANT_FILE"
 ```
 

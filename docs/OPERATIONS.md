@@ -171,7 +171,7 @@ MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
 MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
 MCP__CAPABILITY__COPY_FILE_SOURCE="$HOME/mcp-files/source.bin" \
 MCP__CAPABILITY__COPY_FILE_DESTINATION="$HOME/mcp-files/destination.bin" \
-  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  "$HOME/.local/share/termux-mcp-edge/current/termux-mcp-server" \
   --issue-copy-file-grant >"$COPY_GRANT_FILE"
 ```
 
@@ -197,7 +197,7 @@ chmod 600 "$TRASH_GRANT_FILE"
 MCP__CAPABILITY__CONFIG_FILE="$HOME/.config/termux-mcp-edge/runtime.env" \
 MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
 MCP__CAPABILITY__TRASH_FILE_TARGET="$SAFE_ROOT_TRASH_TARGET" \
-  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  "$HOME/.local/share/termux-mcp-edge/current/termux-mcp-server" \
   --issue-trash-file-grant >"$TRASH_GRANT_FILE"
 ```
 
@@ -230,7 +230,7 @@ MCP__CAPABILITY__SESSION_ID="$MCP_SESSION_ID" \
 MCP__CAPABILITY__WRITE_FILE_TARGET="$SAFE_ROOT_WRITE_TARGET" \
 MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$WRITE_CONTENT_FILE" \
 MCP__CAPABILITY__WRITE_FILE_DISPOSITION=create \
-  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  "$HOME/.local/share/termux-mcp-edge/current/termux-mcp-server" \
   --issue-write-file-grant >"$WRITE_GRANT_FILE"
 ```
 
