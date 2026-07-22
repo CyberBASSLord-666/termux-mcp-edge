@@ -33,6 +33,9 @@ bash tests/cross_compile_contract_test.sh
 bash tests/package_physical_qualification_test.sh
 bash tests/stage_release_assets_test.sh
 bash tests/release_staging_workflow_test.sh
+bash tests/prepare_release_publication_assets_test.sh
+bash tests/publish_release_assets_test.sh
+bash tests/release_publication_workflow_test.sh
 ```
 
 4. Build the affected compile-time posture:
@@ -73,7 +76,7 @@ ANDROID_NDK_HOME=/path/to/android-ndk \
   ./scripts/cross_compile.sh
 ```
 
-See [`docs/ANDROID_ARTIFACTS.md`](docs/ANDROID_ARTIFACTS.md) for artifact naming and release evidence. Release-staging changes must also preserve the exact-byte, evidence-lineage, read-only permission, and protected-environment contracts in [`docs/PUBLIC_RELEASE.md`](docs/PUBLIC_RELEASE.md); they must not add a candidate rebuild, tag, or GitHub Release path.
+See [`docs/ANDROID_ARTIFACTS.md`](docs/ANDROID_ARTIFACTS.md) for artifact naming and release evidence. Release-staging changes must also preserve the exact-byte, evidence-lineage, read-only permission, and protected-environment contracts in [`docs/PUBLIC_RELEASE.md`](docs/PUBLIC_RELEASE.md); they must not add a candidate rebuild, tag, or GitHub Release path. Publication changes must keep staging separate, consume only the exact staging run/artifact ID and server digest, preserve the fixed sixteen-asset allowlist, and retain the pre-created-empty-draft → protected attachment → fresh read-only verification → disjoint final approval → publish → immutable public-proof order. Neither publication job may create or move a tag, create a Release, rebuild an asset, broaden a policy credential, or auto-delete a failed draft.
 
 6. Record the exact head SHA and the applicable CI, Android, and Security results before merge.
 7. Do not merge stale, behind-base, cancelled, failing, broadened, or unreviewed work.

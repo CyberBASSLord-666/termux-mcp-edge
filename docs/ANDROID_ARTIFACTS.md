@@ -24,9 +24,9 @@ The workflow names above identify expiring validation bundles. Durable v0.6.0 Gi
 - `termux-mcp-server-v0.6.0-aarch64-linux-android-command-execution` for a release that includes the optional fixed-command posture.
 - `termux-mcp-server-v0.6.0-aarch64-linux-android-full-suite` for the governed aggregate posture.
 
-Each durable binary must be accompanied by its checksum/manifest material. A workflow bundle must not be presented as the durable release asset merely because its internal executable has the expected digest.
+Each durable binary must be accompanied by its matching `.sha256` sidecar. The closed public inventory is exactly the seven binaries, seven sidecars, combined `SHA256SUMS`, and unchanged raw deterministic staging tar. The tar retains all seven workflow manifests, the release-staging manifest, LICENSE, and sanitized evidence. Those members are not separate Release assets, and GitHub's generated source archives are not governed Android assets. A workflow bundle must not be presented as the durable release asset merely because its internal executable has the expected digest.
 
-All seven bundles and the combined native-emulation evidence are retained for 30 days so a real-device observation and protected staging review can finish against the same immutable inputs. They remain expiring validation inputs, not a distribution channel. [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) defines the exact-byte staging boundary.
+All seven bundles and the combined native-emulation evidence are retained for 30 days so a real-device observation and protected staging review can finish against the same immutable inputs. They remain expiring validation inputs, not a distribution channel. Neither the resulting stage nor a draft Release is an installation source. [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) defines the exact-byte staging, fixed sixteen-asset publication, and immutable public-proof boundaries.
 
 Each downloaded workflow artifact is a three-file bundle:
 

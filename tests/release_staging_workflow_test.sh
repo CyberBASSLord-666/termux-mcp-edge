@@ -94,6 +94,14 @@ marker = "      - name: Repeat evidence checks and assemble deterministic stage\
 start = stage.index(marker)
 end = stage.index("\n      - name:", start + len(marker))
 repeat_step = stage[start:end]
+upload_marker = "      - name: Upload staged tar without re-archiving\n"
+upload_start = stage.index(upload_marker)
+upload_end = stage.index("\n      - name:", upload_start + len(upload_marker))
+upload_step = stage[upload_start:upload_end]
+if "archive: false" not in upload_step or "path: ${{ env.STAGED_TAR }}" not in upload_step:
+    raise SystemExit("raw staged-artifact upload contract changed")
+if "\n          name:" in upload_step:
+    raise SystemExit("raw upload must rely on its file basename; name input is ignored")
 validation = '[[ "$run_id" =~ ^[1-9][0-9]*$ ]]'
 for export in (
     "printf 'CI_RUN_ID=%s\\n' \"$ci_run_id\" >>\"$GITHUB_ENV\"",

@@ -150,6 +150,9 @@ jobs:
           bash tests/package_physical_qualification_test.sh
           bash tests/stage_release_assets_test.sh
           bash tests/release_staging_workflow_test.sh
+          bash tests/prepare_release_publication_assets_test.sh
+          bash tests/publish_release_assets_test.sh
+          bash tests/release_publication_workflow_test.sh
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
             docs/command-emulated-evidence-schema-v2.json >/dev/null

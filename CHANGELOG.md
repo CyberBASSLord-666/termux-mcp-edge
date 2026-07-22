@@ -1,9 +1,10 @@
 # Changelog
 
-## v0.6.0 — Release Candidate (Unreleased)
+## v0.6.0
 
 ### Changes after initial release-candidate preparation
 
+- Added a fail-closed protected publication contract that remains separate from staging. It consumes one exact public/non-confidential staged tar and a pre-existing annotated tag/empty draft, attaches a fixed sixteen assets, verifies every draft byte on a fresh read-only runner, requires a disjoint final protected approval, and then proves `immutable:true` plus public re-download identity. The workflow cannot create tags or Releases, rebuild candidates, auto-delete partial drafts, or treat a stage/draft as an installation source; administrator environment, tag-ruleset, immutable-policy, and physical-device gates remain explicit blockers.
 - Added a fail-closed exact-byte release-staging boundary. Android version tags no longer rebuild candidates, all seven bundles and native-emulation evidence are retained for 30 days, a local packager reduces validator-v11 and private harness-v11 results to a closed sanitized qualification envelope, and a read-only protected workflow revalidates current-main/run/artifact/evidence identity before producing a deterministic `staged_not_released` tar. The Actions artifact is not confidential in this public repository; the lane has no tag or GitHub Release permission and does not authorize public publication.
 - Added the explicit locked `full-suite` feature and seventh governed Android artifact. The alias composes MCP, battery status, volume status/control, and fixed diagnostics without bypassing any constituent runtime flag or request grant; it exposes exactly 17 tools with optional gates off and exactly 21 with all four enabled. Raw `--all-features` remains a development compatibility lane rather than a public artifact.
 - Advanced aggregate native evidence to schema/gate v3, the canonical release validator to v11/direct-evidence schema v2, and the physical device harness to v11. Exact-artifact validation now proves the 17/21 endpoints, each optional runtime gate alone, all four disabled filesystem dispatches, and distinct-level volume non-mutation with restoration on failure. The full-suite digest and manifest participate in exact-candidate reconciliation, and v0.6.0 requires a fresh direct physical AArch64 observation; the historical v0.5.1 bridge cannot authorize this changed runtime surface. This prepares release evidence but does not create or authorize a `v0.6.0` tag or GitHub Release.
@@ -104,11 +105,11 @@
 - Added HTTP 401 authentication failures with `WWW-Authenticate: Bearer`, `Cache-Control: no-store`, bounded credential parsing, fixed-work token comparison, and token redaction in debug/error paths.
 - Added mobile-conscious MCP request ceilings: four concurrent authenticated requests, a 30-second total request timeout, and a 2 MiB body limit by default, with validated operator override ranges.
 - Added non-sensitive HTTP 413, 503, and 504 limit responses, fail-fast concurrency saturation, streaming body enforcement without double buffering, and active-limit readiness metadata.
-- At v0.5.1, added cancellation-safe same-directory temporary-file cleanup for the then-current write transaction. The Unreleased recovery-quarantine entry above supersedes that transaction and deliberately retains displaced replacement objects.
+- At v0.5.1, added cancellation-safe same-directory temporary-file cleanup for the then-current write transaction. The v0.6.0 recovery-quarantine entry above supersedes that transaction and deliberately retains displaced replacement objects.
 - Added exact `Host` and browser `Origin` validation before MCP request dispatch.
 - Added staged discovery and tool-call coverage for `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `list_directory`, `read_file`, and `write_file`.
 - Kept Android platform control, shell fallback, arbitrary command execution, global process inspection, arbitrary service inspection, service mutation/control, and high-impact actions disabled.
-- At v0.5.1, added bounded safe-rooted directory listing and UTF-8 reads, default-dry-run writes, explicit safe-rooted mutation, atomic temporary-file replacement, and payload-size enforcement. The Unreleased write transaction now defines current publication behavior.
+- At v0.5.1, added bounded safe-rooted directory listing and UTF-8 reads, default-dry-run writes, explicit safe-rooted mutation, atomic temporary-file replacement, and payload-size enforcement. The v0.6.0 write transaction now defines current publication behavior.
 - Added traversal, symlink-boundary, oversize, exact-limit, dry-run, explicit-mutation, MCP-transport, request-limit, authentication-ordering, timeout, saturation, and temp-cleanup tests.
 - Corrected JSON-RPC handling so syntactically valid requests missing `method` return `-32600 Invalid Request` while malformed JSON remains `-32700 Parse error`.
 - Added backend-neutral audit events and in-memory aggregate counters for staged status and filesystem decisions without retaining paths, contents, secrets, tokens, environment values, or caller strings.
@@ -131,7 +132,7 @@
 - Reworked `FileSystemTools::sanitize` into a public, testable safe-root guard that rejects relative paths, NUL bytes, explicit parent-directory components, and paths escaping configured roots.
 - Replaced recursive async directory traversal with bounded iterative breadth-first traversal to avoid Rust async recursion compile failures and reduce stack/future-size risk.
 - Added list traversal bounds for maximum depth and maximum entries, plus metrics for truncated and unsafe skipped entries.
-- At that release, hardened atomic writes by staging temporary files in the destination directory and cleaning up failed temporary writes or renames. This historical implementation is superseded by the Unreleased reserved recovery-quarantine contract.
+- At that release, hardened atomic writes by staging temporary files in the destination directory and cleaning up failed temporary writes or renames. This historical implementation is superseded by the v0.6.0 reserved recovery-quarantine contract.
 - Added real integration tests for dry-run writes, atomic writes, reads, directory listing, and traversal rejection.
 - Added property tests for safe-root path acceptance and rejection behavior.
 - Added `proptest` and `tempfile` dev-dependencies and corrected crate repository metadata.

@@ -103,6 +103,8 @@ Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-m
 
 After physical qualification, follow [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md). The `release-qualification` environment must already have a non-initiating required reviewer, prevent-self-review, a main-only branch policy, disabled administrator bypass, no secrets, and the documented guard variable. Protected staging must consume the exact first-attempt Android run, repeat every source/run/artifact/evidence check after approval, copy all seven binaries byte-for-byte, and emit a deterministic closed-manifest tar with `publicationState: "staged_not_released"`. A stage is not authorization to tag or publish.
 
+Publication additionally requires release immutability, a no-bypass `v*` tag ruleset, one protected annotated tag at the exact staged commit, and one pre-created exact-tag draft with zero assets. `release-production` and `release-final` must have disjoint eligible-reviewer sets, prevent self-review and administrator bypass, accept only `main`, and expose their documented environment-only guards and separate Administration-read policy credentials. The publisher must attach exactly sixteen assets—seven binaries, seven sidecars, `SHA256SUMS`, and the unchanged raw staging tar—then pass fresh read-only draft verification before final approval. Production readiness requires the published response to say `immutable: true` and a public re-download to prove every asset byte. A tag, stage, populated draft, or physical `releaseEligible:true` report alone is insufficient.
+
 ## Current MCP Runtime Gate
 
 A change to the stable transport or staged tool registry must prove:

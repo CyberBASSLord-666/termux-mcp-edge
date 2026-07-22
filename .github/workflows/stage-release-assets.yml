@@ -594,9 +594,10 @@ jobs:
       - name: Upload staged tar without re-archiving
         id: staged
         # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        # With archive:false, the action derives the artifact name from the
+        # single uploaded file basename and ignores the name input.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: termux-mcp-server-v${{ inputs.version }}-release-stage-${{ inputs.expected_commit }}
           path: ${{ env.STAGED_TAR }}
           archive: false
           if-no-files-found: error

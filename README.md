@@ -61,16 +61,16 @@ curl -fsS http://127.0.0.1:8000/health
 curl -fsS http://127.0.0.1:8000/ready | jq
 ```
 
-Continue with [authenticated MCP validation](docs/OPERATIONS.md#authenticated-mcp-validation) to initialize a session and list the tools. The source tree is currently a `0.6.0` release candidate; do not treat expiring workflow artifacts as durable public releases. Production publication remains governed by the exact-main checks in the release documentation.
+Continue with [authenticated MCP validation](docs/OPERATIONS.md#authenticated-mcp-validation) to initialize a session and list the tools. Expiring workflow artifacts are validation inputs, not durable public releases. Production publication is governed by the exact-main checks in the release documentation.
 
 ### Release status in plain language
 
-The workflow builds and automatically validates seven Android postures, including the named full suite. Successful workflow binaries are retained for 30 days and can be copied byte-for-byte into a protected deterministic pre-release stage only after a fresh passing physical-device report and reviewer approval. Staging cannot tag or publish, and its Actions artifact is not confidential in this public repository. See [Public release staging](docs/PUBLIC_RELEASE.md) for the exact inputs, evidence boundaries, final filenames, and remaining publication approval.
+The workflow builds and automatically validates seven Android postures, including the named full suite. Successful workflow binaries are retained for 30 days and can be copied byte-for-byte into a protected deterministic pre-release stage only after a fresh passing physical-device report and reviewer approval. Staging cannot tag or publish, and its Actions artifact is not confidential in this public repository. The separate publisher accepts only that exact stage plus a pre-existing protected annotated tag and pre-created empty draft. It attaches a fixed sixteen-asset set, verifies every draft byte on a fresh read-only runner, waits for a disjoint final protected approval, then requires `immutable: true` and a public re-download proof. Workflow bundles, stages, tags, and drafts are not installation sources. See [Public release staging and publication](docs/PUBLIC_RELEASE.md) for the exact state machine and administrator/device prerequisites.
 
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
-- **Source package version:** `0.6.0` release candidate. No `v0.6.0` tag or GitHub Release is authoritative until the final exact-main release procedure completes.
+- **Source package version:** `0.6.0`. Release authority comes only from an immutable GitHub Release whose exact-main public proof passed; version metadata or a tag alone is insufficient.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 by default, while the explicit SSE posture accepts only cursor-bearing replay GETs.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in.
@@ -305,6 +305,9 @@ bash tests/cross_compile_contract_test.sh
 bash tests/package_physical_qualification_test.sh
 bash tests/stage_release_assets_test.sh
 bash tests/release_staging_workflow_test.sh
+bash tests/prepare_release_publication_assets_test.sh
+bash tests/publish_release_assets_test.sh
+bash tests/release_publication_workflow_test.sh
 ```
 
 Build all supported postures:
@@ -379,7 +382,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Downloaded release-candidate validation](docs/RELEASE_CANDIDATE_VALIDATION.md)
 - [Native ARM64 Termux emulated release gate](docs/EMULATED_RELEASE_GATE.md)
 - [v0.6.0 release-candidate record](docs/V0.6.0_RELEASE_CANDIDATE.md)
-- [Public release staging and publication boundary](docs/PUBLIC_RELEASE.md)
+- [Public release staging, protected publication, and immutable proof](docs/PUBLIC_RELEASE.md)
 - [Termux deployment and recovery](docs/TERMUX_DEPLOYMENT.md)
 - [Operator validation checklist](docs/operator-validation.md)
 
