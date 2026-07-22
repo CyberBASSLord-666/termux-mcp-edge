@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-CLASSIFIER_VERSION=1
+CLASSIFIER_VERSION=2
 
 REPOSITORY_ROOT=''
 SOURCE_COMMIT=''
@@ -66,8 +66,8 @@ EMULATED_REPORT_SHA="$(sha256sum "$EMULATED_REPORT" | awk '{print $1}')"
 [[ "$EMULATED_REPORT_SHA" =~ ^[0-9a-f]{64}$ ]] || fail emulated_report_digest_invalid
 jq -e \
   --arg candidate "$CANDIDATE_COMMIT" '
-    .schemaVersion == 2
-    and .gateVersion == "2"
+    .schemaVersion == 3
+    and .gateVersion == "3"
     and .status == "pass"
     and .failureCode == null
     and .candidate.commit == $candidate
@@ -78,6 +78,16 @@ jq -e \
     and .environment.executionMode == "official-termux-docker-native-arm64"
     and .environment.androidLinker == true
     and .runtimeValidation.status == "pass"
+    and (.candidate.fullSuiteArtifact.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+    and (.candidate.fullSuiteArtifact.manifestSha256 | type == "string" and test("^[0-9a-f]{64}$"))
+    and .candidate.fullSuiteArtifact.artifactName == "termux-mcp-server-aarch64-linux-android-full-suite"
+    and .candidate.fullSuiteArtifact.posture == "full-suite"
+    and .candidate.fullSuiteArtifact.features == ["full-suite"]
+    and .candidate.fullSuiteArtifact.fileName == "termux-mcp-server"
+    and .aggregateValidation.status == "pass"
+    and .aggregateValidation.defaultDisabled.toolCount == 17
+    and .aggregateValidation.fullyEnabled.toolCount == 21
+    and .aggregateValidation.directPhysicalObservationRequired == true
     and .stress.status == "pass"
     and .stress.samples >= 32
     and .stress.safeRootIdentityPinned == true
@@ -179,7 +189,16 @@ else
   fi
 fi
 
-if [[ "$runtime_inputs_unchanged" == true && "$cargo_inputs_unchanged" == true ]]; then
+# Aggregate v3 introduces a governed build input that the historical physical
+# source did not observe. Preserve its digests in the report, but never route
+# this release candidate through the legacy bridge.
+full_suite_direct_observation_required=true
+if [[ "$full_suite_direct_observation_required" == true ]]; then
+  inheritance_candidate=false
+  evidence_mode=physical_observation_required
+  reason_code=full_suite_direct_physical_observation_required
+  next_gate=direct_physical_device_observation
+elif [[ "$runtime_inputs_unchanged" == true && "$cargo_inputs_unchanged" == true ]]; then
   inheritance_candidate=true
   evidence_mode=observation_inheritance_candidate
   reason_code=inheritance_verification_required
@@ -208,6 +227,9 @@ SECURITY_RUN_ID="$(jq -r .candidate.securityRunId "$EMULATED_REPORT")"
 ANDROID_RUN_ID="$(jq -r .candidate.androidRunId "$EMULATED_REPORT")"
 IMAGE_DIGEST="$(jq -r .environment.imageDigest "$EMULATED_REPORT")"
 SAMPLES="$(jq -r .stress.samples "$EMULATED_REPORT")"
+FULL_SUITE_SHA="$(jq -r .candidate.fullSuiteArtifact.sha256 "$EMULATED_REPORT")"
+FULL_SUITE_MANIFEST_SHA="$(jq -r .candidate.fullSuiteArtifact.manifestSha256 "$EMULATED_REPORT")"
+[[ "$FULL_SUITE_SHA" =~ ^[0-9a-f]{64}$ && "$FULL_SUITE_MANIFEST_SHA" =~ ^[0-9a-f]{64}$ ]] || fail full_suite_digest_invalid
 
 REPORT_NEXT="$(dirname "$OUTPUT_REPORT")/.observation-requirement-$$.json"
 jq -n \
@@ -222,14 +244,17 @@ jq -n \
   --arg ci_run_id "$CI_RUN_ID" \
   --arg security_run_id "$SECURITY_RUN_ID" \
   --arg android_run_id "$ANDROID_RUN_ID" \
+  --arg full_suite_sha "$FULL_SUITE_SHA" \
+  --arg full_suite_manifest_sha "$FULL_SUITE_MANIFEST_SHA" \
   --arg emulated_report_sha "$EMULATED_REPORT_SHA" \
   --arg image_digest "$IMAGE_DIGEST" \
   --argjson samples "$SAMPLES" \
   --argjson inheritance_candidate "$inheritance_candidate" \
   --argjson runtime_inputs_unchanged "$runtime_inputs_unchanged" \
-  --argjson cargo_inputs_unchanged "$cargo_inputs_unchanged" '
+  --argjson cargo_inputs_unchanged "$cargo_inputs_unchanged" \
+  --argjson full_suite_direct_observation_required "$full_suite_direct_observation_required" '
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     classifierVersion: $classifier_version,
     status: "pass",
     failureCode: null,
@@ -244,7 +269,9 @@ jq -n \
       version: $candidate_version,
       ciRunId: $ci_run_id,
       securityRunId: $security_run_id,
-      androidRunId: $android_run_id
+      androidRunId: $android_run_id,
+      fullSuiteArtifactSha256: $full_suite_sha,
+      fullSuiteManifestSha256: $full_suite_manifest_sha
     },
     emulation: {
       reportSha256: $emulated_report_sha,
@@ -259,17 +286,20 @@ jq -n \
     },
     changedInputClasses: [
       if $runtime_inputs_unchanged then empty else "runtime_or_deployment" end,
-      if $cargo_inputs_unchanged then empty else "cargo_or_dependency" end
+      if $cargo_inputs_unchanged then empty else "cargo_or_dependency" end,
+      if $full_suite_direct_observation_required then "full_suite_artifact" else empty end
     ],
     nextGate: $next_gate
   }' >"$REPORT_NEXT" || fail report_generation_failed
 chmod 600 "$REPORT_NEXT" || fail report_mode_failed
 
 jq -e '
-  .schemaVersion == 1 and .classifierVersion == "1" and .status == "pass"
+  .schemaVersion == 2 and .classifierVersion == "2" and .status == "pass"
   and .failureCode == null and .releaseQualificationEligible == false
   and (.inheritanceCandidate | type == "boolean")
   and .emulation.status == "pass"
+  and (.candidate.fullSuiteArtifactSha256 | test("^[0-9a-f]{64}$"))
+  and (.candidate.fullSuiteManifestSha256 | test("^[0-9a-f]{64}$"))
   and (
     if .inheritanceCandidate then
       .evidenceMode == "observation_inheritance_candidate"

@@ -108,8 +108,10 @@ Run:
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 bash tests/package_android_artifact_test.sh
 ```
@@ -118,7 +120,7 @@ The exact PR head must also pass:
 
 - CI on all feature combinations;
 - Security checks;
-- six Android artifact builds;
+- all seven governed Android artifact builds, including `full-suite`;
 - native ARM64 official-Termux execution of `termux_command_emulated_gate.sh`;
 - evidence validation against `command-emulated-evidence-schema-v2.json`;
 - ordinary-dependency and selected-workspace API compile failures for removed authority symbols, the private command switch, raw types, legacy constructors, and former public option/authority bundle types;

@@ -15,7 +15,8 @@ cleanup_test() {
 trap cleanup_test EXIT INT TERM
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/termux_release_validate.sh"
-SCHEMA="$REPO_ROOT/docs/release-evidence-schema-v1.json"
+SCHEMA="$REPO_ROOT/docs/release-evidence-schema-v2.json"
+HISTORICAL_SCHEMA="$REPO_ROOT/docs/release-evidence-schema-v1.json"
 REAL_PATH="$PATH"
 REAL_TIMEOUT="$(command -v timeout)"
 REAL_SHA256SUM="$(command -v sha256sum)"
@@ -50,9 +51,9 @@ assert_no_private_output() {
 
 assert_report_contract() {
   jq -e '
-    (keys == ["artifacts","completedAt","environment","failureCode","phases","releaseEligible","repository","requestedPhase","results","schemaVersion","startedAt","status","sustainedObservation","validatorVersion"])
-    and .schemaVersion == 1
-    and (.validatorVersion | type == "string" and test("^[0-9]+$"))
+    (keys == ["artifacts","completedAt","deploymentCandidate","environment","failureCode","phases","releaseEligible","repository","requestedPhase","results","schemaVersion","startedAt","status","sustainedObservation","validatorVersion"])
+    and .schemaVersion == 2
+    and .validatorVersion == "11"
     and (.status == "pass" or .status == "fail" or .status == "fixture")
     and (.startedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
     and (.completedAt | type == "string")
@@ -60,7 +61,9 @@ assert_report_contract() {
     and (.repository.commit | test("^[0-9a-f]{40}$"))
     and (.environment | keys == ["architecture","fixtureMode","tools"])
     and (.environment.tools | keys == ["bash","curl","file","jq"])
-    and (.artifacts | keys == ["androidVolumeControl","baseline","default","mcpRuntime"])
+    and (.artifacts | keys == ["androidVolumeControl","baseline","default","fullSuite","mcpRuntime"])
+    and .deploymentCandidate.posture == "full-suite"
+    and (.deploymentCandidate.productionAction == null or (.deploymentCandidate.productionAction | type) == "string")
     and (.phases | keys == ["deployment","preflight","runtime"])
     and (.results | type == "array" and length <= 256)
     and (all(.results[]; (keys == ["check","code","outcome","phase"])))
@@ -108,6 +111,10 @@ if [[ "\${1:-}" == --version ]]; then
 fi
 if [[ '$posture' == mcp && "\${MCP__ANDROID__VOLUME_CONTROL_ENABLED:-false}" == true ]]; then
   printf '%s\n' 'MCP__ANDROID__VOLUME_CONTROL_ENABLED requires a binary built with the android-volume-control feature' >&2
+  exit 1
+fi
+if [[ '$posture' == full-suite && "\${MCP__COMMAND__ENABLED:-false}" == true && "\${BASH_SOURCE[0]##*/}" != termux-mcp-server ]]; then
+  printf '%s\n' 'full-suite command execution requires the exact termux-mcp-server basename' >&2
   exit 1
 fi
 if [[ "\${1:-}" == --issue-create-directory-grant ]]; then
@@ -162,6 +169,10 @@ write_manifest() {
       artifact_name=termux-mcp-server-aarch64-linux-android-android-volume-control
       features='["android-volume-control"]'
       ;;
+    full-suite)
+      artifact_name=termux-mcp-server-aarch64-linux-android-full-suite
+      features='["full-suite"]'
+      ;;
     *) fail_test "unknown manifest posture" ;;
   esac
   jq -n \
@@ -193,10 +204,12 @@ write_manifest() {
 write_config() {
   local path="$1" default_artifact="$2" default_sha="$3" mcp_artifact="$4" mcp_sha="$5"
   local sustained_status="${6:-not_run}" sustained_minutes="${7:-0}" sustained_reason="${8:-not_observed}"
-  local default_manifest="${path}.default-manifest.json" mcp_manifest="${path}.mcp-manifest.json" volume_control_manifest="${path}.volume-control-manifest.json"
+  local default_manifest="${path}.default-manifest.json" mcp_manifest="${path}.mcp-manifest.json"
+  local volume_control_manifest="${path}.volume-control-manifest.json" full_suite_manifest="${path}.full-suite-manifest.json"
   write_manifest "$default_manifest" "$default_artifact" "$default_sha" default
   write_manifest "$mcp_manifest" "$mcp_artifact" "$mcp_sha" mcp-runtime
   write_manifest "$volume_control_manifest" "$VOLUME_CONTROL_ARTIFACT" "$VOLUME_CONTROL_SHA" android-volume-control
+  write_manifest "$full_suite_manifest" "$FULL_SUITE_ARTIFACT" "$FULL_SUITE_SHA" full-suite
   cat >"$path" <<EOF
 EXPECTED_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 EXPECTED_VERSION=0.5.1
@@ -209,6 +222,9 @@ MCP_MANIFEST=$mcp_manifest
 VOLUME_CONTROL_ARTIFACT=$VOLUME_CONTROL_ARTIFACT
 VOLUME_CONTROL_SHA256=$VOLUME_CONTROL_SHA
 VOLUME_CONTROL_MANIFEST=$volume_control_manifest
+FULL_SUITE_ARTIFACT=$FULL_SUITE_ARTIFACT
+FULL_SUITE_SHA256=$FULL_SUITE_SHA
+FULL_SUITE_MANIFEST=$full_suite_manifest
 BASELINE_ARTIFACT=$BASELINE_ARTIFACT
 BASELINE_VERSION=0.5.0
 BASELINE_SHA256=$BASELINE_SHA
@@ -306,16 +322,48 @@ done
 if grep -Fq -- '{260}' "$SCRIPT"; then
   fail_test "release validator uses a non-portable ERE repetition above Android RE_DUP_MAX"
 fi
+for marker in \
+  'readonly VALIDATOR_VERSION="11"' \
+  'pinned_artifact="$pinned_directory/termux-mcp-server"' \
+  'full_suite_default_disabled_17_tool_posture_verified' \
+  'full_suite_battery_runtime_gate_independence_verified' \
+  'full_suite_volume_status_runtime_gate_independence_verified' \
+  'full_suite_volume_control_runtime_gate_independence_verified' \
+  'full_suite_command_runtime_gate_independence_verified' \
+  'full_suite_enabled_21_tool_posture_verified' \
+  'full_suite_optional_provider_success_verified' \
+  'full_suite_volume_preview_and_grant_boundary_verified' \
+  'full_suite_command_basename_and_profile_verified' \
+  'full_suite_filesystem_mutations_independently_disabled' \
+  'full-suite-create-disabled' \
+  'full-suite-copy-disabled' \
+  'full-suite-trash-disabled' \
+  'full-suite-write-disabled' \
+  'snapshot_private_directory "$trash_quarantine"' \
+  'restore_full_suite_music_level' \
+  'full_suite_volume_preview_mutated' \
+  'full_suite_volume_missing_grant_mutated' \
+  'full_suite_deployment_candidate_selected' \
+  'full_suite_production_candidate_selected'
+do
+  grep -Fq -- "$marker" "$SCRIPT" || fail_test "release validator omitted full-suite marker: $marker"
+done
 jq -e '
   .["$schema"] == "https://json-schema.org/draft/2020-12/schema"
   and .additionalProperties == false
   and (.allOf | length) == 5
-  and .properties.schemaVersion.const == 1
+  and .properties.schemaVersion.const == 2
   and .properties.status.enum == ["pass","fail","fixture"]
   and .properties.artifacts.properties.androidVolumeControl."$ref" == "#/$defs/artifact"
+  and .properties.artifacts.properties.fullSuite."$ref" == "#/$defs/artifact"
+  and .properties.deploymentCandidate.properties.posture.const == "full-suite"
   and (.properties.sustainedObservation.allOf | length) == 3
   and .properties.sustainedObservation.properties.minimumMinutes.const == 60
 ' "$SCHEMA" >/dev/null
+jq -e '
+  .properties.schemaVersion.const == 1
+  and (.properties.artifacts.properties | has("fullSuite") | not)
+' "$HISTORICAL_SCHEMA" >/dev/null || fail_test "historical release evidence schema v1 changed"
 mkdir -p "$ROOT/home/safe" "$ROOT/prefix/bin" "$ROOT/fake-bin"
 chmod 700 "$ROOT/home" "$ROOT/home/safe" "$ROOT/prefix" "$ROOT/fake-bin"
 HOME="$ROOT/home"
@@ -324,6 +372,17 @@ FAKE_BIN="$ROOT/fake-bin"
 SAFE_ROOT="$HOME/safe"
 cp -L -- /bin/sh "$PREFIX/bin/sh"
 chmod 700 "$PREFIX/bin/sh"
+cat >"$PREFIX/bin/termux-volume" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: "${TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE:?}"
+[[ "$#" -eq 2 && "$1" == music && "$2" =~ ^[0-9]+$ && "$2" -le 15 ]]
+[[ -f "$TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE" \
+  && ! -L "$TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE" ]]
+printf '%s\n' "$2" >"$TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE"
+printf 'music:%s\n' "$2" >>"$TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE.restore-log"
+EOF
+chmod 700 "$PREFIX/bin/termux-volume"
 
 cat >"$FAKE_BIN/file" <<'EOF'
 #!/usr/bin/env bash
@@ -340,14 +399,17 @@ chmod 700 "$FAKE_BIN/file"
 DEFAULT_ARTIFACT="$ROOT/default-artifact"
 MCP_ARTIFACT="$ROOT/mcp-artifact"
 VOLUME_CONTROL_ARTIFACT="$ROOT/volume-control-artifact"
+FULL_SUITE_ARTIFACT="$ROOT/full-suite-artifact"
 BASELINE_ARTIFACT="$ROOT/baseline-artifact"
 make_artifact "$DEFAULT_ARTIFACT" 0.5.1 default
 make_artifact "$MCP_ARTIFACT" 0.5.1 mcp
 make_artifact "$VOLUME_CONTROL_ARTIFACT" 0.5.1 android-volume-control
+make_artifact "$FULL_SUITE_ARTIFACT" 0.5.1 full-suite
 make_artifact "$BASELINE_ARTIFACT" 0.5.0 baseline
 DEFAULT_SHA="$(sha "$DEFAULT_ARTIFACT")"
 MCP_SHA="$(sha "$MCP_ARTIFACT")"
 VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
+FULL_SUITE_SHA="$(sha "$FULL_SUITE_ARTIFACT")"
 BASELINE_SHA="$(sha "$BASELINE_ARTIFACT")"
 
 TOKEN_FILE="$ROOT/token"
@@ -365,8 +427,8 @@ if ! run_validator --config "$CONFIG" --report "$REPORT" --phase preflight >"$RO
 fi
 
 jq -e '
-  .schemaVersion == 1
-  and .validatorVersion == "10"
+  .schemaVersion == 2
+  and .validatorVersion == "11"
   and .status == "fixture"
   and .releaseEligible == false
   and .phases.preflight == "pass"
@@ -375,8 +437,13 @@ jq -e '
   and .artifacts.default.sha256 != .artifacts.mcpRuntime.sha256
   and .artifacts.androidVolumeControl.sha256 != .artifacts.default.sha256
   and .artifacts.androidVolumeControl.sha256 != .artifacts.mcpRuntime.sha256
+  and .artifacts.fullSuite.sha256 != .artifacts.default.sha256
+  and .artifacts.fullSuite.sha256 != .artifacts.mcpRuntime.sha256
+  and .artifacts.fullSuite.sha256 != .artifacts.androidVolumeControl.sha256
   and .artifacts.default.version == "0.5.1"
   and .artifacts.androidVolumeControl.version == "0.5.1"
+  and .artifacts.fullSuite.version == "0.5.1"
+  and .deploymentCandidate == {posture:"full-suite",productionAction:null}
   and .environment.fixtureMode == true
 ' "$REPORT" >/dev/null
 [[ "$(stat -c '%a' "$REPORT")" == 600 ]] || fail_test "report mode is not 600"
@@ -432,6 +499,16 @@ chmod 600 "$VOLUME_MANIFEST_CONFIG.volume-control-manifest.json"
 assert_fails run_validator --config "$VOLUME_MANIFEST_CONFIG" --report "$VOLUME_MANIFEST_REPORT" --phase preflight
 jq -e '.status == "fail" and .failureCode == "android_volume_control_manifest_mismatch"' "$VOLUME_MANIFEST_REPORT" >/dev/null
 
+FULL_SUITE_MANIFEST_CONFIG="$ROOT/full-suite-manifest-mismatch.env"
+FULL_SUITE_MANIFEST_REPORT="$ROOT/full-suite-manifest-mismatch.json"
+write_config "$FULL_SUITE_MANIFEST_CONFIG" "$DEFAULT_ARTIFACT" "$DEFAULT_SHA" "$MCP_ARTIFACT" "$MCP_SHA"
+jq '.features = ["mcp-runtime"]' \
+  "$FULL_SUITE_MANIFEST_CONFIG.full-suite-manifest.json" >"$ROOT/full-suite-manifest-mismatch.next"
+mv "$ROOT/full-suite-manifest-mismatch.next" "$FULL_SUITE_MANIFEST_CONFIG.full-suite-manifest.json"
+chmod 600 "$FULL_SUITE_MANIFEST_CONFIG.full-suite-manifest.json"
+assert_fails run_validator --config "$FULL_SUITE_MANIFEST_CONFIG" --report "$FULL_SUITE_MANIFEST_REPORT" --phase preflight
+jq -e '.status == "fail" and .failureCode == "full_suite_manifest_mismatch"' "$FULL_SUITE_MANIFEST_REPORT" >/dev/null
+
 MISSING_MANIFEST_CONFIG="$ROOT/missing-manifest.env"
 MISSING_MANIFEST_REPORT="$ROOT/missing-manifest.json"
 grep -v '^DEFAULT_MANIFEST=' "$CONFIG" >"$MISSING_MANIFEST_CONFIG"
@@ -446,6 +523,23 @@ chmod 600 "$MISSING_VOLUME_CONFIG"
 assert_fails run_validator --config "$MISSING_VOLUME_CONFIG" --report "$MISSING_VOLUME_REPORT" --phase preflight
 [[ ! -e "$MISSING_VOLUME_REPORT" ]] || fail_test "missing volume-control metadata unexpectedly produced a report"
 grep -Fq artifact_digest_metadata_invalid "$ROOT/last.stderr" || fail_test "missing volume-control metadata was not rejected"
+
+MISSING_FULL_SUITE_CONFIG="$ROOT/missing-full-suite.env"
+MISSING_FULL_SUITE_REPORT="$ROOT/missing-full-suite.json"
+grep -v '^FULL_SUITE_' "$CONFIG" >"$MISSING_FULL_SUITE_CONFIG"
+chmod 600 "$MISSING_FULL_SUITE_CONFIG"
+assert_fails run_validator --config "$MISSING_FULL_SUITE_CONFIG" --report "$MISSING_FULL_SUITE_REPORT" --phase preflight
+[[ ! -e "$MISSING_FULL_SUITE_REPORT" ]] || fail_test "missing full-suite metadata unexpectedly produced a report"
+grep -Fq artifact_digest_metadata_invalid "$ROOT/last.stderr" || fail_test "missing full-suite metadata was not rejected"
+
+DUPLICATE_POSTURE_DIGEST_CONFIG="$ROOT/duplicate-posture-digest.env"
+DUPLICATE_POSTURE_DIGEST_REPORT="$ROOT/duplicate-posture-digest.json"
+cp -- "$CONFIG" "$DUPLICATE_POSTURE_DIGEST_CONFIG"
+sed -i "s/^FULL_SUITE_SHA256=.*/FULL_SUITE_SHA256=$MCP_SHA/" "$DUPLICATE_POSTURE_DIGEST_CONFIG"
+chmod 600 "$DUPLICATE_POSTURE_DIGEST_CONFIG"
+assert_fails run_validator --config "$DUPLICATE_POSTURE_DIGEST_CONFIG" --report "$DUPLICATE_POSTURE_DIGEST_REPORT" --phase preflight
+[[ ! -e "$DUPLICATE_POSTURE_DIGEST_REPORT" ]] || fail_test "duplicate posture digest unexpectedly produced a report"
+grep -Fq artifact_posture_digests_not_distinct "$ROOT/last.stderr" || fail_test "duplicate posture digest was not rejected"
 
 MUTATING_ARTIFACT="$ROOT/mutating-artifact"
 make_artifact "$MUTATING_ARTIFACT" 0.5.1 default
@@ -593,11 +687,15 @@ jq -e '
 RUNTIME_DEFAULT="$ROOT/runtime-default-artifact"
 RUNTIME_MCP="$ROOT/runtime-mcp-artifact"
 RUNTIME_VOLUME_CONTROL="$ROOT/runtime-volume-control-artifact"
+RUNTIME_FULL_SUITE="$ROOT/runtime-full-suite-artifact"
 make_runtime_artifact "$RUNTIME_DEFAULT" 0.5.1 default
 make_runtime_artifact "$RUNTIME_MCP" 0.5.1 mcp
 make_runtime_artifact "$RUNTIME_VOLUME_CONTROL" 0.5.1 volume-control
+make_runtime_artifact "$RUNTIME_FULL_SUITE" 0.5.1 full-suite
 VOLUME_CONTROL_ARTIFACT="$RUNTIME_VOLUME_CONTROL"
 VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
+FULL_SUITE_ARTIFACT="$RUNTIME_FULL_SUITE"
+FULL_SUITE_SHA="$(sha "$FULL_SUITE_ARTIFACT")"
 RUNTIME_CONFIG="$ROOT/runtime.env"
 RUNTIME_REPORT="$ROOT/runtime.json"
 write_config "$RUNTIME_CONFIG" "$RUNTIME_DEFAULT" "$(sha "$RUNTIME_DEFAULT")" "$RUNTIME_MCP" "$(sha "$RUNTIME_MCP")"
@@ -689,6 +787,16 @@ jq -e '
   and ([.results[].code] | index("volume_control_hidden_while_disabled") != null)
   and ([.results[].code] | index("volume_control_runtime_status_read") != null)
   and ([.results[].code] | index("volume_control_disabled_call_rejected") != null)
+  and ([.results[].code] | index("full_suite_default_disabled_17_tool_posture_verified") != null)
+  and ([.results[].code] | index("full_suite_battery_runtime_gate_independence_verified") != null)
+  and ([.results[].code] | index("full_suite_volume_status_runtime_gate_independence_verified") != null)
+  and ([.results[].code] | index("full_suite_volume_control_runtime_gate_independence_verified") != null)
+  and ([.results[].code] | index("full_suite_command_runtime_gate_independence_verified") != null)
+  and ([.results[].code] | index("full_suite_enabled_21_tool_posture_verified") != null)
+  and ([.results[].code] | index("full_suite_optional_provider_success_verified") != null)
+  and ([.results[].code] | index("full_suite_volume_preview_and_grant_boundary_verified") != null)
+  and ([.results[].code] | index("full_suite_command_basename_and_profile_verified") != null)
+  and ([.results[].code] | index("full_suite_filesystem_mutations_independently_disabled") != null)
 ' "$RUNTIME_REPORT" >/dev/null
 if grep -Fq "$ROOT" "$RUNTIME_REPORT" \
   || grep -Fq fixture-private-token "$RUNTIME_REPORT" \
@@ -698,6 +806,50 @@ if grep -Fq "$ROOT" "$RUNTIME_REPORT" \
 fi
 assert_no_private_output "runtime output" "$ROOT/runtime.stdout" "$ROOT/runtime.stderr"
 [[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] || fail_test "runtime phase left safe-root state"
+
+PREVIEW_MUTATION_REPORT="$ROOT/full-suite-preview-mutation.json"
+DENIAL_MUTATION_REPORT="$ROOT/full-suite-denial-mutation.json"
+for volume_fault in preview_mutates denial_mutates; do
+  volume_state="$ROOT/full-suite-$volume_fault.state"
+  restore_log="$volume_state.restore-log"
+  case "$volume_fault" in
+    preview_mutates)
+      fault_report="$PREVIEW_MUTATION_REPORT"
+      expected_failure=full_suite_volume_preview_mutated
+      ;;
+    denial_mutates)
+      fault_report="$DENIAL_MUTATION_REPORT"
+      expected_failure=full_suite_volume_missing_grant_mutated
+      ;;
+  esac
+  printf '5\n' >"$volume_state"
+  chmod 600 "$volume_state"
+  if HOME="$HOME" PREFIX="$PREFIX" PATH="$FAKE_BIN:$REAL_PATH" \
+    TERMUX_MCP_RELEASE_VALIDATOR_TEST_MODE=1 \
+    TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE="$volume_state" \
+    TERMUX_MCP_RELEASE_FIXTURE_VOLUME_FAULT="$volume_fault" \
+    bash "$SCRIPT" \
+      --config "$RUNTIME_CONFIG" \
+      --report "$fault_report" \
+      --phase runtime \
+      --confirm-runtime-mutation \
+      >"$ROOT/$volume_fault.stdout" 2>"$ROOT/$volume_fault.stderr"; then
+    fail_test "$volume_fault fixture unexpectedly passed"
+  fi
+  jq -e --arg failure "$expected_failure" '
+    .status == "fail"
+    and .failureCode == $failure
+    and .phases.runtime == "fail"
+    and .releaseEligible == false
+  ' "$fault_report" >/dev/null
+  [[ "$(<"$volume_state")" == 5 ]] || fail_test "$volume_fault fixture was not restored"
+  [[ "$(<"$restore_log")" == music:5 ]] || fail_test "$volume_fault restoration was not exercised exactly once"
+  [[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] \
+    || fail_test "$volume_fault fixture left safe-root state"
+  assert_no_private_output "$volume_fault output" \
+    "$fault_report" "$ROOT/$volume_fault.stdout" "$ROOT/$volume_fault.stderr"
+done
+unset volume_fault volume_state restore_log fault_report expected_failure
 
 python3 -m http.server 18765 --bind 127.0.0.1 >"$ROOT/listener.log" 2>&1 &
 LISTENER_PID=$!
@@ -748,6 +900,25 @@ jq -e '.status == "fail" and .failureCode == "volume_control_runtime_status_inva
 VOLUME_CONTROL_ARTIFACT="$RUNTIME_VOLUME_CONTROL"
 VOLUME_CONTROL_SHA="$(sha "$VOLUME_CONTROL_ARTIFACT")"
 
+RUNTIME_WRONG_FULL_SUITE="$ROOT/runtime-wrong-full-suite-artifact"
+make_runtime_artifact "$RUNTIME_WRONG_FULL_SUITE" 0.5.1 mcp
+printf '%s\n' '# distinct incompatible full-suite posture fixture' >>"$RUNTIME_WRONG_FULL_SUITE"
+chmod 700 "$RUNTIME_WRONG_FULL_SUITE"
+FULL_SUITE_ARTIFACT="$RUNTIME_WRONG_FULL_SUITE"
+FULL_SUITE_SHA="$(sha "$FULL_SUITE_ARTIFACT")"
+WRONG_FULL_SUITE_CONFIG="$ROOT/wrong-full-suite-runtime.env"
+WRONG_FULL_SUITE_REPORT="$ROOT/wrong-full-suite-runtime.json"
+write_config "$WRONG_FULL_SUITE_CONFIG" "$RUNTIME_DEFAULT" "$(sha "$RUNTIME_DEFAULT")" "$RUNTIME_MCP" "$(sha "$RUNTIME_MCP")"
+assert_fails run_validator \
+  --config "$WRONG_FULL_SUITE_CONFIG" \
+  --report "$WRONG_FULL_SUITE_REPORT" \
+  --phase runtime \
+  --confirm-runtime-mutation
+jq -e '.status == "fail" and .failureCode == "full_suite_default_runtime_status_invalid" and .phases.runtime == "fail"' "$WRONG_FULL_SUITE_REPORT" >/dev/null
+[[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] || fail_test "wrong full-suite posture left safe-root state"
+FULL_SUITE_ARTIFACT="$RUNTIME_FULL_SUITE"
+FULL_SUITE_SHA="$(sha "$FULL_SUITE_ARTIFACT")"
+
 NO_RUNTIME_CONFIRM_REPORT="$ROOT/no-runtime-confirm.json"
 assert_fails run_validator \
   --config "$RUNTIME_CONFIG" \
@@ -770,6 +941,8 @@ jq -e '
   and .phases.preflight == "pass"
   and .phases.runtime == "not_run"
   and .phases.deployment == "pass"
+  and .deploymentCandidate == {posture:"full-suite",productionAction:null}
+  and ([.results[].code] | index("full_suite_deployment_candidate_selected") != null)
   and ([.results[].code] | index("default_install_baseline_succeeded") != null)
   and ([.results[].code] | index("default_upgrade_candidate_succeeded") != null)
   and ([.results[].code] | index("default_rollback_success_succeeded") != null)
@@ -809,6 +982,7 @@ if HOME="$HOME" PREFIX="$PREFIX" PATH="$FAKE_BIN:$REAL_PATH" \
   fail_test "production action without exact confirmation unexpectedly succeeded"
 fi
 jq -e '.status == "fail" and .failureCode == "production_confirmation_invalid"' "$PRODUCTION_CONFIRM_REPORT" >/dev/null
+jq -e '.deploymentCandidate == {posture:"full-suite",productionAction:"uninstall"}' "$PRODUCTION_CONFIRM_REPORT" >/dev/null
 [[ ! -e "$HOME/.local/share/termux-mcp-edge" ]] || fail_test "unconfirmed production action mutated deployment state"
 
 PRODUCTION_ENV_REPORT="$ROOT/production-environment.json"
@@ -862,6 +1036,8 @@ jq -e '
   and .sustainedObservation.status == "pass"
   and .sustainedObservation.minutes == 60
   and .sustainedObservation.reasonCode == "stable"
+  and .deploymentCandidate == {posture:"full-suite",productionAction:null}
+  and ([.results[].code] | index("full_suite_deployment_candidate_selected") != null)
 ' "$ALL_REPORT" >/dev/null
 [[ -z "$(find "$SAFE_ROOT" -mindepth 1 -print -quit)" ]] || fail_test "all phase left safe-root state"
 [[ -z "$(find "$PREFIX/var" -maxdepth 1 -name 'service-termux-mcp-release-validation-*' -print -quit 2>/dev/null)" ]] || fail_test "all phase left service state"
@@ -872,6 +1048,7 @@ for evidence_report in \
   "$BAD_REPORT" \
   "$MANIFEST_REPORT" \
   "$VOLUME_MANIFEST_REPORT" \
+  "$FULL_SUITE_MANIFEST_REPORT" \
   "$MISSING_MANIFEST_REPORT" \
   "$MUTATING_REPORT" \
   "$INJECTION_REPORT" \
@@ -882,9 +1059,12 @@ for evidence_report in \
   "$RUNTIME_REPORT" \
   "$TOKEN_MODE_REPORT" \
   "$TOKEN_NEWLINE_REPORT" \
+  "$PREVIEW_MUTATION_REPORT" \
+  "$DENIAL_MUTATION_REPORT" \
   "$PORT_COLLISION_REPORT" \
   "$SWAPPED_REPORT" \
   "$WRONG_VOLUME_REPORT" \
+  "$WRONG_FULL_SUITE_REPORT" \
   "$NO_RUNTIME_CONFIRM_REPORT" \
   "$DEPLOY_REPORT" \
   "$NO_DEPLOY_CONFIRM_REPORT" \

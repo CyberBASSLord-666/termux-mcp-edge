@@ -111,6 +111,14 @@ Requesting a client that was not compiled into the selected feature posture
 returns `McpRouterBuildError::CapabilityUnavailable`; it is never silently
 disabled. SSE is likewise explicit and defaults off.
 
+The `full-suite` feature only makes every supported optional implementation
+available to the package build. It does not call any builder opt-in, enable a
+runtime flag, create a mutation authority, or satisfy a request grant. A
+full-suite process therefore has the same 17-tool discovery baseline until its
+four optional runtime gates are enabled independently; with all four enabled it
+has exactly 21 tools. Raw Cargo `--all-features` remains a development
+compatibility posture, not an embedding or public artifact contract.
+
 Mutation authorities are added with the fallible
 `try_with_create_directory_authority`, `try_with_copy_file_authority`,
 `try_with_trash_file_authority`, `try_with_write_file_authority`, and—when compiled—
@@ -157,7 +165,7 @@ is the crate-private command-profile switch, which downstream crates cannot
 name or call.
 
 The checked-in [`secure_embedding` example](../examples/secure_embedding.rs)
-is compiled by the repository's default, minimal-`mcp-runtime`, and all-feature
-gates. To run it deliberately, provide a private token and an existing absolute
+is compiled by the repository's default, minimal-`mcp-runtime`, named
+`full-suite`, and raw all-feature gates. To run it deliberately, provide a private token and an existing absolute
 safe root through `MCP_EXAMPLE_STATIC_TOKEN` and `MCP_EXAMPLE_SAFE_ROOT`, then
 use `cargo run --locked --example secure_embedding --features mcp-runtime`.

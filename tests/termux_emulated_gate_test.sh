@@ -103,16 +103,22 @@ for code in \
   exact_trash_file_byte_limit_verified \
   trash_recovery_quarantine_verified \
   trash_file_private_audit_verified \
-  trash_file_disabled_posture_verified
+  trash_file_disabled_posture_verified \
+  full_suite_default_disabled_17_tool_posture_verified \
+  full_suite_enabled_21_tool_posture_verified \
+  full_suite_optional_provider_success_verified \
+  full_suite_volume_preview_and_grant_boundary_verified \
+  full_suite_command_basename_and_profile_verified \
+  full_suite_filesystem_mutations_independently_disabled
 do
   grep -Fq "$code" "$GATE" \
     || fail_test "canonical emulation gate omits required validator evidence: $code"
   grep -Fq "$code" "$VALIDATOR" \
     || fail_test "release validator cannot emit canonical emulation evidence: $code"
 done
-grep -Fq '.validatorVersion == "10"' "$GATE" \
-  || fail_test 'canonical emulation gate does not require release validator v10'
-grep -Fq 'readonly VALIDATOR_VERSION="10"' "$VALIDATOR" \
+grep -Fq '.validatorVersion == "11"' "$GATE" \
+  || fail_test 'canonical emulation gate does not require release validator v11'
+grep -Fq 'readonly VALIDATOR_VERSION="11"' "$VALIDATOR" \
   || fail_test 'release validator version does not match canonical emulation gate requirement'
 
 if bash "$GATE" >"$ROOT/.termux-emulated-test.stdout" 2>"$ROOT/.termux-emulated-test.stderr"; then
@@ -174,6 +180,30 @@ jq -e '
   and .properties.stress.properties.safeRootAncestorIdentityPinned.const == true
   and .properties.stress.properties.longObservationRequired.const == false
 ' "$ROOT/docs/emulated-release-evidence-schema-v2.json" >/dev/null
+
+jq -e '
+  .properties.schemaVersion.const == 3
+  and .properties.gateVersion.const == "3"
+  and .properties.status.const == "pass"
+  and .properties.releaseQualificationEligible.const == false
+  and .properties.candidate.properties.fullSuiteArtifact."$ref" == "#/$defs/fullSuiteArtifact"
+  and ."$defs".fullSuiteArtifact.properties.artifactName.const == "termux-mcp-server-aarch64-linux-android-full-suite"
+  and ."$defs".fullSuiteArtifact.properties.posture.const == "full-suite"
+  and ."$defs".fullSuiteArtifact.properties.features.const == ["full-suite"]
+  and ."$defs".fullSuiteArtifact.properties.fileName.const == "termux-mcp-server"
+  and .properties.aggregateValidation.properties.defaultDisabled."$ref" == "#/$defs/defaultDisabled"
+  and .properties.aggregateValidation.properties.fullyEnabled."$ref" == "#/$defs/fullyEnabled"
+  and .properties.aggregateValidation.properties.independentRuntimeGates.const == true
+  and ."$defs".defaultDisabled.properties.toolCount.const == 17
+  and ."$defs".defaultDisabled.properties.runtimeFlagsOmitted.const == true
+  and ."$defs".fullyEnabled.properties.toolCount.const == 21
+  and ."$defs".fullyEnabled.properties.volumePreviewNoMutation.const == true
+  and ."$defs".fullyEnabled.properties.volumeGrantIsolation.const == true
+  and ."$defs".fullyEnabled.properties.commandExecutableIdentityPinned.const == true
+  and .properties.aggregateValidation.properties.filesystemMutationsDisabled.const == true
+  and .properties.aggregateValidation.properties.boundedCleanup.const == true
+  and .properties.aggregateValidation.properties.directPhysicalObservationRequired.const == true
+' "$ROOT/docs/emulated-release-evidence-schema-v3.json" >/dev/null
 
 jq -e '
   .properties.schemaVersion.const == 2
@@ -319,6 +349,19 @@ jq -e '
 ' "$ROOT/docs/release-observation-requirement-schema-v1.json" >/dev/null
 
 jq -e '
+  .properties.schemaVersion.const == 2
+  and .properties.classifierVersion.const == "2"
+  and .properties.releaseQualificationEligible.const == false
+  and ."$defs".candidate.properties.fullSuiteArtifactSha256."$ref" == "#/$defs/sha256"
+  and ."$defs".candidate.properties.fullSuiteManifestSha256."$ref" == "#/$defs/sha256"
+  and ."$defs".emulation.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and (.properties.reasonCode.enum | index("full_suite_direct_physical_observation_required") != null)
+  and (.properties.changedInputClasses.items.enum | index("full_suite_artifact") != null)
+  and .allOf[0].then.properties.changedInputClasses.maxItems == 0
+  and .allOf[0].else.properties.changedInputClasses.minItems == 1
+' "$ROOT/docs/release-observation-requirement-schema-v2.json" >/dev/null
+
+jq -e '
   .properties.releaseQualificationEligible.const == true
   and .properties.evidenceMode.const == "inherited_physical_observation"
   and .properties.sourceObservation.properties.physicalDevice.const == true
@@ -361,8 +404,8 @@ EQUIVALENT_EMULATED="$FIXTURE_ROOT/equivalent-emulated.json"
 jq -n \
   --arg commit "$EQUIVALENT_CANDIDATE" '
   {
-    schemaVersion: 2,
-    gateVersion: "2",
+    schemaVersion: 3,
+    gateVersion: "3",
     status: "pass",
     failureCode: null,
     candidate: {
@@ -370,7 +413,15 @@ jq -n \
       version: "0.6.0",
       ciRunId: "1001",
       securityRunId: "1002",
-      androidRunId: "1003"
+      androidRunId: "1003",
+      fullSuiteArtifact: {
+        sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        manifestSha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        artifactName: "termux-mcp-server-aarch64-linux-android-full-suite",
+        posture: "full-suite",
+        features: ["full-suite"],
+        fileName: "termux-mcp-server"
+      }
     },
     environment: {
       executionMode: "official-termux-docker-native-arm64",
@@ -378,6 +429,12 @@ jq -n \
       imageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     runtimeValidation: {status: "pass"},
+    aggregateValidation: {
+      status: "pass",
+      defaultDisabled: {toolCount: 17},
+      fullyEnabled: {toolCount: 21},
+      directPhysicalObservationRequired: true
+    },
     stress: {
       status: "pass",
       samples: 32,
@@ -394,10 +451,16 @@ bash "$CLASSIFIER" \
   --emulated-report "$EQUIVALENT_EMULATED" \
   --output "$FIXTURE_ROOT/output/equivalent.json" >/dev/null
 jq -e '
-  .inheritanceCandidate == true
+  .inheritanceCandidate == false
+  and .schemaVersion == 2
+  and .classifierVersion == "2"
   and .releaseQualificationEligible == false
-  and .evidenceMode == "observation_inheritance_candidate"
-  and .changedInputClasses == []
+  and .evidenceMode == "physical_observation_required"
+  and .reasonCode == "full_suite_direct_physical_observation_required"
+  and .changedInputClasses == ["full_suite_artifact"]
+  and .nextGate == "direct_physical_device_observation"
+  and .candidate.fullSuiteArtifactSha256 == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  and .candidate.fullSuiteManifestSha256 == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 ' "$FIXTURE_ROOT/output/equivalent.json" >/dev/null
 [[ "$(stat -c %a "$FIXTURE_ROOT/output/equivalent.json")" == 600 ]] || fail_test 'classifier output is not private'
 
@@ -424,8 +487,8 @@ jq -e '
   .inheritanceCandidate == false
   and .releaseQualificationEligible == false
   and .evidenceMode == "physical_observation_required"
-  and .reasonCode == "runtime_and_build_inputs_changed"
-  and .changedInputClasses == ["runtime_or_deployment", "cargo_or_dependency"]
+  and .reasonCode == "full_suite_direct_physical_observation_required"
+  and .changedInputClasses == ["runtime_or_deployment", "cargo_or_dependency", "full_suite_artifact"]
   and .nextGate == "direct_physical_device_observation"
 ' "$FIXTURE_ROOT/output/changed.json" >/dev/null
 
@@ -436,10 +499,13 @@ grep -Fq 'posture: android-battery-status' "$ANDROID_WORKFLOW" || fail_test 'bat
 grep -Fq 'posture: android-volume-status' "$ANDROID_WORKFLOW" || fail_test 'volume feature build posture missing'
 grep -Fq 'posture: android-volume-control' "$ANDROID_WORKFLOW" || fail_test 'volume control feature build posture missing'
 grep -Fq 'posture: command-execution' "$ANDROID_WORKFLOW" || fail_test 'command feature build posture missing'
+grep -Fq 'posture: full-suite' "$ANDROID_WORKFLOW" || fail_test 'full-suite build posture missing'
+grep -Fq 'termux-mcp-server-aarch64-linux-android-full-suite' "$ANDROID_WORKFLOW" || fail_test 'full-suite artifact name missing'
 grep -Fq 'termux_battery_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'battery native emulation gate missing'
 grep -Fq 'termux_volume_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'volume native emulation gate missing'
 grep -Fq 'termux_volume_control_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'volume control native emulation gate missing'
 grep -Fq -- '--volume-control-dir /workspace/artifacts/android-volume-control' "$ANDROID_WORKFLOW" || fail_test 'canonical runtime validator is missing the volume control artifact'
+grep -Fq -- '--full-suite-dir /workspace/artifacts/full-suite' "$ANDROID_WORKFLOW" || fail_test 'aggregate native gate is missing the full-suite artifact'
 grep -Fq 'termux_command_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'command native emulation gate missing'
 for contract in \
   '.failureCode == null' \
@@ -484,6 +550,7 @@ grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" ||
 grep -Fq 'classify_observation_requirement.sh' "$ANDROID_WORKFLOW" || fail_test 'observation requirement classifier missing'
 grep -Fq "if jq -e '.inheritanceCandidate == true'" "$ANDROID_WORKFLOW" || fail_test 'inheritance verifier is not conditionally gated'
 grep -Fq '.evidenceMode == "physical_observation_required"' "$ANDROID_WORKFLOW" || fail_test 'runtime-change observation evidence path missing'
+grep -Fq '.reasonCode == "full_suite_direct_physical_observation_required"' "$ANDROID_WORKFLOW" || fail_test 'full-suite direct-observation requirement missing'
 grep -Fq "chmod 755 \"\$root/termux-mcp-server\"" "$ANDROID_WORKFLOW" || fail_test 'container-readable artifact binary mode missing'
 grep -Fq "chmod 644 \"\$root/SHA256SUMS\" \"\$root/artifact-manifest.json\"" "$ANDROID_WORKFLOW" || fail_test 'container-readable artifact metadata mode missing'
 grep -Fq 'export TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64' "$ANDROID_WORKFLOW" || fail_test 'Termux entrypoint-safe environment attestation missing'
@@ -492,6 +559,78 @@ grep -Fq 'battery_feature_not_compiled' "$GATE" || fail_test 'standard runtime f
 grep -Fq 'volume_feature_not_compiled' "$GATE" || fail_test 'standard runtime feature-disabled volume contract missing'
 grep -Fq 'volume_control_posture_verified' "$GATE" || fail_test 'canonical runtime validator does not verify volume control posture'
 grep -Fq 'androidVolumeControlArtifact' "$GATE" || fail_test 'canonical evidence omits the volume control artifact'
+grep -Fq 'fullSuiteArtifact' "$GATE" || fail_test 'canonical evidence omits the full-suite artifact'
+grep -Fq 'full_suite_manifest_sha' "$GATE" || fail_test 'canonical evidence omits the full-suite manifest digest'
+grep -Fq 'aggregate_default_tool_allowlist_invalid' "$GATE" || fail_test 'aggregate default-disabled 17-tool contract missing'
+grep -Fq 'aggregate_enabled_tool_allowlist_invalid' "$GATE" || fail_test 'aggregate fully-enabled 21-tool contract missing'
+grep -Fq 'aggregate_volume_preview_mutated' "$GATE" || fail_test 'aggregate volume preview non-mutation contract missing'
+grep -Fq 'capability_grant_binding_mismatch' "$GATE" || fail_test 'aggregate volume grant isolation contract missing'
+grep -Fq 'aggregate_command_override_status_invalid' "$GATE" || fail_test 'aggregate command denial contract missing'
+grep -Fq 'aggregate_command_executable_replacement_ran' "$GATE" || fail_test 'aggregate command inode replacement contract missing'
+grep -Fq 'aggregate_shutdown_not_bounded' "$GATE" || fail_test 'aggregate bounded cleanup contract missing'
+grep -Fq 'terminate_server_pid_bounded()' "$GATE" || fail_test 'shared bounded server cleanup helper missing'
+grep -Fq 'kill -TERM "$pid"' "$GATE" || fail_test 'bounded server cleanup omits TERM'
+grep -Fq 'kill -KILL "$pid"' "$GATE" || fail_test 'bounded server cleanup omits KILL fallback'
+grep -Fq 'for ((attempt = 0; attempt < 50; attempt++))' "$GATE" || fail_test 'bounded server cleanup omits TERM deadline'
+grep -Fq 'for ((attempt = 0; attempt < 20; attempt++))' "$GATE" || fail_test 'bounded server cleanup omits KILL deadline'
+[[ "$(grep -Fc 'if ! kill -0 "$pid"' "$GATE")" == 2 ]] || fail_test 'bounded server cleanup can wait before proving child exit'
+grep -Fq 'terminate_server_pid_bounded "$SERVER_PID" || status=1' "$GATE" || fail_test 'failure trap does not use bounded server cleanup'
+grep -Fq "trap '' INT TERM HUP" "$GATE" || fail_test 'failure cleanup can be interrupted before fixture removal'
+if grep -Fq 'wait "$SERVER_PID"' "$GATE"; then
+  fail_test 'native gate retains an unbounded direct server wait'
+fi
+cleanup_stop_line="$(grep -nF 'terminate_server_pid_bounded "$SERVER_PID" || status=1' "$GATE" | head -n1 | cut -d: -f1)"
+battery_fixture_cleanup_line="$(grep -nF 'rm -f -- "$BATTERY_PROGRAM"' "$GATE" | head -n1 | cut -d: -f1)"
+volume_fixture_cleanup_line="$(grep -nF 'rm -f -- "$VOLUME_PROGRAM"' "$GATE" | head -n1 | cut -d: -f1)"
+[[ "$cleanup_stop_line" =~ ^[0-9]+$ && "$battery_fixture_cleanup_line" =~ ^[0-9]+$ && "$volume_fixture_cleanup_line" =~ ^[0-9]+$ ]] \
+  || fail_test 'bounded process and provider fixture cleanup sequence missing'
+((cleanup_stop_line < battery_fixture_cleanup_line && battery_fixture_cleanup_line < volume_fixture_cleanup_line)) \
+  || fail_test 'provider fixtures are not removed after bounded process cleanup'
+
+grep -Fq 'validate_single_optional_gate_posture()' "$GATE" || fail_test 'aggregate single-gate validator missing'
+grep -Fq 'aggregate_execution_copy_digest_mismatch' "$GATE" || fail_test 'each aggregate launch is not rebound to the exact full-suite digest'
+grep -Fq "command curl --disable --proto '=http' --noproxy '*' --connect-timeout 2 --max-time 10" "$GATE" \
+  || fail_test 'aggregate selected-tool calls are not bounded by the hardened HTTP client'
+grep -Fq 'env "${cleared_runtime_environment[@]}" "${posture_environment[@]}"' "$GATE" \
+  || fail_test 'aggregate postures do not clear all optional runtime gates before selecting one'
+grep -Fq 'for aggregate_posture in battery-only volume-status-only volume-control-only command-only; do' "$GATE" \
+  || fail_test 'aggregate four-posture independence matrix missing'
+for posture in battery-only volume-status-only volume-control-only command-only; do
+  grep -Fq "$posture)" "$GATE" || fail_test "aggregate posture is not configured: $posture"
+  grep -Fq "full-suite-$posture-success" "$GATE" || fail_test "aggregate posture omits bounded selected-tool success: $posture"
+done
+[[ "$(grep -Fc '$base_tools + [$selected_tool]' "$GATE")" == 2 ]] \
+  || fail_test 'aggregate discovery and runtime status do not both assert exact 18-tool order'
+grep -Fq '($status.availableTools | length) == 18' "$GATE" || fail_test 'aggregate single-gate runtime tool count is not exact'
+grep -Fq '$status.androidBatteryStatusEnabled == $battery_enabled' "$GATE" || fail_test 'aggregate battery gate independence status missing'
+grep -Fq '$status.androidVolumeStatusEnabled == $volume_status_enabled' "$GATE" || fail_test 'aggregate volume-status gate independence status missing'
+grep -Fq '$status.androidVolumeControlEnabled == $volume_control_enabled' "$GATE" || fail_test 'aggregate volume-control gate independence status missing'
+grep -Fq '$status.commandExecution == $command_enabled' "$GATE" || fail_test 'aggregate command gate independence status missing'
+grep -Fq 'AGGREGATE_CLEANUPS" == 6' "$GATE" || fail_test 'aggregate six-server cleanup count missing'
+grep -Fq 'independentRuntimeGates: true' "$GATE" || fail_test 'aggregate report omits independent runtime-gate evidence'
+grep -Fq '.aggregateValidation.independentRuntimeGates == true' "$GATE" || fail_test 'generated aggregate report does not verify runtime-gate evidence'
+
+for mutation_contract in \
+  'name:"create_directory",arguments:{path:$path,dry_run:false}' \
+  'name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}' \
+  'name:"trash_file",arguments:{path:$path,dry_run:false}' \
+  'name:"write_file",arguments:{path:$path,content:"inert",dry_run:false}' \
+  'create_directory_mutation_disabled' \
+  'copy_file_mutation_disabled' \
+  'trash_file_mutation_disabled' \
+  'write_file_mutation_disabled' \
+  'aggregate_create_directory_disabled_contract_invalid' \
+  'aggregate_copy_file_disabled_contract_invalid' \
+  'aggregate_trash_file_disabled_contract_invalid' \
+  'aggregate_write_disabled_contract_invalid' \
+  'aggregate_copy_file_disabled_source_state_mutated' \
+  'aggregate_copy_file_disabled_destination_mutated' \
+  'aggregate_trash_file_disabled_target_state_mutated' \
+  'aggregate_trash_file_disabled_quarantine_mutated' \
+  'aggregate_write_disabled_destination_mutated'; do
+  grep -Fq "$mutation_contract" "$GATE" || fail_test "aggregate filesystem dispatch contract missing: $mutation_contract"
+done
+grep -Fq '.candidate.fullSuiteArtifactSha256' "$CLASSIFIER" || fail_test 'observation classification omits full-suite digest binding'
 grep -Fq '.error.code == -32600' "$VOLUME_CONTROL_GATE" || fail_test 'volume control grant context does not assert the MCP invalid-request envelope'
 grep -Fq 'A request-scoped capability grant is accepted only for an exact grant-authorized tool call.' "$VOLUME_CONTROL_GATE" || fail_test 'volume control grant context does not assert the stable transport detail'
 

@@ -40,7 +40,8 @@ Required evidence:
    - `android-battery-status`;
    - `android-volume-status`;
    - `android-volume-control`;
-   - `command-execution`.
+   - `command-execution`;
+   - `full-suite`.
 4. Each Android job uploads the expected posture-specific binary artifact.
 5. Artifact checksums are generated from the downloaded release candidates, not from unrelated local builds.
 6. The release candidate version reported by the binary matches `Cargo.toml`.
@@ -59,6 +60,7 @@ A release must publish clearly named artifacts for each supported Android postur
 - `termux-mcp-server-vMAJOR.MINOR.PATCH-aarch64-linux-android-android-volume-status`
 - `termux-mcp-server-vMAJOR.MINOR.PATCH-aarch64-linux-android-android-volume-control`
 - `termux-mcp-server-vMAJOR.MINOR.PATCH-aarch64-linux-android-command-execution`
+- `termux-mcp-server-vMAJOR.MINOR.PATCH-aarch64-linux-android-full-suite`
 
 Each binary must be accompanied by a SHA-256 checksum file. A combined `SHA256SUMS` file is recommended and must use exact artifact filenames.
 
@@ -91,20 +93,22 @@ Every product and Android artifact build must use the committed `Cargo.lock`; a 
 3. Confirm README, security, operations, deployment, validation, and rollback documentation describe the actual candidate behavior.
 4. Merge only through the normal protected-main process with expected-head SHA validation.
 5. Wait for post-merge CI, security, and Android validation on the resulting `main` SHA.
-6. Download all six posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
-7. Run the default, `mcp-runtime`, and `android-volume-control` bundles through validator v10 in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md), including all four independent filesystem grants, reversible-trash identity/content binding and private recovery retention, exact write limits, create/replace, actual-ID preflight, and disabled optional-posture proofs; run every optional posture through its exact-source native ARM64 official-Termux gate. Retain all schema-versioned sanitized evidence and complete either the direct physical route or the strictly bounded inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md).
+6. Download all seven posture-specific Android bundles and verify artifact names, manifests, checksum sidecars, executable identity, size, and SHA-256 checksums.
+7. Run the default, `mcp-runtime`, `android-volume-control`, and `full-suite` bundles through validator v11 in [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). Retain direct schema-v2 evidence, aggregate schema/gate-v3 evidence that binds the exact workflow full-suite digest/manifest, 17/18/21 truth table, independent runtime gates, and all four disabled filesystem dispatches, plus every posture's exact-source native ARM64 official-Termux evidence. For v0.6.0, complete a fresh device-harness-v11 physical observation of the same immutable commit and retain its separately recorded on-device native-build digest; do not assert byte equality between different toolchain builds.
 8. Create the annotated or signed `vMAJOR.MINOR.PATCH` tag at the validated `main` SHA.
 9. Publish the GitHub Release from that immutable tag and attach all supported binaries, manifests, and checksum sidecars.
 10. Re-open the release page and independently verify every asset, checksum, link, version, and recorded SHA.
 
 Do not publish a draft as final until every required artifact is attached and verified.
 
-Before publication, one of two evidence routes must pass:
+Before publication, an applicable evidence route must pass:
 
 - **Direct route:** the downloaded-artifact report's `releaseEligible` field is true after non-fixture preflight, runtime, deployment, and an operator-supplied passing physical observation of at least 60 minutes.
 - **Inherited route:** an earlier direct physical report remains applicable only after the exact candidate passes native ARM64 official-Termux emulation and `verify_observation_inheritance.sh` proves unchanged runtime source, dependencies, build inputs except the root version, deployment logic, and exact bridge artifact digests. Its report must set `releaseQualificationEligible: true` without a waived assertion.
 
 Both are review evidence, not automated authorization to tag or publish. An emulator alone never replaces device-specific battery, thermal, OEM process-management, or radio evidence.
+
+The v0.6.0 full-suite change is not eligible for the inherited route: it adds a feature composition, a seventh artifact, a new aggregate runtime truth table, and a new digest identity that the historical v0.5.1 report did not observe. Its exact-main direct schema-v2 report must say `releaseEligible:true` after a fresh physical AArch64 observation.
 
 ## Installation, upgrade, and rollback guarantees
 
@@ -115,7 +119,7 @@ Release notes must distinguish:
 - rollback to the immediately previous validated release;
 - configuration incompatibilities or migrations;
 - service-name or runit-path changes;
-- default, `mcp-runtime`, battery, volume-status, volume-control, and fixed-command feature postures.
+- default, `mcp-runtime`, battery, volume-status, volume-control, fixed-command, and `full-suite` feature postures. Raw Cargo `--all-features` is development coverage, not a supported release asset.
 
 Never claim rollback is automatic, atomic, or complete unless the deployed tooling and tests prove that behavior for the release. A release that changes service supervision, environment parsing, filesystem layout, authentication, transport policy, or safe-root behavior must include an explicit compatibility and recovery note.
 
@@ -163,4 +167,4 @@ The following are hard blockers until reconciled:
 
 The v0.6.0 release-preparation lane reconciles the source package, lockfile, changelog, deployment examples, artifact names, and candidate record without creating a tag or GitHub Release. The historical `v0.1.0-baseline` tag and the validated exact-main v0.5.1 candidate are not retroactively declared production releases. Consequently, v0.6.0 has no authoritative previous public release: clean installation and uninstall are supported, while public rollback becomes available only after a later complete release is installed over v0.6.0.
 
-The pre-metadata v0.5.1 exact-main evidence may qualify v0.6.0 only through the narrow inherited-observation verifier. Before publication, the final merged v0.6.0 `main` SHA must independently complete CI, Security, all six Android postures, downloaded-bundle validation, native ARM64 official-Termux emulation, and exact bridge-digest equivalence. Any runtime, dependency, build, deployment, or bridge-digest change invalidates inheritance and requires a new direct physical observation. See [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md).
+The pre-metadata v0.5.1 exact-main evidence is historical and cannot qualify the full-suite v0.6.0 candidate. Before publication, the final merged v0.6.0 `main` SHA must independently complete CI, Security, all seven Android postures, downloaded-bundle validation, aggregate schema/gate-v3 native ARM64 official-Termux evidence, and a fresh harness-v11 physical observation whose validator-v11/schema-v2 report says `releaseEligible:true`. Until then, no `v0.6.0` tag or GitHub Release is authorized. See [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md).

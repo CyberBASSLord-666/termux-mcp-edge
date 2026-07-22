@@ -2,7 +2,7 @@
 
 ## Supported Runtime Scope
 
-The supported runtime line has six explicit compile-time postures:
+The supported runtime line has seven governed compile-time postures: six least-privilege builds and one explicit aggregate:
 
 - The default build exposes operational health/readiness endpoints only.
 - The optional `mcp-runtime` build exposes the staged `/mcp` transport and its documented allowlisted tool set.
@@ -10,6 +10,9 @@ The supported runtime line has six explicit compile-time postures:
 - The optional `android-volume-status` build includes `mcp-runtime` and can expose one separately runtime-gated read-only volume-status tool.
 - The optional `android-volume-control` build includes `mcp-runtime` and can expose one separately runtime-gated, preview-first, exact-grant-authorized volume-control tool.
 - The optional `command-execution` build includes `mcp-runtime` and can expose one separately runtime-gated fixed-profile diagnostic tool.
+- The `full-suite` build composes all four optional feature families for one governed aggregate artifact. It still discovers exactly the 17 baseline tools when all optional runtime flags are off and exactly 21 only when all four flags are enabled independently.
+
+`full-suite` is compile-time inclusion, not a master permission. Battery, volume-status, volume-control, and fixed-command runtime flags remain independent; filesystem and volume mutations retain their separate default-disabled gates and exact-operation request grants. Raw Cargo `--all-features` is retained for development compatibility and is not a public release posture.
 
 The staged MCP route requires the configured static bearer token before JSON-RPC parsing, tool discovery, or tool invocation. The only exception is explicit unauthenticated localhost-only development mode: startup restricts the declared bind to loopback and request-time connection metadata must prove the actual TCP peer is loopback. Missing metadata and non-loopback peers fail closed; forwarded headers are not peer authority.
 

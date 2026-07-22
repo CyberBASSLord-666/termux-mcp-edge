@@ -14,14 +14,14 @@ on:
       - "scripts/**"
       - "*.md"
       - "docs/**/*.md"
-      - "docs/*release-evidence-schema-v1.json"
+      - "docs/release-evidence-schema-v*.json"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/android-volume-control-emulated-evidence-schema-v*.json"
       - "docs/command-emulated-evidence-schema-v*.json"
-      - "docs/release-observation-requirement-schema-v1.json"
-      - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-observation-requirement-schema-v*.json"
+      - "docs/release-observation-inheritance-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   pull_request:
@@ -37,14 +37,14 @@ on:
       - "scripts/**"
       - "*.md"
       - "docs/**/*.md"
-      - "docs/*release-evidence-schema-v1.json"
+      - "docs/release-evidence-schema-v*.json"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/android-volume-control-emulated-evidence-schema-v*.json"
       - "docs/command-emulated-evidence-schema-v*.json"
-      - "docs/release-observation-requirement-schema-v1.json"
-      - "docs/release-observation-inheritance-schema-v1.json"
+      - "docs/release-observation-requirement-schema-v*.json"
+      - "docs/release-observation-inheritance-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   workflow_dispatch:
@@ -60,7 +60,7 @@ jobs:
   rust:
     name: Rust validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         # actions/checkout@v7.0.0 resolved 2026-07-10
@@ -84,7 +84,14 @@ jobs:
 
       - name: Verify locked dependency graph
         run: |
-          cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
+          metadata="$(cargo metadata --locked --all-features --format-version 1 --no-deps)"
+          full_suite="$(jq -c '
+            .packages[]
+            | select(.name == "termux-mcp-server")
+            | .features["full-suite"]
+            | sort
+          ' <<<"$metadata")"
+          test "$full_suite" = '["android-battery-status","android-volume-control","android-volume-status","command-execution","mcp-runtime"]'
           git diff --exit-code -- Cargo.toml Cargo.lock
 
       - name: Cache cargo registry and build outputs
@@ -105,6 +112,9 @@ jobs:
       - name: Clippy (MCP runtime posture)
         run: cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
 
+      - name: Clippy (full-suite posture)
+        run: cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
+
       - name: Clippy (all features)
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
@@ -114,8 +124,14 @@ jobs:
       - name: Tests (MCP runtime posture)
         run: cargo test --locked --workspace --all-targets --features mcp-runtime
 
+      - name: Tests (full-suite posture)
+        run: cargo test --locked --workspace --all-targets --features full-suite
+
       - name: Tests (all features)
         run: cargo test --locked --workspace --all-targets --all-features
+
+      - name: Release build (full-suite posture)
+        run: cargo build --locked --release --features full-suite
 
       - name: Shell contract tests
         run: |

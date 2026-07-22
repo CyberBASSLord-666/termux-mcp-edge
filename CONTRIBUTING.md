@@ -15,6 +15,8 @@ cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
+cargo test --locked --workspace --all-targets --features full-suite
 bash tests/documentation_contract_test.sh
 ```
 
@@ -27,9 +29,10 @@ cargo build --release --locked --features android-battery-status
 cargo build --release --locked --features android-volume-status
 cargo build --release --locked --features android-volume-control
 cargo build --release --locked --features command-execution
+cargo build --release --locked --features full-suite
 ```
 
-5. For Android release validation, build every affected supported posture. The six governed postures are isolated deliberately; an ad hoc `--all-features` binary is useful for host compatibility testing but is not a substitutable release artifact.
+5. For Android release validation, build every affected supported posture. The seven governed postures are six deliberately isolated least-privilege artifacts plus the named `full-suite` aggregate. A raw `--all-features` binary remains useful for host compatibility testing, but it is not the aggregate release contract and must not substitute for `full-suite`.
 
 ```bash
 ANDROID_NDK_HOME=/path/to/android-ndk \
@@ -49,6 +52,9 @@ ANDROID_NDK_HOME=/path/to/android-ndk \
   ./scripts/cross_compile.sh
 ANDROID_NDK_HOME=/path/to/android-ndk \
   BUILD_FEATURES=command-execution \
+  ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES=full-suite \
   ./scripts/cross_compile.sh
 ```
 

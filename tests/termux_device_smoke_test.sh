@@ -19,7 +19,7 @@ assert_contains() {
 
 [[ -x "$SCRIPT" ]] || fail "device smoke harness must be executable"
 bash -n "$SCRIPT"
-assert_contains 'HARNESS_VERSION="10"' "$SCRIPT"
+assert_contains 'HARNESS_VERSION="11"' "$SCRIPT"
 assert_contains 'valid_capability_grant()' "$SCRIPT"
 assert_contains 'capability_grant_has_signed_byte "$grant" 260 64 01' "$SCRIPT"
 assert_contains 'capability_grant_has_signed_byte "$grant" 130 16 02' "$SCRIPT"
@@ -59,8 +59,11 @@ for marker in \
   'cargo metadata --locked --format-version 1 --no-deps' \
   'cargo build --release --locked --features mcp-runtime' \
   'cargo build --release --locked --features android-volume-control' \
+  'cargo build --release --locked --features full-suite' \
   'volume_control_compile_gate=rejected_incompatible_artifact' \
-  'volume_control_disabled_runtime=verified_without_device_mutation' \
+  'full_suite_disabled_runtime=17_tools_all_optional_gates_off' \
+  'full_suite_enabled_runtime=21_tools_optional_providers_composed_no_ungranted_mutation' \
+  'full_suite_configuration_restored=filesystem_grants_enabled_optional_tools_disabled' \
   'candidate_readiness_failure' \
   'successful_upgrade' \
   'protocol_smoke candidate' \
@@ -74,10 +77,39 @@ done
 
 [[ "$(grep -Fc 'cargo build --release --locked --features mcp-runtime' "$SCRIPT")" -eq 2 ]] \
   || fail 'baseline and exact MCP candidate builds must both use the committed dependency graph'
+[[ "$(grep -Fc 'cargo build --release --locked --features full-suite' "$SCRIPT")" -eq 1 ]] \
+  || fail 'the exact full-suite candidate must have one locked build'
 
 for protocol_marker in \
   '"notifications/initialized"' \
   '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"' \
+  '"runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","android_battery_status","android_volume_status","set_android_volume","run_command_profile"' \
+  'MCP__ANDROID__BATTERY_STATUS_ENABLED=true' \
+  'MCP__ANDROID__VOLUME_STATUS_ENABLED=true' \
+  'MCP__ANDROID__VOLUME_CONTROL_ENABLED=true' \
+  'MCP__COMMAND__ENABLED=true' \
+  'androidBatteryStatusCompiled == true' \
+  'androidBatteryStatusEnabled == true' \
+  'androidVolumeStatusCompiled == true' \
+  'androidVolumeStatusEnabled == true' \
+  'commandExecutionCompiled == true' \
+  'commandExecution == true' \
+  'full_suite_battery_http' \
+  'full_suite_volume_http' \
+  'full_suite_volume_preview_http' \
+  'full_suite_volume_after_preview_http' \
+  'full_suite_volume_preview_restore_http' \
+  'full_suite_volume_missing_grant_http' \
+  'full_suite_volume_after_denial_http' \
+  'full_suite_volume_denial_restore_http' \
+  'full-suite volume status cannot provide a distinct bounded probe level' \
+  'full_suite_volume_distinct_probe_no_mutation=preview_and_missing_grant' \
+  'termux-volume music "$music_level"' \
+  'full_suite_command_http' \
+  'capability_grant_missing' \
+  'full_suite_sha256=' \
+  'mcp_runtime_sha256=' \
+  'termux-api termux-services' \
   'create_directory_dry_run_http' \
   'create_directory_mode' \
   'create_directory_missing_grant_http' \

@@ -1,17 +1,17 @@
 # Production Readiness Checklist
 
-This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes six supported compile-time postures: the optional runtime implements the stable MCP 2025-11-25 Streamable HTTP lifecycle around a deliberately staged tool surface; battery, volume-status, and fixed-command features each add one separately gated read-only tool; and volume control adds one separately authorized preview-first mutation. Release readiness still depends on the exact-candidate filesystem, deployment, configuration, packaging, recovery, and applicable physical-device evidence below.
+This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes seven governed compile-time postures: six least-privilege artifacts and the explicit `full-suite` aggregate. The aggregate compiles every supported optional provider but leaves every runtime flag and request grant independent. Release readiness still depends on the exact-candidate filesystem, deployment, configuration, packaging, recovery, and physical-device evidence below.
 
 ## Supported Compile-Time Postures
 
-| Surface | Default build | `mcp-runtime` build | `android-battery-status` build | `android-volume-status` build | `android-volume-control` build | `command-execution` build |
-| --- | --- | --- | --- | --- | --- | --- |
-| `GET /health` | Enabled, coarse | Enabled, coarse | Enabled, coarse | Enabled, coarse | Enabled, coarse | Enabled, coarse |
-| `GET /ready` | Enabled, coarse | Enabled with bounded-limit metadata | Same | Same | Same | Same |
-| `/mcp` stable transport | Not compiled | Authenticated and resource-bounded; JSON/GET-405 default, bounded SSE opt-in | Same | Same | Same | Same |
-| Optional tool | None | None | `android_battery_status` | `android_volume_status` | `set_android_volume` | `run_command_profile` |
-| Exact-stream volume control | Disabled | Disabled | Disabled | Disabled | Preview-first; live use exact-grant authorized | Disabled |
-| Broader Android/shell/arbitrary-command/service control | Disabled | Disabled | Disabled | Disabled | Disabled | Disabled |
+| Surface | Default | `mcp-runtime` | Battery | Volume status | Volume control | Command | `full-suite` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `GET /health` | Enabled | Enabled | Enabled | Enabled | Enabled | Enabled | Enabled |
+| `/mcp` stable transport | Absent | Protected | Protected | Protected | Protected | Protected | Protected |
+| Optional tools when their flags are on | None | None | Battery | Volume status | Volume control | Fixed diagnostics | All four |
+| Tool count with optional flags off | 0 | 17 | 17 | 17 | 17 | 17 | 17 |
+| Maximum enabled tool count | 0 | 17 | 18 | 18 | 19 | 18 | 21 |
+| Broader Android/shell/arbitrary-command/service control | Disabled | Disabled | Disabled | Disabled | Disabled | Disabled | Disabled |
 
 All postures validate startup authentication configuration. Static-token mode is the default. Unauthenticated development requires an explicit opt-in and a loopback bind.
 
@@ -39,8 +39,8 @@ Source remediation alone is not a release declaration. A candidate is production
 Every implementation pull request must satisfy all applicable items:
 
 1. The diff is focused on one tracked concern and is based on current `main`.
-2. Exact-head CI passes formatting, all-target/all-feature Clippy with warnings denied, the full all-feature test suite, and Termux deployment shell tests.
-3. Exact-head Android validation passes for the default, `mcp-runtime`, battery, volume-status, volume-control, and fixed-command AArch64 postures when Rust source, toolchain, dependencies, cross-compilation, or device artifacts can change.
+2. Exact-head CI passes formatting, named full-suite and raw all-feature Clippy/tests with warnings denied, and Termux deployment shell tests.
+3. Exact-head Android validation passes for all seven AArch64 artifacts: default, `mcp-runtime`, battery, volume-status, volume-control, fixed-command, and `full-suite`.
 4. Exact-head Security passes when Cargo metadata, `Cargo.lock`, or the Security workflow changes.
 5. Dependency alerts are reviewed after dependency changes.
 6. All actionable review threads are resolved and the head SHA has not changed since validation.
@@ -56,7 +56,9 @@ Run the host gates with the pinned toolchain:
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 cargo build --release --locked
@@ -65,6 +67,7 @@ cargo build --release --locked --features android-battery-status
 cargo build --release --locked --features android-volume-status
 cargo build --release --locked --features android-volume-control
 cargo build --release --locked --features command-execution
+cargo build --release --locked --features full-suite
 ```
 
 For Android, require all posture-specific artifacts described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md):
@@ -75,6 +78,7 @@ For Android, require all posture-specific artifacts described in [`ANDROID_ARTIF
 - `termux-mcp-server-aarch64-linux-android-android-volume-status`.
 - `termux-mcp-server-aarch64-linux-android-android-volume-control`.
 - `termux-mcp-server-aarch64-linux-android-command-execution`.
+- `termux-mcp-server-aarch64-linux-android-full-suite`.
 
 For each released artifact:
 
@@ -89,13 +93,13 @@ For each released artifact:
 9. For the control artifact, prove incompatible-build rejection, disabled/enabled truth, closed schema, preview non-consumption, exact grants, fixed setter, fresh bounds, verification, recovery, concurrency, cancellation cleanup, and private counters.
 10. For the command artifact, prove default-build compile rejection, disabled discovery, the exact three-profile closed schema, binary-only enablement, exact-name candidate-to-loaded-image device/inode attestation, `/proc/self/exe` spawning, descriptor-pinned non-root safe cwd after pathname replacement, empty environment, null stdin, immutable 5-second/16 KiB stdout/4 KiB stderr maxima, override rejection, and audit counters while arbitrary commands and unrelated high-impact controls remain disabled. Require strict v2 evidence with exactly 29 MCP requests plus the separate wrong-name construction-failure phase: `McpRouterBuildError::CommandClientUnavailable`, no request serving or service-start log, and no bearer-token or filesystem-path disclosure. Retain the complete candidate/artifact/environment checks.
 11. Exercise upgrade failure recovery and explicit rollback before replacing the prior known-good release.
-12. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions when release governance requires device-specific evidence, either directly for the candidate or through a strictly verified inherited observation when runtime/deployment inputs and exact bridge artifact digests are unchanged.
+12. Validate sustained behavior under the target device's battery, thermal, and child-process restrictions. The v0.6.0 full-suite candidate requires a fresh direct AArch64 observation bound to the exact aggregate digest; its changed runtime/build surface cannot inherit the v0.5.1 report.
 
 Run exact downloaded artifacts through the native ARM64 official-Termux gate in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). For behavior-changing candidates, also run [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) directly on hardware. A metadata-only descendant may inherit an already completed physical observation only when the repository verifier proves every source, dependency, deployment, bridge-digest, and emulation condition without exception.
 
-The release validator and device-smoke harness must execute deterministic authorization contracts for all four filesystem mutation families against the exact artifact. Reversible trash evidence must prove default-disabled discovery and denial, exact grant issuance, target identity/content binding, authorized recovery retention, mismatch denial, preflight preservation, private response/audit evidence, separate quarantine isolation/capacity, and service cleanup through deployment upgrade/rollback/uninstall. Automated core/integration tests independently prove trash replay and concurrent-replay denial. This capability evidence does not by itself require a new fixed-duration idle observation; physical observation remains governed by the existing source/artifact and device-behavior classifier.
+Release validator v11 and device harness v11 must execute deterministic authorization contracts for all four filesystem mutation families against the exact artifact. They must also prove the full-suite 17-disabled/21-enabled truth table while keeping every optional provider flag and request-grant family independent. Reversible trash evidence must prove default-disabled discovery and denial, exact grant issuance, target identity/content binding, authorized recovery retention, mismatch denial, preflight preservation, private response/audit evidence, separate quarantine isolation/capacity, and service cleanup through deployment upgrade/rollback/uninstall.
 
-Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). The exact commit must have either a direct non-fixture `releaseEligible: true` report or a passing inherited-observation report conforming to [`release-observation-inheritance-schema-v1.json`](release-observation-inheritance-schema-v1.json), backed by the direct source report and a passing exact-candidate [`emulated-release-evidence-schema-v1.json`](emulated-release-evidence-schema-v1.json) report.
+Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). The final exact-main commit needs a non-fixture validator-v11 report conforming to [`release-evidence-schema-v2.json`](release-evidence-schema-v2.json) with `releaseEligible:true`, plus passing aggregate [`emulated-release-evidence-schema-v3.json`](emulated-release-evidence-schema-v3.json) evidence. Both must bind the exact full-suite digest and manifest; historical inherited evidence is insufficient for this candidate.
 
 ## Current MCP Runtime Gate
 

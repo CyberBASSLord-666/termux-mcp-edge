@@ -5,8 +5,8 @@ export LC_ALL=C
 umask 077
 set +x
 
-readonly VALIDATOR_VERSION="10"
-readonly EVIDENCE_SCHEMA_VERSION=1
+readonly VALIDATOR_VERSION="11"
+readonly EVIDENCE_SCHEMA_VERSION=2
 readonly MIN_SUSTAINED_MINUTES=60
 readonly MAX_ARTIFACT_BYTES=67108864
 readonly MCP_PROTOCOL_VERSION="2025-11-25"
@@ -126,6 +126,9 @@ MCP_MANIFEST=""
 VOLUME_CONTROL_ARTIFACT=""
 VOLUME_CONTROL_SHA256=""
 VOLUME_CONTROL_MANIFEST=""
+FULL_SUITE_ARTIFACT=""
+FULL_SUITE_SHA256=""
+FULL_SUITE_MANIFEST=""
 BASELINE_ARTIFACT=""
 BASELINE_VERSION=""
 BASELINE_SHA256=""
@@ -172,6 +175,7 @@ PINNED_ARTIFACT_ROOT=""
 DEFAULT_PINNED_ARTIFACT=""
 MCP_PINNED_ARTIFACT=""
 VOLUME_CONTROL_PINNED_ARTIFACT=""
+FULL_SUITE_PINNED_ARTIFACT=""
 BASELINE_PINNED_ARTIFACT=""
 STARTED_AT=""
 RUN_ID=""
@@ -222,7 +226,7 @@ early_cleanup() {
   exit "$status"
 }
 
-for command_name in bash awk curl date dd dirname env file grep install jq ln mktemp mkdir mv readlink realpath rm rmdir sha256sum stat timeout uname wc cmp chmod kill seq sleep tr; do
+for command_name in bash awk curl date dd dirname env file grep install jq ln mktemp mkdir mv readlink realpath rm rmdir sha256sum sort stat timeout uname wc cmp chmod kill seq sleep tr; do
   require_command "$command_name"
 done
 
@@ -264,6 +268,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     VOLUME_CONTROL_ARTIFACT) VOLUME_CONTROL_ARTIFACT="$value" ;;
     VOLUME_CONTROL_SHA256) VOLUME_CONTROL_SHA256="$value" ;;
     VOLUME_CONTROL_MANIFEST) VOLUME_CONTROL_MANIFEST="$value" ;;
+    FULL_SUITE_ARTIFACT) FULL_SUITE_ARTIFACT="$value" ;;
+    FULL_SUITE_SHA256) FULL_SUITE_SHA256="$value" ;;
+    FULL_SUITE_MANIFEST) FULL_SUITE_MANIFEST="$value" ;;
     BASELINE_ARTIFACT) BASELINE_ARTIFACT="$value" ;;
     BASELINE_VERSION) BASELINE_VERSION="$value" ;;
     BASELINE_SHA256) BASELINE_SHA256="$value" ;;
@@ -285,8 +292,18 @@ unset line key value
 
 [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || raw_fail "expected_commit_invalid"
 [[ "$EXPECTED_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || raw_fail "expected_version_invalid"
-[[ "$DEFAULT_SHA256" =~ ^[0-9a-f]{64}$ && "$MCP_SHA256" =~ ^[0-9a-f]{64}$ && "$VOLUME_CONTROL_SHA256" =~ ^[0-9a-f]{64}$ ]] || raw_fail "artifact_digest_metadata_invalid"
-[[ "$DEFAULT_SHA256" != "$MCP_SHA256" && "$DEFAULT_SHA256" != "$VOLUME_CONTROL_SHA256" && "$MCP_SHA256" != "$VOLUME_CONTROL_SHA256" ]] || raw_fail "artifact_posture_digests_not_distinct"
+[[ "$DEFAULT_SHA256" =~ ^[0-9a-f]{64}$ \
+  && "$MCP_SHA256" =~ ^[0-9a-f]{64}$ \
+  && "$VOLUME_CONTROL_SHA256" =~ ^[0-9a-f]{64}$ \
+  && "$FULL_SUITE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || raw_fail "artifact_digest_metadata_invalid"
+declare -A CANDIDATE_DIGESTS=()
+for candidate_digest in "$DEFAULT_SHA256" "$MCP_SHA256" "$VOLUME_CONTROL_SHA256" "$FULL_SUITE_SHA256"; do
+  [[ -z "${CANDIDATE_DIGESTS[$candidate_digest]+present}" ]] \
+    || raw_fail "artifact_posture_digests_not_distinct"
+  CANDIDATE_DIGESTS["$candidate_digest"]=1
+done
+unset candidate_digest CANDIDATE_DIGESTS
 [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ && "$SECURITY_RUN_ID" =~ ^[1-9][0-9]*$ && "$ANDROID_RUN_ID" =~ ^[1-9][0-9]*$ ]] || raw_fail "workflow_metadata_invalid"
 [[ "$BIND_HOST" == 127.0.0.1 ]] || raw_fail "bind_host_invalid"
 [[ "$PORT" =~ ^[0-9]+$ ]] || raw_fail "port_invalid"
@@ -346,6 +363,8 @@ jq -n \
   --arg default_sha "$DEFAULT_SHA256" \
   --arg mcp_sha "$MCP_SHA256" \
   --arg volume_control_sha "$VOLUME_CONTROL_SHA256" \
+  --arg full_suite_sha "$FULL_SUITE_SHA256" \
+  --arg production_action "$PRODUCTION_ACTION" \
   --arg sustained_status "$SUSTAINED_OBSERVATION_STATUS" \
   --argjson sustained_minutes "$SUSTAINED_OBSERVATION_MINUTES" \
   --arg sustained_reason "$SUSTAINED_OBSERVATION_REASON_CODE" \
@@ -383,7 +402,12 @@ jq -n \
       default: {sha256: $default_sha, bytes: null, version: null, elf: null},
       mcpRuntime: {sha256: $mcp_sha, bytes: null, version: null, elf: null},
       androidVolumeControl: {sha256: $volume_control_sha, bytes: null, version: null, elf: null},
+      fullSuite: {sha256: $full_suite_sha, bytes: null, version: null, elf: null},
       baseline: null
+    },
+    deploymentCandidate: {
+      posture: "full-suite",
+      productionAction: (if $production_action == "" then null else $production_action end)
     },
     phases: {
       preflight: "not_run",
@@ -567,7 +591,7 @@ trap 'FAILURE_CODE=interrupted; exit 130' INT TERM HUP
 
 validate_artifact() {
   local posture="$1" json_posture="$2" artifact="$3" expected_sha="$4" expected_version="$5"
-  local bytes actual_sha identity reported_version pinned_artifact pinned_bytes pinned_sha
+  local bytes actual_sha identity reported_version pinned_directory pinned_artifact pinned_bytes pinned_sha
   [[ -f "$artifact" && ! -L "$artifact" && -x "$artifact" ]] || fail "${posture}_artifact_invalid"
   bytes="$(stat -c '%s' "$artifact" 2>/dev/null)" || fail "${posture}_artifact_stat_failed"
   [[ "$bytes" =~ ^[0-9]+$ ]] || fail "${posture}_artifact_stat_failed"
@@ -578,8 +602,10 @@ validate_artifact() {
     PINNED_ARTIFACT_ROOT="$TEMP_ROOT/verified-artifacts"
     mkdir -m 700 -- "$PINNED_ARTIFACT_ROOT" 2>/dev/null || fail artifact_pinning_failed
   fi
-  pinned_artifact="$PINNED_ARTIFACT_ROOT/$posture"
-  [[ ! -e "$pinned_artifact" && ! -L "$pinned_artifact" ]] || fail artifact_pinning_failed
+  pinned_directory="$PINNED_ARTIFACT_ROOT/$posture"
+  [[ ! -e "$pinned_directory" && ! -L "$pinned_directory" ]] || fail artifact_pinning_failed
+  mkdir -m 700 -- "$pinned_directory" 2>/dev/null || fail artifact_pinning_failed
+  pinned_artifact="$pinned_directory/termux-mcp-server"
   install -m 700 "$artifact" "$pinned_artifact" 2>/dev/null || fail artifact_pinning_failed
   pinned_bytes="$(stat -c '%s' "$pinned_artifact" 2>/dev/null)" || fail artifact_pinning_failed
   [[ "$pinned_bytes" == "$bytes" ]] || fail artifact_changed_during_pinning
@@ -591,6 +617,7 @@ validate_artifact() {
     default) validate_artifact_manifest "$posture" "$DEFAULT_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
     mcp_runtime) validate_artifact_manifest "$posture" "$MCP_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
     android_volume_control) validate_artifact_manifest "$posture" "$VOLUME_CONTROL_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
+    full_suite) validate_artifact_manifest "$posture" "$FULL_SUITE_MANIFEST" "$actual_sha" "$bytes" "$expected_version" ;;
   esac
   reported_version="$(timeout -k 2 5 "$pinned_artifact" --version 2>/dev/null | awk 'NR==1 {print $NF}')" || fail "${posture}_artifact_version_failed"
   [[ "$reported_version" == "$expected_version" ]] || fail "${posture}_artifact_version_mismatch"
@@ -598,6 +625,7 @@ validate_artifact() {
     default) DEFAULT_PINNED_ARTIFACT="$pinned_artifact" ;;
     mcp_runtime) MCP_PINNED_ARTIFACT="$pinned_artifact" ;;
     android_volume_control) VOLUME_CONTROL_PINNED_ARTIFACT="$pinned_artifact" ;;
+    full_suite) FULL_SUITE_PINNED_ARTIFACT="$pinned_artifact" ;;
     baseline) BASELINE_PINNED_ARTIFACT="$pinned_artifact" ;;
   esac
   record_result preflight "${posture}_artifact" pass artifact_verified
@@ -630,6 +658,10 @@ validate_artifact_manifest() {
       manifest_posture=android-volume-control
       artifact_name=termux-mcp-server-aarch64-linux-android-android-volume-control
       ;;
+    full_suite)
+      manifest_posture=full-suite
+      artifact_name=termux-mcp-server-aarch64-linux-android-full-suite
+      ;;
     *) fail artifact_manifest_posture_invalid ;;
   esac
   jq -e \
@@ -648,7 +680,13 @@ validate_artifact_manifest() {
       and .workflowRunId == $run_id
       and .artifactName == $artifact_name
       and .posture == $posture
-      and .features == (if $posture == "mcp-runtime" then ["mcp-runtime"] elif $posture == "android-volume-control" then ["android-volume-control"] else [] end)
+      and .features == (
+        if $posture == "mcp-runtime" then ["mcp-runtime"]
+        elif $posture == "android-volume-control" then ["android-volume-control"]
+        elif $posture == "full-suite" then ["full-suite"]
+        else []
+        end
+      )
       and .target == "aarch64-linux-android"
       and .fileName == "termux-mcp-server"
       and .version == $version
@@ -666,15 +704,29 @@ run_preflight() {
   validate_artifact default default "$DEFAULT_ARTIFACT" "$DEFAULT_SHA256" "$EXPECTED_VERSION"
   validate_artifact mcp_runtime mcpRuntime "$MCP_ARTIFACT" "$MCP_SHA256" "$EXPECTED_VERSION"
   validate_artifact android_volume_control androidVolumeControl "$VOLUME_CONTROL_ARTIFACT" "$VOLUME_CONTROL_SHA256" "$EXPECTED_VERSION"
-  local default_path mcp_path volume_control_path default_manifest_path mcp_manifest_path volume_control_manifest_path
+  validate_artifact full_suite fullSuite "$FULL_SUITE_ARTIFACT" "$FULL_SUITE_SHA256" "$EXPECTED_VERSION"
+  local default_path mcp_path volume_control_path full_suite_path
+  local default_manifest_path mcp_manifest_path volume_control_manifest_path full_suite_manifest_path
+  local -A seen_candidate_paths=() seen_manifest_paths=()
   default_path="$(realpath -e "$DEFAULT_ARTIFACT" 2>/dev/null)"
   mcp_path="$(realpath -e "$MCP_ARTIFACT" 2>/dev/null)"
   volume_control_path="$(realpath -e "$VOLUME_CONTROL_ARTIFACT" 2>/dev/null)"
-  [[ "$default_path" != "$mcp_path" && "$default_path" != "$volume_control_path" && "$mcp_path" != "$volume_control_path" ]] || fail artifact_postures_not_distinct
+  full_suite_path="$(realpath -e "$FULL_SUITE_ARTIFACT" 2>/dev/null)"
+  for candidate_path in "$default_path" "$mcp_path" "$volume_control_path" "$full_suite_path"; do
+    [[ -n "$candidate_path" && -z "${seen_candidate_paths[$candidate_path]+present}" ]] \
+      || fail artifact_postures_not_distinct
+    seen_candidate_paths["$candidate_path"]=1
+  done
   default_manifest_path="$(realpath -e "$DEFAULT_MANIFEST" 2>/dev/null)"
   mcp_manifest_path="$(realpath -e "$MCP_MANIFEST" 2>/dev/null)"
   volume_control_manifest_path="$(realpath -e "$VOLUME_CONTROL_MANIFEST" 2>/dev/null)"
-  [[ "$default_manifest_path" != "$mcp_manifest_path" && "$default_manifest_path" != "$volume_control_manifest_path" && "$mcp_manifest_path" != "$volume_control_manifest_path" ]] || fail artifact_manifests_not_distinct
+  full_suite_manifest_path="$(realpath -e "$FULL_SUITE_MANIFEST" 2>/dev/null)"
+  for candidate_manifest_path in "$default_manifest_path" "$mcp_manifest_path" "$volume_control_manifest_path" "$full_suite_manifest_path"; do
+    [[ -n "$candidate_manifest_path" && -z "${seen_manifest_paths[$candidate_manifest_path]+present}" ]] \
+      || fail artifact_manifests_not_distinct
+    seen_manifest_paths["$candidate_manifest_path"]=1
+  done
+  unset candidate_path candidate_manifest_path
   if [[ "$PHASE" == deployment || "$PHASE" == all ]] && [[ -z "$PRODUCTION_ACTION" ]]; then
     [[ "$BASELINE_SHA256" =~ ^[0-9a-f]{64}$ && "$BASELINE_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail baseline_metadata_invalid
     [[ "$BASELINE_VERSION" != "$EXPECTED_VERSION" ]] || fail baseline_version_not_distinct
@@ -958,6 +1010,34 @@ start_server() {
       "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
       "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
     )
+  elif [[ "$posture" == full_suite_battery_only ]]; then
+    environment+=("MCP__ANDROID__BATTERY_STATUS_ENABLED=true")
+  elif [[ "$posture" == full_suite_volume_status_only ]]; then
+    environment+=("MCP__ANDROID__VOLUME_STATUS_ENABLED=true")
+  elif [[ "$posture" == full_suite_volume_control_only ]]; then
+    environment+=(
+      "MCP__ANDROID__VOLUME_CONTROL_ENABLED=true"
+      "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
+      "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
+    )
+  elif [[ "$posture" == full_suite_command_only ]]; then
+    environment+=("MCP__COMMAND__ENABLED=true")
+  elif [[ "$posture" == full_suite_enabled ]]; then
+    environment+=(
+      "MCP__ANDROID__BATTERY_STATUS_ENABLED=true"
+      "MCP__ANDROID__VOLUME_STATUS_ENABLED=true"
+      "MCP__ANDROID__VOLUME_CONTROL_ENABLED=true"
+      "MCP__COMMAND__ENABLED=true"
+      "MCP__CAPABILITY__KEY_ID=$CAPABILITY_KEY_ID"
+      "MCP__CAPABILITY__HMAC_KEY_HEX=$CAPABILITY_KEY_HEX"
+    )
+  fi
+  if [[ "$TEST_MODE" == 1 && -n "${TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE:-}" ]]; then
+    environment+=("TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE=$TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE")
+  fi
+  if [[ "$TEST_MODE" == 1 && "$posture" == full_suite_enabled \
+    && -n "${TERMUX_MCP_RELEASE_FIXTURE_VOLUME_FAULT:-}" ]]; then
+    environment+=("TERMUX_MCP_RELEASE_FIXTURE_VOLUME_FAULT=$TERMUX_MCP_RELEASE_FIXTURE_VOLUME_FAULT")
   fi
   env -i \
     "HOME=$HOME" \
@@ -2505,6 +2585,577 @@ run_volume_control_runtime_checks() {
   stop_server || fail volume_control_runtime_stop_failed
 }
 
+snapshot_private_directory() {
+  local directory="$1" staging="$2" entry base mode size links digest
+  : >"$staging" 2>/dev/null || return 1
+  chmod 600 "$staging" 2>/dev/null || return 1
+  if [[ ! -e "$directory" && ! -L "$directory" ]]; then
+    printf '%s\n' absent >"$staging" 2>/dev/null || return 1
+  else
+    [[ -d "$directory" && ! -L "$directory" ]] || return 1
+    stat -c 'directory:%d:%i:%a:%s:%Y:%Z' "$directory" >>"$staging" 2>/dev/null || return 1
+    while IFS= read -r -d '' entry; do
+      [[ -f "$entry" && ! -L "$entry" ]] || return 1
+      base="${entry##*/}"
+      [[ "$base" != *$'\n'* && "$base" != *$'\r'* ]] || return 1
+      mode="$(stat -c '%a' "$entry" 2>/dev/null)" || return 1
+      size="$(stat -c '%s' "$entry" 2>/dev/null)" || return 1
+      links="$(stat -c '%h' "$entry" 2>/dev/null)" || return 1
+      digest="$(sha256sum -- "$entry" 2>/dev/null | awk '{print $1}')" || return 1
+      [[ "$mode" =~ ^[0-7]{3,4}$ && "$size" =~ ^[0-9]+$ && "$links" =~ ^[1-9][0-9]*$ \
+        && "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+      printf 'entry:%s:%s:%s:%s:%s\n' "$base" "$mode" "$size" "$links" "$digest" \
+        >>"$staging" 2>/dev/null || return 1
+    done < <(find "$directory" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | sort -z)
+  fi
+  sha256sum -- "$staging" 2>/dev/null | awk '{print $1}'
+}
+
+restore_full_suite_music_level() {
+  local body="$1" original_level="$2" failure_prefix="$3"
+  local restore_program status observed_level payload
+  restore_program="${PREFIX:-}/bin/termux-volume"
+  [[ "$restore_program" == /* && -f "$restore_program" && ! -L "$restore_program" \
+    && -x "$restore_program" ]] || fail "${failure_prefix}_restore_program_invalid"
+  timeout -k 2 10 "$restore_program" music "$original_level" >/dev/null 2>&1 \
+    || fail "${failure_prefix}_restore_failed"
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume-restore-verify","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 200 ]] || fail "${failure_prefix}_restore_verification_failed"
+  observed_level="$(jq -r '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  [[ "$observed_level" =~ ^[0-9]+$ && "$observed_level" == "$original_level" ]] \
+    || fail "${failure_prefix}_restore_verification_failed"
+}
+
+run_full_suite_single_gate_check() {
+  local posture="$1" enabled_tool="$2" evidence_code="$3"
+  local body="$TEMP_ROOT/${posture}-response.json"
+  local headers="$TEMP_ROOT/${posture}-headers.txt"
+  local status payload
+
+  start_server "$FULL_SUITE_PINNED_ARTIFACT" "$posture"
+  curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null \
+    || fail "${posture}_readiness_failed"
+  jq -e --arg version "$EXPECTED_VERSION" '
+    .status == "ready"
+    and .version == $version
+    and .mcp_runtime_enabled == true
+    and .safe_root_count == 1
+    and .auth_posture == "static_token"
+  ' "$body" >/dev/null 2>&1 || fail "${posture}_readiness_invalid"
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-single-gate-initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-validator","version":"1.0.0"}}}'
+  stage_request "$payload"
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp")"
+  [[ "$status" == 200 ]] || fail "${posture}_initialize_failed"
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || fail "${posture}_session_header_invalid"
+
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 202 && ! -s "$body" ]] || fail "${posture}_initialized_notification_invalid"
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-single-gate-tools","method":"tools/list"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 200 ]] || fail "${posture}_tool_discovery_failed"
+  jq -e --arg enabled "$enabled_tool" '
+    [.result.tools[].name] == ([
+      "runtime_status","platform_info","android_status","project_service_status",
+      "create_directory","copy_file","trash_file","find_paths","hash_file",
+      "list_directory","path_metadata","read_binary_file","read_binary_range",
+      "read_file","read_text_range","search_text","write_file"
+    ] + [$enabled])
+  ' "$body" >/dev/null 2>&1 || fail "${posture}_discovery_invalid"
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-single-gate-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 200 ]] || fail "${posture}_runtime_status_failed"
+  jq -e --arg enabled "$enabled_tool" '
+    .result.structuredContent as $status
+    | $status.availableTools == ([
+        "runtime_status","platform_info","android_status","project_service_status",
+        "create_directory","copy_file","trash_file","find_paths","hash_file",
+        "list_directory","path_metadata","read_binary_file","read_binary_range",
+        "read_file","read_text_range","search_text","write_file"
+      ] + [$enabled])
+      and $status.androidBatteryStatusCompiled == true
+      and $status.androidVolumeStatusCompiled == true
+      and $status.androidVolumeControlCompiled == true
+      and $status.commandExecutionCompiled == true
+      and $status.androidBatteryStatusEnabled == ($enabled == "android_battery_status")
+      and $status.androidVolumeStatusEnabled == ($enabled == "android_volume_status")
+      and $status.androidVolumeControlEnabled == ($enabled == "set_android_volume")
+      and $status.androidVolumeGrantRequired == ($enabled == "set_android_volume")
+      and $status.commandExecution == ($enabled == "run_command_profile")
+      and $status.arbitraryCommandExecution == false
+      and $status.androidPlatformTools == ($enabled != "run_command_profile")
+      and $status.highImpactTools == ($enabled == "set_android_volume")
+      and $status.createDirectoryMutationEnabled == false
+      and $status.copyFileMutationEnabled == false
+      and $status.trashFileMutationEnabled == false
+      and $status.fileWriteMutationEnabled == false
+      and $status.createDirectoryGrantRequired == false
+      and $status.copyFileGrantRequired == false
+      and $status.trashFileGrantRequired == false
+      and $status.fileWriteGrantRequired == false
+  ' "$body" >/dev/null 2>&1 || fail "${posture}_runtime_status_invalid"
+
+  case "$enabled_tool" in
+    android_battery_status)
+      payload='{"jsonrpc":"2.0","id":"full-suite-battery-only-call","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}'
+      status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+      [[ "$status" == 200 ]] || fail "${posture}_call_failed"
+      jq -e '
+        .result.isError == false
+        and (.result.structuredContent | type) == "object"
+        and (.result.structuredContent | keys | length) >= 1
+        and ((.result.structuredContent | keys) - [
+          "charge_counter_microamp_hours","current_average_microamps","current_microamps",
+          "cycle_count","energy_nanowatt_hours","health","level","percentage","plugged",
+          "present","scale","status","temperature_celsius","voltage_millivolts"
+        ] | length) == 0
+      ' "$body" >/dev/null 2>&1 || fail "${posture}_call_contract_invalid"
+      ;;
+    android_volume_status)
+      payload='{"jsonrpc":"2.0","id":"full-suite-volume-status-only-call","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+      status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+      [[ "$status" == 200 ]] || fail "${posture}_call_failed"
+      jq -e '
+        .result.isError == false
+        and [.result.structuredContent.streams[].stream] == ["alarm","call","music","notification","ring","system"]
+        and all(.result.structuredContent.streams[]; .volume >= 0 and .volume <= .maxVolume)
+      ' "$body" >/dev/null 2>&1 || fail "${posture}_call_contract_invalid"
+      ;;
+    set_android_volume)
+      payload='{"jsonrpc":"2.0","id":"full-suite-volume-control-only-call","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":0,"dry_run":true}}}'
+      status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+      [[ "$status" == 200 ]] || fail "${posture}_call_failed"
+      jq -e '
+        .result.isError == false
+        and .result.structuredContent.stream == "music"
+        and .result.structuredContent.requestedLevel == 0
+        and .result.structuredContent.dryRun == true
+        and .result.structuredContent.changed == false
+        and .result.structuredContent.verified == false
+        and .result.structuredContent.outcome == "preview"
+      ' "$body" >/dev/null 2>&1 || fail "${posture}_call_contract_invalid"
+      ;;
+    run_command_profile)
+      payload='{"jsonrpc":"2.0","id":"full-suite-command-only-call","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}'
+      status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+      [[ "$status" == 200 ]] || fail "${posture}_call_failed"
+      jq -e --arg version "$EXPECTED_VERSION" '
+        .result.isError == false
+        and .result.structuredContent.profile == "server_version"
+        and .result.structuredContent.exitCode == 0
+        and .result.structuredContent.stdout == ("termux-mcp-server " + $version + "\n")
+        and .result.structuredContent.stderr == ""
+      ' "$body" >/dev/null 2>&1 || fail "${posture}_call_contract_invalid"
+      ;;
+    *) fail full_suite_single_gate_internal_error ;;
+  esac
+
+  stage_session_headers "$MCP_SESSION_ID"
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "@$SESSION_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    "http://$BIND_HOST:$PORT/mcp")"
+  [[ "$status" == 204 && ! -s "$body" ]] || fail "${posture}_session_delete_invalid"
+  MCP_SESSION_ID=""
+  stop_server || fail "${posture}_runtime_stop_failed"
+  record_result runtime "$posture" pass "$evidence_code"
+}
+
+run_full_suite_runtime_checks() {
+  local body="$TEMP_ROOT/full-suite-response.json"
+  local headers="$TEMP_ROOT/full-suite-headers.txt"
+  local status payload music_level music_max music_target music_after
+  local fs_source fs_create_target fs_copy_target fs_write_target trash_quarantine
+  local fs_source_before fs_source_after fs_source_sha_before fs_source_sha_after
+  local quarantine_before_file quarantine_after_file quarantine_before quarantine_after
+
+  start_server "$FULL_SUITE_PINNED_ARTIFACT" full_suite_disabled
+  curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null \
+    || fail full_suite_default_readiness_failed
+  jq -e --arg version "$EXPECTED_VERSION" '
+    .status == "ready"
+    and .version == $version
+    and .mcp_runtime_enabled == true
+    and .safe_root_count == 1
+    and .auth_posture == "static_token"
+    and .mcp_request_limits.max_concurrent_requests == 4
+    and .mcp_request_limits.request_timeout_seconds == 30
+    and .mcp_request_limits.max_body_bytes == 1024
+    and .mcp_request_limits.sse_enabled == false
+  ' "$body" >/dev/null 2>&1 || fail full_suite_default_feature_posture_mismatch
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-default-initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-validator","version":"1.0.0"}}}'
+  stage_request "$payload"
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp")"
+  expect_status full_suite_default_initialize "$status" 200 full_suite_default_initialize_succeeded
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || fail full_suite_default_session_header_invalid
+
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_default_initialized_notification "$status" 202 full_suite_default_initialized_notification_accepted
+  [[ ! -s "$body" ]] || fail full_suite_default_initialized_notification_body_present
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-default-tools","method":"tools/list"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_default_tool_discovery "$status" 200 full_suite_default_tool_discovery_succeeded
+  jq -e '
+    [.result.tools[].name] == [
+      "runtime_status","platform_info","android_status","project_service_status",
+      "create_directory","copy_file","trash_file","find_paths","hash_file",
+      "list_directory","path_metadata","read_binary_file","read_binary_range",
+      "read_file","read_text_range","search_text","write_file"
+    ]
+    and (all(
+      .result.tools[]
+      | select(.name == "create_directory" or .name == "copy_file" or .name == "trash_file" or .name == "write_file");
+      .inputSchema.properties.dry_run.const == true
+    ))
+  ' "$body" >/dev/null 2>&1 || fail full_suite_default_discovery_invalid
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-default-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_default_runtime_status "$status" 200 full_suite_default_runtime_status_read
+  jq -e '
+    .result.structuredContent as $status
+    | $status.availableTools == [
+        "runtime_status","platform_info","android_status","project_service_status",
+        "create_directory","copy_file","trash_file","find_paths","hash_file",
+        "list_directory","path_metadata","read_binary_file","read_binary_range",
+        "read_file","read_text_range","search_text","write_file"
+      ]
+      and $status.androidBatteryStatusCompiled == true
+      and $status.androidBatteryStatusEnabled == false
+      and $status.androidVolumeStatusCompiled == true
+      and $status.androidVolumeStatusEnabled == false
+      and $status.androidVolumeControlCompiled == true
+      and $status.androidVolumeControlEnabled == false
+      and $status.androidVolumeGrantRequired == false
+      and $status.commandExecutionCompiled == true
+      and $status.commandExecution == false
+      and $status.arbitraryCommandExecution == false
+      and $status.androidPlatformTools == false
+      and $status.highImpactTools == false
+      and $status.createDirectoryMutationEnabled == false
+      and $status.copyFileMutationEnabled == false
+      and $status.trashFileMutationEnabled == false
+      and $status.fileWriteMutationEnabled == false
+      and $status.createDirectoryGrantRequired == false
+      and $status.copyFileGrantRequired == false
+      and $status.trashFileGrantRequired == false
+      and $status.fileWriteGrantRequired == false
+  ' "$body" >/dev/null 2>&1 || fail full_suite_default_runtime_status_invalid
+
+  local disabled_tool disabled_reason
+  for disabled_tool in android_battery_status android_volume_status set_android_volume run_command_profile; do
+    case "$disabled_tool" in
+      android_battery_status)
+        disabled_reason=battery_runtime_disabled
+        payload='{"jsonrpc":"2.0","id":"full-suite-disabled-battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}'
+        ;;
+      android_volume_status)
+        disabled_reason=volume_runtime_disabled
+        payload='{"jsonrpc":"2.0","id":"full-suite-disabled-volume","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+        ;;
+      set_android_volume)
+        disabled_reason=volume_control_runtime_disabled
+        payload='{"jsonrpc":"2.0","id":"full-suite-disabled-volume-control","method":"tools/call","params":{"name":"set_android_volume","arguments":{"stream":"music","level":0}}}'
+        ;;
+      run_command_profile)
+        disabled_reason=command_runtime_disabled
+        payload='{"jsonrpc":"2.0","id":"full-suite-disabled-command","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}'
+        ;;
+    esac
+    status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+    [[ "$status" == 200 ]] || fail full_suite_default_optional_call_status_invalid
+    jq -e --arg reason "$disabled_reason" '
+      .result.isError == true and .result.structuredContent.reasonCode == $reason
+    ' "$body" >/dev/null 2>&1 || fail full_suite_default_optional_call_invalid
+  done
+  record_result runtime full_suite_default_posture pass full_suite_default_disabled_17_tool_posture_verified
+
+  stage_session_headers "$MCP_SESSION_ID"
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "@$SESSION_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    "http://$BIND_HOST:$PORT/mcp")"
+  expect_status full_suite_default_session_delete "$status" 204 full_suite_default_session_deleted
+  [[ ! -s "$body" ]] || fail full_suite_default_session_delete_body_present
+  MCP_SESSION_ID=""
+  stop_server || fail full_suite_default_runtime_stop_failed
+
+  run_full_suite_single_gate_check \
+    full_suite_battery_only android_battery_status \
+    full_suite_battery_runtime_gate_independence_verified
+  run_full_suite_single_gate_check \
+    full_suite_volume_status_only android_volume_status \
+    full_suite_volume_status_runtime_gate_independence_verified
+  run_full_suite_single_gate_check \
+    full_suite_volume_control_only set_android_volume \
+    full_suite_volume_control_runtime_gate_independence_verified
+  run_full_suite_single_gate_check \
+    full_suite_command_only run_command_profile \
+    full_suite_command_runtime_gate_independence_verified
+
+  start_server "$FULL_SUITE_PINNED_ARTIFACT" full_suite_enabled
+  curl_local -fsS -o "$body" "http://$BIND_HOST:$PORT/ready" 2>/dev/null \
+    || fail full_suite_enabled_readiness_failed
+  jq -e --arg version "$EXPECTED_VERSION" '
+    .status == "ready"
+    and .version == $version
+    and .mcp_runtime_enabled == true
+    and .safe_root_count == 1
+    and .auth_posture == "static_token"
+  ' "$body" >/dev/null 2>&1 || fail full_suite_enabled_feature_posture_mismatch
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-enabled-initialize","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-validator","version":"1.0.0"}}}'
+  stage_request "$payload"
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "@$AUTH_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "@$REQUEST_FILE" "http://$BIND_HOST:$PORT/mcp")"
+  expect_status full_suite_enabled_initialize "$status" 200 full_suite_enabled_initialize_succeeded
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || fail full_suite_enabled_session_header_invalid
+
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_enabled_initialized_notification "$status" 202 full_suite_enabled_initialized_notification_accepted
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-enabled-tools","method":"tools/list"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_enabled_tool_discovery "$status" 200 full_suite_enabled_tool_discovery_succeeded
+  jq -e '
+    [.result.tools[].name] == [
+      "runtime_status","platform_info","android_status","project_service_status",
+      "create_directory","copy_file","trash_file","find_paths","hash_file",
+      "list_directory","path_metadata","read_binary_file","read_binary_range",
+      "read_file","read_text_range","search_text","write_file",
+      "android_battery_status","android_volume_status","set_android_volume","run_command_profile"
+    ]
+    and (.result.tools[] | select(.name == "android_battery_status") | .inputSchema) == {type:"object",properties:{},additionalProperties:false}
+    and (.result.tools[] | select(.name == "android_volume_status") | .inputSchema) == {type:"object",properties:{},additionalProperties:false}
+    and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.required) == ["stream","level"]
+    and (.result.tools[] | select(.name == "set_android_volume") | .inputSchema.additionalProperties) == false
+    and (.result.tools[] | select(.name == "run_command_profile") | .inputSchema.properties.profile.enum) == ["server_version","server_help","execution_boundary"]
+    and (.result.tools[] | select(.name == "run_command_profile") | .inputSchema.additionalProperties) == false
+  ' "$body" >/dev/null 2>&1 || fail full_suite_enabled_discovery_invalid
+  record_result runtime full_suite_enabled_posture pass full_suite_enabled_21_tool_posture_verified
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-enabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_enabled_runtime_status "$status" 200 full_suite_enabled_runtime_status_read
+  jq -e '
+    .result.structuredContent as $status
+    | ($status.availableTools | length) == 21
+      and $status.androidBatteryStatusCompiled == true
+      and $status.androidBatteryStatusEnabled == true
+      and $status.androidVolumeStatusCompiled == true
+      and $status.androidVolumeStatusEnabled == true
+      and $status.androidVolumeControlCompiled == true
+      and $status.androidVolumeControlEnabled == true
+      and $status.androidVolumeGrantRequired == true
+      and $status.commandExecutionCompiled == true
+      and $status.commandExecution == true
+      and $status.arbitraryCommandExecution == false
+      and $status.androidPlatformTools == true
+      and $status.highImpactTools == true
+      and $status.createDirectoryMutationEnabled == false
+      and $status.copyFileMutationEnabled == false
+      and $status.trashFileMutationEnabled == false
+      and $status.fileWriteMutationEnabled == false
+      and $status.createDirectoryGrantRequired == false
+      and $status.copyFileGrantRequired == false
+      and $status.trashFileGrantRequired == false
+      and $status.fileWriteGrantRequired == false
+  ' "$body" >/dev/null 2>&1 || fail full_suite_enabled_runtime_status_invalid
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_battery "$status" 200 full_suite_battery_succeeded
+  jq -e '
+    .result.isError == false
+    and (.result.structuredContent | type) == "object"
+    and ((.result.structuredContent | keys) - [
+      "charge_counter_microamp_hours","current_average_microamps","current_microamps",
+      "cycle_count","energy_nanowatt_hours","health","level","percentage","plugged",
+      "present","scale","status","temperature_celsius","voltage_millivolts"
+    ] | length) == 0
+  ' "$body" >/dev/null 2>&1 || fail full_suite_battery_contract_invalid
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_volume "$status" 200 full_suite_volume_succeeded
+  jq -e '
+    .result.isError == false
+    and [.result.structuredContent.streams[].stream] == ["alarm","call","music","notification","ring","system"]
+    and all(.result.structuredContent.streams[];
+      (.volume | type) == "number"
+      and (.maxVolume | type) == "number"
+      and .volume >= 0
+      and .volume <= .maxVolume
+    )
+  ' "$body" >/dev/null 2>&1 || fail full_suite_volume_contract_invalid
+  music_level="$(jq -r '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  music_max="$(jq -r '.result.structuredContent.streams[] | select(.stream == "music") | .maxVolume' "$body")"
+  [[ "$music_level" =~ ^[0-9]+$ && "$music_max" =~ ^[1-9][0-9]*$ && "$music_level" -le "$music_max" ]] \
+    || fail full_suite_volume_distinct_target_unavailable
+  if ((music_level < music_max)); then
+    music_target=$((music_level + 1))
+  else
+    music_target=$((music_level - 1))
+  fi
+  record_result runtime full_suite_optional_providers pass full_suite_optional_provider_success_verified
+
+  payload="$(jq -cn --argjson level "$music_target" \
+    '{jsonrpc:"2.0",id:"full-suite-volume-preview",method:"tools/call",params:{name:"set_android_volume",arguments:{stream:"music",level:$level,dry_run:true}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_volume_preview "$status" 200 full_suite_volume_preview_succeeded
+  jq -e --argjson level "$music_target" --argjson previous "$music_level" '
+    .result.isError == false
+    and .result.structuredContent.stream == "music"
+    and .result.structuredContent.previousLevel == $previous
+    and .result.structuredContent.requestedLevel == $level
+    and .result.structuredContent.dryRun == true
+    and .result.structuredContent.changed == false
+    and .result.structuredContent.verified == false
+    and .result.structuredContent.outcome == "preview"
+    and .result.structuredContent.rollback == "not_required"
+  ' "$body" >/dev/null 2>&1 || fail full_suite_volume_preview_contract_invalid
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume-after-preview","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_volume_after_preview "$status" 200 full_suite_volume_after_preview_succeeded
+  music_after="$(jq -r '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  if [[ "$music_after" != "$music_level" ]]; then
+    restore_full_suite_music_level "$body" "$music_level" full_suite_volume_preview
+    fail full_suite_volume_preview_mutated
+  fi
+
+  payload="$(jq -cn --argjson level "$music_target" \
+    '{jsonrpc:"2.0",id:"full-suite-volume-missing-grant",method:"tools/call",params:{name:"set_android_volume",arguments:{stream:"music",level:$level,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_volume_missing_grant "$status" 403 full_suite_volume_missing_grant_rejected
+  jq -e '.error.code == -32003 and .error.data.reason == "capability_grant_missing"' "$body" >/dev/null 2>&1 \
+    || fail full_suite_volume_missing_grant_body_invalid
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume-after-denial","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_volume_after_denial "$status" 200 full_suite_volume_after_denial_succeeded
+  music_after="$(jq -r '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  if [[ "$music_after" != "$music_level" ]]; then
+    restore_full_suite_music_level "$body" "$music_level" full_suite_volume_missing_grant
+    fail full_suite_volume_missing_grant_mutated
+  fi
+  record_result runtime full_suite_volume_boundary pass full_suite_volume_preview_and_grant_boundary_verified
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-command","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  expect_status full_suite_command "$status" 200 full_suite_command_succeeded
+  jq -e --arg version "$EXPECTED_VERSION" '
+    .result.isError == false
+    and .result.structuredContent.profile == "server_version"
+    and .result.structuredContent.exitCode == 0
+    and .result.structuredContent.stdout == ("termux-mcp-server " + $version + "\n")
+    and .result.structuredContent.stderr == ""
+    and .result.structuredContent.stdoutBytes == (.result.structuredContent.stdout | utf8bytelength)
+    and .result.structuredContent.stderrBytes == 0
+    and (.result.structuredContent.durationMilliseconds | type) == "number"
+  ' "$body" >/dev/null 2>&1 || fail full_suite_command_contract_invalid
+  record_result runtime full_suite_command_profile pass full_suite_command_basename_and_profile_verified
+
+  fs_source="$VALIDATION_SAFE_ROOT/full-suite-disabled-source.txt"
+  fs_create_target="$VALIDATION_SAFE_ROOT/full-suite-disabled-directory"
+  fs_copy_target="$VALIDATION_SAFE_ROOT/full-suite-disabled-copy.txt"
+  fs_write_target="$VALIDATION_SAFE_ROOT/full-suite-disabled-write.txt"
+  trash_quarantine="$VALIDATION_SAFE_ROOT/.termux-mcp-trash-quarantine"
+  quarantine_before_file="$TEMP_ROOT/full-suite-quarantine-before.txt"
+  quarantine_after_file="$TEMP_ROOT/full-suite-quarantine-after.txt"
+  [[ ! -e "$fs_source" && ! -L "$fs_source" \
+    && ! -e "$fs_create_target" && ! -L "$fs_create_target" \
+    && ! -e "$fs_copy_target" && ! -L "$fs_copy_target" \
+    && ! -e "$fs_write_target" && ! -L "$fs_write_target" ]] \
+    || fail full_suite_filesystem_fixture_exists
+  printf '%s' full-suite-disabled-source >"$fs_source" 2>/dev/null \
+    || fail full_suite_filesystem_fixture_create_failed
+  chmod 600 "$fs_source" 2>/dev/null || fail full_suite_filesystem_fixture_create_failed
+  fs_source_before="$(stat -c '%d:%i:%a:%s:%Y:%Z' "$fs_source" 2>/dev/null)" \
+    || fail full_suite_filesystem_fixture_invalid
+  fs_source_sha_before="$(sha256sum -- "$fs_source" 2>/dev/null | awk '{print $1}')" \
+    || fail full_suite_filesystem_fixture_invalid
+  quarantine_before="$(snapshot_private_directory "$trash_quarantine" "$quarantine_before_file")" \
+    || fail full_suite_filesystem_quarantine_snapshot_failed
+
+  payload="$(jq -cn --arg path "$fs_create_target" \
+    '{jsonrpc:"2.0",id:"full-suite-create-disabled",method:"tools/call",params:{name:"create_directory",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 403 ]] || fail full_suite_create_directory_disabled_status_invalid
+  jq -e '.error.code == -32003 and .error.data.reason == "create_directory_mutation_disabled"' "$body" >/dev/null 2>&1 \
+    || fail full_suite_create_directory_disabled_body_invalid
+
+  payload="$(jq -cn --arg source "$fs_source" --arg destination "$fs_copy_target" \
+    '{jsonrpc:"2.0",id:"full-suite-copy-disabled",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 403 ]] || fail full_suite_copy_file_disabled_status_invalid
+  jq -e '.error.code == -32003 and .error.data.reason == "copy_file_mutation_disabled"' "$body" >/dev/null 2>&1 \
+    || fail full_suite_copy_file_disabled_body_invalid
+
+  payload="$(jq -cn --arg path "$fs_source" \
+    '{jsonrpc:"2.0",id:"full-suite-trash-disabled",method:"tools/call",params:{name:"trash_file",arguments:{path:$path,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 403 ]] || fail full_suite_trash_file_disabled_status_invalid
+  jq -e '.error.code == -32003 and .error.data.reason == "trash_file_mutation_disabled"' "$body" >/dev/null 2>&1 \
+    || fail full_suite_trash_file_disabled_body_invalid
+
+  payload="$(jq -cn --arg path "$fs_write_target" \
+    '{jsonrpc:"2.0",id:"full-suite-write-disabled",method:"tools/call",params:{name:"write_file",arguments:{path:$path,content:"full-suite-disabled-write",dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  [[ "$status" == 403 ]] || fail full_suite_write_file_disabled_status_invalid
+  jq -e '.error.code == -32003 and .error.data.reason == "write_file_mutation_disabled"' "$body" >/dev/null 2>&1 \
+    || fail full_suite_write_file_disabled_body_invalid
+
+  fs_source_after="$(stat -c '%d:%i:%a:%s:%Y:%Z' "$fs_source" 2>/dev/null)" \
+    || fail full_suite_filesystem_disabled_mutated
+  fs_source_sha_after="$(sha256sum -- "$fs_source" 2>/dev/null | awk '{print $1}')" \
+    || fail full_suite_filesystem_disabled_mutated
+  quarantine_after="$(snapshot_private_directory "$trash_quarantine" "$quarantine_after_file")" \
+    || fail full_suite_filesystem_quarantine_snapshot_failed
+  [[ "$fs_source_after" == "$fs_source_before" \
+    && "$fs_source_sha_after" == "$fs_source_sha_before" \
+    && "$quarantine_after" == "$quarantine_before" \
+    && ! -e "$fs_create_target" && ! -L "$fs_create_target" \
+    && ! -e "$fs_copy_target" && ! -L "$fs_copy_target" \
+    && ! -e "$fs_write_target" && ! -L "$fs_write_target" ]] \
+    || fail full_suite_filesystem_disabled_mutated
+  rm -f -- "$fs_source" "$quarantine_before_file" "$quarantine_after_file" 2>/dev/null \
+    || fail full_suite_filesystem_fixture_cleanup_failed
+  record_result runtime full_suite_filesystem_posture pass full_suite_filesystem_mutations_independently_disabled
+
+  stage_session_headers "$MCP_SESSION_ID"
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "@$SESSION_HEADER_FILE" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    "http://$BIND_HOST:$PORT/mcp")"
+  expect_status full_suite_enabled_session_delete "$status" 204 full_suite_enabled_session_deleted
+  [[ ! -s "$body" ]] || fail full_suite_enabled_session_delete_body_present
+  MCP_SESSION_ID=""
+  stop_server || fail full_suite_enabled_runtime_stop_failed
+}
+
 run_runtime_phase() {
   CURRENT_PHASE=runtime
   set_phase runtime running
@@ -2514,6 +3165,7 @@ run_runtime_phase() {
   run_mcp_runtime_checks
   run_write_file_boundary_checks
   run_volume_control_runtime_checks
+  run_full_suite_runtime_checks
   record_result runtime cleanup info isolated_runtime_cleanup_armed
   set_phase runtime pass
 }
@@ -2612,6 +3264,7 @@ run_dedicated_deployment_cycle() {
   prepare_dedicated_deployment
   local baseline_release="$DEDICATED_DEPLOY_ROOT/releases/$BASELINE_VERSION"
   local candidate_release="$DEDICATED_DEPLOY_ROOT/releases/$EXPECTED_VERSION"
+  record_result deployment deployment_candidate_posture pass full_suite_deployment_candidate_selected
 
   run_deploy_success default_install_baseline \
     bash "$DEPLOY_SCRIPT" install --artifact "$BASELINE_PINNED_ARTIFACT" --version "$BASELINE_VERSION" --sha256 "$BASELINE_SHA256"
@@ -2637,7 +3290,7 @@ run_dedicated_deployment_cycle() {
   if [[ "$TEST_MODE" == 1 ]]; then
     run_deploy_expected_failure forced_candidate_failure \
       env TERMUX_MCP_TEST_PROBE_SEQUENCE=failure,success \
-      bash "$DEPLOY_SCRIPT" upgrade --artifact "$MCP_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$MCP_SHA256"
+      bash "$DEPLOY_SCRIPT" upgrade --artifact "$FULL_SUITE_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$FULL_SUITE_SHA256"
   else
     local fake_dir="$TEMP_ROOT/fake-curl" count_file="$TEMP_ROOT/fake-curl-count" real_curl
     real_curl="$(command -v curl)"
@@ -2657,13 +3310,13 @@ EOF
     printf '0\n' >"$count_file"
     run_deploy_expected_failure forced_candidate_failure \
       env PATH="$fake_dir:$PATH" TERMUX_MCP_RELEASE_FAKE_COUNT="$count_file" TERMUX_MCP_RELEASE_REAL_CURL="$real_curl" \
-      bash "$DEPLOY_SCRIPT" upgrade --artifact "$MCP_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$MCP_SHA256"
+      bash "$DEPLOY_SCRIPT" upgrade --artifact "$FULL_SUITE_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$FULL_SUITE_SHA256"
   fi
   link_equals "$DEDICATED_DEPLOY_ROOT/current" "$baseline_release" || fail candidate_failure_recovery_invalid
   [[ ! -e "$candidate_release" ]] || fail failed_candidate_not_removed
 
   run_deploy_success upgrade_candidate \
-    bash "$DEPLOY_SCRIPT" upgrade --artifact "$MCP_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$MCP_SHA256"
+    bash "$DEPLOY_SCRIPT" upgrade --artifact "$FULL_SUITE_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$FULL_SUITE_SHA256"
   link_equals "$DEDICATED_DEPLOY_ROOT/current" "$candidate_release" || fail upgrade_state_invalid
   link_equals "$DEDICATED_DEPLOY_ROOT/previous" "$baseline_release" || fail upgrade_previous_invalid
 
@@ -2695,10 +3348,11 @@ run_production_action() {
   require_termux_aarch64_environment production_termux_environment_required
   [[ -f "$DEPLOY_SCRIPT" && ! -L "$DEPLOY_SCRIPT" ]] || fail deploy_script_invalid
   unset TERMUX_MCP_DEPLOY_ROOT TERMUX_MCP_CONFIG_ROOT TERMUX_MCP_SERVICE_ROOT TERMUX_MCP_TEST_MODE
+  record_result deployment production_candidate_posture pass full_suite_production_candidate_selected
   case "$PRODUCTION_ACTION" in
     install|upgrade)
       run_deploy_success "production_$PRODUCTION_ACTION" \
-        bash "$DEPLOY_SCRIPT" "$PRODUCTION_ACTION" --artifact "$MCP_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$MCP_SHA256"
+        bash "$DEPLOY_SCRIPT" "$PRODUCTION_ACTION" --artifact "$FULL_SUITE_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$FULL_SUITE_SHA256"
       ;;
     upgrade-failure)
       local fake_dir="$TEMP_ROOT/production-fake-curl" count_file="$TEMP_ROOT/production-fake-curl-count" real_curl
@@ -2730,7 +3384,7 @@ EOF
       run_deploy_expected_failure production_upgrade_failure \
         env PATH="$fake_dir:$PATH" TERMUX_MCP_RELEASE_FAKE_COUNT="$count_file" TERMUX_MCP_RELEASE_REAL_CURL="$real_curl" \
         TERMUX_MCP_PROBE_ATTEMPTS=5 TERMUX_MCP_PROBE_DELAY_SECONDS=1 \
-        bash "$DEPLOY_SCRIPT" upgrade --artifact "$MCP_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$MCP_SHA256"
+        bash "$DEPLOY_SCRIPT" upgrade --artifact "$FULL_SUITE_PINNED_ARTIFACT" --version "$EXPECTED_VERSION" --sha256 "$FULL_SUITE_SHA256"
       [[ -L "$production_root/current" && "$(readlink "$production_root/current" 2>/dev/null)" == "$current_before" ]] || fail production_upgrade_failure_recovery_invalid
       if ((previous_present == 1)); then
         [[ -L "$production_root/previous" && "$(readlink "$production_root/previous" 2>/dev/null)" == "$previous_before" ]] || fail production_upgrade_failure_recovery_invalid

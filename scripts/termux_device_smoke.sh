@@ -55,7 +55,7 @@ if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 REPOSITORY_URL="https://github.com/CyberBASSLord-666/termux-mcp-edge.git"
-HARNESS_VERSION="10"
+HARNESS_VERSION="11"
 HEAD_LABEL="${EXPECTED_HEAD:0:12}"
 SMOKE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK_ROOT="$HOME/termux-mcp-device-smoke-$HEAD_LABEL-$SMOKE_ID"
@@ -1281,10 +1281,10 @@ protocol_smoke() {
   MCP_SESSION_ID=""
 }
 
-volume_control_disabled_smoke() {
-  local body="$LOG_DIR/volume-control-disabled-response.json"
-  local headers="$LOG_DIR/volume-control-disabled-initialize.headers"
-  local server_log="$LOG_DIR/volume-control-disabled-server.log"
+full_suite_disabled_smoke() {
+  local body="$LOG_DIR/full-suite-disabled-response.json"
+  local headers="$LOG_DIR/full-suite-disabled-initialize.headers"
+  local server_log="$LOG_DIR/full-suite-disabled-server.log"
   local status payload attempt
 
   env -i \
@@ -1306,7 +1306,7 @@ volume_control_disabled_smoke() {
     MCP__FILE__COPY_FILE_MUTATION_ENABLED=false \
     MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false \
     MCP__FILE__WRITE_MUTATION_ENABLED=false \
-    "$VOLUME_CONTROL_ARTIFACT" >"$server_log" 2>&1 &
+    "$FULL_SUITE_ARTIFACT" >"$server_log" 2>&1 &
   DIRECT_SERVER_PID=$!
   for attempt in $(seq 1 40); do
     kill -0 "$DIRECT_SERVER_PID" >/dev/null 2>&1 || fail "volume-control disabled runtime exited before readiness"
@@ -1344,7 +1344,7 @@ volume_control_disabled_smoke() {
   payload='{"jsonrpc":"2.0","id":"volume-control-disabled-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
   status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
   assert_eq volume_control_disabled_status_http "$status" 200
-  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.copyFileMutationEnabled == false and .result.structuredContent.copyFileMode == "dry_run_only_mutation_disabled" and .result.structuredContent.copyFileGrantRequired == false and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant" and .result.structuredContent.copyFileGrantTtlSeconds == 60 and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace" and .result.structuredContent.copyFileMaxBytes == 1048576 and .result.structuredContent.copyFileMaxResponseBytes == 16384 and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only" and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
+  assert_json volume_control_disabled_status "$body" '.result.structuredContent.androidBatteryStatusCompiled == true and .result.structuredContent.androidBatteryStatusEnabled == false and .result.structuredContent.androidVolumeStatusCompiled == true and .result.structuredContent.androidVolumeStatusEnabled == false and .result.structuredContent.androidVolumeControlCompiled == true and .result.structuredContent.androidVolumeControlEnabled == false and .result.structuredContent.androidVolumeGrantRequired == false and .result.structuredContent.commandExecutionCompiled == true and .result.structuredContent.commandExecution == false and .result.structuredContent.highImpactTools == false and .result.structuredContent.copyFileMutationEnabled == false and .result.structuredContent.copyFileMode == "dry_run_only_mutation_disabled" and .result.structuredContent.copyFileGrantRequired == false and .result.structuredContent.copyFileGrantHeader == "mcp-capability-grant" and .result.structuredContent.copyFileGrantTtlSeconds == 60 and .result.structuredContent.copyFileGrantBinding == "source_root_path_identity_size_sha256_destination_root_path_absent_no_replace" and .result.structuredContent.copyFileMaxBytes == 1048576 and .result.structuredContent.copyFileMaxResponseBytes == 16384 and .result.structuredContent.copyFileResponsePosture == "path_free_bounded_metadata_only" and .result.structuredContent.fileWrites == true and .result.structuredContent.fileWriteMode == "dry_run_only_mutation_disabled" and .result.structuredContent.fileWriteMutationEnabled == false and .result.structuredContent.fileWriteGrantRequired == false and .result.structuredContent.fileWriteGrantHeader == "mcp-capability-grant" and .result.structuredContent.fileWriteGrantTtlSeconds == 60 and .result.structuredContent.binaryFileReads == true and .result.structuredContent.binaryFileReadEncoding == "base64" and .result.structuredContent.binaryFileReadMaxBytes == 1048576 and .result.structuredContent.binaryFileReadMaxResponseBytes == 1507328 and .result.structuredContent.binaryRangeReads == true and .result.structuredContent.binaryRangeReadMaxFileBytes == 67108864 and .result.structuredContent.binaryRangeReadMaxBytes == 262144 and .result.structuredContent.binaryRangeReadMaxResponseBytes == 393216 and .result.structuredContent.textRangeReads == true and .result.structuredContent.textRangeReadEncoding == "utf-8" and .result.structuredContent.textRangeReadMinBytes == 4 and .result.structuredContent.textRangeReadMaxFileBytes == 67108864 and .result.structuredContent.textRangeReadMaxBytes == 262144 and .result.structuredContent.textRangeReadMaxResponseBytes == 1703936 and .result.structuredContent.fileHashing == true and .result.structuredContent.fileHashAlgorithm == "sha256" and .result.structuredContent.fileHashMaxBytes == 16777216'
   assert_json volume_control_disabled_trash_status "$body" '.result.structuredContent.trashFileMutationEnabled == false and .result.structuredContent.trashFileMode == "dry_run_only_mutation_disabled" and .result.structuredContent.trashFileGrantRequired == false and .result.structuredContent.trashFileGrantHeader == "mcp-capability-grant" and .result.structuredContent.trashFileGrantTtlSeconds == 60 and .result.structuredContent.trashFileGrantBinding == "root_path_single_link_identity_size_ctime_sha256_recovery_retained" and .result.structuredContent.trashFileMaxBytes == 1048576 and .result.structuredContent.trashFileMaxResponseBytes == 16384 and .result.structuredContent.trashFileQuarantineMaxArtifacts == 32 and .result.structuredContent.trashFileQuarantineMaxBytes == 33554432 and .result.structuredContent.trashFileResponsePosture == "path_and_artifact_free_bounded_metadata_only"'
 
   payload="$(jq -cn --arg source "$SAFE_ROOT/visible.txt" --arg destination "$SAFE_ROOT/volume-copy-disabled.txt" '{jsonrpc:"2.0",id:"volume-copy-disabled",method:"tools/call",params:{name:"copy_file",arguments:{source_path:$source,destination_path:$destination,dry_run:false}}}')"
@@ -1388,7 +1388,119 @@ volume_control_disabled_smoke() {
   fi
   wait "$DIRECT_SERVER_PID" >/dev/null 2>&1 || true
   DIRECT_SERVER_PID=""
-  log "PASS volume_control_disabled_runtime=verified_without_device_mutation"
+  log "PASS full_suite_disabled_runtime=17_tools_all_optional_gates_off"
+}
+
+full_suite_enabled_smoke() {
+  local body="$LOG_DIR/full-suite-enabled-response.json"
+  local headers="$LOG_DIR/full-suite-enabled-initialize.headers"
+  local status payload music_level music_max music_target music_after
+
+  [[ "$(curl_local -fsS --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)" == ok ]] \
+    || fail "deployed full-suite runtime is not healthy"
+
+  payload='{"jsonrpc":"2.0","id":"initialize-full-suite-enabled","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"termux-device-smoke","version":"1.0.0"}}}'
+  status="$(curl_local -sS -D "$headers" -o "$body" -w '%{http_code}' \
+    -H "Authorization: Bearer $MCP_TOKEN" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data-binary "$payload" "$MCP_URL")"
+  assert_eq full_suite_enabled_initialize_http "$status" 200
+  assert_json full_suite_enabled_initialize_body "$body" '.result.protocolVersion == "2025-11-25"'
+  MCP_SESSION_ID="$(awk 'tolower($1) == "mcp-session-id:" {sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}' "$headers")"
+  [[ "$MCP_SESSION_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || fail "full-suite enabled runtime omitted its session ID"
+
+  payload='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_enabled_initialized_http "$status" 202
+  [[ ! -s "$body" ]] || fail "full-suite enabled initialized notification returned a body"
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-tools","method":"tools/list"}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_enabled_tools_http "$status" 200
+  assert_json full_suite_enabled_tool_allowlist "$body" '[.result.tools[].name] == ["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","android_battery_status","android_volume_status","set_android_volume","run_command_profile"]'
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-status","method":"tools/call","params":{"name":"runtime_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_enabled_status_http "$status" 200
+  assert_json full_suite_enabled_status "$body" '.result.structuredContent as $s | $s.androidBatteryStatusCompiled == true and $s.androidBatteryStatusEnabled == true and $s.androidVolumeStatusCompiled == true and $s.androidVolumeStatusEnabled == true and $s.androidVolumeControlCompiled == true and $s.androidVolumeControlEnabled == true and $s.androidVolumeGrantRequired == true and $s.commandExecutionCompiled == true and $s.commandExecution == true and $s.arbitraryCommandExecution == false and $s.createDirectoryMutationEnabled == false and $s.copyFileMutationEnabled == false and $s.trashFileMutationEnabled == false and $s.fileWriteMutationEnabled == false'
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-battery","method":"tools/call","params":{"name":"android_battery_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_battery_http "$status" 200
+  assert_json full_suite_battery "$body" '.result.isError == false and (.result.structuredContent | type) == "object" and (.result.structuredContent | keys | length) >= 1'
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_volume_http "$status" 200
+  assert_json full_suite_volume "$body" '.result.isError == false and [.result.structuredContent.streams[].stream] == ["alarm","call","music","notification","ring","system"] and (.result.structuredContent.streams | all(.volume >= 0 and .maxVolume >= .volume))'
+  music_level="$(jq -er '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  music_max="$(jq -er '.result.structuredContent.streams[] | select(.stream == "music") | .maxVolume' "$body")"
+  [[ "$music_level" =~ ^[0-9]+$ ]] || fail "full-suite volume status omitted the current music level"
+  [[ "$music_max" =~ ^[1-9][0-9]*$ && "$music_level" -le "$music_max" ]] \
+    || fail "full-suite volume status cannot provide a distinct bounded probe level"
+  if ((music_level < music_max)); then
+    music_target=$((music_level + 1))
+  else
+    music_target=$((music_level - 1))
+  fi
+
+  payload="$(jq -cn --argjson level "$music_target" '{jsonrpc:"2.0",id:"full-suite-volume-preview",method:"tools/call",params:{name:"set_android_volume",arguments:{stream:"music",level:$level}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_volume_preview_http "$status" 200
+  assert_json full_suite_volume_preview "$body" ".result.isError == false and .result.structuredContent.dryRun == true and .result.structuredContent.changed == false and .result.structuredContent.verified == false and .result.structuredContent.previousLevel == $music_level and .result.structuredContent.requestedLevel == $music_target and .result.structuredContent.outcome == \"preview\""
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume-after-preview","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_volume_after_preview_http "$status" 200
+  music_after="$(jq -er '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  if [[ "$music_after" != "$music_level" ]]; then
+    timeout --signal=KILL 10 termux-volume music "$music_level" >/dev/null 2>&1 \
+      || fail "full-suite volume preview mutated audio and restoration failed"
+    payload='{"jsonrpc":"2.0","id":"full-suite-volume-preview-restore","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+    status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+    assert_eq full_suite_volume_preview_restore_http "$status" 200
+    music_after="$(jq -er '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+    [[ "$music_after" == "$music_level" ]] \
+      || fail "full-suite volume preview mutated audio and restoration could not be verified"
+    fail "full-suite volume preview mutated audio; the original level was restored"
+  fi
+
+  payload="$(jq -cn --argjson level "$music_target" '{jsonrpc:"2.0",id:"full-suite-volume-missing-grant",method:"tools/call",params:{name:"set_android_volume",arguments:{stream:"music",level:$level,dry_run:false}}}')"
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_volume_missing_grant_http "$status" 403
+  assert_json full_suite_volume_missing_grant "$body" '.error.code == -32003 and .error.data.reason == "capability_grant_missing"'
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-volume-after-denial","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_volume_after_denial_http "$status" 200
+  music_after="$(jq -er '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+  if [[ "$music_after" != "$music_level" ]]; then
+    timeout --signal=KILL 10 termux-volume music "$music_level" >/dev/null 2>&1 \
+      || fail "full-suite missing-grant denial mutated audio and restoration failed"
+    payload='{"jsonrpc":"2.0","id":"full-suite-volume-denial-restore","method":"tools/call","params":{"name":"android_volume_status","arguments":{}}}'
+    status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+    assert_eq full_suite_volume_denial_restore_http "$status" 200
+    music_after="$(jq -er '.result.structuredContent.streams[] | select(.stream == "music") | .volume' "$body")"
+    [[ "$music_after" == "$music_level" ]] \
+      || fail "full-suite missing-grant denial mutated audio and restoration could not be verified"
+    fail "full-suite missing-grant denial mutated audio; the original level was restored"
+  fi
+  log "PASS full_suite_volume_distinct_probe_no_mutation=preview_and_missing_grant"
+
+  payload='{"jsonrpc":"2.0","id":"full-suite-command","method":"tools/call","params":{"name":"run_command_profile","arguments":{"profile":"server_version"}}}'
+  status="$(mcp_post "$body" "$payload" "$MCP_SESSION_ID")"
+  assert_eq full_suite_command_http "$status" 200
+  assert_json full_suite_command "$body" ".result.isError == false and .result.structuredContent.profile == \"server_version\" and .result.structuredContent.exitCode == 0 and (.result.structuredContent.stdout | contains(\"$CANDIDATE_VERSION\")) and .result.structuredContent.stderr == \"\" and .result.structuredContent.stdoutBytes <= 16384 and .result.structuredContent.stderrBytes == 0"
+
+  status="$(curl_local -sS -X DELETE -o "$body" -w '%{http_code}' \
+    -H "Authorization: Bearer $MCP_TOKEN" \
+    -H "Host: localhost:$PORT" -H "Origin: http://localhost:$PORT" \
+    -H 'MCP-Protocol-Version: 2025-11-25' -H "MCP-Session-Id: $MCP_SESSION_ID" \
+    "$MCP_URL")"
+  assert_eq full_suite_enabled_delete_http "$status" 204
+  MCP_SESSION_ID=""
+  log "PASS full_suite_enabled_runtime=21_tools_optional_providers_composed_no_ungranted_mutation"
 }
 
 log "Termux MCP exact-commit device production gate starting"
@@ -1416,7 +1528,7 @@ if ! is_true "$SKIP_PACKAGE_BOOTSTRAP"; then
     package_status=$?
   fi
   if ((package_status == 0)); then
-    pkg install -y git bash coreutils curl file gawk grep jq sed termux-services rust clang make pkg-config binutils iproute2 >>"$PACKAGE_LOG" 2>&1
+    pkg install -y git bash coreutils curl file gawk grep jq sed termux-api termux-services rust clang make pkg-config binutils iproute2 >>"$PACKAGE_LOG" 2>&1
     package_status=$?
   fi
   set -e
@@ -1490,8 +1602,10 @@ CANDIDATE_VERSION="$(awk '
 [[ -n "$CANDIDATE_VERSION" ]] || fail "could not read the package version"
 BASELINE_VERSION="0.0.0-device-smoke.$HEAD_LABEL"
 BASELINE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$BASELINE_VERSION"
-CANDIDATE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION"
+MCP_RUNTIME_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION-mcp-runtime"
 VOLUME_CONTROL_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION-android-volume-control"
+FULL_SUITE_ARTIFACT="$ARTIFACT_DIR/termux-mcp-server-$CANDIDATE_VERSION-full-suite"
+CANDIDATE_ARTIFACT="$FULL_SUITE_ARTIFACT"
 
 log "Building baseline and exact candidate; detailed output is in $BUILD_LOG"
 : >"$BUILD_LOG"
@@ -1518,30 +1632,41 @@ if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features mcp-runtime -
   tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
   fail "exact candidate Rust build failed"
 fi
-install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$CANDIDATE_ARTIFACT"
+install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$MCP_RUNTIME_ARTIFACT"
 if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features android-volume-control -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
   tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
   fail "exact volume-control candidate Rust build failed"
 fi
 install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$VOLUME_CONTROL_ARTIFACT"
+if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features full-suite -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
+  tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
+  fail "exact full-suite candidate Rust build failed"
+fi
+install -m 700 "$CARGO_TARGET_DIR/release/termux-mcp-server" "$FULL_SUITE_ARTIFACT"
 
 assert_eq baseline_reported_version "$("$BASELINE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$BASELINE_VERSION"
-assert_eq candidate_reported_version "$("$CANDIDATE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
+assert_eq mcp_runtime_reported_version "$("$MCP_RUNTIME_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
 assert_eq volume_control_reported_version "$("$VOLUME_CONTROL_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
+assert_eq full_suite_reported_version "$("$FULL_SUITE_ARTIFACT" --version | awk 'NR==1 {print $NF}')" "$CANDIDATE_VERSION"
 BASELINE_FILE="$(file -b "$BASELINE_ARTIFACT")"
-CANDIDATE_FILE="$(file -b "$CANDIDATE_ARTIFACT")"
+MCP_RUNTIME_FILE="$(file -b "$MCP_RUNTIME_ARTIFACT")"
 VOLUME_CONTROL_FILE="$(file -b "$VOLUME_CONTROL_ARTIFACT")"
+FULL_SUITE_FILE="$(file -b "$FULL_SUITE_ARTIFACT")"
 log "baseline_file=$BASELINE_FILE"
-log "candidate_file=$CANDIDATE_FILE"
+log "mcp_runtime_file=$MCP_RUNTIME_FILE"
 log "volume_control_file=$VOLUME_CONTROL_FILE"
-[[ "$CANDIDATE_FILE" == *"ARM aarch64"* && "$CANDIDATE_FILE" == *"Android"* ]] || fail "candidate is not an AArch64 Android ELF executable"
+log "full_suite_file=$FULL_SUITE_FILE"
+[[ "$MCP_RUNTIME_FILE" == *"ARM aarch64"* && "$MCP_RUNTIME_FILE" == *"Android"* ]] || fail "MCP runtime candidate is not an AArch64 Android ELF executable"
 [[ "$VOLUME_CONTROL_FILE" == *"ARM aarch64"* && "$VOLUME_CONTROL_FILE" == *"Android"* ]] || fail "volume-control candidate is not an AArch64 Android ELF executable"
+[[ "$FULL_SUITE_FILE" == *"ARM aarch64"* && "$FULL_SUITE_FILE" == *"Android"* ]] || fail "full-suite candidate is not an AArch64 Android ELF executable"
 BASELINE_SHA="$(file_sha "$BASELINE_ARTIFACT")"
-CANDIDATE_SHA="$(file_sha "$CANDIDATE_ARTIFACT")"
+MCP_RUNTIME_SHA="$(file_sha "$MCP_RUNTIME_ARTIFACT")"
 VOLUME_CONTROL_SHA="$(file_sha "$VOLUME_CONTROL_ARTIFACT")"
+CANDIDATE_SHA="$(file_sha "$FULL_SUITE_ARTIFACT")"
 log "baseline_sha256=$BASELINE_SHA"
-log "candidate_sha256=$CANDIDATE_SHA"
+log "mcp_runtime_sha256=$MCP_RUNTIME_SHA"
 log "volume_control_sha256=$VOLUME_CONTROL_SHA"
+log "full_suite_sha256=$CANDIDATE_SHA"
 
 set +e
 timeout -k 2 5 env -i \
@@ -1553,7 +1678,7 @@ timeout -k 2 5 env -i \
   MCP__CAPABILITY__KEY_ID=device-smoke-compile-gate \
   MCP__CAPABILITY__HMAC_KEY_HEX=0000000000000000000000000000000000000000000000000000000000000000 \
   MCP__SERVER__HOST=127.0.0.1 MCP__SERVER__PORT=18765 \
-  "$CANDIDATE_ARTIFACT" >"$LOG_DIR/volume-control-compile-gate.log" 2>&1
+  "$MCP_RUNTIME_ARTIFACT" >"$LOG_DIR/volume-control-compile-gate.log" 2>&1
 volume_control_compile_rc=$?
 set -e
 ((volume_control_compile_rc != 0 && volume_control_compile_rc != 124 && volume_control_compile_rc != 137)) || fail "incompatible candidate did not reject the volume-control runtime gate"
@@ -1624,7 +1749,7 @@ export TERMUX_MCP_STOP_ATTEMPTS=20
 export TERMUX_MCP_STOP_DELAY_SECONDS=1
 MCP_URL="http://127.0.0.1:$PORT/mcp"
 
-volume_control_disabled_smoke
+full_suite_disabled_smoke
 
 log "candidate_version=$CANDIDATE_VERSION"
 log "test_port=$PORT"
@@ -1694,6 +1819,36 @@ assert_eq upgraded_previous "$(link_value "$DEPLOY_ROOT/previous")" "$BASELINE_R
 assert_running_state
 protocol_smoke candidate
 
+FULL_SUITE_BASE_CONFIG="$CONFIG_ROOT/runtime.env.full-suite-base"
+cp -p -- "$CONFIG_ROOT/runtime.env" "$FULL_SUITE_BASE_CONFIG"
+for gate in \
+  MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED \
+  MCP__FILE__COPY_FILE_MUTATION_ENABLED \
+  MCP__FILE__TRASH_FILE_MUTATION_ENABLED \
+  MCP__FILE__WRITE_MUTATION_ENABLED
+do
+  sed -i "s/^${gate}=true$/${gate}=false/" "$CONFIG_ROOT/runtime.env"
+  grep -Fx "${gate}=false" "$CONFIG_ROOT/runtime.env" >/dev/null \
+    || fail "could not disable $gate for aggregate full-suite validation"
+done
+cat >>"$CONFIG_ROOT/runtime.env" <<'EOF'
+MCP__ANDROID__BATTERY_STATUS_ENABLED=true
+MCP__ANDROID__VOLUME_STATUS_ENABLED=true
+MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
+MCP__COMMAND__ENABLED=true
+EOF
+chmod 600 "$CONFIG_ROOT/runtime.env"
+assert_eq full_suite_deployed_basename "$(basename "$DEPLOY_ROOT/current/termux-mcp-server")" termux-mcp-server
+sv restart "$SERVICE_DIR" >/dev/null || fail "could not restart the deployed full-suite runtime"
+assert_running_state
+full_suite_enabled_smoke
+
+mv -- "$FULL_SUITE_BASE_CONFIG" "$CONFIG_ROOT/runtime.env"
+chmod 600 "$CONFIG_ROOT/runtime.env"
+sv restart "$SERVICE_DIR" >/dev/null || fail "could not restore the baseline candidate runtime configuration"
+assert_running_state
+log "PASS full_suite_configuration_restored=filesystem_grants_enabled_optional_tools_disabled"
+
 DRY_CURRENT="$(link_value "$DEPLOY_ROOT/current")"
 DRY_PREVIOUS="$(link_value "$DEPLOY_ROOT/previous")"
 run_success production_dry_run bash "$DEPLOY_SCRIPT" rollback --dry-run
@@ -1729,6 +1884,8 @@ assert_exists uninstall_preserved_config "$CONFIG_ROOT/runtime.env"
 
 log "exact_head=$EXPECTED_HEAD"
 log "candidate_sha256=$CANDIDATE_SHA"
+log "mcp_runtime_sha256=$MCP_RUNTIME_SHA"
 log "volume_control_sha256=$VOLUME_CONTROL_SHA"
+log "full_suite_sha256=$CANDIDATE_SHA"
 log "TERMUX_MCP_DEVICE_RESULT=PASS"
 SMOKE_SUCCEEDED=1
