@@ -194,7 +194,7 @@ Rust dependencies, GitHub Actions, the Android toolchain, and the MCP specificat
 
 Current controls:
 
-- immutable action pins, pinned Rust 1.88.0, pinned Android NDK, exact-head CI, RustSec Security, and six-posture Android validation;
+- immutable action pins, pinned Rust 1.88.0, pinned Android NDK, exact-head CI, RustSec Security, and seven-artifact Android validation;
 - dependency changes remain separate from unrelated runtime behavior.
 
 Required controls:
@@ -220,8 +220,8 @@ A transport or tool-surface change is blocked when it:
 
 Every affected change must identify the exact head SHA and provide the applicable evidence:
 
-1. host format, Clippy, all-feature tests, and deployment shell tests;
-2. all six Android AArch64 builds and applicable native ARM64 official-Termux gates for device-affecting source/toolchain changes;
+1. host format, named full-suite plus raw all-feature Clippy/tests, and deployment shell tests under locked dependency resolution;
+2. all seven governed Android AArch64 builds and applicable native ARM64 official-Termux gates for device-affecting source/toolchain changes;
 3. RustSec Security and dependency-alert review for dependency changes;
 4. accepted and rejected authentication, Host, Origin, envelope, lifecycle, and tool-schema cases;
 5. concurrency, timeout, body, response, cancellation, cleanup, and reconnect bounds appropriate to the change;

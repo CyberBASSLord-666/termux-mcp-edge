@@ -1,8 +1,8 @@
 # Exact-Commit Termux Device Production Gate
 
-`scripts/termux_device_smoke.sh` is the canonical no-clone device gate for an AArch64 Termux release candidate. It bootstraps the required packages, fetches one Git ref, refuses to proceed unless that ref resolves to the required full commit SHA, builds the native `mcp-runtime` and `android-volume-control` postures against the committed lockfile, and exercises the deployable release through an isolated real `runsvdir`.
+`scripts/termux_device_smoke.sh` harness v11 is the canonical no-clone device gate for an AArch64 Termux release candidate. It bootstraps the required packages, fetches one Git ref, refuses to proceed unless that ref resolves to the required full commit SHA, and builds the native `mcp-runtime`, `android-volume-control`, and governed `full-suite` postures against the committed lockfile. The full-suite binary is the deployable candidate exercised through an isolated real `runsvdir`; its installed basename remains `termux-mcp-server`.
 
-Passing host CI or Android cross-compilation does not replace this gate. Passing this gate also does not replace a sustained operational soak under the target device's real battery, thermal, network, and process-restriction conditions.
+Passing host CI or Android cross-compilation does not replace this gate. The full-suite runtime-surface change requires a fresh direct physical observation on real AArch64 Termux hardware; the historical v0.5.1 observation and bridge digests cannot qualify it. Passing the automated harness also does not replace the sustained operational soak under the target device's real battery, thermal, network, and process-restriction conditions.
 
 ## Safety and effects
 
@@ -63,7 +63,7 @@ The harness records and verifies:
 1. exact fetched and built commit SHA;
 2. Termux architecture and native Rust/Clang versions;
 3. candidate package version and `--version` output;
-4. AArch64 Android ELF identity and SHA-256 digest for both exact-head feature postures;
+4. AArch64 Android ELF identity and SHA-256 digest for all three exact-head candidate postures, including `full-suite`;
 5. private runtime configuration mode;
 6. same-filesystem atomic-publication prerequisite;
 7. initial versioned install under a real isolated `runsvdir`;
@@ -74,7 +74,7 @@ The harness records and verifies:
 12. stable `2025-11-25` initialization, notification, and session deletion;
 13. the exact 17-tool discovery allowlist, including grant-gated `create_directory`, bounded content-private `copy_file`, reversible recovery-retained `trash_file`, content-free bounded `find_paths`, bounded content-private `hash_file`, canonical bounded `read_binary_file`, canonical bounded `read_binary_range`, code-point-safe bounded `read_text_range`, and bounded `path_metadata` and `search_text`;
 14. volume-control compile-gate rejection by the incompatible `mcp-runtime` artifact, plus disabled-by-default control-artifact discovery, runtime truth, and direct-call rejection without invoking `termux-volume` or changing device audio;
-15. disabled command, Android-control, and high-impact gates;
+15. the full-suite default truth table: exactly 17 tools while all four optional runtime gates remain off;
 16. enabled directory-mutation discovery/status, missing-grant denial, dry-run non-consumption, exact-candidate offline issuance, one exact-target mode-`0700` creation, replay denial, safe-rooted listing, content-free path metadata, SHA-256 hashing, and UTF-8 read;
 17. default-dry-run and explicit exact binary file copy, fixed mode `0600`, content-free response, and existing-destination no-replace denial;
 18. default-preview and exact-grant reversible file trashing, target identity/content binding, exact 1 MiB retention, `recoveryArtifactRetained:true`, private bounded quarantine isolation, and content/path/artifact-free results and audits;
@@ -86,7 +86,8 @@ The harness records and verifies:
 24. injected rollback-readiness failure with original-candidate restoration;
 25. successful rollback;
 26. uninstall with configuration-preservation behavior;
-27. isolated-state cleanup.
+27. isolated-state cleanup;
+28. the full-suite enabled truth table: exactly 21 tools with battery, volume-status, volume-control, and fixed-command providers active together, while all filesystem mutation gates remain independently disabled and an ungranted volume mutation remains denied.
 
 The trash evidence in item 18 covers exact-binary issuance, binding/preflight preservation, and successful retained recovery. Trash-grant replay and concurrent-replay denial are proven by automated core/integration tests and are not direct claims of this device harness.
 
@@ -95,7 +96,9 @@ The final report must contain all of:
 ```text
 exact_head=<expected-sha>
 candidate_sha256=<artifact-sha256>
+mcp_runtime_sha256=<artifact-sha256>
 volume_control_sha256=<artifact-sha256>
+full_suite_sha256=<artifact-sha256>
 TERMUX_MCP_DEVICE_RESULT=PASS
 cleanup_complete=true
 final_status=PASS
@@ -119,4 +122,4 @@ After the automated pass:
 4. repeat authenticated representative calls against the production configuration without broadening safe roots;
 5. roll back on any unexplained restart, resource growth, thermal instability, authentication anomaly, or filesystem-policy mismatch.
 
-Do not label the exact candidate production-ready until its report, workflow evidence, and required sustained-device observation all refer to the same release candidate.
+Do not label the exact candidate production-ready until a fresh harness-v11 report, validator-v11/schema-v2 evidence, aggregate schema/gate-v3 evidence, exact-head workflow results, and the required sustained-device observation all bind the same immutable release commit. Validator v11 and aggregate v3 must bind the exact downloaded workflow full-suite digest and manifest. Harness v11 separately records the digest of its locked on-device native build; that digest is independent native-build evidence and is not claimed byte-identical to the cross-compiled workflow artifact. The final direct validator report must say `releaseEligible:true`; none of these development changes alone authorizes a tag or GitHub Release.

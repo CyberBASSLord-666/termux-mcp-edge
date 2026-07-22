@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/emulated-release-evidence-schema-v3.json",
+  "title": "Termux MCP Edge emulated exact-artifact evidence v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateVersion",
+    "status",
+    "failureCode",
+    "releaseQualificationEligible",
+    "startedAt",
+    "completedAt",
+    "candidate",
+    "environment",
+    "runtimeValidation",
+    "aggregateValidation",
+    "stress"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 3},
+    "gateVersion": {"const": "3"},
+    "status": {"const": "pass"},
+    "failureCode": {"const": null},
+    "releaseQualificationEligible": {"const": false},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "version",
+        "ciRunId",
+        "securityRunId",
+        "androidRunId",
+        "defaultArtifact",
+        "mcpRuntimeArtifact",
+        "androidVolumeControlArtifact",
+        "fullSuiteArtifact"
+      ],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "ciRunId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "securityRunId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "androidRunId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "defaultArtifact": {"$ref": "#/$defs/artifact"},
+        "mcpRuntimeArtifact": {"$ref": "#/$defs/artifact"},
+        "androidVolumeControlArtifact": {"$ref": "#/$defs/artifact"},
+        "fullSuiteArtifact": {"$ref": "#/$defs/fullSuiteArtifact"}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executionMode", "architecture", "image", "imageDigest", "androidLinker"],
+      "properties": {
+        "executionMode": {"const": "official-termux-docker-native-arm64"},
+        "architecture": {"enum": ["aarch64", "arm64"]},
+        "image": {"const": "termux/termux-docker:aarch64"},
+        "imageDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "androidLinker": {"const": true}
+      }
+    },
+    "runtimeValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reportSha256", "resultCount", "phases"],
+      "properties": {
+        "status": {"const": "pass"},
+        "reportSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "resultCount": {"type": "integer", "minimum": 1, "maximum": 256},
+        "phases": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["preflight", "runtime", "deployment"],
+          "properties": {
+            "preflight": {"const": "pass"},
+            "runtime": {"const": "pass"},
+            "deployment": {"const": "not_run"}
+          }
+        }
+      }
+    },
+    "aggregateValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "requests",
+        "defaultDisabled",
+        "fullyEnabled",
+        "independentRuntimeGates",
+        "filesystemMutationsDisabled",
+        "boundedCleanup",
+        "directPhysicalObservationRequired"
+      ],
+      "properties": {
+        "status": {"const": "pass"},
+        "requests": {"type": "integer", "minimum": 14, "maximum": 128},
+        "defaultDisabled": {"$ref": "#/$defs/defaultDisabled"},
+        "fullyEnabled": {"$ref": "#/$defs/fullyEnabled"},
+        "independentRuntimeGates": {"const": true},
+        "filesystemMutationsDisabled": {"const": true},
+        "boundedCleanup": {"const": true},
+        "directPhysicalObservationRequired": {"const": true}
+      }
+    },
+    "stress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "samples",
+        "requests",
+        "servicePidStable",
+        "healthReadyStable",
+        "sessionLifecycle",
+        "exactToolAllowlist",
+        "safeRootIdentityPinned",
+        "safeRootAncestorIdentityPinned",
+        "copyFileMutationDisabled",
+        "highImpactDisabled",
+        "longObservationRequired"
+      ],
+      "properties": {
+        "status": {"const": "pass"},
+        "samples": {"type": "integer", "minimum": 32, "maximum": 4096},
+        "requests": {"type": "integer", "minimum": 100},
+        "servicePidStable": {"const": true},
+        "healthReadyStable": {"const": true},
+        "sessionLifecycle": {"const": true},
+        "exactToolAllowlist": {"const": true},
+        "safeRootIdentityPinned": {"const": true},
+        "safeRootAncestorIdentityPinned": {"const": true},
+        "copyFileMutationDisabled": {"const": true},
+        "highImpactDisabled": {"const": true},
+        "longObservationRequired": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    },
+    "fullSuiteArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes", "manifestSha256", "artifactName", "posture", "features", "fileName"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "artifactName": {"const": "termux-mcp-server-aarch64-linux-android-full-suite"},
+        "posture": {"const": "full-suite"},
+        "features": {"const": ["full-suite"]},
+        "fileName": {"const": "termux-mcp-server"}
+      }
+    },
+    "defaultDisabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCount", "exactToolOrder", "optionalFeaturesCompiled", "optionalToolsHidden", "runtimeFlagsOmitted"],
+      "properties": {
+        "toolCount": {"const": 17},
+        "exactToolOrder": {"const": true},
+        "optionalFeaturesCompiled": {"const": true},
+        "optionalToolsHidden": {"const": true},
+        "runtimeFlagsOmitted": {"const": true}
+      }
+    },
+    "fullyEnabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCount", "exactToolOrder", "allOptionalToolsExposed", "providerSuccesses", "volumePreviewNoMutation", "volumeGrantIsolation", "commandExecutableIdentityPinned"],
+      "properties": {
+        "toolCount": {"const": 21},
+        "exactToolOrder": {"const": true},
+        "allOptionalToolsExposed": {"const": true},
+        "providerSuccesses": {"const": true},
+        "volumePreviewNoMutation": {"const": true},
+        "volumeGrantIsolation": {"const": true},
+        "commandExecutableIdentityPinned": {"const": true}
+      }
+    }
+  }
+}

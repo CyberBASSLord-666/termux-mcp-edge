@@ -18,7 +18,8 @@ All MCP tools also require an initialized, protected MCP transport. Normal deplo
 | Baseline plus volume status | `--features android-volume-status` | 18 when its runtime flag is enabled | Isolated posture |
 | Baseline plus volume control | `--features android-volume-control` | 18 for control alone, or 19 when volume-status discovery is also enabled | Isolated posture |
 | Baseline plus fixed diagnostics | `--features command-execution` | 18 when its runtime flag is enabled | Isolated posture |
-| Local aggregate validation or development | `--all-features` | Up to 21 when all four optional runtime flags are enabled | Not a named or separately qualified public release artifact |
+| Governed aggregate | `--features full-suite` | Exactly 17 with optional flags off; exactly 21 when all four are enabled | Named public aggregate posture |
+| Raw compatibility build | `--all-features` | Up to 21 | Development/compatibility coverage only; not a release artifact |
 
 The four optional runtime flags are:
 
@@ -29,9 +30,9 @@ MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
 MCP__COMMAND__ENABLED=true
 ```
 
-Compiling a feature does not turn on its runtime flag. The `android-volume-control` feature includes the volume-status implementation needed for validation and recovery, but it does not make `android_volume_status` discoverable unless `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` is also configured.
+Compiling a feature does not turn on its runtime flag. `full-suite` is an explicit alias for `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; it adds no master runtime gate and no authorization bypass. The `android-volume-control` feature includes the volume-status implementation needed for validation and recovery, but it does not make `android_volume_status` discoverable unless `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` is also configured.
 
-The release contract currently validates six isolated Android feature postures. An `--all-features` build is useful for local integration testing, but it must not be renamed or represented as one of those durable posture-specific release assets. See [Android validation artifacts](ANDROID_ARTIFACTS.md).
+The release contract validates seven Android artifacts: six least-privilege postures and the named `full-suite` aggregate. Raw `--all-features` remains useful for compatibility testing, but it must not be renamed or represented as the aggregate durable release asset. See [Android validation artifacts](ANDROID_ARTIFACTS.md).
 
 ## Baseline MCP tools
 
@@ -99,4 +100,4 @@ For issuance and recovery details, use the dedicated contracts for [directory cr
 
 ## Deliberately unavailable authority
 
-No build exposes a general shell, caller-selected command execution, global process inventory, arbitrary service control, package management, network mutation, recursive deletion, broad Android control, or unrestricted shared-storage access. Adding one of those authority classes requires a separate threat model, gate, tests, and release evidence; `--all-features` does not bypass that boundary.
+No build exposes a general shell, caller-selected command execution, global process inventory, arbitrary service control, package management, network mutation, recursive deletion, broad Android control, or unrestricted shared-storage access. Adding one of those authority classes requires a separate threat model, gate, tests, and release evidence; neither `full-suite` nor raw `--all-features` bypasses that boundary.

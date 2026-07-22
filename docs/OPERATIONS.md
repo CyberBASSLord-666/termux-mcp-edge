@@ -347,16 +347,16 @@ Do not manually repoint release links outside the project releases directory. Pr
 
 ## Release process
 
-1. Run format, workspace/all-target/all-feature Clippy, workspace/all-target/all-feature tests, and deployment shell tests.
-2. Build the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` release postures.
+1. Run format, named full-suite and raw all-feature Clippy/tests, and deployment shell tests with locked dependency resolution.
+2. Build the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, `command-execution`, and `full-suite` release postures.
 3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
-4. Cross-compile and validate all six Android postures, including native ARM64 official-Termux execution and the control/command compile-gate truth tables.
+4. Cross-compile and validate all seven governed Android postures, including native ARM64 official-Termux aggregate schema/gate-v3 evidence and the 17-disabled/21-enabled full-suite truth table.
 5. Record and verify each posture-specific artifact's SHA-256 digest.
 6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.
 8. Confirm deployment status, runit state, health, readiness, and authenticated discovery.
 9. Validate representative allowed and denied MCP calls, including the independent disabled/enabled file-write gate, exact-binary grant issuance, authorized create/replace, mismatch/replay denials, fixed mode/limits, no-replace creation, irreversible exchange, bounded retained recovery artifacts, reserved-namespace isolation, and private audit/result surfaces.
 10. Exercise rollback before declaring production readiness.
-11. Preserve the prior known-good release through sustained battery, thermal, and process-restriction validation.
+11. Obtain a fresh direct physical AArch64 observation with device harness v11 against the same immutable commit and retain its separate native-build digest. Validator-v11/schema-v2 evidence—not the independently built harness binary—binds the exact workflow full-suite digest; the v0.5.1 bridge cannot qualify this candidate.
 
 Do not describe fixed server diagnostics as arbitrary command execution or exact-stream volume control as general Android authority. Shells, caller-selected commands, and unrelated high-impact tools remain unavailable until their independent gates, tests, audit behavior, and recovery semantics are complete.

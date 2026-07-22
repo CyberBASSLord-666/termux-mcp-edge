@@ -2,7 +2,7 @@
 
 This document defines validation evidence for the stable MCP transport around the current staged tool surface and for future protocol or capability expansion.
 
-The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented 17-tool baseline, including independently grant-gated reversible `trash_file`. It uses bounded session-backed lifecycle state, declines optional SSE with HTTP 405 by default, and offers a separately configured finite SSE response/resumption posture.
+The default build remains a conservative Axum health/readiness service. The optional `mcp-runtime` build exposes authenticated stable MCP 2025-11-25 Streamable HTTP handling and the documented 17-tool baseline, including independently grant-gated reversible `trash_file`. The named `full-suite` build composes all four optional providers but remains at 17 tools until their independent runtime flags are enabled, reaching exactly 21 with all four enabled. Raw `--all-features` remains compatibility coverage rather than a release identity.
 
 ## Required PR shape
 
@@ -24,7 +24,9 @@ Every MCP runtime PR must prove:
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 cargo build --release --locked
 cargo build --release --locked --features mcp-runtime
@@ -32,9 +34,10 @@ cargo build --release --locked --features android-battery-status
 cargo build --release --locked --features android-volume-status
 cargo build --release --locked --features android-volume-control
 cargo build --release --locked --features command-execution
+cargo build --release --locked --features full-suite
 ```
 
-CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
+CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for all seven governed AArch64 postures, including `full-suite`, when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.
 
 ## Dependency gate
 

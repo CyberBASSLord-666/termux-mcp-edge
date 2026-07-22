@@ -18,6 +18,7 @@ android-battery-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-status = ["mcp-runtime", "tokio/process", "rustix/process"]
 android-volume-control = ["android-volume-status"]
 command-execution = ["mcp-runtime", "tokio/process", "rustix/process"]
+full-suite = ["mcp-runtime", "android-battery-status", "android-volume-status", "android-volume-control", "command-execution"]
 
 [dependencies]
 axum = "0.8"

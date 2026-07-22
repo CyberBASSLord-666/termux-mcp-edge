@@ -95,7 +95,7 @@ Changes to this tool are blocked unless tests and release gates prove:
 - complete response bounding at the exact raw-file limit;
 - path/content/host-metadata-private results and audit counters;
 - parity across default and optional artifact discovery postures;
-- release-validator v10, device-harness v10, and native official-Termux ARM64 execution for the exact candidate.
+- release-validator v11, device-harness v11, all seven governed Android postures, and native official-Termux ARM64 execution for the exact candidate.
 
 ## Non-goals
 

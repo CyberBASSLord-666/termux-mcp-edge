@@ -114,7 +114,7 @@ Changes to this tool are blocked unless tests and release gates prove:
 - worst-case NUL escaping within the exact full-response ceiling;
 - path/content/host-metadata-private results and audit counters;
 - parity across baseline and every optional artifact discovery posture; and
-- release-validator v10, device-harness v10, Android cross-builds, and native official-Termux ARM64 execution for the exact candidate.
+- release-validator v11, device-harness v11, all seven governed Android cross-builds, and native official-Termux ARM64 execution for the exact candidate.
 
 ## Non-goals
 

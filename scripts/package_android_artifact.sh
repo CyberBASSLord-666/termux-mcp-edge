@@ -9,7 +9,7 @@ usage() {
 Usage: package_android_artifact.sh \
   --binary FILE --output-dir DIR --repository OWNER/REPO --commit SHA \
   --workflow-run-id ID --artifact-name NAME \
-  --posture default|mcp-runtime|android-battery-status|android-volume-status|android-volume-control|command-execution \
+  --posture default|mcp-runtime|android-battery-status|android-volume-status|android-volume-control|command-execution|full-suite \
   --version VERSION
 EOF
 }
@@ -91,6 +91,10 @@ case "$POSTURE" in
   command-execution)
     expected_artifact_name=termux-mcp-server-aarch64-linux-android-command-execution
     features='["command-execution"]'
+    ;;
+  full-suite)
+    expected_artifact_name=termux-mcp-server-aarch64-linux-android-full-suite
+    features='["full-suite"]'
     ;;
   *) fail posture_invalid ;;
 esac

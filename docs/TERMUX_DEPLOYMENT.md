@@ -236,7 +236,9 @@ Both operations target only the configured project deployment root, the fixed `m
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 ```
@@ -247,7 +249,7 @@ The test suite covers the binary CLI contract, verified install, invalid operati
 
 Use [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) and `scripts/termux_device_smoke.sh` for the canonical automated no-clone exercise. It pins the fetched source to a required full commit SHA and covers the checks below in isolated real runit state. Preserve its mode-`0600` report with the exact CI and Android evidence.
 
-Use [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md) for downloaded default/`mcp-runtime` artifacts. Its deployment phase calls this same manager in unique test roots by default, requires explicit mutation confirmation, exercises failed-candidate and failed-rollback recovery, and emits a sanitized JSON result. Canonical production-root actions require a separate action-specific confirmation and never replace production configuration.
+Use [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md) for downloaded default, `mcp-runtime`, volume-control, and `full-suite` artifacts. Validator v11 emits sanitized direct evidence schema v2. Its deployment phase installs the full-suite candidate under the unchanged `termux-mcp-server` basename, requires explicit mutation confirmation, and exercises failed-candidate and failed-rollback recovery. Canonical production-root actions require a separate action-specific confirmation and never replace production configuration.
 
 1. Confirm the artifact corresponds to the intended exact commit or release.
 2. Verify its SHA-256 digest.

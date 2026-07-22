@@ -2,7 +2,7 @@
 
 ## Current Security Posture
 
-Termux MCP Edge has six deliberate compile-time postures:
+Termux MCP Edge has seven governed compile-time postures: six least-privilege choices plus one named aggregate:
 
 - The default feature set exposes the Axum `GET /health` and `GET /ready` operational endpoints and validates fail-closed startup authentication configuration.
 - The optional `mcp-runtime` feature additionally exposes stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its narrowly scoped staged tool registry.
@@ -10,6 +10,9 @@ Termux MCP Edge has six deliberate compile-time postures:
 - The optional `android-volume-status` feature includes `mcp-runtime` and permits a separately runtime-gated read-only audio-stream volume-status tool.
 - The optional `android-volume-control` feature permits only separately runtime-gated, preview-first, exact-stream volume mutation with a fresh live bound and one exact single-use request grant.
 - The optional `command-execution` feature includes `mcp-runtime` and permits a separately runtime-gated fixed-profile server diagnostic tool.
+- The `full-suite` feature explicitly composes all four optional families. It exposes exactly the 17 baseline tools with optional runtime gates off and exactly 21 only when all four are enabled independently.
+
+`full-suite` adds compiled code, not authority. It does not enable a constituent runtime flag, satisfy static authentication, or replace any filesystem or volume request grant. Raw Cargo `--all-features` remains a development compatibility posture and is not the named public aggregate artifact.
 
 The transport negotiates protocol version `2025-11-25`, requires initialization before normal operations, enforces JSON/SSE media acceptance and subsequent protocol/session headers, and uses bounded in-memory UUID sessions. GET returns the specification-permitted HTTP 405 by default; a separate default-disabled setting permits finite SSE response replay under fixed session-owned limits.
 

@@ -81,7 +81,7 @@ The exact candidate must prove:
 - the 8,192-entry, 512-match, and 262,144-byte boundaries;
 - safe-root, linked-parent, final-link, special-object, invalid-UTF-8, unreadable, and response-ID preflight behavior;
 - content/query/path-private audit decisions;
-- validator v10, device harness v10, every optional posture allowlist, Android cross-builds, and native official-Termux ARM64 execution.
+- validator v11, device harness v11, all seven governed posture allowlists and Android cross-builds, and native official-Termux ARM64 execution.
 
 ## Non-goals
 

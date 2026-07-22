@@ -3,7 +3,7 @@
 `scripts/termux_release_validate.sh` validates downloaded Android release candidates without downloading anything or installing packages. It complements the source-building gate in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md):
 
 - the device-production gate proves an exact source commit can build and survive a comprehensive isolated Termux lifecycle;
-- the release-candidate validator proves the exact downloaded default, `mcp-runtime`, and `android-volume-control` artifacts, their checksums, feature postures, fail-closed control posture, runtime behavior, and deployment behavior.
+- the release-candidate validator proves the exact downloaded default, `mcp-runtime`, `android-volume-control`, and governed `full-suite` artifacts, their checksums, feature postures, fail-closed runtime gates, aggregate runtime behavior, and deployment behavior.
 
 Neither gate creates a tag or GitHub Release. Publishing remains a separate maintainer decision under [`RELEASE_GOVERNANCE.md`](RELEASE_GOVERNANCE.md).
 
@@ -33,7 +33,7 @@ for script in termux_release_validate.sh termux_deploy.sh; do
 done
 ```
 
-Download the default, `mcp-runtime`, and `android-volume-control` workflow artifacts from the recorded Android run and extract them into separate mode-`0700` directories. In each directory, run `sha256sum -c SHA256SUMS`, then set the extracted binary to mode `0700`. Downloading scripts or artifacts is deliberately outside the validator's authority and should finish before preflight begins.
+Download the default, `mcp-runtime`, `android-volume-control`, and `full-suite` workflow artifacts from the recorded Android run and extract them into separate mode-`0700` directories. In each directory, run `sha256sum -c SHA256SUMS`, then set the extracted binary to mode `0700`. Downloading scripts or artifacts is deliberately outside the validator's authority and should finish before preflight begins.
 
 ## Private literal configuration
 
@@ -59,6 +59,9 @@ MCP_MANIFEST=$HOME/artifacts/mcp-runtime/artifact-manifest.json
 VOLUME_CONTROL_ARTIFACT=$HOME/artifacts/android-volume-control/termux-mcp-server
 VOLUME_CONTROL_SHA256=<64-lowercase-hex>
 VOLUME_CONTROL_MANIFEST=$HOME/artifacts/android-volume-control/artifact-manifest.json
+FULL_SUITE_ARTIFACT=$HOME/artifacts/full-suite/termux-mcp-server
+FULL_SUITE_SHA256=<64-lowercase-hex>
+FULL_SUITE_MANIFEST=$HOME/artifacts/full-suite/artifact-manifest.json
 BASELINE_ARTIFACT=$HOME/artifacts/termux-mcp-server-v0.5.1-aarch64-linux-android-mcp-runtime
 BASELINE_VERSION=0.5.1
 BASELINE_SHA256=<64-lowercase-hex>
@@ -94,17 +97,17 @@ bash scripts/termux_release_validate.sh \
   --phase preflight
 ```
 
-For all three downloaded artifacts it verifies:
+For all four downloaded artifacts it verifies:
 
 - regular, executable, non-symlink state;
 - nonzero size no greater than 64 MiB;
 - exact supplied SHA-256 digest;
-- pairwise-distinct default, `mcp-runtime`, and `android-volume-control` files, manifests, and digests;
+- pairwise-distinct default, `mcp-runtime`, `android-volume-control`, and `full-suite` files, manifests, and digests;
 - AArch64 Android ELF identity from `file`;
 - an exact workflow-generated manifest matching repository, commit, Android run ID, artifact name, posture, feature set, target, version, digest, size, and ELF classification;
 - exact embedded `--version` output.
 
-After checksum verification, the validator copies each artifact into its private temporary workspace, rechecks size, digest, and ELF identity there, and uses only that pinned copy for the bounded version, runtime, and deployment phases. The version probe is limited to five seconds. The validator does not request listener or service startup during preflight, but `--version` still executes candidate code; treat the supplied digest and matching workflow manifest as the trust boundary for that execution.
+After checksum verification, the validator copies each artifact into a posture-specific private directory in its temporary workspace, preserving the executable basename as `termux-mcp-server`. It rechecks size, digest, and ELF identity there and uses only that pinned copy for the bounded version, runtime, and deployment phases. Preserving the basename is part of the fixed command-profile identity boundary; it does not weaken the no-follow device/inode checks. The version probe is limited to five seconds. The validator does not request listener or service startup during preflight, but `--version` still executes candidate code; treat the supplied digest and matching workflow manifest as the trust boundary for that execution.
 
 The CI and Security run IDs remain operator-supplied provenance assertions. Each Android bundle includes `artifact-manifest.json` and `SHA256SUMS`; the validator requires the manifest's exact commit and Android run ID to match the private configuration and requires its digest/size to match the downloaded binary. The binary does not currently embed a Git commit, so retain the complete workflow bundle and independently confirm that the recorded run identifies the intended commit.
 
@@ -151,7 +154,7 @@ The `mcp-runtime` artifact must prove:
 - documented default JSON/GET-405 posture and default-disabled bounded SSE option;
 - explicit session deletion.
 
-Trash-grant replay and concurrent-replay denial remain required automated core/integration-test evidence. Validator v10 directly proves issuance, binding denial, preflight preservation, and successful recovery retention, but it does not reuse a consumed trash grant.
+Trash-grant replay and concurrent-replay denial remain required automated core/integration-test evidence. Validator v11 directly proves issuance, binding denial, preflight preservation, and successful recovery retention, but it does not reuse a consumed trash grant.
 
 The `android-volume-control` artifact must additionally prove:
 
@@ -161,7 +164,15 @@ The `android-volume-control` artifact must additionally prove:
 - a direct call returns the stable `volume_control_runtime_disabled` result;
 - no control grant is issued, `termux-volume` is never invoked, and device audio is never changed by the canonical validator.
 
-Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v10 runtime result includes `request_scoped_single_use_grant_enforced`, `request_scoped_single_use_copy_grant_enforced`, `request_scoped_trash_grant_enforced`, `trash_identity_content_binding_enforced`, `trash_recovery_quarantine_verified`, `request_scoped_single_use_write_grant_enforced`, `safe_root_path_discovery_verified`, `safe_root_file_hash_verified`, `safe_root_binary_read_verified`, `safe_root_binary_range_read_verified`, `incompatible_volume_control_artifact_rejected`, `volume_control_hidden_while_disabled`, and `volume_control_disabled_call_rejected`.
+The governed `full-suite` artifact is exercised in six runtime postures:
+
+1. With all optional runtime flags omitted, it must expose exactly the 17 baseline tools in deterministic order. Runtime status must report battery status, volume status/control, and fixed command execution as compiled but disabled. Direct calls must return their stable runtime-disabled results, and all four filesystem mutation gates and grant requirements must remain false.
+2. Four isolated postures enable battery, volume status, volume control, or fixed command execution one at a time. Each must expose exactly the 17 baseline tools plus only its selected tool, report only that runtime gate active, and complete the selected bounded provider/profile call.
+3. With `MCP__ANDROID__BATTERY_STATUS_ENABLED`, `MCP__ANDROID__VOLUME_STATUS_ENABLED`, `MCP__ANDROID__VOLUME_CONTROL_ENABLED`, and `MCP__COMMAND__ENABLED` explicitly enabled, it must expose exactly 21 tools in deterministic order. The validator reads normalized battery and six-stream volume status, requests a distinct in-range non-mutating volume preview, proves a distinct live request is rejected without its exact grant, re-reads the provider after both calls, and runs only the fixed `server_version` command profile. It directly dispatches create, copy, reversible trash, and write with `dry_run:false`, requires each stable disabled reason, and proves source identity/content, target absence, and quarantine state remain unchanged. A defective volume candidate triggers fixed-path restoration and provider re-verification before the validator fails.
+
+The fully enabled phase requires the real Termux:API battery and volume providers to succeed. It never issues a volume-control grant and never changes device audio. Fixed command execution succeeds only from the basename-preserving pinned artifact and remains bound to the already-loaded executable inode.
+
+Response bodies, safe-root paths, test file contents, bearer tokens, capability keys/grants, and session identifiers stay in the private temporary workspace and are deleted. They are never copied into JSON evidence. A passing validator-v11 runtime result includes `request_scoped_single_use_grant_enforced`, `request_scoped_single_use_copy_grant_enforced`, `request_scoped_trash_grant_enforced`, `trash_identity_content_binding_enforced`, `trash_recovery_quarantine_verified`, `request_scoped_single_use_write_grant_enforced`, `safe_root_path_discovery_verified`, `safe_root_file_hash_verified`, `safe_root_binary_read_verified`, `safe_root_binary_range_read_verified`, `incompatible_volume_control_artifact_rejected`, `volume_control_hidden_while_disabled`, `volume_control_disabled_call_rejected`, `full_suite_default_disabled_17_tool_posture_verified`, four `full_suite_*_runtime_gate_independence_verified` results, `full_suite_enabled_21_tool_posture_verified`, `full_suite_optional_provider_success_verified`, `full_suite_volume_preview_and_grant_boundary_verified`, `full_suite_command_basename_and_profile_verified`, and `full_suite_filesystem_mutations_independently_disabled`.
 
 ## Phase 3: deployment validation
 
@@ -175,7 +186,7 @@ bash scripts/termux_release_validate.sh \
   --confirm-deployment-mutation
 ```
 
-It uses the canonical `termux_deploy.sh` manager with unique deployment, configuration, service, and safe-root paths. On a real Termux device it starts a dedicated `runsvdir` and first installs, upgrades to, rolls back from, and uninstalls the default-posture artifact. It then verifies the `mcp-runtime` recovery cycle:
+It uses the canonical `termux_deploy.sh` manager with unique deployment, configuration, service, and safe-root paths. On a real Termux device it starts a dedicated `runsvdir` and first installs, upgrades to, rolls back from, and uninstalls the default-posture artifact. It then verifies the governed `full-suite` recovery cycle:
 
 1. baseline install;
 2. forced candidate-readiness failure and prior-runtime recovery;
@@ -208,17 +219,18 @@ bash scripts/termux_release_validate.sh \
   --confirm-production-roots termux-mcp-edge-production-upgrade
 ```
 
-Canonical actions are accepted only on AArch64 Termux when `HOME` and `PREFIX` match the application's canonical private directories. They use the production manager's default roots and existing private production configuration. The validator does not create or replace production `runtime.env`. Ordinary release validation should use the dedicated cycle; production actions are for an already approved release operation. The forced-failure action also snapshots the canonical `current`/`previous` links and requires exact restoration plus candidate removal before it passes.
+Canonical actions are accepted only on AArch64 Termux when `HOME` and `PREFIX` match the application's canonical private directories. Install, upgrade, and forced-upgrade-failure actions select the exact verified `full-suite` artifact; rollback and uninstall remain manager actions against existing production state. They use the production manager's default roots and existing private production configuration. The validator does not create or replace production `runtime.env`. Ordinary release validation should use the dedicated cycle; production actions are for an already approved release operation. The forced-failure action also snapshots the canonical `current`/`previous` links and requires exact restoration plus candidate removal before it passes.
 
 ## Versioned sanitized evidence
 
-Reports conform to [`release-evidence-schema-v1.json`](release-evidence-schema-v1.json). The report contains:
+Validator-v11 reports conform to [`release-evidence-schema-v2.json`](release-evidence-schema-v2.json). Historical validator reports remain governed by the unchanged [`release-evidence-schema-v1.json`](release-evidence-schema-v1.json); v1 cannot represent or qualify the new full-suite build input. The v2 report contains:
 
 - schema and validator versions;
 - pass/fail status and one stable failure code;
 - exact expected commit, package version, and workflow run IDs;
 - architecture and bounded tool-version strings;
-- artifact posture, digest, size, version, and ELF classification;
+- exact default, `mcp-runtime`, `android-volume-control`, full-suite, and optional baseline digest, size, version, and ELF classifications;
+- `deploymentCandidate.posture:"full-suite"` plus the bounded production action name when one was explicitly requested;
 - requested phase and per-phase state;
 - fixed check names, outcomes, and reason codes;
 - operator-supplied sustained-observation state.
@@ -258,9 +270,9 @@ A failed observation uses `fail`, a positive observed duration, and one bounded 
 
 A supplied failed observation makes the validator exit nonzero with `sustained_observation_failed`, even when every automated phase passed. `not_run` may accompany a successful automated report but can never make it release-eligible.
 
-`releaseEligible` becomes true only for a non-fixture `--phase all` report with every phase passing and a valid passing sustained observation. This field is evidence for maintainer review; it does not publish or authorize a release.
+`releaseEligible` becomes true only for a non-fixture validator-v11 `--phase all` report with every phase passing, the exact full-suite artifact bound into schema-v2 evidence, the dedicated full-suite deployment candidate selected, and a valid passing sustained observation. This field is evidence for maintainer review; it does not publish or authorize a release.
 
-The canonical report intentionally models only a direct observation. A metadata-only descendant may instead use the separate inherited-observation route in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). That route requires the earlier direct `releaseEligible: true` report, exact candidate runtime validation, native ARM64 official-Termux stress evidence, unchanged runtime/dependency/deployment inputs, and exact bridge artifact digests. It does not alter or relabel a `not_run` canonical report.
+The canonical report intentionally models only a direct observation. The historical v0.5.1 observation and its bridge do not bind the full-suite digest and cannot qualify this changed build input; the first full-suite candidate requires a fresh direct physical AArch64 Termux observation. Any future inherited-observation route must explicitly bind the source report, bridge artifact, and full-suite digest under its then-current versioned contract. It cannot alter or relabel a `not_run` canonical report.
 
 ## Failure and cleanup
 

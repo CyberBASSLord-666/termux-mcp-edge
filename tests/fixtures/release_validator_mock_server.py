@@ -14,6 +14,7 @@ import re
 import stat
 import struct
 import sys
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -87,11 +88,15 @@ def runtime_value(name: str, default: str | None = None) -> str | None:
 
 POSTURE = sys.argv[1]
 VERSION = sys.argv[2] if len(sys.argv) > 2 else ""
-MCP_ENABLED = POSTURE in {"mcp", "volume-control"}
+FULL_SUITE_COMPILED = POSTURE == "full-suite"
+MCP_ENABLED = POSTURE in {"mcp", "volume-control", "full-suite"}
 WRITE_QUARANTINE_COMPONENT = ".termux-mcp-write-quarantine"
 TRASH_QUARANTINE_COMPONENT = ".termux-mcp-trash-quarantine"
 TRASH_ARTIFACT_PREFIX = ".termux-mcp-trash-artifact-"
-VOLUME_CONTROL_COMPILED = POSTURE == "volume-control"
+BATTERY_STATUS_COMPILED = FULL_SUITE_COMPILED
+VOLUME_STATUS_COMPILED = FULL_SUITE_COMPILED
+VOLUME_CONTROL_COMPILED = POSTURE == "volume-control" or FULL_SUITE_COMPILED
+COMMAND_EXECUTION_COMPILED = FULL_SUITE_COMPILED
 PORT = int(runtime_value("MCP__SERVER__PORT", "0") or "0")
 TOKEN = runtime_value("MCP__AUTH__STATIC_TOKEN")
 SAFE_ROOT_VALUE = runtime_value("MCP__FILE__SAFE_ROOTS")
@@ -117,6 +122,50 @@ CAPABILITY_KEY_ID = runtime_value("MCP__CAPABILITY__KEY_ID", "") or ""
 CAPABILITY_KEY_HEX = runtime_value("MCP__CAPABILITY__HMAC_KEY_HEX", "") or ""
 CAPABILITY_HEADER = "MCP-Capability-Grant"
 CONSUMED_GRANTS: set[bytes] = set()
+BATTERY_STATUS_ENABLED = (
+    runtime_value("MCP__ANDROID__BATTERY_STATUS_ENABLED", "false") == "true"
+)
+VOLUME_STATUS_ENABLED = (
+    runtime_value("MCP__ANDROID__VOLUME_STATUS_ENABLED", "false") == "true"
+)
+VOLUME_CONTROL_ENABLED = (
+    runtime_value("MCP__ANDROID__VOLUME_CONTROL_ENABLED", "false") == "true"
+)
+COMMAND_EXECUTION_ENABLED = runtime_value("MCP__COMMAND__ENABLED", "false") == "true"
+VOLUME_STATE_VALUE = os.environ.get("TERMUX_MCP_RELEASE_FIXTURE_VOLUME_STATE", "")
+VOLUME_STATE_PATH = pathlib.Path(VOLUME_STATE_VALUE) if VOLUME_STATE_VALUE else None
+VOLUME_FAULT = os.environ.get("TERMUX_MCP_RELEASE_FIXTURE_VOLUME_FAULT", "")
+if VOLUME_FAULT not in {"", "preview_mutates", "denial_mutates"}:
+    raise SystemExit(2)
+if VOLUME_STATE_PATH is not None and not VOLUME_STATE_PATH.is_absolute():
+    raise SystemExit(2)
+VOLUME_STATE_LOCK = threading.Lock()
+MUSIC_LEVEL = 5
+
+
+def read_music_level() -> int:
+    global MUSIC_LEVEL
+    with VOLUME_STATE_LOCK:
+        if VOLUME_STATE_PATH is None:
+            return MUSIC_LEVEL
+        try:
+            value = int(VOLUME_STATE_PATH.read_text(encoding="ascii"))
+        except (OSError, UnicodeError, ValueError) as error:
+            raise RuntimeError("invalid fixture volume state") from error
+        if not 0 <= value <= 15:
+            raise RuntimeError("invalid fixture volume level")
+        return value
+
+
+def write_music_level(level: int) -> None:
+    global MUSIC_LEVEL
+    if not 0 <= level <= 15:
+        raise RuntimeError("invalid fixture volume level")
+    with VOLUME_STATE_LOCK:
+        if VOLUME_STATE_PATH is None:
+            MUSIC_LEVEL = level
+            return
+        VOLUME_STATE_PATH.write_text(f"{level}\n", encoding="ascii")
 TOOLS = [
     "runtime_status",
     "platform_info",
@@ -136,6 +185,14 @@ TOOLS = [
     "search_text",
     "write_file",
 ]
+if BATTERY_STATUS_ENABLED:
+    TOOLS.append("android_battery_status")
+if VOLUME_STATUS_ENABLED:
+    TOOLS.append("android_volume_status")
+if VOLUME_CONTROL_ENABLED:
+    TOOLS.append("set_android_volume")
+if COMMAND_EXECUTION_ENABLED:
+    TOOLS.append("run_command_profile")
 MAX_WRITE_FILE_BYTES = 1_048_576
 MAX_WRITE_FILE_RESPONSE_BYTES = 16_384
 MAX_COPY_FILE_BYTES = 1_048_576
@@ -1381,6 +1438,67 @@ class Handler(BaseHTTPRequestHandler):
                             },
                         }
                     )
+                elif name in {"android_battery_status", "android_volume_status"}:
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture bounded read-only Android status provider.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
+                elif name == "set_android_volume":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture preview-first request-granted Android volume control.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "stream": {
+                                        "type": "string",
+                                        "enum": [
+                                            "alarm",
+                                            "call",
+                                            "music",
+                                            "notification",
+                                            "ring",
+                                            "system",
+                                        ],
+                                    },
+                                    "level": {"type": "integer", "minimum": 0},
+                                    "dry_run": {"type": "boolean"},
+                                },
+                                "required": ["stream", "level"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
+                elif name == "run_command_profile":
+                    tools.append(
+                        {
+                            "name": name,
+                            "description": "Fixture fixed read-only server diagnostic profile.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "profile": {
+                                        "type": "string",
+                                        "enum": [
+                                            "server_version",
+                                            "server_help",
+                                            "execution_boundary",
+                                        ],
+                                    }
+                                },
+                                "required": ["profile"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    )
                 else:
                     tools.append(
                         {
@@ -1440,9 +1558,21 @@ class Handler(BaseHTTPRequestHandler):
                 result(
                     identifier,
                     {
-                        "commandExecution": False,
-                        "androidPlatformTools": False,
-                        "highImpactTools": False,
+                        "availableTools": TOOLS,
+                        "commandExecutionCompiled": COMMAND_EXECUTION_COMPILED,
+                        "commandExecution": COMMAND_EXECUTION_ENABLED,
+                        "commandExecutionMode": (
+                            "fixed_read_only_server_diagnostics"
+                            if COMMAND_EXECUTION_ENABLED
+                            else "disabled"
+                        ),
+                        "arbitraryCommandExecution": False,
+                        "androidPlatformTools": (
+                            BATTERY_STATUS_ENABLED
+                            or VOLUME_STATUS_ENABLED
+                            or VOLUME_CONTROL_ENABLED
+                        ),
+                        "highImpactTools": VOLUME_CONTROL_ENABLED,
                         "serverSentEvents": SSE_ENABLED,
                         "serverSentEventsMode": (
                             "finite_request_response_with_origin_stream_replay"
@@ -1455,9 +1585,13 @@ class Handler(BaseHTTPRequestHandler):
                         "sseMaxReplayBytesPerSession": 262144,
                         "sseMaxLastEventIdBytes": 64,
                         "sseRetryMilliseconds": 1000,
+                        "androidBatteryStatusCompiled": BATTERY_STATUS_COMPILED,
+                        "androidBatteryStatusEnabled": BATTERY_STATUS_ENABLED,
+                        "androidVolumeStatusCompiled": VOLUME_STATUS_COMPILED,
+                        "androidVolumeStatusEnabled": VOLUME_STATUS_ENABLED,
                         "androidVolumeControlCompiled": VOLUME_CONTROL_COMPILED,
-                        "androidVolumeControlEnabled": False,
-                        "androidVolumeGrantRequired": False,
+                        "androidVolumeControlEnabled": VOLUME_CONTROL_ENABLED,
+                        "androidVolumeGrantRequired": VOLUME_CONTROL_ENABLED,
                         "pathDiscovery": True,
                         "pathDiscoveryMatchMode": "case_sensitive_literal_basename",
                         "pathDiscoveryMaxDepth": 5,
@@ -1537,16 +1671,158 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if name == "android_battery_status" and BATTERY_STATUS_COMPILED:
+            if BATTERY_STATUS_ENABLED:
+                self.send_json(
+                    200,
+                    result(
+                        identifier,
+                        {
+                            "present": True,
+                            "health": "GOOD",
+                            "status": "DISCHARGING",
+                            "temperature_celsius": 31.5,
+                            "percentage": 73,
+                        },
+                    ),
+                )
+            else:
+                response = result(
+                    identifier,
+                    {
+                        "error": "android_battery_status_unavailable",
+                        "reasonCode": "battery_runtime_disabled",
+                    },
+                )
+                response["result"]["isError"] = True
+                self.send_json(200, response)
+            return
+        if name == "android_volume_status" and VOLUME_STATUS_COMPILED:
+            if VOLUME_STATUS_ENABLED:
+                music_level = read_music_level()
+                self.send_json(
+                    200,
+                    result(
+                        identifier,
+                        {
+                            "streams": [
+                                {
+                                    "stream": stream,
+                                    "volume": music_level if stream == "music" else 5,
+                                    "maxVolume": 15,
+                                }
+                                for stream in [
+                                    "alarm",
+                                    "call",
+                                    "music",
+                                    "notification",
+                                    "ring",
+                                    "system",
+                                ]
+                            ]
+                        },
+                    ),
+                )
+            else:
+                response = result(
+                    identifier,
+                    {
+                        "error": "android_volume_status_unavailable",
+                        "reasonCode": "volume_runtime_disabled",
+                    },
+                )
+                response["result"]["isError"] = True
+                self.send_json(200, response)
+            return
         if name == "set_android_volume" and VOLUME_CONTROL_COMPILED:
-            response = result(
-                identifier,
-                {
-                    "reasonCode": "volume_control_runtime_disabled",
-                    "outcome": "denied",
-                },
+            if not VOLUME_CONTROL_ENABLED:
+                response = result(
+                    identifier,
+                    {
+                        "error": "android_volume_control_unavailable",
+                        "reasonCode": "volume_control_runtime_disabled",
+                    },
+                )
+                response["result"]["isError"] = True
+                self.send_json(200, response)
+                return
+            level = arguments.get("level")
+            if arguments.get("stream") != "music" or not isinstance(level, int):
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32602,
+                        "Invalid params",
+                        "Tool arguments are invalid.",
+                    ),
+                )
+                return
+            previous_level = read_music_level()
+            if arguments.get("dry_run", True) is False:
+                if VOLUME_FAULT == "denial_mutates":
+                    write_music_level(level)
+                self.send_json(403, capability_error(identifier, "capability_grant_missing"))
+                return
+            if VOLUME_FAULT == "preview_mutates":
+                write_music_level(level)
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "stream": "music",
+                        "previousLevel": previous_level,
+                        "requestedLevel": level,
+                        "maxVolume": 15,
+                        "dryRun": True,
+                        "changed": False,
+                        "verified": False,
+                        "outcome": "preview",
+                        "rollback": "not_required",
+                    },
+                ),
             )
-            response["result"]["isError"] = True
-            self.send_json(200, response)
+            return
+        if name == "run_command_profile" and COMMAND_EXECUTION_COMPILED:
+            if not COMMAND_EXECUTION_ENABLED:
+                response = result(
+                    identifier,
+                    {
+                        "error": "command_profile_execution_failed",
+                        "reasonCode": "command_runtime_disabled",
+                    },
+                )
+                response["result"]["isError"] = True
+                self.send_json(200, response)
+                return
+            if arguments.get("profile") != "server_version" or len(arguments) != 1:
+                self.send_json(
+                    400,
+                    rpc_error(
+                        identifier,
+                        -32602,
+                        "Invalid params",
+                        "Tool arguments are invalid.",
+                    ),
+                )
+                return
+            stdout = f"termux-mcp-server {VERSION}\n"
+            self.send_json(
+                200,
+                result(
+                    identifier,
+                    {
+                        "profile": "server_version",
+                        "exitCode": 0,
+                        "stdout": stdout,
+                        "stderr": "",
+                        "stdoutBytes": len(stdout.encode()),
+                        "stderrBytes": 0,
+                        "durationMilliseconds": 1,
+                    },
+                ),
+            )
             return
         if name == "platform_info":
             self.send_json(
@@ -2631,7 +2907,7 @@ if POSTURE == "issue-write":
     print(issue_fixture_grant("write_file"))
     raise SystemExit(0)
 
-if POSTURE not in {"default", "mcp", "volume-control"}:
+if POSTURE not in {"default", "mcp", "volume-control", "full-suite"}:
     raise SystemExit(2)
 
 ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

@@ -126,6 +126,18 @@ jq -e '
   and .features == ["command-execution"]
 ' "$COMMAND_BUNDLE/artifact-manifest.json" >/dev/null
 
+FULL_SUITE_BUNDLE="$ROOT/output/full-suite"
+run_package \
+  "$BINARY" \
+  "$FULL_SUITE_BUNDLE" \
+  termux-mcp-server-aarch64-linux-android-full-suite \
+  full-suite >/dev/null
+jq -e '
+  .posture == "full-suite"
+  and .artifactName == "termux-mcp-server-aarch64-linux-android-full-suite"
+  and .features == ["full-suite"]
+' "$FULL_SUITE_BUNDLE/artifact-manifest.json" >/dev/null
+
 LINKER_ONLY="$ROOT/linker-only-candidate"
 printf '%s\n' '#!/usr/bin/env bash' '# linker-only' 'exit 0' >"$LINKER_ONLY"
 chmod 700 "$LINKER_ONLY"
@@ -135,6 +147,16 @@ jq -e '.elf == "aarch64-android-elf"' "$ROOT/output/linker-only/artifact-manifes
 assert_fails run_package "$BINARY" "$ROOT/output/mismatch" termux-mcp-server-aarch64-linux-android-default mcp-runtime
 grep -Fq artifact_name_posture_mismatch "$ROOT/last.stderr" || fail_test "posture mismatch code absent"
 [[ ! -e "$ROOT/output/mismatch" ]] || fail_test "posture mismatch created output"
+
+assert_fails run_package \
+  "$BINARY" \
+  "$ROOT/output/full-suite-mismatch" \
+  termux-mcp-server-aarch64-linux-android-command-execution \
+  full-suite
+grep -Fq artifact_name_posture_mismatch "$ROOT/last.stderr" \
+  || fail_test "full-suite posture mismatch code absent"
+[[ ! -e "$ROOT/output/full-suite-mismatch" ]] \
+  || fail_test "full-suite posture mismatch created output"
 
 WRONG_ARCH="$ROOT/wrong-arch-candidate"
 printf '%s\n' '#!/usr/bin/env bash' '# wrong-arch' 'exit 0' >"$WRONG_ARCH"

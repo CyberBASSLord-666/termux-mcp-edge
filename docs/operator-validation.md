@@ -11,6 +11,7 @@ The expected posture is narrow and fail-closed:
 - In static-token mode, the complete `/mcp` route requires the configured bearer token before transport validation, JSON-RPC parsing, discovery, or invocation.
 - Explicit unauthenticated development mode is accepted only when startup validates a loopback bind.
 - `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file` are the 17 baseline tools expected in authenticated discovery. `android_battery_status`, `android_volume_status`, `set_android_volume`, and `run_command_profile` are expected only when their respective compile-time and runtime gates are enabled.
+- A governed `full-suite` binary still exposes exactly those 17 tools when all four optional runtime flags are off and exactly 21 when all four are enabled. Its feature alias is not a master runtime or request-authorization gate; raw Cargo `--all-features` is not the public aggregate posture.
 - `create_directory`, `copy_file`, `trash_file`, and `write_file` remain dry-run by default. All four mutations have independent default-disabled gates and request-grant bindings; `dry_run:false` alone must fail for each one.
 - Filesystem creation, reads, listings, searches, and writes remain bounded to configured safe roots.
 - `project_service_status` remains limited to explicitly allowlisted project-owned logical services.
@@ -21,7 +22,7 @@ The expected posture is narrow and fail-closed:
 
 Before validating behavior, confirm the operator configuration is deliberately narrow:
 
-1. Build with the intended feature set: normally `--features mcp-runtime`, `--features android-battery-status` for battery validation, `--features android-volume-status` for volume-status validation, `--features android-volume-control` for volume-control validation, or `--features command-execution` for fixed-command validation.
+1. Build with the intended feature set: normally `--features mcp-runtime`, one least-privilege optional feature for focused validation, or `--features full-suite` for the governed aggregate. Do not substitute raw `--all-features` for release evidence.
 2. Use a strong static bearer token for any deployment that is not explicitly loopback-development only.
 3. Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600`; do not echo the token or use shell tracing while it is loaded.
 4. Use localhost-only unauthenticated mode only when the server is bound to a loopback address and not exposed through a tunnel, LAN listener, or reverse proxy.

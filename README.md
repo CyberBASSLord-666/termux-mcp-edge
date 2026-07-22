@@ -15,9 +15,10 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 | Health and readiness only | `cargo build --release --locked` | No MCP route or tools. |
 | Standard MCP server | `cargo build --release --locked --features mcp-runtime` | Authenticated MCP transport with the 17 baseline tools. |
 | One optional Android or diagnostic tool | `cargo build --release --locked --features <feature>` | Baseline tools plus the selected tool after its separate runtime flag is enabled. |
-| Local aggregate validation or development | `cargo build --release --locked --all-features` | Up to 21 tools after all four optional runtime flags are enabled. This is not a named, separately qualified public release artifact. |
+| Governed full suite | `cargo build --release --locked --features full-suite` | Exactly 17 tools with all optional runtime flags off; exactly 21 after all four are enabled. This is the named aggregate Android release posture. |
+| Raw compatibility build | `cargo build --release --locked --all-features` | Development and compatibility coverage only. It is not the public aggregate artifact and must not substitute for `full-suite`. |
 
-The optional feature names are `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; each includes `mcp-runtime`. Compiling a feature does not enable its runtime flag. Live filesystem and volume mutations additionally require their independent default-disabled runtime gate and a fresh, exact-operation, single-use request grant.
+The optional feature names are `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; each includes `mcp-runtime`. The explicit `full-suite` feature composes all four without acting as a master authorization switch. Compiling any feature does not enable its runtime flag. Battery, volume-status, volume-control, and command discovery remain independently gated, and every live filesystem or volume mutation additionally requires its own default-disabled runtime gate plus a fresh, exact-operation, single-use request grant.
 
 See the [capability catalog](docs/CAPABILITIES.md) for every baseline and optional tool, build/runtime/request-authorization boundaries, and the precise meaning of a local full-feature build.
 
@@ -281,8 +282,10 @@ Run the exact CI gates:
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
+cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-targets --features mcp-runtime
+cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 ```
 
@@ -295,6 +298,7 @@ cargo build --release --locked --features android-battery-status
 cargo build --release --locked --features android-volume-status
 cargo build --release --locked --features android-volume-control
 cargo build --release --locked --features command-execution
+cargo build --release --locked --features full-suite
 ```
 
 The binary exposes deployment-facing metadata without requiring runtime configuration:
@@ -315,11 +319,11 @@ Use [`docs/TERMUX_DEPLOYMENT.md`](docs/TERMUX_DEPLOYMENT.md) as the canonical in
 - activates releases atomically;
 - restores prior release links, restarts the prior active runtime, and re-probes it when candidate or rollback validation fails.
 
-Before a release declaration, run the no-clone exact-commit AArch64 device gate in [`docs/DEVICE_PRODUCTION_GATE.md`](docs/DEVICE_PRODUCTION_GATE.md). The harness builds the pinned source natively in Termux and validates real isolated runit transitions, authenticated MCP lifecycle and tool boundaries, request-limit ordering, failed upgrade/rollback recovery, explicit rollback, uninstall, artifact identity, and cleanup.
+Before a release declaration, run the no-clone exact-commit AArch64 device gate in [`docs/DEVICE_PRODUCTION_GATE.md`](docs/DEVICE_PRODUCTION_GATE.md). Device harness v11 builds the pinned source natively in Termux, uses the locked `full-suite` candidate for deployment, proves the 17-disabled/21-enabled aggregate truth table, and validates real isolated runit transitions, authenticated MCP lifecycle and tool boundaries, independent runtime and request gates, failed upgrade/rollback recovery, explicit rollback, uninstall, artifact identity, and cleanup.
 
-Validate the exact downloaded default, `mcp-runtime`, and `android-volume-control` Android candidates together through [`docs/RELEASE_CANDIDATE_VALIDATION.md`](docs/RELEASE_CANDIDATE_VALIDATION.md). Each workflow bundle includes an exact-source manifest and checksum sidecar; the validator reconciles all three with supplied commit/run metadata, executes the seventeen-tool baseline including reversible grant-gated trashing, content-free path discovery, bounded file hashing, canonical binary reads, code-point-safe UTF-8 range pagination, and request-granted file-write mutation, proves the control posture remains hidden and inert by default without changing device audio, requires explicit confirmation for runtime/deployment phases, and emits only versioned sanitized JSON evidence.
+Validate the exact downloaded default, `mcp-runtime`, `android-volume-control`, and `full-suite` Android candidates together through [`docs/RELEASE_CANDIDATE_VALIDATION.md`](docs/RELEASE_CANDIDATE_VALIDATION.md). Validator v11 emits direct release evidence schema v2. It reconciles all four exact-source manifests and checksum sidecars with supplied commit/run metadata, executes the seventeen-tool baseline, proves the control posture remains hidden and inert by default, then exercises each of the four optional full-suite runtime gates alone before enabling all four together. It also live-dispatches all four disabled filesystem mutations and verifies unchanged sources, targets, destinations, and quarantines. Compile-time inclusion never replaces a runtime flag, and no runtime flag replaces an operation-bound grant.
 
-The Android workflow additionally executes the default, `mcp-runtime`, opt-in battery, read-only volume, request-authorized volume-control, and fixed-command postures in the digest-pinned official Termux container on a native ARM64 runner. Feature gates also consume an incompatible artifact where needed to prove compile-time rejection. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated gates, the evidence-only classification used when runtime changes require later physical release evidence, and the narrow conditions under which a completed physical observation may be inherited by a metadata-only descendant.
+The Android workflow produces seven governed bundles: the six least-privilege postures—default, `mcp-runtime`, battery, volume-status, volume-control, and command-execution—plus `termux-mcp-server-aarch64-linux-android-full-suite`. It executes them in the digest-pinned official Termux container on a native ARM64 runner and emits aggregate evidence schema/gate v3 for the full-suite digest, manifest, 17/21 truth table, four isolated runtime gates, and four disabled filesystem dispatches. Raw `--all-features` remains a CI compatibility lane, never a release asset. [`docs/EMULATED_RELEASE_GATE.md`](docs/EMULATED_RELEASE_GATE.md) defines the automated evidence and the mandatory fresh physical AArch64 observation for this runtime-surface change. The historical v0.5.1 observation bridge cannot qualify the full-suite candidate.
 
 Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticated MCP, audit-counter, filesystem, Android-status, service-status, and capability-boundary checks.
 
