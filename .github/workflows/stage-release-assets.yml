@@ -40,11 +40,10 @@ jobs:
     outputs:
       artifact_ids: ${{ steps.upstream.outputs.artifact_ids }}
     steps:
-      - name: Checkout exact candidate
+      - name: Checkout dispatch main candidate
         # actions/checkout@v7.0.0 resolved 2026-07-10
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ inputs.expected_commit }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -301,11 +300,10 @@ jobs:
           ENVIRONMENT_GUARD: ${{ vars.RELEASE_QUALIFICATION_PROTECTED }}
         run: test "$ENVIRONMENT_GUARD" = required-reviewer-main-only-v1
 
-      - name: Checkout exact candidate after approval
+      - name: Checkout dispatch main candidate after approval
         # actions/checkout@v7.0.0 resolved 2026-07-10
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ inputs.expected_commit }}
           fetch-depth: 1
           persist-credentials: false
 

@@ -61,6 +61,13 @@ assert_contains 'This workflow did not create a tag or GitHub Release.'
 
 [[ "$(grep -Fc 'uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c' "$WORKFLOW")" -eq 2 ]] \
   || fail download_action_count_or_pin_changed
+[[ "$(grep -Fc 'uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' "$WORKFLOW")" -eq 2 ]] \
+  || fail checkout_action_count_or_pin_changed
+[[ "$(grep -Fc 'persist-credentials: false' "$WORKFLOW")" -eq 2 ]] \
+  || fail checkout_credentials_must_remain_disabled
+if grep -Fq 'ref: ${{ inputs.expected_commit }}' "$WORKFLOW"; then
+  fail operator_input_must_not_select_checkout_ref
+fi
 [[ "$(grep -Fc 'digest-mismatch: error' "$WORKFLOW")" -eq 2 ]] \
   || fail download_digest_mismatch_must_fail
 [[ "$(grep -Fc 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' "$WORKFLOW")" -eq 1 ]] \
