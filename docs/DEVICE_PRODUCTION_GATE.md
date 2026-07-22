@@ -1,6 +1,6 @@
 # Exact-Commit Termux Device Production Gate
 
-`scripts/termux_device_smoke.sh` is the canonical no-clone device gate for an AArch64 Termux release candidate. It bootstraps the required packages, fetches one Git ref, refuses to proceed unless that ref resolves to the required full commit SHA, builds the native `mcp-runtime` and `android-volume-control` postures, and exercises the deployable release through an isolated real `runsvdir`.
+`scripts/termux_device_smoke.sh` is the canonical no-clone device gate for an AArch64 Termux release candidate. It bootstraps the required packages, fetches one Git ref, refuses to proceed unless that ref resolves to the required full commit SHA, builds the native `mcp-runtime` and `android-volume-control` postures against the committed lockfile, and exercises the deployable release through an isolated real `runsvdir`.
 
 Passing host CI or Android cross-compilation does not replace this gate. Passing this gate also does not replace a sustained operational soak under the target device's real battery, thermal, network, and process-restriction conditions.
 
@@ -11,6 +11,7 @@ The harness:
 - uses `set -Eeuo pipefail`, a private umask, and no shell tracing;
 - requires a lowercase 40-character expected commit rather than trusting a mutable branch;
 - checks out the fetched source detached and verifies the exact Git head before building;
+- constructs the synthetic rollback baseline by changing only the root package-version field in `Cargo.toml` and `Cargo.lock`, builds it with `--locked`, and restores an exact clean tree before locked candidate compilation;
 - creates isolated deployment, configuration, safe-root, and service roots containing the commit prefix and a unique run ID;
 - starts a dedicated `runsvdir` for only the isolated service root;
 - generates a private bearer token without printing it;

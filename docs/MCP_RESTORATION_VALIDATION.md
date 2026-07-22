@@ -22,15 +22,16 @@ For protocol or capability expansion:
 Every MCP runtime PR must prove:
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
-cargo build --release
-cargo build --release --features mcp-runtime
-cargo build --release --features android-battery-status
-cargo build --release --features android-volume-status
-cargo build --release --features android-volume-control
-cargo build --release --features command-execution
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --all-features
+cargo build --release --locked
+cargo build --release --locked --features mcp-runtime
+cargo build --release --locked --features android-battery-status
+cargo build --release --locked --features android-volume-status
+cargo build --release --locked --features android-volume-control
+cargo build --release --locked --features command-execution
 ```
 
 CI must succeed on the exact head. Security must succeed when Cargo, lockfile, or Security-workflow inputs change. Android cross-compilation must succeed for the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution` AArch64 postures when Rust source, toolchain, dependency, workflow, cross-compilation, or deployment changes can affect device artifacts.

@@ -160,4 +160,4 @@ The checked-in [`secure_embedding` example](../examples/secure_embedding.rs)
 is compiled by the repository's default, minimal-`mcp-runtime`, and all-feature
 gates. To run it deliberately, provide a private token and an existing absolute
 safe root through `MCP_EXAMPLE_STATIC_TOKEN` and `MCP_EXAMPLE_SAFE_ROOT`, then
-use `cargo run --example secure_embedding --features mcp-runtime`.
+use `cargo run --locked --example secure_embedding --features mcp-runtime`.

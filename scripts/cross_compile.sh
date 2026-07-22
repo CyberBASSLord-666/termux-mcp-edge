@@ -61,10 +61,10 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_PATH"
 
 if [[ -n "$BUILD_FEATURES" ]]; then
   log "Building explicit feature posture: ${BUILD_FEATURES}"
-  cargo build --release --target "$TARGET" --features "$BUILD_FEATURES"
+  cargo build --release --locked --target "$TARGET" --features "$BUILD_FEATURES"
 else
   log "Building default feature posture"
-  cargo build --release --target "$TARGET"
+  cargo build --release --locked --target "$TARGET"
 fi
 
 log "Binary ready at: ${OUTPUT_DIR}/termux-mcp-server"

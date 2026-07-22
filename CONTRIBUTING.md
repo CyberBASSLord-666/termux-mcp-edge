@@ -11,21 +11,22 @@ This repository is intended to be operated as a security-sensitive Android edge 
 The documentation contract uses Python 3 to verify relative Markdown links.
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --all-features
 bash tests/documentation_contract_test.sh
 ```
 
 4. Build the affected compile-time posture:
 
 ```bash
-cargo build --release
-cargo build --release --features mcp-runtime
-cargo build --release --features android-battery-status
-cargo build --release --features android-volume-status
-cargo build --release --features android-volume-control
-cargo build --release --features command-execution
+cargo build --release --locked
+cargo build --release --locked --features mcp-runtime
+cargo build --release --locked --features android-battery-status
+cargo build --release --locked --features android-volume-status
+cargo build --release --locked --features android-volume-control
+cargo build --release --locked --features command-execution
 ```
 
 5. For Android release validation, build every affected supported posture. The six governed postures are isolated deliberately; an ad hoc `--all-features` binary is useful for host compatibility testing but is not a substitutable release artifact.

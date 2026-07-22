@@ -137,8 +137,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          version="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "termux-mcp-server") | .version')"
+          version="$(cargo metadata --locked --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "termux-mcp-server") | .version')"
           [[ -n "$version" && "$version" != null ]]
+          git diff --exit-code -- Cargo.toml Cargo.lock
           bash scripts/package_android_artifact.sh \
             --binary target/aarch64-linux-android/release/termux-mcp-server \
             --output-dir target/aarch64-linux-android/release-candidate \

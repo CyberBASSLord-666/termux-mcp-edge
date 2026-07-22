@@ -105,11 +105,12 @@ Allowed and denied events may retain only tool name, gate name, read-only mode, 
 Run:
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
-cargo test --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --all-targets --all-features
 bash tests/package_android_artifact_test.sh
 ```
 

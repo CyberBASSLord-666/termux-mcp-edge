@@ -7,6 +7,9 @@ fn write_probe_source(root: &Path, source: &str) {
 }
 
 fn run_cargo(root: &Path, target: &Path, arguments: &[&str]) -> std::process::Output {
+    // These temporary downstream-consumer probes intentionally have no committed
+    // lockfile. They remain offline and run beneath the root suite's locked Cargo
+    // invocation; no probe output is packaged or used as a release artifact.
     Command::new(env!("CARGO"))
         .args(arguments)
         .current_dir(root)

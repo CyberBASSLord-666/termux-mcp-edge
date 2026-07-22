@@ -22,7 +22,7 @@ The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENA
 Example:
 
 ```bash
-cargo build --release --features command-execution
+cargo build --release --locked --features command-execution
 export MCP__COMMAND__ENABLED=true
 ```
 

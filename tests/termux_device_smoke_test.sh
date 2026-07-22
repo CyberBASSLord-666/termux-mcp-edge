@@ -55,6 +55,8 @@ assert_contains 'must be a positive integer' "$TMP/stderr"
 [[ -z "$(find "$TMP/home" -mindepth 1 -print -quit)" ]] || fail "invalid options created state beneath HOME"
 
 for marker in \
+  'rewrite_locked_package_version "$CANDIDATE_VERSION" "$BASELINE_VERSION"' \
+  'cargo metadata --locked --format-version 1 --no-deps' \
   'cargo build --release --locked --features mcp-runtime' \
   'cargo build --release --locked --features android-volume-control' \
   'volume_control_compile_gate=rejected_incompatible_artifact' \
@@ -69,6 +71,9 @@ for marker in \
 do
   assert_contains "$marker" "$SCRIPT"
 done
+
+[[ "$(grep -Fc 'cargo build --release --locked --features mcp-runtime' "$SCRIPT")" -eq 2 ]] \
+  || fail 'baseline and exact MCP candidate builds must both use the committed dependency graph'
 
 for protocol_marker in \
   '"notifications/initialized"' \
