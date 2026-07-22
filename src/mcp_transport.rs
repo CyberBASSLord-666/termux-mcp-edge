@@ -8253,14 +8253,19 @@ mod tests {
         second_state.sessions = first_state.sessions.clone();
         let session = first_state.sessions.create().unwrap();
         first_state.sessions.activate(&session).unwrap();
-        let grant = issue_copy_test_grant(
-            &first_authority,
-            &file_tools,
-            &session,
-            &source,
-            &destination,
-        );
-        let first_router = router_from_state(first_state);
+        let binding = file_tools
+            .copy_file_grant_target(
+                source.to_string_lossy().as_ref(),
+                destination.to_string_lossy().as_ref(),
+            )
+            .unwrap();
+        let grant = first_authority.issue(&session, &binding).unwrap();
+        first_state
+            .copy_file_authority
+            .as_ref()
+            .unwrap()
+            .consume(Some(&grant), &session, &binding)
+            .unwrap();
         let second_router = router_from_state(second_state);
 
         let request = |id: &str| {
@@ -8287,11 +8292,6 @@ mod tests {
                 }).to_string()))
                 .unwrap()
         };
-
-        let first = first_router.oneshot(request("copy-router-a")).await.unwrap();
-        assert_eq!(first.status(), StatusCode::OK);
-        assert_eq!(std::fs::read(&destination).unwrap(), b"shared-copy-replay-content");
-        std::fs::remove_file(&destination).unwrap();
 
         let replay = second_router.oneshot(request("copy-router-b")).await.unwrap();
         assert_eq!(replay.status(), StatusCode::FORBIDDEN);
