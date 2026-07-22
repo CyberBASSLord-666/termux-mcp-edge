@@ -48,7 +48,7 @@ MCP__CAPABILITY__SESSION_ID='replace-with-active-session-id' \
 MCP__CAPABILITY__WRITE_FILE_TARGET='/data/data/com.termux/files/home/mcp-files/output.txt' \
 MCP__CAPABILITY__WRITE_FILE_CONTENT_FILE="$CONTENT_FILE" \
 MCP__CAPABILITY__WRITE_FILE_DISPOSITION='create' \
-  "$HOME/.local/share/termux-mcp-edge/current/bin/termux-mcp-server" \
+  "$HOME/.local/share/termux-mcp-edge/current/termux-mcp-server" \
   --issue-write-file-grant >"$GRANT_FILE"
 ```
 

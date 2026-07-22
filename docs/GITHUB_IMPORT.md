@@ -1,45 +1,83 @@
-# GitHub Import Instructions
+# Working with the Canonical GitHub Repository
 
-The preferred canonical repository is:
+The existing canonical public repository is:
 
 ```text
-CyberBASSLord-666/termux-mcp-edge
+https://github.com/CyberBASSLord-666/termux-mcp-edge
 ```
 
-The currently available ChatGPT GitHub connector can read and update existing repositories, but it does not expose a repository-creation action. Create the repository once in GitHub, then this project can be pushed into it and used as the durable source of truth for recurring improvement passes.
+Do not create or import a replacement repository when the goal is to install, inspect, or contribute to this project.
 
-## Option A — GitHub CLI
+## Clone the public repository
 
-From the repository root on a machine with `gh` authenticated:
-
-```bash
-gh repo create CyberBASSLord-666/termux-mcp-edge \
-  --private \
-  --description "Secure Rust MCP edge server for Android Termux" \
-  --source . \
-  --remote origin \
-  --push
-```
-
-## Option B — Manual GitHub UI
-
-1. Go to GitHub and create a new private repository named `termux-mcp-edge` under `CyberBASSLord-666`.
-2. Do not add generated sample files if you intend to push this repository directly.
-3. From this project root:
+No GitHub account or authentication is required for a read-only HTTPS clone:
 
 ```bash
-git remote add origin https://github.com/CyberBASSLord-666/termux-mcp-edge.git
-git branch -M main
-git push -u origin main
-```
-
-## Option C — Import from bundle
-
-If you received `termux-mcp-edge.git.bundle`:
-
-```bash
-git clone termux-mcp-edge.git.bundle termux-mcp-edge
+git clone https://github.com/CyberBASSLord-666/termux-mcp-edge.git
 cd termux-mcp-edge
-git remote add origin https://github.com/CyberBASSLord-666/termux-mcp-edge.git
-git push -u origin main
+git remote -v
+git status --short --branch
 ```
+
+Verify that `origin` points to the canonical repository before using release, deployment, or validation scripts:
+
+```bash
+test "$(git remote get-url origin)" = \
+  'https://github.com/CyberBASSLord-666/termux-mcp-edge.git'
+git fetch --prune origin
+git switch main
+git pull --ff-only origin main
+```
+
+For an exact-commit workflow, obtain the full expected commit SHA from the trusted release or validation record and verify it after checkout:
+
+```bash
+EXPECTED_COMMIT='<full-40-character-commit-sha>'
+git fetch --prune --tags origin
+git cat-file -e "${EXPECTED_COMMIT}^{commit}"
+git checkout --detach "$EXPECTED_COMMIT"
+test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+```
+
+Do not substitute an unverified branch name, abbreviated SHA, pull-request artifact, or unrelated fork when exact-source release evidence is required.
+
+## Contribute through a fork
+
+Create a fork of `CyberBASSLord-666/termux-mcp-edge` in GitHub, then clone that fork and register the canonical repository as `upstream`:
+
+```bash
+GITHUB_USER='<your-github-user>'
+git clone "https://github.com/${GITHUB_USER}/termux-mcp-edge.git"
+cd termux-mcp-edge
+git remote add upstream https://github.com/CyberBASSLord-666/termux-mcp-edge.git
+git remote -v
+git fetch --prune upstream
+```
+
+Keep the fork's `main` branch synchronized without rewriting shared history:
+
+```bash
+git switch main
+git merge --ff-only upstream/main
+git push origin main
+```
+
+Create focused work on a topic branch and follow the repository's [contribution requirements](../CONTRIBUTING.md) before opening a pull request against the canonical `main` branch.
+
+## Verify an existing checkout
+
+Inspect remotes before changing them:
+
+```bash
+git remote -v
+git rev-parse --show-toplevel
+git status --short --branch
+```
+
+For a direct public clone, `origin` should be the canonical URL. For a contributor fork, `origin` should be the contributor's fork and `upstream` should be the canonical URL. Add or repair only the missing role:
+
+```bash
+git remote add upstream https://github.com/CyberBASSLord-666/termux-mcp-edge.git
+```
+
+If `upstream` already exists, verify its value with `git remote get-url upstream` before using `git remote set-url`. Never overwrite a contributor's `origin` merely to add the canonical read-only remote.

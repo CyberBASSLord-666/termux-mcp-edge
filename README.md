@@ -8,6 +8,60 @@ The optional `mcp-runtime` feature wires a stable MCP 2025-11-25 Streamable HTTP
 
 The transport negotiates protocol version `2025-11-25`, issues bounded cryptographically random sessions, requires `notifications/initialized` before normal operations, enforces media and protocol headers, accepts one JSON-RPC request, notification, or response per POST, and supports explicit session termination. JSON responses remain the default. An independent default-disabled runtime option adds finite SSE request responses and exact originating-stream replay without creating an unbounded connection or queue subsystem.
 
+## Choose a build
+
+| Goal | Build command | Result |
+|---|---|---|
+| Health and readiness only | `cargo build --release` | No MCP route or tools. |
+| Standard MCP server | `cargo build --release --features mcp-runtime` | Authenticated MCP transport with the 17 baseline tools. |
+| One optional Android or diagnostic tool | `cargo build --release --features <feature>` | Baseline tools plus the selected tool after its separate runtime flag is enabled. |
+| Local aggregate validation or development | `cargo build --release --all-features` | Up to 21 tools after all four optional runtime flags are enabled. This is not a named, separately qualified public release artifact. |
+
+The optional feature names are `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; each includes `mcp-runtime`. Compiling a feature does not enable its runtime flag. Live filesystem and volume mutations additionally require their independent default-disabled runtime gate and a fresh, exact-operation, single-use request grant.
+
+See the [capability catalog](docs/CAPABILITIES.md) for every baseline and optional tool, build/runtime/request-authorization boundaries, and the precise meaning of a local full-feature build.
+
+## Quick start on Termux
+
+The shortest source-build path to the standard MCP server is:
+
+```bash
+pkg update
+pkg install git bash coreutils curl file gawk jq procps termux-services rust clang make pkg-config binutils
+git clone https://github.com/CyberBASSLord-666/termux-mcp-edge.git
+cd termux-mcp-edge
+cargo build --release --features mcp-runtime
+```
+
+If `termux-services` was installed for the first time, close all Termux sessions and open a new one before continuing; that starts its `runsvdir` service supervisor. Return to the clone and verify the supervisor:
+
+```bash
+cd termux-mcp-edge
+pgrep -af "$PREFIX/bin/runsvdir"
+```
+
+Before installation, create the private `runtime.env` and dedicated safe root exactly as shown in [Termux deployment: Runtime configuration](docs/TERMUX_DEPLOYMENT.md#runtime-configuration). Then install the native artifact through the versioned deployment manager:
+
+```bash
+ARTIFACT="$PWD/target/release/termux-mcp-server"
+ARTIFACT_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
+chmod 700 scripts/termux_deploy.sh
+scripts/termux_deploy.sh install \
+  --artifact "$ARTIFACT" \
+  --version 0.6.0 \
+  --sha256 "$ARTIFACT_SHA256"
+```
+
+Confirm the supervised service before connecting a client:
+
+```bash
+sv status "$PREFIX/var/service/mcp_runtime"
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:8000/ready | jq
+```
+
+Continue with [authenticated MCP validation](docs/OPERATIONS.md#authenticated-mcp-validation) to initialize a session and list the tools. The source tree is currently a `0.6.0` release candidate; do not treat expiring workflow artifacts as durable public releases. Production publication remains governed by the exact-main checks in the release documentation.
+
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
@@ -270,6 +324,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 
 ## Project documentation
 
+- [Capability catalog and build/gate matrix](docs/CAPABILITIES.md)
 - [Operations guide](docs/OPERATIONS.md)
 - [Security guide](docs/SECURITY.md)
 - [Validation guide](docs/VALIDATION.md)

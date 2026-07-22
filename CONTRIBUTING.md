@@ -8,10 +8,13 @@ This repository is intended to be operated as a security-sensitive Android edge 
 2. Keep changes independently reviewable and limited to one implementation or maintenance concern.
 3. Run the same local validation gates enforced by CI before opening a pull request:
 
+The documentation contract uses Python 3 to verify relative Markdown links.
+
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
+bash tests/documentation_contract_test.sh
 ```
 
 4. Build the affected compile-time posture:
@@ -19,9 +22,13 @@ cargo test --workspace --all-targets --all-features
 ```bash
 cargo build --release
 cargo build --release --features mcp-runtime
+cargo build --release --features android-battery-status
+cargo build --release --features android-volume-status
+cargo build --release --features android-volume-control
+cargo build --release --features command-execution
 ```
 
-5. For Android release validation, build both supported postures:
+5. For Android release validation, build every affected supported posture. The six governed postures are isolated deliberately; an ad hoc `--all-features` binary is useful for host compatibility testing but is not a substitutable release artifact.
 
 ```bash
 ANDROID_NDK_HOME=/path/to/android-ndk \
@@ -29,6 +36,18 @@ ANDROID_NDK_HOME=/path/to/android-ndk \
   ./scripts/cross_compile.sh
 ANDROID_NDK_HOME=/path/to/android-ndk \
   BUILD_FEATURES=mcp-runtime \
+  ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES=android-battery-status \
+  ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES=android-volume-status \
+  ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES=android-volume-control \
+  ./scripts/cross_compile.sh
+ANDROID_NDK_HOME=/path/to/android-ndk \
+  BUILD_FEATURES=command-execution \
   ./scripts/cross_compile.sh
 ```
 
