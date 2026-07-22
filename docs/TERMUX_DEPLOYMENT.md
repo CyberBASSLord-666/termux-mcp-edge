@@ -251,6 +251,8 @@ Use [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) and `scripts/termux
 
 Use [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md) for downloaded default, `mcp-runtime`, volume-control, and `full-suite` artifacts. Validator v11 emits sanitized direct evidence schema v2. Its deployment phase installs the full-suite candidate under the unchanged `termux-mcp-server` basename, requires explicit mutation confirmation, and exercises failed-candidate and failed-rollback recovery. Canonical production-root actions require a separate action-specific confirmation and never replace production configuration.
 
+For a public production installation, accept binaries only from the exact published GitHub Release after its immutable-state and unauthenticated public re-download checks pass. Workflow bundles, the public release stage, the protected tag by itself, and a draft Release are qualification inputs rather than installation sources. See [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) for the sixteen-asset publication contract.
+
 1. Confirm the artifact corresponds to the intended exact commit or release.
 2. Verify its SHA-256 digest.
 3. Verify AArch64 Android-compatible ELF metadata.

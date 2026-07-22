@@ -116,8 +116,10 @@ grep -Fq 'fresh direct physical' docs/V0.6.0_RELEASE_CANDIDATE.md \
   || fail release_candidate_fresh_physical_observation_missing
 grep -Fq 'cannot qualify' docs/V0.6.0_RELEASE_CANDIDATE.md \
   || fail release_candidate_historical_bridge_exclusion_missing
-grep -Fq 'No `v0.6.0` tag or GitHub Release exists or is authorized' docs/V0.6.0_RELEASE_CANDIDATE.md \
-  || fail release_candidate_no_tag_boundary_missing
+grep -Fq 'At initial preparation, no `v0.6.0` tag or GitHub Release existed' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_historical_no_tag_boundary_missing
+grep -Fq 'Current release authority comes only from the immutable public Release' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_immutable_authority_missing
 grep -Fq 'publicationState: "staged_not_released"' docs/PUBLIC_RELEASE.md \
   || fail public_release_staged_not_released_boundary_missing
 grep -Fq 'RELEASE_QUALIFICATION_PROTECTED=required-reviewer-main-only-v1' docs/PUBLIC_RELEASE.md \
@@ -140,10 +142,89 @@ grep -Fq 'separate native-device full-suite digest' docs/PUBLIC_RELEASE.md \
   || fail public_release_digest_lineage_missing
 grep -Fq 'first-attempt successful CI, Security, and Android push runs' docs/RELEASE_GOVERNANCE.md \
   || fail release_first_attempt_only_boundary_missing
-grep -Fq 'Create a **draft** GitHub Release' docs/RELEASE_GOVERNANCE.md \
-  || fail draft_before_release_verification_missing
-grep -Fq 'Obtain the separate final publication approval' docs/RELEASE_GOVERNANCE.md \
-  || fail final_publication_approval_missing
+grep -Fq 'Pre-create one **empty draft** GitHub Release' docs/RELEASE_GOVERNANCE.md \
+  || fail empty_draft_before_attachment_missing
+grep -Fq 'Obtain the disjoint `release-final` approval only after step 15 retains its closed record and reviewer-readable summary' docs/RELEASE_GOVERNANCE.md \
+  || fail disjoint_final_publication_approval_missing
+grep -Fq 'RELEASE_PRODUCTION_PROTECTED=asset-attachment-reviewer-main-only-v1' docs/PUBLIC_RELEASE.md \
+  || fail release_production_environment_guard_missing
+grep -Fq 'RELEASE_FINAL_PROTECTED=final-publication-reviewer-main-only-immutable-v1' docs/PUBLIC_RELEASE.md \
+  || fail release_final_environment_guard_missing
+grep -Fq '`RELEASE_PRODUCTION_POLICY_READ_TOKEN`' docs/PUBLIC_RELEASE.md \
+  || fail release_production_policy_read_credential_missing
+grep -Fq '`RELEASE_FINAL_POLICY_READ_TOKEN`' docs/PUBLIC_RELEASE.md \
+  || fail release_final_policy_read_credential_missing
+grep -Fq "limited to this repository's **Administration: read** permission" docs/PUBLIC_RELEASE.md \
+  || fail publication_policy_credential_scope_missing
+grep -Fq 'The two eligible-reviewer sets must be disjoint' docs/PUBLIC_RELEASE.md \
+  || fail publication_disjoint_reviewers_missing
+grep -Fq 'pre-created empty draft' docs/PUBLIC_RELEASE.md \
+  || fail publication_empty_draft_boundary_missing
+grep -Fq 'exact version title, a blank body' docs/PUBLIC_RELEASE.md \
+  || fail publication_blank_draft_body_missing
+grep -Fq 'bind the deterministic, provenance-derived release body' docs/PUBLIC_RELEASE.md \
+  || fail publication_deterministic_body_binding_missing
+grep -Fq 'contain exactly sixteen assets' docs/PUBLIC_RELEASE.md \
+  || fail publication_sixteen_asset_allowlist_missing
+grep -Fq 'the seven matching `<binary-name>.sha256` sidecars' docs/PUBLIC_RELEASE.md \
+  || fail publication_seven_sidecars_missing
+grep -Fq 'the unchanged raw `termux-mcp-server-v0.6.0-release-stage-<sha12>.tar`' docs/PUBLIC_RELEASE.md \
+  || fail publication_raw_stage_asset_missing
+grep -Fq 'receipt is verification state, not a seventeenth Release asset' docs/PUBLIC_RELEASE.md \
+  || fail publication_receipt_asset_exclusion_missing
+grep -Fq 'are not members of the sixteen-asset contract' docs/PUBLIC_RELEASE.md \
+  || fail publication_source_archive_exclusion_missing
+grep -Fq '**Independent byte verification.**' docs/PUBLIC_RELEASE.md \
+  || fail publication_independent_byte_verification_missing
+grep -Fq 'retains the closed JSON verification record for 30 days' docs/PUBLIC_RELEASE.md \
+  || fail publication_verification_record_retention_missing
+grep -Fq 'downloads that exact current-run verification artifact by server-assigned ID' docs/PUBLIC_RELEASE.md \
+  || fail publication_same_run_verification_record_gate_missing
+grep -Fq 'The Release body is bound before upload and contains only deterministic facts already available at that boundary' docs/PUBLIC_RELEASE.md \
+  || fail publication_body_timing_boundary_missing
+grep -Fq 'Because both jobs intentionally set `deployment: false`, they create no GitHub Deployment record' docs/PUBLIC_RELEASE.md \
+  || fail publication_record_deployment_semantics_missing
+grep -Fq "Use the linked run's environment-review UI" docs/PUBLIC_RELEASE.md \
+  || fail publication_record_review_context_missing
+grep -Fq 'every GitHub workflow rerun is rejected by the first-attempt guard' docs/PUBLIC_RELEASE.md \
+  || fail publication_rerun_rejection_missing
+grep -Fq 'must start a fresh reviewed dispatch' docs/PUBLIC_RELEASE.md \
+  || fail publication_fresh_dispatch_recovery_missing
+grep -Fq 'reasserts the already-verified `prerelease: false` state, and explicitly requests this Release as latest' docs/PUBLIC_RELEASE.md \
+  || fail publication_patch_scope_documentation_missing
+grep -Fq 'Server-assigned and post-upload facts belong to the separate workflow publication record' docs/RELEASE_GOVERNANCE.md \
+  || fail governance_separate_publication_record_missing
+if grep -Fq 'Every GitHub Release body must record' docs/RELEASE_GOVERNANCE.md; then
+  fail governance_preupload_body_overclaim_present
+fi
+grep -Fq '`immutable: true`' docs/PUBLIC_RELEASE.md \
+  || fail publication_immutable_true_proof_missing
+grep -Fq 'public sixteen-asset re-download proof' docs/PUBLIC_RELEASE.md \
+  || fail publication_public_redownload_proof_missing
+grep -Fq 'workflow never auto-deletes a draft, asset, tag, or staging artifact' docs/PUBLIC_RELEASE.md \
+  || fail publication_no_automatic_deletion_recovery_missing
+grep -Fq 'Workflow bundles, stages, tags, and drafts are not installation sources' README.md \
+  || fail readme_nonrelease_installation_boundary_missing
+if grep -Eiq 'pre-existing immutable tag|verified immutable tag|independent final publication approval' \
+  docs/PUBLIC_RELEASE.md docs/RELEASE_GOVERNANCE.md; then
+  fail prepublication_immutability_or_unenforced_approval_claim
+fi
+python3 - <<'PY'
+from pathlib import Path
+
+text = Path("docs/PUBLIC_RELEASE.md").read_text(encoding="utf-8")
+markers = [
+    "**Public, non-confidential stage.**",
+    "**Pre-created empty draft.**",
+    "**Protected attachment.**",
+    "**Independent byte verification.**",
+    "**Separate final approval.**",
+    "**Immutable public proof.**",
+]
+positions = [text.index(marker) for marker in markers]
+if positions != sorted(positions) or len(set(positions)) != len(positions):
+    raise SystemExit("publication state-machine documentation order changed")
+PY
 grep -Fq 'Staging cannot tag or publish' README.md \
   || fail readme_staging_publication_boundary_missing
 grep -Fq 'cargo clippy --locked --workspace --all-targets -- -D warnings' README.md \
@@ -152,6 +233,18 @@ grep -Fq 'cargo test --locked --workspace --all-targets' README.md \
   || fail readme_default_test_gate_missing
 grep -Fq 'bash tests/release_staging_workflow_test.sh' README.md \
   || fail readme_release_staging_gate_missing
+grep -Fq 'bash tests/release_publication_workflow_test.sh' README.md \
+  || fail readme_release_publication_gate_missing
+grep -Fq 'bash tests/prepare_release_publication_assets_test.sh' README.md \
+  || fail readme_release_publication_preparer_gate_missing
+grep -Fq 'bash tests/publish_release_assets_test.sh' README.md \
+  || fail readme_release_publication_api_gate_missing
+grep -Fq 'bash tests/release_publication_workflow_test.sh' CONTRIBUTING.md \
+  || fail contributing_release_publication_gate_missing
+grep -Fq 'bash tests/prepare_release_publication_assets_test.sh' CONTRIBUTING.md \
+  || fail contributing_release_publication_preparer_gate_missing
+grep -Fq 'bash tests/publish_release_assets_test.sh' CONTRIBUTING.md \
+  || fail contributing_release_publication_api_gate_missing
 [[ "$(grep -Fc 'retention-days: 30' .github/workflows/android-cross-compile.yml)" -eq 2 ]] \
   || fail android_qualification_retention_contract_changed
 if grep -Eq '^[[:space:]]+tags:' .github/workflows/android-cross-compile.yml; then
@@ -159,6 +252,32 @@ if grep -Eq '^[[:space:]]+tags:' .github/workflows/android-cross-compile.yml; th
 fi
 grep -Fq 'name: Stage Release Assets' .github/workflows/stage-release-assets.yml \
   || fail protected_release_staging_workflow_missing
+
+publication_workflow=.github/workflows/publish-release.yml
+if [[ -f "$publication_workflow" ]]; then
+  grep -Fq 'name: Publish Immutable Release' "$publication_workflow" \
+    || fail protected_release_publication_workflow_name_changed
+  grep -Fq 'expected_tag_object_sha:' "$publication_workflow" \
+    || fail protected_release_tag_object_input_missing
+  grep -Fq 'staged_artifact_id:' "$publication_workflow" \
+    || fail protected_release_stage_artifact_input_missing
+  grep -Fq 'staged_artifact_sha256:' "$publication_workflow" \
+    || fail protected_release_stage_digest_input_missing
+  grep -Fq 'draft_release_id:' "$publication_workflow" \
+    || fail protected_release_draft_id_input_missing
+  grep -Fq 'release-production' "$publication_workflow" \
+    || fail protected_release_production_environment_missing
+  grep -Fq 'release-final' "$publication_workflow" \
+    || fail protected_release_final_environment_missing
+  grep -Fq 'asset-attachment-reviewer-main-only-v1' "$publication_workflow" \
+    || fail protected_release_production_guard_missing
+  grep -Fq 'final-publication-reviewer-main-only-immutable-v1' "$publication_workflow" \
+    || fail protected_release_final_guard_missing
+  grep -Fq 'secrets.RELEASE_PRODUCTION_POLICY_READ_TOKEN' "$publication_workflow" \
+    || fail protected_release_production_policy_credential_missing
+  grep -Fq 'secrets.RELEASE_FINAL_POLICY_READ_TOKEN' "$publication_workflow" \
+    || fail protected_release_final_policy_credential_missing
+fi
 
 public_contract_docs=(
   README.md
@@ -206,9 +325,9 @@ grep -Fq 'Directory creation returns its normalized safe-rooted path' SECURITY.m
   || fail root_security_create_result_scope_missing
 grep -Fq '### `trash_file` request grant' docs/capability-gates.md \
   || fail trash_capability_gate_missing
-grep -Fq '## v0.6.0 — Release Candidate (Unreleased)' CHANGELOG.md \
-  || fail changelog_release_candidate_heading_missing
-if grep -Eq '^## (Unreleased|[0-9]{4}-[0-9]{2}-[0-9]{2} — v0\.6\.0)' CHANGELOG.md; then
+grep -Fxq '## v0.6.0' CHANGELOG.md \
+  || fail changelog_version_heading_missing
+if grep -Eq '^## (Unreleased|.*v0\.6\.0.*(Release Candidate|Unreleased))' CHANGELOG.md; then
   fail changelog_release_state_ambiguous
 fi
 
