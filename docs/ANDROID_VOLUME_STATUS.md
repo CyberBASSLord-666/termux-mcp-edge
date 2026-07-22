@@ -25,7 +25,7 @@ The server executes that exact absolute path directly. It supplies no arguments,
 Build and enable the posture explicitly:
 
 ```bash
-cargo build --release --features android-volume-status
+cargo build --release --locked --features android-volume-status
 export MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 ```
 

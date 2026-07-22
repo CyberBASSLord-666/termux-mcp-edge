@@ -110,11 +110,47 @@ import sys
 import urllib.parse
 
 link_pattern = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+resolving_cargo_command = re.compile(
+    r"\bcargo\s+(?:build|check|clippy|fetch|metadata|run|test)\b"
+)
+locked_argument = re.compile(r"(?:^|\s)--locked(?:\s|$)")
+shell_or_cargo_boundary = re.compile(r"\s--(?:\s|$)|\s#|&&|\|\||[;|]")
 failures: list[str] = []
+
+
+def command_uses_locked(segment: str, command: re.Match[str]) -> bool:
+    arguments = segment[command.end():]
+    boundary = shell_or_cargo_boundary.search(arguments)
+    if boundary is not None:
+        arguments = arguments[:boundary.start()]
+    return locked_argument.search(arguments) is not None
+
+
+for invalid_example in (
+    "cargo test -- --locked",
+    "cargo test && printf --locked",
+    "cargo test # remember --locked",
+):
+    invalid_command = resolving_cargo_command.search(invalid_example)
+    assert invalid_command is not None
+    if command_uses_locked(invalid_example, invalid_command):
+        raise SystemExit(f"documentation lock parser accepted invalid fixture: {invalid_example}")
 
 for raw_name in sys.argv[1:]:
     document = pathlib.Path(raw_name)
     text = document.read_text(encoding="utf-8")
+    in_fence = False
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        segments = [line] if in_fence else re.findall(r"`([^`]+)`", line)
+        for segment in segments:
+            for command in resolving_cargo_command.finditer(segment):
+                if not command_uses_locked(segment, command):
+                    failures.append(
+                        f"{document}:{line_number}: public Cargo command does not use --locked before its argument boundary"
+                    )
     for match in link_pattern.finditer(text):
         raw_target = match.group(1).strip()
         if not raw_target or raw_target.startswith(("#", "http://", "https://", "mailto:")):
@@ -131,7 +167,7 @@ for raw_name in sys.argv[1:]:
             failures.append(f"{document}:{line}: {raw_target}")
 
 if failures:
-    print("broken relative Markdown links:", file=sys.stderr)
+    print("documentation contract violations:", file=sys.stderr)
     for failure in failures:
         print(f"  {failure}", file=sys.stderr)
     raise SystemExit(1)

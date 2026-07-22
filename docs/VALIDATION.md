@@ -13,29 +13,30 @@ The optional MCP transport enforces authentication before mobile-conscious concu
 Run the same Rust gates enforced by `.github/workflows/ci.yml`:
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --features mcp-runtime -- -D warnings
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --features mcp-runtime
-cargo test --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features mcp-runtime
+cargo test --locked --workspace --all-targets --all-features
 ```
 
 Build all supported compile-time postures when preparing a release candidate:
 
 ```bash
-cargo build --release
-cargo build --release --features mcp-runtime
-cargo build --release --features android-battery-status
-cargo build --release --features android-volume-status
-cargo build --release --features android-volume-control
-cargo build --release --features command-execution
+cargo build --release --locked
+cargo build --release --locked --features mcp-runtime
+cargo build --release --locked --features android-battery-status
+cargo build --release --locked --features android-volume-status
+cargo build --release --locked --features android-volume-control
+cargo build --release --locked --features command-execution
 ```
 
 Validate the exact release candidate on an AArch64 Termux device with the no-clone harness in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md). Its companion contract test runs in CI as `tests/termux_device_smoke_test.sh`; CI validates the harness interface and required coverage markers, while the actual run requires a real Termux/runit device.
 
 Validate downloaded default, `mcp-runtime`, and `android-volume-control` artifacts with [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). CI runs `tests/package_android_artifact_test.sh` for exact-source manifest/checksum bundle construction and `tests/termux_release_validate_test.sh` against deterministic default/MCP/control HTTP fixtures and deployment-manager fixture mode. Coverage includes preflight success, three-way provenance/digest/architecture/symlink/metadata failures, artifact-change detection, wrong feature posture, the volume-control compile/default-disabled truth table without device mutation, reversible-trash gate/issuance/binding/preflight/recovery fixture coverage, automated core/integration trash-replay coverage, the independent file-write grant/replay/recovery truth table, confirmation gates, transport/response/safe-root contracts, failed upgrade/rollback recovery, interruption cleanup, redaction, and the versioned JSON evidence contract.
 
-The CI workflow enforces format plus default, minimal `mcp-runtime`, and all-feature Clippy/tests. The Security workflow validates the locked dependency graph with `cargo audit` and fails on audit findings. The same exact-head workflow also runs pinned CodeQL `security-extended` analysis for Rust source and GitHub Actions workflow code, using buildless extraction and separate SARIF categories. A green CodeQL job proves that analysis and SARIF upload completed; code-scanning alerts must still be inspected and triaged rather than inferred absent from the workflow conclusion alone. CI and Security path filters cover every source and evidence input that can start Android validation, so its native-evidence job can resolve both required companion runs for the same commit. The native job reserves a monotonic, request-timeout-enforced 25-minute polling window inside its 50-minute job budget, which accommodates the 20-minute CodeQL job ceiling while preserving the prior native-validation allowance and requiring both exact-head companions to complete successfully.
+The CI workflow first rejects a missing or stale committed dependency graph before any Cargo-aware formatting or cache action can repair it, verifies those steps leave both dependency inputs unchanged, and runs default, minimal `mcp-runtime`, and all-feature Clippy/tests with `--locked`. The Security workflow validates the same locked graph with `cargo audit` and fails on audit findings. The same exact-head workflow also runs pinned CodeQL `security-extended` analysis for Rust source and GitHub Actions workflow code, using buildless extraction and separate SARIF categories. A green CodeQL job proves that analysis and SARIF upload completed; code-scanning alerts must still be inspected and triaged rather than inferred absent from the workflow conclusion alone. CI and Security path filters cover every source and evidence input that can start Android validation, so its native-evidence job can resolve both required companion runs for the same commit. The native job reserves a monotonic, request-timeout-enforced 25-minute polling window inside its 50-minute job budget, which accommodates the 20-minute CodeQL job ceiling while preserving the prior native-validation allowance and requiring both exact-head companions to complete successfully.
 
 ## Secure Embedding Boundary Validation
 

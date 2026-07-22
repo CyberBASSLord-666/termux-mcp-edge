@@ -105,6 +105,30 @@ fail() {
   exit 1
 }
 
+rewrite_locked_package_version() {
+  local old_version="$1"
+  local new_version="$2"
+  local lock_file="Cargo.lock"
+  local temporary="${lock_file}.device-smoke.$$"
+
+  if ! awk -v old_version="$old_version" -v new_version="$new_version" '
+    BEGIN { in_target = 0; replacements = 0 }
+    /^\[\[package\]\]$/ { in_target = 0 }
+    /^name = "termux-mcp-server"$/ { in_target = 1 }
+    in_target && $0 == "version = \"" old_version "\"" {
+      print "version = \"" new_version "\""
+      replacements++
+      next
+    }
+    { print }
+    END { if (replacements != 1) exit 42 }
+  ' "$lock_file" >"$temporary"; then
+    rm -f -- "$temporary"
+    fail "could not prepare the locked baseline package version"
+  fi
+  mv -- "$temporary" "$lock_file"
+}
+
 is_true() {
   case "$1" in
     1|true|TRUE|yes|YES) return 0 ;;
@@ -1473,7 +1497,16 @@ log "Building baseline and exact candidate; detailed output is in $BUILD_LOG"
 : >"$BUILD_LOG"
 sed -i "0,/^version = \"$CANDIDATE_VERSION\"$/s//version = \"$BASELINE_VERSION\"/" Cargo.toml
 grep -Fx "version = \"$BASELINE_VERSION\"" Cargo.toml >/dev/null || fail "could not prepare the baseline package version"
-if ! CARGO_INCREMENTAL=1 cargo build --release --features mcp-runtime -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
+rewrite_locked_package_version "$CANDIDATE_VERSION" "$BASELINE_VERSION"
+expected_baseline_diff=$'1\t1\tCargo.lock\n1\t1\tCargo.toml'
+[[ "$(git diff --numstat -- Cargo.toml Cargo.lock)" == "$expected_baseline_diff" ]] \
+  || fail "synthetic baseline changed dependency inputs beyond the two package-version fields"
+git diff --check -- Cargo.toml Cargo.lock || fail "synthetic baseline package-version diff is malformed"
+if ! cargo metadata --locked --format-version 1 --no-deps >/dev/null 2>>"$BUILD_LOG"; then
+  tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
+  fail "synthetic baseline lockfile validation failed"
+fi
+if ! CARGO_INCREMENTAL=1 cargo build --release --locked --features mcp-runtime -j "$BUILD_JOBS" >>"$BUILD_LOG" 2>&1; then
   tail -n 120 "$BUILD_LOG" | tee -a "$REPORT"
   fail "baseline Rust build failed"
 fi

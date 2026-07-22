@@ -12,10 +12,10 @@ The transport negotiates protocol version `2025-11-25`, issues bounded cryptogra
 
 | Goal | Build command | Result |
 |---|---|---|
-| Health and readiness only | `cargo build --release` | No MCP route or tools. |
-| Standard MCP server | `cargo build --release --features mcp-runtime` | Authenticated MCP transport with the 17 baseline tools. |
-| One optional Android or diagnostic tool | `cargo build --release --features <feature>` | Baseline tools plus the selected tool after its separate runtime flag is enabled. |
-| Local aggregate validation or development | `cargo build --release --all-features` | Up to 21 tools after all four optional runtime flags are enabled. This is not a named, separately qualified public release artifact. |
+| Health and readiness only | `cargo build --release --locked` | No MCP route or tools. |
+| Standard MCP server | `cargo build --release --locked --features mcp-runtime` | Authenticated MCP transport with the 17 baseline tools. |
+| One optional Android or diagnostic tool | `cargo build --release --locked --features <feature>` | Baseline tools plus the selected tool after its separate runtime flag is enabled. |
+| Local aggregate validation or development | `cargo build --release --locked --all-features` | Up to 21 tools after all four optional runtime flags are enabled. This is not a named, separately qualified public release artifact. |
 
 The optional feature names are `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; each includes `mcp-runtime`. Compiling a feature does not enable its runtime flag. Live filesystem and volume mutations additionally require their independent default-disabled runtime gate and a fresh, exact-operation, single-use request grant.
 
@@ -30,7 +30,7 @@ pkg update
 pkg install git bash coreutils curl file gawk jq procps termux-services rust clang make pkg-config binutils
 git clone https://github.com/CyberBASSLord-666/termux-mcp-edge.git
 cd termux-mcp-edge
-cargo build --release --features mcp-runtime
+cargo build --release --locked --features mcp-runtime
 ```
 
 If `termux-services` was installed for the first time, close all Termux sessions and open a new one before continuing; that starts its `runsvdir` service supervisor. Return to the clone and verify the supervisor:
@@ -226,7 +226,7 @@ The service does not default to broad Android shared storage. Keep `MCP__FILE__S
 Battery telemetry requires a separately compiled and separately enabled posture:
 
 ```bash
-cargo build --release --features android-battery-status
+cargo build --release --locked --features android-battery-status
 export MCP__ANDROID__BATTERY_STATUS_ENABLED=true
 ```
 
@@ -239,7 +239,7 @@ See [`docs/ANDROID_BATTERY_STATUS.md`](docs/ANDROID_BATTERY_STATUS.md) for prere
 Audio-stream volume status requires an independent compile-time and runtime opt-in:
 
 ```bash
-cargo build --release --features android-volume-status
+cargo build --release --locked --features android-volume-status
 export MCP__ANDROID__VOLUME_STATUS_ENABLED=true
 ```
 
@@ -252,7 +252,7 @@ See [`docs/ANDROID_VOLUME_STATUS.md`](docs/ANDROID_VOLUME_STATUS.md) for the exa
 One exact audio-stream mutation requires its own compile and runtime gates:
 
 ```bash
-cargo build --release --features android-volume-control
+cargo build --release --locked --features android-volume-control
 export MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
 ```
 
@@ -265,7 +265,7 @@ See [`docs/ANDROID_VOLUME_CONTROL.md`](docs/ANDROID_VOLUME_CONTROL.md) for confi
 Fixed server diagnostics require a separate build and runtime opt-in:
 
 ```bash
-cargo build --release --features command-execution
+cargo build --release --locked --features command-execution
 export MCP__COMMAND__ENABLED=true
 ```
 
@@ -278,22 +278,23 @@ See [`docs/command-execution-gate.md`](docs/command-execution-gate.md) for the c
 Run the exact CI gates:
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --features mcp-runtime -- -D warnings
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --features mcp-runtime
-cargo test --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features mcp-runtime
+cargo test --locked --workspace --all-targets --all-features
 ```
 
 Build all supported postures:
 
 ```bash
-cargo build --release
-cargo build --release --features mcp-runtime
-cargo build --release --features android-battery-status
-cargo build --release --features android-volume-status
-cargo build --release --features android-volume-control
-cargo build --release --features command-execution
+cargo build --release --locked
+cargo build --release --locked --features mcp-runtime
+cargo build --release --locked --features android-battery-status
+cargo build --release --locked --features android-volume-status
+cargo build --release --locked --features android-volume-control
+cargo build --release --locked --features command-execution
 ```
 
 The binary exposes deployment-facing metadata without requiring runtime configuration:

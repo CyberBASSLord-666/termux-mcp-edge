@@ -23,7 +23,7 @@ The server executes that exact absolute path directly. It supplies no arguments,
 Build and enable the posture explicitly:
 
 ```bash
-cargo build --release --features android-battery-status
+cargo build --release --locked --features android-battery-status
 export MCP__ANDROID__BATTERY_STATUS_ENABLED=true
 ```
 

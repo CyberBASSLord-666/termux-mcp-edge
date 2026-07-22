@@ -234,9 +234,10 @@ Both operations target only the configured project deployment root, the fixed `m
 ## CI validation
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
 ```
 

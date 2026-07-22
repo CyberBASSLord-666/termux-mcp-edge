@@ -46,7 +46,7 @@ provide a second, grant-free volume setter.
 Build the dedicated posture:
 
 ```bash
-cargo build --release --features android-volume-control
+cargo build --release --locked --features android-volume-control
 ```
 
 Use a private mode-`0600` `runtime.env` and static-token authentication:

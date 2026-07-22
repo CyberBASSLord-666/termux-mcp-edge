@@ -32,7 +32,7 @@ Before tagging or publishing, record the exact 40-character commit SHA and verif
 
 Required evidence:
 
-1. The standard CI workflow succeeds, including formatting, Clippy, the complete test suite, and deployment shell tests.
+1. The standard CI workflow succeeds, including locked dependency-graph preflight, unchanged `Cargo.toml`/`Cargo.lock` assertions around Cargo-aware setup, formatting, locked Clippy, the complete locked test suite, and deployment shell tests.
 2. The security workflow succeeds with no unresolved actionable advisory or policy failure.
 3. Android AArch64 validation succeeds for all supported feature postures:
    - default feature set;
@@ -81,6 +81,8 @@ Every GitHub Release body must record:
 - upgrade and rollback references.
 
 The release process should be reproducible from the tagged source using the documented toolchain. A byte-for-byte reproducible build is preferred but is not claimed unless independently verified.
+
+Every product and Android artifact build must use the committed `Cargo.lock`; a stale or missing lock is a release failure, never an instruction to regenerate dependencies in place. The device gate's synthetic older-version rollback fixture may change only the root package-version field in both `Cargo.toml` and `Cargo.lock`, must build that graph with `--locked`, and must restore a clean exact-head tree before any candidate build.
 
 ## Release procedure
 

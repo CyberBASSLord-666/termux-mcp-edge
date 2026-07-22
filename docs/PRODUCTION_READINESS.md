@@ -54,16 +54,17 @@ Documentation-only changes may document why path-filtered workflow non-runs are 
 Run the host gates with the pinned toolchain:
 
 ```bash
+cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
-cargo build --release
-cargo build --release --features mcp-runtime
-cargo build --release --features android-battery-status
-cargo build --release --features android-volume-status
-cargo build --release --features android-volume-control
-cargo build --release --features command-execution
+cargo build --release --locked
+cargo build --release --locked --features mcp-runtime
+cargo build --release --locked --features android-battery-status
+cargo build --release --locked --features android-volume-status
+cargo build --release --locked --features android-volume-control
+cargo build --release --locked --features command-execution
 ```
 
 For Android, require all posture-specific artifacts described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md):
