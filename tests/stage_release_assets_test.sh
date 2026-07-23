@@ -439,7 +439,8 @@ mapfile -t archive_members < <(tar -tf "$FIRST_TAR")
 mapfile -t sorted_archive_members < <(printf '%s\n' "${archive_members[@]}" | sort)
 [[ "$(printf '%s\n' "${archive_members[@]}")" == "$(printf '%s\n' "${sorted_archive_members[@]}")" ]] \
   || fail_test 'archive members are not deterministically sorted'
-if tar -tvf "$FIRST_TAR" | awk '$4 != "1970-01-01" {exit 1}'; then
+if LC_ALL=C TZ=XST8 tar --utc --full-time -tvf "$FIRST_TAR" \
+  | awk '$4 != "1970-01-01" || $5 != "00:00:00" {exit 1}'; then
   :
 else
   fail_test 'archive timestamps are not normalized'
