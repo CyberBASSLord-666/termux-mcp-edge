@@ -41,8 +41,8 @@ jobs:
       artifact_ids: ${{ steps.upstream.outputs.artifact_ids }}
     steps:
       - name: Checkout dispatch main candidate
-        # actions/checkout@v7.0.0 resolved 2026-07-10
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -301,8 +301,8 @@ jobs:
         run: test "$ENVIRONMENT_GUARD" = required-reviewer-main-only-v1
 
       - name: Checkout dispatch main candidate after approval
-        # actions/checkout@v7.0.0 resolved 2026-07-10
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 1
           persist-credentials: false
