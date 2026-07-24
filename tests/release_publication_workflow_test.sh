@@ -81,7 +81,7 @@ do
   assert_contains "$marker"
 done
 
-[[ "$(grep -Fc 'uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0' "$WORKFLOW")" -eq 5 ]] \
+[[ "$(grep -Fc 'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' "$WORKFLOW")" -eq 5 ]] \
   || fail checkout_action_count_or_pin_changed
 [[ "$(grep -Fc 'persist-credentials: false' "$WORKFLOW")" -eq 5 ]] \
   || fail checkout_credentials_must_remain_disabled
