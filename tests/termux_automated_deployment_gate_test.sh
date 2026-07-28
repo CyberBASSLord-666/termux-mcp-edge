@@ -212,6 +212,21 @@ bash -n "$SCRIPT"
 bash -n "${BASH_SOURCE[0]}"
 jq empty "$SCHEMA"
 jq empty "$SCENARIOS"
+python3 - "$SCRIPT" <<'PY'
+from pathlib import Path
+import sys
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+for name in (
+    "track_runsv_children",
+    "collect_isolated_processes",
+    "signal_tracked_processes",
+):
+    start = lines.index(f"{name}() {{")
+    end = next(index for index in range(start + 1, len(lines)) if lines[index] == "}")
+    if lines[end - 1] != "  return 0":
+        raise SystemExit(f"{name} must return success explicitly")
+PY
 grep -Fq 'kill -HUP "$RUNSVDIR_PID"' "$SCRIPT" \
   || fail_test "runit shutdown does not use the runsvdir HUP contract"
 if grep -Eq '(^|[[:space:]])pkill([[:space:]]|$)|terminate_pid_bounded' "$SCRIPT"; then
@@ -278,11 +293,15 @@ trap shutdown HUP
 # isolated children and therefore fails the gate's adversarial cleanup test.
 trap ':' TERM
 
+identity_next="$pid_file.next"
+rm -f -- "$identity_next"
 {
   process_identity runsvdir "$$"
   process_identity runsv "$runsv_pid"
   process_identity service "$service_pid"
-} >"$pid_file"
+} >"$identity_next"
+chmod 600 "$identity_next"
+mv -T "$identity_next" "$pid_file"
 
 while :; do
   if read -r -t 1 _; then
@@ -496,11 +515,15 @@ SUPERVISOR_SUCCESS_ROOT="$(make_case supervisor-success-cleanup)"
 write_bundle "$SUPERVISOR_SUCCESS_ROOT/bundle"
 SUPERVISOR_SUCCESS_PIDS="$SUPERVISOR_SUCCESS_ROOT/supervisor.pids"
 SUPERVISOR_PID_FILES+=("$SUPERVISOR_SUCCESS_PIDS")
-if ! run_gate_with_supervisor \
+if run_gate_with_supervisor \
   "$SUPERVISOR_SUCCESS_ROOT" "$SUPERVISOR_SUCCESS_PIDS" \
-  >"$SUPERVISOR_SUCCESS_ROOT/stdout" 2>"$SUPERVISOR_SUCCESS_ROOT/stderr"; then
+  >"$SUPERVISOR_SUCCESS_ROOT/stdout" 2>"$SUPERVISOR_SUCCESS_ROOT/stderr"
+then
+  supervisor_success_status=0
+else
+  supervisor_success_status=$?
   sed -n '1,120p' "$SUPERVISOR_SUCCESS_ROOT/stderr" >&2
-  fail_test "supervisor success cleanup fixture failed"
+  fail_test "supervisor success cleanup fixture failed with status $supervisor_success_status"
 fi
 assert_supervisor_pids_exited "$SUPERVISOR_SUCCESS_PIDS"
 jq -e '
@@ -532,7 +555,7 @@ env \
     --output "$SUPERVISOR_TRAP_ROOT/output/automated-native-deployment-v1.json" \
     >"$SUPERVISOR_TRAP_ROOT/stdout" 2>"$SUPERVISOR_TRAP_ROOT/stderr" &
 SUPERVISOR_TRAP_GATE_PID=$!
-for _ in $(seq 1 200); do
+for _ in $(seq 1 1000); do
   [[ -f "$SUPERVISOR_TRAP_PAUSE.ready" && -s "$SUPERVISOR_TRAP_PIDS" ]] && break
   kill -0 "$SUPERVISOR_TRAP_GATE_PID" >/dev/null 2>&1 || break
   sleep 0.02

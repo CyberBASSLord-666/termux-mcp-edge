@@ -759,7 +759,7 @@ grep -Fq 'python3 "$COMMIT_HELPER"' "$CLASSIFIER" \
 assert_publication_cleanup_contract "$CLASSIFIER"
 [[ -f "$COMMIT_HELPER" && ! -L "$COMMIT_HELPER" ]] \
   || fail_test 'held-FD commit helper is missing or linked'
-if rg -n 'PUBLISH_(LINKED|IDENTITY)' \
+if grep -En 'PUBLISH_(LINKED|IDENTITY)' \
   "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" \
   "$COMMAND_GATE" "$CLASSIFIER" >/dev/null
 then

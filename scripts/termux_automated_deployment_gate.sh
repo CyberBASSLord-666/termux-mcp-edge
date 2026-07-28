@@ -200,8 +200,11 @@ track_runsv_children() {
   [[ -r "$children_file" ]] || return 0
   while IFS= read -r child_proc_id; do
     child="$(proc_namespace_pid "$child_proc_id" 2>/dev/null || true)"
-    [[ -n "$child" ]] && append_identity runsv "$child" "$child_proc_id"
+    if [[ -n "$child" ]]; then
+      append_identity runsv "$child" "$child_proc_id"
+    fi
   done < <(tr ' ' '\n' <"$children_file" | sed '/^$/d')
+  return 0
 }
 
 path_is_isolated() {
@@ -245,8 +248,11 @@ collect_isolated_processes() {
     proc_in_gate_pid_namespace "$proc_id" || continue
     pid="$(proc_namespace_pid "$proc_id" 2>/dev/null || true)"
     [[ "$pid" =~ ^[1-9][0-9]*$ && "$pid" != "$$" ]] || continue
-    pid_is_isolated "$proc_id" && append_identity associated "$pid" "$proc_id"
+    if pid_is_isolated "$proc_id"; then
+      append_identity associated "$pid" "$proc_id"
+    fi
   done
+  return 0
 }
 
 signal_identity() {
@@ -296,6 +302,7 @@ signal_tracked_processes() {
   if [[ -n "$RUNSVDIR_IDENTITY" ]]; then
     signal_identity "$RUNSVDIR_IDENTITY" "$signal"
   fi
+  return 0
 }
 
 shutdown_isolated_supervision() {
@@ -332,7 +339,12 @@ cleanup() {
     timeout -k 2 5 sv down "$SERVICE_SANDBOX/service/mcp_runtime" \
       >/dev/null 2>&1 || true
   fi
-  shutdown_isolated_supervision >/dev/null 2>&1 || status=1
+  if ! shutdown_isolated_supervision >/dev/null 2>&1; then
+    if ((status == 0)); then
+      printf 'TERMUX_MCP_AUTOMATED_DEPLOYMENT_RESULT=FAIL reason=cleanup_unconfirmed\n' >&2
+    fi
+    status=1
+  fi
 
   if [[ -n "$REPORT_NEXT" && -f "$REPORT_NEXT" ]]; then
     rm -f -- "$REPORT_NEXT" >/dev/null 2>&1 || status=1
@@ -866,6 +878,19 @@ if [[ -n "$RUNSVDIR_PID" ]]; then
   [[ -n "$RUNSVDIR_PROC_ID" && -n "$RUNSVDIR_START" ]] || fail runsvdir_identity_failed
   RUNSVDIR_IDENTITY="$RUNSVDIR_PID:$RUNSVDIR_PROC_ID:$RUNSVDIR_START"
   kill -0 "$RUNSVDIR_PID" >/dev/null 2>&1 || fail runsvdir_start_failed
+  if [[ -n "$TEST_SUPERVISOR_PID_FILE" ]]; then
+    for _ in $(seq 1 500); do
+      if [[ -f "$TEST_SUPERVISOR_PID_FILE" \
+        && "$(wc -l <"$TEST_SUPERVISOR_PID_FILE")" == 3 ]]; then
+        break
+      fi
+      kill -0 "$RUNSVDIR_PID" >/dev/null 2>&1 || break
+      sleep 0.02
+    done
+    [[ -f "$TEST_SUPERVISOR_PID_FILE" \
+      && "$(wc -l <"$TEST_SUPERVISOR_PID_FILE")" == 3 ]] \
+      || fail test_supervisor_identity_timeout
+  fi
   for _ in $(seq 1 100); do
     track_runsv_children
     [[ "${#TRACKED_RUNSV_IDENTITIES[@]}" -ge 1 || -z "$TEST_RUNSVDIR_PATH" ]] && break
@@ -876,7 +901,7 @@ if [[ -n "$RUNSVDIR_PID" ]]; then
 fi
 if [[ -n "$TEST_SUPERVISOR_PAUSE_PATH" ]]; then
   : >"$TEST_SUPERVISOR_PAUSE_PATH.ready"
-  for _ in $(seq 1 100); do
+  for _ in $(seq 1 600); do
     [[ -f "$TEST_SUPERVISOR_PAUSE_PATH.continue" ]] && break
     sleep 0.05
   done
