@@ -13,6 +13,8 @@ INHERITANCE="$ROOT/scripts/verify_observation_inheritance.sh"
 ANDROID_WORKFLOW="$ROOT/.github/workflows/android-cross-compile.yml"
 CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
 SECURITY_WORKFLOW="$ROOT/.github/workflows/security.yml"
+LATEST_RUN_SELECTOR="$ROOT/scripts/latest_workflow_run.jq"
+COMMIT_HELPER="$ROOT/scripts/commit_verified_file.py"
 SOURCE_REPORT="$ROOT/docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
 FIXTURE_ROOT="$(mktemp -d)"
 trap 'rm -rf -- "$FIXTURE_ROOT"' EXIT INT TERM
@@ -20,6 +22,56 @@ trap 'rm -rf -- "$FIXTURE_ROOT"' EXIT INT TERM
 fail_test() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
+}
+
+assert_unconditional_main_push() {
+  local workflow="$1"
+  awk '
+    /^  push:$/ { in_push = 1; next }
+    in_push && /^  [a-zA-Z_][a-zA-Z_-]*:$/ { exit }
+    in_push && /branches: \[ main \]/ { main_branch = 1 }
+    in_push && /^[[:space:]]+paths:/ { path_filter = 1 }
+    END { exit !(main_branch && !path_filter) }
+  ' "$workflow" || fail_test "main push is not unconditional: $workflow"
+}
+
+assert_publication_cleanup_contract() {
+  local publisher="$1" name case_root cleanup_source staged output
+  name="$(basename "$publisher" .sh)"
+  case_root="$(mktemp -d "$FIXTURE_ROOT/${name}.publication.XXXXXX")"
+  cleanup_source="$case_root/cleanup.sh"
+  sed -n '/^cleanup() {$/,/^}$/p' "$publisher" >"$cleanup_source"
+  if grep -Eq 'OUTPUT_REPORT|PUBLISH_(LINKED|IDENTITY)' "$cleanup_source"; then
+    fail_test "failure cleanup may inspect or unlink the public output: $publisher"
+  fi
+
+  staged="$case_root/staged"
+  output="$case_root/output"
+  printf 'private staging\n' >"$staged"
+  printf 'concurrent owner\n' >"$output"
+  if (
+    set +e
+    # shellcheck source=/dev/null
+    source "$cleanup_source"
+    SERVER_PID=''
+    BACKGROUND_CURL_PID=''
+    BATTERY_PROGRAM_CREATED=false
+    BATTERY_PROGRAM=''
+    VOLUME_PROGRAM_CREATED=false
+    VOLUME_PROGRAM=''
+    PUBLISH_NEXT="$staged"
+    REPORT_NEXT="$staged"
+    OUTPUT_REPORT="$output"
+    WORK_ROOT=''
+    false
+    cleanup
+  ); then
+    fail_test "injected publication failure unexpectedly succeeded: $publisher"
+  fi
+  [[ ! -e "$staged" && ! -L "$staged" ]] \
+    || fail_test "failure cleanup retained private staging: $publisher"
+  [[ "$(<"$output")" == 'concurrent owner' ]] \
+    || fail_test "failure cleanup removed or changed a public output: $publisher"
 }
 
 for script in "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" "$COMMAND_GATE" "$CLASSIFIER" "$INHERITANCE"; do
@@ -165,6 +217,38 @@ rm -f -- \
   "$ROOT/.termux-classifier-test.stdout" "$ROOT/.termux-classifier-test.stderr" \
   "$ROOT/.termux-inheritance-test.stdout" "$ROOT/.termux-inheritance-test.stderr"
 
+printf '%s  %s\n' \
+  ed86dbee150a42f4dd2775c79f9c358ec1b0a4420661ecc62b47b7be9d741568 "$ROOT/docs/android-battery-emulated-evidence-schema-v2.json" \
+  506a7f5ef3cf3fa0a1e83777d8edc722c132e99f9baf36bf3e5bdf0b448dab63 "$ROOT/docs/android-volume-emulated-evidence-schema-v1.json" \
+  8a90efefbffc5ee5d37660f7dce375084c3f42be2ee74b806fa10ee7a382d8ab "$ROOT/docs/android-volume-control-emulated-evidence-schema-v1.json" \
+  e2fb1da72669351805d360259f4ce3c209ce5c32c882d408988247edd2436fc0 "$ROOT/docs/command-emulated-evidence-schema-v2.json" \
+  | sha256sum -c - >/dev/null \
+  || fail_test 'historical specialized evidence schema bytes changed'
+
+python3 - \
+  "$ROOT/docs/android-battery-emulated-evidence-schema-v3.json" \
+  "$ROOT/docs/android-volume-emulated-evidence-schema-v2.json" \
+  "$ROOT/docs/android-volume-control-emulated-evidence-schema-v2.json" \
+  "$ROOT/docs/command-emulated-evidence-schema-v3.json" <<'PY'
+import json
+import pathlib
+import sys
+
+
+def closed_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+for raw_path in sys.argv[1:]:
+    with pathlib.Path(raw_path).open("r", encoding="utf-8") as source:
+        json.load(source, object_pairs_hook=closed_object)
+PY
+
 jq -e '
   .properties.schemaVersion.const == 2
   and .properties.gateVersion.const == "2"
@@ -182,7 +266,9 @@ jq -e '
 ' "$ROOT/docs/emulated-release-evidence-schema-v2.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 3
+  ."$id" == "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/emulated-release-evidence-schema-v3.json"
+  and .title == "Termux MCP Edge emulated exact-artifact evidence v3"
+  and .properties.schemaVersion.const == 3
   and .properties.gateVersion.const == "3"
   and .properties.status.const == "pass"
   and .properties.releaseQualificationEligible.const == false
@@ -206,11 +292,39 @@ jq -e '
 ' "$ROOT/docs/emulated-release-evidence-schema-v3.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 2
-  and .properties.gateVersion.const == "2"
+  .properties.schemaVersion.const == 4
+  and .properties.gateVersion.const == "4"
+  and .properties.status.const == "pass"
+  and .properties.releaseQualificationEligible.const == false
+  and .properties.claimBoundary."$ref" == "#/$defs/claimBoundary"
+  and .properties.environment.properties.imageDigest.pattern == "^sha256:[0-9a-f]{64}$"
+  and .properties.environment.properties.rootfsImageId.pattern == "^sha256:[0-9a-f]{64}$"
+  and .properties.environment.properties.runtimeImageDigest.pattern == "^sha256:[0-9a-f]{64}$"
+  and ."$defs".claimBoundary.properties.physicalDeviceObserved.const == false
+  and ."$defs".claimBoundary.properties.androidFrameworkObserved.const == false
+  and ."$defs".claimBoundary.properties.sustainedPhysicalSoak.const == false
+  and ."$defs".claimBoundary.properties.physicalCertification.const == "not_run"
+  and .properties.coverage.properties.covered.const == [
+    "exact_android_artifacts",
+    "official_termux_userland_native_arm64",
+    "android_bionic_linker",
+    "deterministic_provider_simulation",
+    "runtime_gate_composition",
+    "bounded_native_stress"
+  ]
+  and .properties.aggregateValidation.properties.automatedQualificationComponent.const == true
+' "$ROOT/docs/emulated-release-evidence-schema-v4.json" >/dev/null
+
+jq -e '
+  .properties.schemaVersion.const == 3
+  and .properties.gateVersion.const == "3"
   and .properties.releaseQualificationEligible.const == false
   and .properties.environment."$ref" == "#/$defs/environment"
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and (."$defs".environment.required | index("rootfsImageId") != null)
+  and (."$defs".environment.required | index("runtimeImageDigest") != null)
+  and ."$defs".environment.properties.rootfsImageId."$ref" == "#/$defs/ociDigest"
+  and ."$defs".environment.properties.runtimeImageDigest."$ref" == "#/$defs/ociDigest"
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.fixedProgram.const == true
   and ."$defs".validation.properties.fixedWorkingDirectory.const == true
@@ -222,14 +336,20 @@ jq -e '
   and ."$defs".validation.properties.callerCancellationCleanup.const == true
   and ."$defs".validation.properties.boundedSupervisorCleanup.const == true
   and ."$defs".validation.properties.androidDeviceControlDisabled.const == true
-' "$ROOT/docs/android-battery-emulated-evidence-schema-v2.json" >/dev/null
+' "$ROOT/docs/android-battery-emulated-evidence-schema-v3.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 1
-  and .properties.gateVersion.const == "1"
+  ."$id" == "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/android-volume-emulated-evidence-schema-v2.json"
+  and .title == "Termux MCP Android volume native emulation evidence v2"
+  and .properties.schemaVersion.const == 2
+  and .properties.gateVersion.const == "2"
   and .properties.releaseQualificationEligible.const == false
   and .properties.environment."$ref" == "#/$defs/environment"
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and (."$defs".environment.required | index("rootfsImageId") != null)
+  and (."$defs".environment.required | index("runtimeImageDigest") != null)
+  and ."$defs".environment.properties.rootfsImageId."$ref" == "#/$defs/ociDigest"
+  and ."$defs".environment.properties.runtimeImageDigest."$ref" == "#/$defs/ociDigest"
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.fixedProgram.const == true
   and ."$defs".validation.properties.fixedWorkingDirectory.const == true
@@ -245,14 +365,20 @@ jq -e '
   and ."$defs".validation.properties.callerCancellationCleanup.const == true
   and ."$defs".validation.properties.boundedSupervisorCleanup.const == true
   and ."$defs".validation.properties.androidDeviceControlDisabled.const == true
-' "$ROOT/docs/android-volume-emulated-evidence-schema-v1.json" >/dev/null
+' "$ROOT/docs/android-volume-emulated-evidence-schema-v2.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 1
-  and .properties.gateVersion.const == "1"
+  ."$id" == "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/android-volume-control-emulated-evidence-schema-v2.json"
+  and .title == "Termux MCP Android volume control native emulation evidence v2"
+  and .properties.schemaVersion.const == 2
+  and .properties.gateVersion.const == "2"
   and .properties.releaseQualificationEligible.const == false
   and ."$defs".candidate.required == ["commit","version","ciRunId","securityRunId","androidRunId","artifact","incompatibleArtifact"]
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and (."$defs".environment.required | index("rootfsImageId") != null)
+  and (."$defs".environment.required | index("runtimeImageDigest") != null)
+  and ."$defs".environment.properties.rootfsImageId."$ref" == "#/$defs/ociDigest"
+  and ."$defs".environment.properties.runtimeImageDigest."$ref" == "#/$defs/ociDigest"
   and ."$defs".validation.properties.compileGate.const == true
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
   and ."$defs".validation.properties.previewDoesNotConsumeGrant.const == true
@@ -266,15 +392,21 @@ jq -e '
   and ."$defs".validation.properties.rollbackUnconfirmed.const == true
   and ."$defs".validation.properties.cancellationIndependentRecovery.const == true
   and ."$defs".validation.properties.longObservationRequired.const == false
-' "$ROOT/docs/android-volume-control-emulated-evidence-schema-v1.json" >/dev/null
+' "$ROOT/docs/android-volume-control-emulated-evidence-schema-v2.json" >/dev/null
 
 jq -e '
-  .properties.schemaVersion.const == 2
-  and .properties.gateVersion.const == "2"
+  ."$id" == "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/command-emulated-evidence-schema-v3.json"
+  and .title == "Termux MCP fixed command profile native emulation evidence v3"
+  and .properties.schemaVersion.const == 3
+  and .properties.gateVersion.const == "3"
   and .properties.releaseQualificationEligible.const == false
   and .properties.candidate."$ref" == "#/$defs/candidate"
   and ."$defs".candidate.required == ["commit","version","ciRunId","securityRunId","androidRunId","artifact","defaultArtifact"]
   and ."$defs".environment.properties.executionMode.const == "official-termux-docker-native-arm64"
+  and (."$defs".environment.required | index("rootfsImageId") != null)
+  and (."$defs".environment.required | index("runtimeImageDigest") != null)
+  and ."$defs".environment.properties.rootfsImageId."$ref" == "#/$defs/ociDigest"
+  and ."$defs".environment.properties.runtimeImageDigest."$ref" == "#/$defs/ociDigest"
   and ."$defs".validation.properties.requests.const == 29
   and ."$defs".validation.properties.compileGate.const == true
   and ."$defs".validation.properties.runtimeDefaultDisabled.const == true
@@ -296,7 +428,7 @@ jq -e '
   and ."$defs".validation.properties.auditCounters.const == true
   and ."$defs".validation.properties.arbitraryCommandExecutionDisabled.const == true
   and ."$defs".validation.properties.longObservationRequired.const == false
-' "$ROOT/docs/command-emulated-evidence-schema-v2.json" >/dev/null
+' "$ROOT/docs/command-emulated-evidence-schema-v3.json" >/dev/null
 grep -Fq 'EXPECTED_REQUEST_COUNT=29' "$COMMAND_GATE" \
   || fail_test 'command gate omits its exact request-count contract'
 grep -Fq '((REQUEST_COUNT == EXPECTED_REQUEST_COUNT)) || fail request_count_invalid' "$COMMAND_GATE" \
@@ -362,6 +494,29 @@ jq -e '
 ' "$ROOT/docs/release-observation-requirement-schema-v2.json" >/dev/null
 
 jq -e '
+  .properties.schemaVersion.const == 3
+  and .properties.classifierVersion.const == "3"
+  and .properties.releaseQualificationEligible.const == false
+  and .properties.evidenceMode.const == "automated_release_qualification"
+  and .properties.reasonCode.const == "automated_native_termux_evidence_required"
+  and .properties.inheritanceCandidate.const == false
+  and .properties.nextGate.const == "assemble_automated_release_qualification"
+  and .properties.changedInputClasses.maxItems == 2
+  and (.allOf | length) == 2
+  and .allOf[0].if.properties.protectedInputComparison.properties.runtimeAndDeploymentInputsUnchanged.const == true
+  and .allOf[0].then.properties.changedInputClasses.not.contains.const == "runtime_or_deployment"
+  and .allOf[0].else.properties.changedInputClasses.contains.const == "runtime_or_deployment"
+  and .allOf[1].if.properties.protectedInputComparison.properties.cargoAndDependencyInputsUnchangedExceptRootVersion.const == true
+  and .allOf[1].then.properties.changedInputClasses.not.contains.const == "cargo_or_dependency"
+  and .allOf[1].else.properties.changedInputClasses.contains.const == "cargo_or_dependency"
+  and .properties.claimBoundary."$ref" == "#/$defs/claimBoundary"
+  and ."$defs".claimBoundary.properties.physicalDeviceObserved.const == false
+  and ."$defs".claimBoundary.properties.androidFrameworkObserved.const == false
+  and ."$defs".claimBoundary.properties.sustainedPhysicalSoak.const == false
+  and ."$defs".claimBoundary.properties.physicalCertification.const == "not_run"
+' "$ROOT/docs/release-observation-requirement-schema-v3.json" >/dev/null
+
+jq -e '
   .properties.releaseQualificationEligible.const == true
   and .properties.evidenceMode.const == "inherited_physical_observation"
   and .properties.sourceObservation.properties.physicalDevice.const == true
@@ -404,10 +559,13 @@ EQUIVALENT_EMULATED="$FIXTURE_ROOT/equivalent-emulated.json"
 jq -n \
   --arg commit "$EQUIVALENT_CANDIDATE" '
   {
-    schemaVersion: 3,
-    gateVersion: "3",
+    schemaVersion: 4,
+    gateVersion: "4",
     status: "pass",
     failureCode: null,
+    releaseQualificationEligible: false,
+    startedAt: "2026-07-23T00:00:00Z",
+    completedAt: "2026-07-23T00:01:00Z",
     candidate: {
       commit: $commit,
       version: "0.6.0",
@@ -428,12 +586,37 @@ jq -n \
       androidLinker: true,
       imageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
+    claimBoundary: {
+      physicalDeviceObserved: false,
+      androidFrameworkObserved: false,
+      sustainedPhysicalSoak: false,
+      physicalCertification: "not_run"
+    },
+    coverage: {
+      covered: [
+        "exact_android_artifacts",
+        "official_termux_userland_native_arm64",
+        "android_bionic_linker",
+        "deterministic_provider_simulation",
+        "runtime_gate_composition",
+        "bounded_native_stress"
+      ],
+      notCovered: [
+        "physical_device",
+        "android_framework",
+        "oem_policy",
+        "battery_aging",
+        "thermal_soak",
+        "radio",
+        "doze"
+      ]
+    },
     runtimeValidation: {status: "pass"},
     aggregateValidation: {
       status: "pass",
       defaultDisabled: {toolCount: 17},
       fullyEnabled: {toolCount: 21},
-      directPhysicalObservationRequired: true
+      automatedQualificationComponent: true
     },
     stress: {
       status: "pass",
@@ -452,17 +635,65 @@ bash "$CLASSIFIER" \
   --output "$FIXTURE_ROOT/output/equivalent.json" >/dev/null
 jq -e '
   .inheritanceCandidate == false
-  and .schemaVersion == 2
-  and .classifierVersion == "2"
+  and .schemaVersion == 3
+  and .classifierVersion == "3"
   and .releaseQualificationEligible == false
-  and .evidenceMode == "physical_observation_required"
-  and .reasonCode == "full_suite_direct_physical_observation_required"
-  and .changedInputClasses == ["full_suite_artifact"]
-  and .nextGate == "direct_physical_device_observation"
+  and .evidenceMode == "automated_release_qualification"
+  and .reasonCode == "automated_native_termux_evidence_required"
+  and .changedInputClasses == []
+  and .nextGate == "assemble_automated_release_qualification"
+  and .claimBoundary.physicalDeviceObserved == false
+  and .claimBoundary.androidFrameworkObserved == false
+  and .claimBoundary.sustainedPhysicalSoak == false
+  and .claimBoundary.physicalCertification == "not_run"
   and .candidate.fullSuiteArtifactSha256 == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   and .candidate.fullSuiteManifestSha256 == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 ' "$FIXTURE_ROOT/output/equivalent.json" >/dev/null
 [[ "$(stat -c %a "$FIXTURE_ROOT/output/equivalent.json")" == 600 ]] || fail_test 'classifier output is not private'
+
+RACE_BIN="$FIXTURE_ROOT/race-bin"
+RACE_OUTPUT="$FIXTURE_ROOT/output/classifier-race.json"
+RACE_LOG="$FIXTURE_ROOT/classifier-race.log"
+REAL_PYTHON3="$(command -v python3)"
+mkdir -m 700 "$RACE_BIN"
+cat >"$RACE_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+destination=''
+previous=''
+for argument in "$@"; do
+  if [[ "$previous" == --destination ]]; then
+    destination="$argument"
+    break
+  fi
+  previous="$argument"
+done
+if [[ -n "$destination" && "$destination" == "${TERMUX_MCP_RACE_OUTPUT:-}" ]]; then
+  printf '%s\n' 'race-sentinel' >"$destination"
+fi
+exec "$TERMUX_MCP_REAL_PYTHON3" "$@"
+EOF
+chmod 700 "$RACE_BIN/python3"
+set +e
+PATH="$RACE_BIN:$PATH" \
+  TERMUX_MCP_REAL_PYTHON3="$REAL_PYTHON3" \
+  TERMUX_MCP_RACE_OUTPUT="$RACE_OUTPUT" \
+  bash "$CLASSIFIER" \
+    --repository-root "$FIXTURE_REPOSITORY" \
+    --source-commit "$FIXTURE_SOURCE" \
+    --candidate-commit "$EQUIVALENT_CANDIDATE" \
+    --emulated-report "$EQUIVALENT_EMULATED" \
+    --output "$RACE_OUTPUT" >"$RACE_LOG" 2>&1
+race_rc=$?
+set -e
+((race_rc != 0)) || fail_test 'classifier output publication race did not fail closed'
+grep -Fq 'reason=output_already_exists' "$RACE_LOG" \
+  || fail_test 'classifier output publication race returned the wrong failure'
+[[ "$(<"$RACE_OUTPUT")" == race-sentinel ]] \
+  || fail_test 'classifier output publication race clobbered the competing file'
+if find "$FIXTURE_ROOT/output" -maxdepth 1 -name '.observation-requirement.*' -print -quit | grep -q .; then
+  fail_test 'classifier output publication race left a temporary file'
+fi
 
 printf '%s\n' 'pub fn changed_runtime() {}' >"$FIXTURE_REPOSITORY/src/lib.rs"
 cat >>"$FIXTURE_REPOSITORY/Cargo.toml" <<'EOF'
@@ -486,10 +717,10 @@ bash "$CLASSIFIER" \
 jq -e '
   .inheritanceCandidate == false
   and .releaseQualificationEligible == false
-  and .evidenceMode == "physical_observation_required"
-  and .reasonCode == "full_suite_direct_physical_observation_required"
-  and .changedInputClasses == ["runtime_or_deployment", "cargo_or_dependency", "full_suite_artifact"]
-  and .nextGate == "direct_physical_device_observation"
+  and .evidenceMode == "automated_release_qualification"
+  and .reasonCode == "automated_native_termux_evidence_required"
+  and .changedInputClasses == ["runtime_or_deployment", "cargo_or_dependency"]
+  and .nextGate == "assemble_automated_release_qualification"
 ' "$FIXTURE_ROOT/output/changed.json" >/dev/null
 
 grep -Fq 'runs-on: ubuntu-24.04-arm' "$ANDROID_WORKFLOW" || fail_test 'native ARM64 runner missing'
@@ -507,6 +738,67 @@ grep -Fq 'termux_volume_control_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_te
 grep -Fq -- '--volume-control-dir /workspace/artifacts/android-volume-control' "$ANDROID_WORKFLOW" || fail_test 'canonical runtime validator is missing the volume control artifact'
 grep -Fq -- '--full-suite-dir /workspace/artifacts/full-suite' "$ANDROID_WORKFLOW" || fail_test 'aggregate native gate is missing the full-suite artifact'
 grep -Fq 'termux_command_emulated_gate.sh' "$ANDROID_WORKFLOW" || fail_test 'command native emulation gate missing'
+for publisher in \
+  "$GATE" \
+  "$BATTERY_GATE" \
+  "$VOLUME_GATE" \
+  "$VOLUME_CONTROL_GATE" \
+  "$COMMAND_GATE"
+do
+  grep -Fq 'PUBLISH_NEXT="$(mktemp "$OUTPUT_PARENT/' "$publisher" \
+    || fail_test "evidence publisher lacks a private output-parent temporary file: $publisher"
+  grep -Fq 'python3 "$COMMIT_HELPER"' "$publisher" \
+    || fail_test "evidence publisher does not use the held-FD commit helper: $publisher"
+  if grep -Fq 'install -m 600 "$REPORT_NEXT" "$OUTPUT_REPORT"' "$publisher"; then
+    fail_test "evidence publisher can still clobber its destination: $publisher"
+  fi
+  assert_publication_cleanup_contract "$publisher"
+done
+grep -Fq 'python3 "$COMMIT_HELPER"' "$CLASSIFIER" \
+  || fail_test 'classifier does not use the held-FD commit helper'
+assert_publication_cleanup_contract "$CLASSIFIER"
+[[ -f "$COMMIT_HELPER" && ! -L "$COMMIT_HELPER" ]] \
+  || fail_test 'held-FD commit helper is missing or linked'
+if rg -n 'PUBLISH_(LINKED|IDENTITY)' \
+  "$GATE" "$BATTERY_GATE" "$VOLUME_GATE" "$VOLUME_CONTROL_GATE" \
+  "$COMMAND_GATE" "$CLASSIFIER" >/dev/null
+then
+  fail_test 'unsafe public-output rollback state remains in an evidence publisher'
+fi
+for specialized_gate in \
+  "$BATTERY_GATE" \
+  "$VOLUME_GATE" \
+  "$VOLUME_CONTROL_GATE" \
+  "$COMMAND_GATE"
+do
+  case "$(basename "$specialized_gate")" in
+    termux_battery_emulated_gate.sh|termux_command_emulated_gate.sh)
+      expected_gate_version=3
+      ;;
+    termux_volume_emulated_gate.sh|termux_volume_control_emulated_gate.sh)
+      expected_gate_version=2
+      ;;
+    *)
+      fail_test "unknown specialized gate: $specialized_gate"
+      ;;
+  esac
+  grep -Fxq "GATE_VERSION=$expected_gate_version" "$specialized_gate" \
+    || fail_test "specialized gate version is not the immutable schema pair: $specialized_gate"
+  grep -Fq 'TERMUX_MCP_TERMUX_ROOTFS_IMAGE_ID' "$specialized_gate" \
+    || fail_test "specialized gate omits the base image config identity: $specialized_gate"
+  grep -Fq 'TERMUX_MCP_TERMUX_RUNTIME_IMAGE_DIGEST' "$specialized_gate" \
+    || fail_test "specialized gate omits the derived runtime image identity: $specialized_gate"
+  grep -Fq 'runtime_image_digest_not_derived' "$specialized_gate" \
+    || fail_test "specialized gate does not compare base/runtime image IDs: $specialized_gate"
+  grep -Fq 'rootfsImageId:' "$specialized_gate" \
+    || fail_test "specialized report omits rootfsImageId: $specialized_gate"
+  grep -Fq 'runtimeImageDigest:' "$specialized_gate" \
+    || fail_test "specialized report omits runtimeImageDigest: $specialized_gate"
+done
+grep -Fq 'REPORT_NEXT="$(mktemp "$OUTPUT_PARENT/.observation-requirement.XXXXXX")"' "$CLASSIFIER" \
+  || fail_test 'classifier report temporary file remains predictable or outside its output parent'
+grep -Fq 'python3 "$COMMIT_HELPER"' "$CLASSIFIER" \
+  || fail_test 'classifier report publication is not held-FD atomic no-clobber'
 for contract in \
   '.failureCode == null' \
   '.candidate.version == $version' \
@@ -521,6 +813,8 @@ for contract in \
   '.environment.executionMode == "official-termux-docker-native-arm64"' \
   '.environment.image == "termux/termux-docker:aarch64"' \
   '.environment.imageDigest == $digest' \
+  '.environment.rootfsImageId == $rootfs_image_id' \
+  '.environment.runtimeImageDigest == $runtime_digest' \
   '.environment.androidLinker == true' \
   '.validation.requests == 29' \
   '.validation.exactArtifact == true' \
@@ -534,27 +828,156 @@ done
 grep -Fq 'docs/android-volume-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'volume evidence schema does not trigger CI'
 grep -Fq 'docs/android-volume-control-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'volume control evidence schema does not trigger CI'
 grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$CI_WORKFLOW" || fail_test 'command evidence schema does not trigger CI'
-[[ "$(grep -Fc -- '- ".github/workflows/*"' "$CI_WORKFLOW")" == 2 ]] || fail_test 'workflow changes do not trigger CI for both push and pull requests'
-[[ "$(grep -Fc -- '- ".github/workflows/*"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'workflow changes do not trigger Security for both push and pull requests'
-[[ "$(grep -Fc -- '- "src/**"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'runtime source changes do not trigger Security for both push and pull requests'
-[[ "$(grep -Fc -- '- "tests/**"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'test changes do not trigger Security for both push and pull requests'
-[[ "$(grep -Fc -- '- "scripts/termux_release_validate.sh"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'release validator changes do not trigger Security for both push and pull requests'
-[[ "$(grep -Fc -- '- "scripts/termux_device_smoke.sh"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'device smoke changes do not trigger Security for both push and pull requests'
-[[ "$(grep -Fc -- '- "scripts/termux_deploy.sh"' "$SECURITY_WORKFLOW")" == 2 ]] || fail_test 'deployment changes do not trigger Security for both push and pull requests'
+[[ "$(grep -Fc -- '- "docs/release-automated-qualification-schema-v*.json"' "$CI_WORKFLOW")" == 1 ]] || fail_test 'automated qualification schema is absent from the CI pull-request filter'
+[[ "$(grep -Fc -- '- "docs/release-qualification-policy*.json"' "$CI_WORKFLOW")" == 1 ]] || fail_test 'qualification policy is absent from the CI pull-request filter'
+[[ "$(grep -Fc -- '- "docs/automated-native-deployment-*.json"' "$CI_WORKFLOW")" == 1 ]] || fail_test 'automated deployment contracts are absent from the CI pull-request filter'
+grep -Fq 'bash tests/termux_automated_deployment_gate_test.sh' "$CI_WORKFLOW" || fail_test 'automated deployment suite is absent from CI'
+grep -Fq 'bash tests/package_automated_qualification_test.sh' "$CI_WORKFLOW" || fail_test 'automated qualification suite is absent from CI'
+[[ "$(grep -Fc -- '- ".github/workflows/*"' "$CI_WORKFLOW")" == 1 ]] || fail_test 'workflow changes are absent from the CI pull-request filter'
+[[ "$(grep -Fc -- '- ".github/workflows/*"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'workflow changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- ".github/workflows/*"' "$ANDROID_WORKFLOW")" == 1 ]] || fail_test 'workflow changes are absent from the Android pull-request filter'
+[[ "$(grep -Fc -- '- "build.rs"' "$CI_WORKFLOW")" == 1 ]] || fail_test 'build script changes are absent from the CI pull-request filter'
+[[ "$(grep -Fc -- '- "build.rs"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'build script changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "build.rs"' "$ANDROID_WORKFLOW")" == 1 ]] || fail_test 'build script changes are absent from the Android pull-request filter'
+[[ "$(grep -Fc -- '- ".cargo/**"' "$CI_WORKFLOW")" == 1 ]] || fail_test 'Cargo configuration changes are absent from the CI pull-request filter'
+[[ "$(grep -Fc -- '- ".cargo/**"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'Cargo configuration changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- ".cargo/**"' "$ANDROID_WORKFLOW")" == 1 ]] || fail_test 'Cargo configuration changes are absent from the Android pull-request filter'
+[[ "$(grep -Fc -- '- "src/**"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'runtime source changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "tests/**"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'test changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "scripts/termux_release_validate.sh"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'release validator changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "scripts/termux_device_smoke.sh"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'device smoke changes are absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "scripts/termux_deploy.sh"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'deployment changes are absent from the Security pull-request filter'
 grep -Fq 'scripts/termux_volume_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'volume native gate does not trigger Security'
 grep -Fq 'docs/android-volume-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" || fail_test 'volume evidence schema does not trigger Security'
 grep -Fq 'scripts/termux_volume_control_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'volume control native gate does not trigger Security'
 grep -Fq 'docs/android-volume-control-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" || fail_test 'volume control evidence schema does not trigger Security'
 grep -Fq 'scripts/termux_command_emulated_gate.sh' "$SECURITY_WORKFLOW" || fail_test 'command native gate does not trigger Security'
 grep -Fq 'docs/command-emulated-evidence-schema-v*.json' "$SECURITY_WORKFLOW" || fail_test 'command evidence schema does not trigger Security'
+[[ "$(grep -Fc -- '- "scripts/termux_automated_deployment_gate.sh"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'automated deployment gate is absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "scripts/package_automated_qualification.sh"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'automated qualification packager is absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "docs/release-automated-qualification-schema-v*.json"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'automated qualification schema is absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "docs/release-qualification-policy*.json"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'qualification policy is absent from the Security pull-request filter'
+[[ "$(grep -Fc -- '- "docs/automated-native-deployment-*.json"' "$SECURITY_WORKFLOW")" == 1 ]] || fail_test 'automated deployment contracts are absent from the Security pull-request filter'
+assert_unconditional_main_push "$CI_WORKFLOW"
+assert_unconditional_main_push "$SECURITY_WORKFLOW"
+assert_unconditional_main_push "$ANDROID_WORKFLOW"
+python3 - "$ANDROID_WORKFLOW" <<'PY'
+import sys
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+workflow_defaults = workflow.get("defaults")
+if (
+    isinstance(workflow_defaults, dict)
+    and isinstance(workflow_defaults.get("run"), dict)
+    and "shell" in workflow_defaults["run"]
+):
+    raise SystemExit("workflow may not override the runner shell")
+for job_name in ("android-aarch64", "termux-emulated"):
+    job = workflow["jobs"][job_name]
+    if "continue-on-error" in job:
+        raise SystemExit(f"{job_name} job may not ignore failure")
+    job_defaults = job.get("defaults")
+    if (
+        isinstance(job_defaults, dict)
+        and isinstance(job_defaults.get("run"), dict)
+        and "shell" in job_defaults["run"]
+    ):
+        raise SystemExit(f"{job_name} job may not override the runner shell")
+    for index, item in enumerate(job["steps"]):
+        if "continue-on-error" in item:
+            raise SystemExit(
+                f"{job_name} step {item.get('name', index)} may not ignore failure"
+            )
+        if "if" in item:
+            raise SystemExit(
+                f"{job_name} step {item.get('name', index)} may not bypass success ordering"
+            )
+        if "shell" in item:
+            raise SystemExit(
+                f"{job_name} step {item.get('name', index)} may not override the runner shell"
+            )
+steps = workflow["jobs"]["termux-emulated"]["steps"]
+names = [item.get("name") for item in steps]
+validation_index = names.index("Validate emulated evidence")
+if names[validation_index : validation_index + 3] != [
+    "Validate emulated evidence",
+    "Freeze native qualification components",
+    "Upload native qualification components",
+]:
+    raise SystemExit("validate/freeze/upload qualification ordering changed")
+upload = steps[validation_index + 2]
+if upload.get("uses") != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a":
+    raise SystemExit("qualification component upload action pin changed")
+expected_upload = {
+    "name": "termux-mcp-native-qualification-components",
+    "path": "${{ steps.components.outputs.root }}/",
+    "if-no-files-found": "error",
+    "include-hidden-files": False,
+    "compression-level": 0,
+    "overwrite": False,
+    "retention-days": 30,
+}
+if upload.get("with") != expected_upload:
+    raise SystemExit("qualification component upload options changed")
+step = next(
+    item for item in steps
+    if item.get("name") == "Resolve exact companion workflow evidence"
+)
+script = step["run"]
+for name, path in (
+    ("CI", ".github/workflows/ci.yml"),
+    ("Security", ".github/workflows/security.yml"),
+):
+    start = script.index(f'.name == "{name}"')
+    end = script.index(")]", start)
+    selection = script[start:end]
+    if f'.path == "{path}"' not in selection:
+        raise SystemExit(f"{name} latest-run selection is not workflow-specific")
+    if ".run_attempt == 1" in selection:
+        raise SystemExit(f"{name} first-attempt filtering occurs before latest selection")
+for marker in (
+    'include "latest_workflow_run"',
+    "complete_workflow_run_page",
+    "latest_workflow_run_or_null",
+    '(.run_attempt | tostring)',
+    'latest exact-head CI is not a first attempt',
+    'latest exact-head Security is not a first attempt',
+    'IFS=: read -r _ _ ci_run_id _ <<<"$ci_state"',
+    'IFS=: read -r _ _ security_run_id _ <<<"$security_state"',
+):
+    if marker not in script:
+        raise SystemExit(f"companion latest/rerun contract missing: {marker}")
+PY
+[[ -f "$LATEST_RUN_SELECTOR" && ! -L "$LATEST_RUN_SELECTOR" ]] \
+  || fail_test 'shared latest-run selector is missing or linked'
+[[ "$(grep -Fc -- '- "scripts/latest_workflow_run.jq"' "$ANDROID_WORKFLOW")" == 1 ]] \
+  || fail_test 'latest-run selector changes are absent from the Android pull-request filter'
+[[ "$(grep -Fc -- '- "scripts/latest_workflow_run.jq"' "$SECURITY_WORKFLOW")" == 1 ]] \
+  || fail_test 'latest-run selector changes are absent from the Security pull-request filter'
 grep -Fq 'classify_observation_requirement.sh' "$ANDROID_WORKFLOW" || fail_test 'observation requirement classifier missing'
-grep -Fq "if jq -e '.inheritanceCandidate == true'" "$ANDROID_WORKFLOW" || fail_test 'inheritance verifier is not conditionally gated'
-grep -Fq '.evidenceMode == "physical_observation_required"' "$ANDROID_WORKFLOW" || fail_test 'runtime-change observation evidence path missing'
-grep -Fq '.reasonCode == "full_suite_direct_physical_observation_required"' "$ANDROID_WORKFLOW" || fail_test 'full-suite direct-observation requirement missing'
+grep -Fq '.evidenceMode == "automated_release_qualification"' "$ANDROID_WORKFLOW" || fail_test 'automated qualification classifier route missing'
+grep -Fq '.reasonCode == "automated_native_termux_evidence_required"' "$ANDROID_WORKFLOW" || fail_test 'automated qualification classifier reason missing'
+if grep -Fq 'bash scripts/package_automated_qualification.sh' "$ANDROID_WORKFLOW"; then
+  fail_test 'Android workflow still assembles its own post-run qualification conclusion'
+fi
+grep -Fq 'name: termux-mcp-native-qualification-components' "$ANDROID_WORKFLOW" \
+  || fail_test 'Android seven-component snapshot artifact missing'
+grep -Fq 'test "$(find "$snapshot" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 7' "$ANDROID_WORKFLOW" \
+  || fail_test 'Android snapshot does not enforce the exact seven-file boundary'
 grep -Fq "chmod 755 \"\$root/termux-mcp-server\"" "$ANDROID_WORKFLOW" || fail_test 'container-readable artifact binary mode missing'
 grep -Fq "chmod 644 \"\$root/SHA256SUMS\" \"\$root/artifact-manifest.json\"" "$ANDROID_WORKFLOW" || fail_test 'container-readable artifact metadata mode missing'
 grep -Fq 'export TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64' "$ANDROID_WORKFLOW" || fail_test 'Termux entrypoint-safe environment attestation missing'
 grep -Fq "export TERMUX_MCP_TERMUX_IMAGE_DIGEST='\$TERMUX_IMAGE_DIGEST'" "$ANDROID_WORKFLOW" || fail_test 'Termux entrypoint-safe image digest missing'
+grep -Fq "export TERMUX_MCP_TERMUX_ROOTFS_IMAGE_ID='\$rootfs_image_id'" "$ANDROID_WORKFLOW" || fail_test 'base rootfs config/image ID attestation missing'
+grep -Fq "export TERMUX_MCP_TERMUX_RUNTIME_IMAGE_DIGEST='\$runtime_image_id'" "$ANDROID_WORKFLOW" || fail_test 'derived runtime image digest attestation missing'
+grep -Fq 'test "$runtime_image_id" != "$rootfs_image_id"' "$ANDROID_WORKFLOW" || fail_test 'derived runtime image is not distinguished from the materialized base image'
+[[ "$(grep -Fc -- '--arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID"' "$ANDROID_WORKFLOW")" == 6 ]] \
+  || fail_test 'base rootfs image ID is not bound across aggregate, specialized, and deployment evidence'
+[[ "$(grep -Fc -- '--arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST"' "$ANDROID_WORKFLOW")" == 6 ]] \
+  || fail_test 'runtime image digest is not bound across aggregate, specialized, and deployment evidence'
+[[ "$(grep -Fc -- '.environment.runtimeImageDigest == $runtime_digest' "$ANDROID_WORKFLOW")" == 6 ]] \
+  || fail_test 'aggregate, specialized, and deployment runtime image digest checks are incomplete'
 grep -Fq 'battery_feature_not_compiled' "$GATE" || fail_test 'standard runtime feature-disabled battery contract missing'
 grep -Fq 'volume_feature_not_compiled' "$GATE" || fail_test 'standard runtime feature-disabled volume contract missing'
 grep -Fq 'volume_control_posture_verified' "$GATE" || fail_test 'canonical runtime validator does not verify volume control posture'

@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/runtime-package-lock-schema-v1.json",
+  "title": "Termux MCP Edge qualified runtime package-input lock v1",
+  "description": "Closed inventory of the signed repository indexes and exact Debian package bytes frozen before the qualified runtime image is built without network access.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "lockVersion",
+    "repository",
+    "commit",
+    "androidRunId",
+    "base",
+    "requestedPackages",
+    "resolution",
+    "repositoryIndexes",
+    "packages"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "lockVersion": {"const": "1"},
+    "repository": {"const": "CyberBASSLord-666/termux-mcp-edge"},
+    "commit": {"$ref": "#/$defs/commit"},
+    "androidRunId": {"$ref": "#/$defs/runId"},
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "digest", "imageId"],
+      "properties": {
+        "image": {"const": "termux/termux-docker:aarch64"},
+        "digest": {"$ref": "#/$defs/ociDigest"},
+        "imageId": {"$ref": "#/$defs/ociDigest"}
+      }
+    },
+    "requestedPackages": {
+      "const": ["file", "jq", "python", "termux-services"]
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolver",
+        "repositoryMetadataAuthenticated",
+        "packageBytesFrozenBeforeBuild",
+        "finalImageBuildNetwork"
+      ],
+      "properties": {
+        "resolver": {"const": "termux-apt-download-only"},
+        "repositoryMetadataAuthenticated": {"const": true},
+        "packageBytesFrozenBeforeBuild": {"const": true},
+        "finalImageBuildNetwork": {"const": "none"}
+      }
+    },
+    "repositoryIndexes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/fileRecord"}
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "package",
+          "version",
+          "architecture",
+          "fileName",
+          "sha256",
+          "bytes"
+        ],
+        "properties": {
+          "package": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9+.-]{0,127}$"
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[!-~]+$"
+          },
+          "architecture": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
+          },
+          "fileName": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9+._~-]{0,255}\\.deb$"
+          },
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 268435456
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ociDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "fileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "bytes"],
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9+._%~-]{0,255}$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        }
+      }
+    }
+  }
+}

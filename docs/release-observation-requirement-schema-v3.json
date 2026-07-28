@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-observation-requirement-schema-v3.json",
+  "title": "Termux MCP automated release qualification route v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "classifierVersion",
+    "status",
+    "failureCode",
+    "releaseQualificationEligible",
+    "createdAt",
+    "evidenceMode",
+    "reasonCode",
+    "inheritanceCandidate",
+    "source",
+    "candidate",
+    "emulation",
+    "claimBoundary",
+    "protectedInputComparison",
+    "changedInputClasses",
+    "nextGate"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 3},
+    "classifierVersion": {"const": "3"},
+    "status": {"const": "pass"},
+    "failureCode": {"const": null},
+    "releaseQualificationEligible": {"const": false},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "evidenceMode": {"const": "automated_release_qualification"},
+    "reasonCode": {"const": "automated_native_termux_evidence_required"},
+    "inheritanceCandidate": {"const": false},
+    "source": {"$ref": "#/$defs/source"},
+    "candidate": {"$ref": "#/$defs/candidate"},
+    "emulation": {"$ref": "#/$defs/emulation"},
+    "claimBoundary": {"$ref": "#/$defs/claimBoundary"},
+    "protectedInputComparison": {"$ref": "#/$defs/protectedInputComparison"},
+    "changedInputClasses": {
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "runtime_or_deployment",
+          "cargo_or_dependency"
+        ]
+      }
+    },
+    "nextGate": {"const": "assemble_automated_release_qualification"}
+  },
+  "$defs": {
+    "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/sha1"}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "version",
+        "ciRunId",
+        "securityRunId",
+        "androidRunId",
+        "fullSuiteArtifactSha256",
+        "fullSuiteManifestSha256"
+      ],
+      "properties": {
+        "commit": {"$ref": "#/$defs/sha1"},
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "ciRunId": {"$ref": "#/$defs/runId"},
+        "securityRunId": {"$ref": "#/$defs/runId"},
+        "androidRunId": {"$ref": "#/$defs/runId"},
+        "fullSuiteArtifactSha256": {"$ref": "#/$defs/sha256"},
+        "fullSuiteManifestSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "emulation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reportSha256",
+        "executionMode",
+        "imageDigest",
+        "status",
+        "samples"
+      ],
+      "properties": {
+        "reportSha256": {"$ref": "#/$defs/sha256"},
+        "executionMode": {"const": "official-termux-docker-native-arm64"},
+        "imageDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "status": {"const": "pass"},
+        "samples": {"type": "integer", "minimum": 32, "maximum": 4096}
+      }
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physicalDeviceObserved",
+        "androidFrameworkObserved",
+        "sustainedPhysicalSoak",
+        "physicalCertification"
+      ],
+      "properties": {
+        "physicalDeviceObserved": {"const": false},
+        "androidFrameworkObserved": {"const": false},
+        "sustainedPhysicalSoak": {"const": false},
+        "physicalCertification": {"const": "not_run"}
+      }
+    },
+    "protectedInputComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtimeAndDeploymentInputsUnchanged",
+        "cargoAndDependencyInputsUnchangedExceptRootVersion"
+      ],
+      "properties": {
+        "runtimeAndDeploymentInputsUnchanged": {"type": "boolean"},
+        "cargoAndDependencyInputsUnchangedExceptRootVersion": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "protectedInputComparison": {
+            "properties": {
+              "runtimeAndDeploymentInputsUnchanged": {"const": true}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "changedInputClasses": {
+            "not": {"contains": {"const": "runtime_or_deployment"}}
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "changedInputClasses": {
+            "contains": {"const": "runtime_or_deployment"}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "protectedInputComparison": {
+            "properties": {
+              "cargoAndDependencyInputsUnchangedExceptRootVersion": {"const": true}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "changedInputClasses": {
+            "not": {"contains": {"const": "cargo_or_dependency"}}
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "changedInputClasses": {
+            "contains": {"const": "cargo_or_dependency"}
+          }
+        }
+      }
+    }
+  ]
+}

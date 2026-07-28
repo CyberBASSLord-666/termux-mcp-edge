@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-GATE_VERSION=2
+GATE_VERSION=3
 EXPECTED_IMAGE='termux/termux-docker:aarch64'
 DEFAULT_PORT=18769
 EXPECTED_REQUEST_COUNT=29
@@ -24,6 +24,7 @@ SERVER_PID=''
 SESSION_ID=''
 REQUEST_COUNT=0
 MCP_STATUS=''
+PUBLISH_NEXT=''
 
 log() { printf '[termux-command-emulated] %s\n' "$*"; }
 fail() {
@@ -63,6 +64,7 @@ cleanup() {
   fi
   SERVER_PID=''
   unset MCP_TOKEN SESSION_ID 2>/dev/null || true
+  [[ -z "$PUBLISH_NEXT" ]] || rm -f -- "$PUBLISH_NEXT" >/dev/null 2>&1 || status=1
   [[ -z "$WORK_ROOT" ]] || rm -rf -- "$WORK_ROOT" >/dev/null 2>&1 || status=1
   exit "$status"
 }
@@ -98,14 +100,23 @@ done
 [[ "${TERMUX_MCP_EMULATED_ENVIRONMENT:-}" == official-termux-docker-native-arm64 ]] || fail environment_attestation_missing
 IMAGE_DIGEST="${TERMUX_MCP_TERMUX_IMAGE_DIGEST:-}"
 [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail image_digest_invalid
+ROOTFS_IMAGE_ID="${TERMUX_MCP_TERMUX_ROOTFS_IMAGE_ID:-}"
+[[ "$ROOTFS_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || fail rootfs_image_id_invalid
+RUNTIME_IMAGE_DIGEST="${TERMUX_MCP_TERMUX_RUNTIME_IMAGE_DIGEST:-}"
+[[ "$RUNTIME_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || fail runtime_image_digest_invalid
+[[ "$RUNTIME_IMAGE_DIGEST" != "$ROOTFS_IMAGE_ID" ]] || fail runtime_image_digest_not_derived
 [[ "$(uname -m)" == aarch64 || "$(uname -m)" == arm64 ]] || fail architecture_not_arm64
 [[ "${PREFIX:-}" == /data/data/com.termux/files/usr ]] || fail termux_prefix_invalid
 [[ "${HOME:-}" == /data/data/com.termux/files/home ]] || fail termux_home_invalid
 [[ -x /system/bin/linker64 ]] || fail android_linker_missing
 
-for command in awk cat chmod curl date dd dirname file find grep install jq kill mkdir mktemp mv realpath rm seq sha256sum sleep stat timeout uname wc; do
+for command in awk cat chmod cmp curl date dd dirname file find grep install jq kill ln mkdir mktemp mv python3 realpath rm seq sha256sum sleep stat timeout uname wc; do
   command -v "$command" >/dev/null 2>&1 || fail "required_command_missing_$command"
 done
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" \
+  || fail commit_helper_invalid
+COMMIT_HELPER="$SCRIPT_DIR/commit_verified_file.py"
+[[ -f "$COMMIT_HELPER" && ! -L "$COMMIT_HELPER" ]] || fail commit_helper_invalid
 
 ARTIFACT="$ARTIFACT_DIR/termux-mcp-server"
 MANIFEST="$ARTIFACT_DIR/artifact-manifest.json"
@@ -647,9 +658,11 @@ jq -n \
   --arg architecture "$(uname -m)" \
   --arg image "$EXPECTED_IMAGE" \
   --arg image_digest "$IMAGE_DIGEST" \
+  --arg rootfs_image_id "$ROOTFS_IMAGE_ID" \
+  --arg runtime_image_digest "$RUNTIME_IMAGE_DIGEST" \
   --argjson requests "$REQUEST_COUNT" '
   {
-    schemaVersion: 2,
+    schemaVersion: 3,
     gateVersion: $gate_version,
     status: "pass",
     failureCode: null,
@@ -670,6 +683,8 @@ jq -n \
       executionMode: "official-termux-docker-native-arm64",
       image: $image,
       imageDigest: $image_digest,
+      rootfsImageId: $rootfs_image_id,
+      runtimeImageDigest: $runtime_image_digest,
       androidLinker: true
     },
     validation: {
@@ -707,9 +722,12 @@ jq -n \
 chmod 600 "$REPORT_NEXT" || fail report_mode_failed
 
 jq -e --argjson expected_requests "$EXPECTED_REQUEST_COUNT" '
-  .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
+  .schemaVersion == 3 and .gateVersion == "3" and .status == "pass"
   and .failureCode == null and .releaseQualificationEligible == false
   and .environment.executionMode == "official-termux-docker-native-arm64"
+  and (.environment.rootfsImageId | test("^sha256:[0-9a-f]{64}$"))
+  and (.environment.runtimeImageDigest | test("^sha256:[0-9a-f]{64}$"))
+  and .environment.runtimeImageDigest != .environment.rootfsImageId
   and .environment.androidLinker == true
   and .validation.status == "pass"
   and .validation.requests == $expected_requests
@@ -725,8 +743,28 @@ if grep -Eq '/data/|Bearer[[:space:]]|MCP__|secret|private|[0-9a-fA-F]{8}-[0-9a-
   fail report_contains_sensitive_value
 fi
 
-install -m 600 "$REPORT_NEXT" "$OUTPUT_REPORT" || fail report_publication_failed
-REPORT_SHA="$(sha256sum "$OUTPUT_REPORT" | awk '{print $1}')"
+PUBLISH_NEXT="$(mktemp "$OUTPUT_PARENT/.command-evidence.XXXXXX")" \
+  || fail report_publication_failed
+if ! install -m 600 -- "$REPORT_NEXT" "$PUBLISH_NEXT"; then
+  rm -f -- "$PUBLISH_NEXT"
+  fail report_publication_failed
+fi
+if ! cmp -s -- "$REPORT_NEXT" "$PUBLISH_NEXT"; then
+  rm -f -- "$PUBLISH_NEXT"
+  fail report_publication_failed
+fi
+REPORT_SHA="$(sha256sum -- "$PUBLISH_NEXT" | awk '{print $1}')" \
+  || fail report_publication_failed
+if ! python3 "$COMMIT_HELPER" \
+  --source "$PUBLISH_NEXT" \
+  --destination "$OUTPUT_REPORT" \
+  --sha256 "$REPORT_SHA" \
+  --mode 600
+then
+  fail output_already_exists
+fi
+rm -f -- "$PUBLISH_NEXT" >/dev/null 2>&1 || true
+PUBLISH_NEXT=''
 log "report_sha256=$REPORT_SHA"
 log "report=$OUTPUT_REPORT"
 printf 'TERMUX_MCP_COMMAND_EMULATED_RESULT=PASS\n'

@@ -4,43 +4,14 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "src/**"
-      - "scripts/cross_compile.sh"
-      - "scripts/package_android_artifact.sh"
-      - "scripts/termux_release_validate.sh"
-      - "scripts/termux_emulated_gate.sh"
-      - "scripts/termux_battery_emulated_gate.sh"
-      - "scripts/termux_volume_emulated_gate.sh"
-      - "scripts/termux_volume_control_emulated_gate.sh"
-      - "scripts/termux_command_emulated_gate.sh"
-      - "scripts/classify_observation_requirement.sh"
-      - "scripts/verify_observation_inheritance.sh"
-      - "scripts/package_physical_qualification.sh"
-      - "scripts/stage_release_assets.sh"
-      - "scripts/prepare_release_publication_assets.sh"
-      - "scripts/publish_release_assets.sh"
-      - "docs/emulated-release-evidence-schema-v*.json"
-      - "docs/release-evidence-schema-v*.json"
-      - "docs/android-battery-emulated-evidence-schema-v*.json"
-      - "docs/android-volume-emulated-evidence-schema-v*.json"
-      - "docs/android-volume-control-emulated-evidence-schema-v*.json"
-      - "docs/command-emulated-evidence-schema-v*.json"
-      - "docs/release-observation-requirement-schema-v*.json"
-      - "docs/release-observation-inheritance-schema-v*.json"
-      - "docs/release-physical-qualification-schema-v*.json"
-      - "docs/release-staging-manifest-schema-v*.json"
-      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
-      - ".github/workflows/android-cross-compile.yml"
   pull_request:
     branches: [ main ]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "build.rs"
+      - ".cargo/**"
       - "src/**"
       - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
@@ -50,12 +21,17 @@ on:
       - "scripts/termux_volume_emulated_gate.sh"
       - "scripts/termux_volume_control_emulated_gate.sh"
       - "scripts/termux_command_emulated_gate.sh"
+      - "scripts/commit_verified_file.py"
+      - "scripts/verify_runtime_snapshot.sh"
+      - "scripts/termux_automated_deployment_gate.sh"
       - "scripts/classify_observation_requirement.sh"
       - "scripts/verify_observation_inheritance.sh"
+      - "scripts/package_automated_qualification.sh"
       - "scripts/package_physical_qualification.sh"
       - "scripts/stage_release_assets.sh"
       - "scripts/prepare_release_publication_assets.sh"
       - "scripts/publish_release_assets.sh"
+      - "scripts/latest_workflow_run.jq"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
@@ -65,9 +41,15 @@ on:
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
       - "docs/release-physical-qualification-schema-v*.json"
+      - "docs/release-automated-qualification-schema-v*.json"
+      - "docs/release-qualification-policy*.json"
+      - "docs/automated-native-deployment-*.json"
       - "docs/release-staging-manifest-schema-v*.json"
+      - "docs/runtime-package-lock-schema-v*.json"
+      - "docs/runtime-snapshot-schema-v*.json"
+      - "docs/runtime-snapshot-replay-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
-      - ".github/workflows/android-cross-compile.yml"
+      - ".github/workflows/*"
 
 permissions:
   actions: read
@@ -315,6 +297,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&per_page=100"
@@ -344,26 +327,52 @@ jobs:
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
               "$api")"
-            ci_state="$(jq -r --arg sha "$SOURCE_SHA" '
-              [.workflow_runs[] | select(.name == "CI" and .head_sha == $sha)]
-              | sort_by(.run_started_at) | last
-              | if . == null then "missing" else (.status + ":" + (.conclusion // "pending") + ":" + (.id | tostring)) end
+            ci_state="$(jq -L scripts -r --arg sha "$SOURCE_SHA" --arg event "$WORKFLOW_EVENT" '
+              include "latest_workflow_run";
+              complete_workflow_run_page
+              | [.[] | select(
+                .name == "CI"
+                and .path == ".github/workflows/ci.yml"
+                and .head_sha == $sha
+                and .event == $event
+              )]
+              | latest_workflow_run_or_null
+              | if . == null then "missing" else
+                  (.status + ":" + (.conclusion // "pending") + ":" + (.id | tostring) + ":" + (.run_attempt | tostring))
+                end
             ' <<<"$response")"
-            security_state="$(jq -r --arg sha "$SOURCE_SHA" '
-              [.workflow_runs[] | select(.name == "Security" and .head_sha == $sha)]
-              | sort_by(.run_started_at) | last
-              | if . == null then "missing" else (.status + ":" + (.conclusion // "pending") + ":" + (.id | tostring)) end
+            security_state="$(jq -L scripts -r --arg sha "$SOURCE_SHA" --arg event "$WORKFLOW_EVENT" '
+              include "latest_workflow_run";
+              complete_workflow_run_page
+              | [.[] | select(
+                .name == "Security"
+                and .path == ".github/workflows/security.yml"
+                and .head_sha == $sha
+                and .event == $event
+              )]
+              | latest_workflow_run_or_null
+              | if . == null then "missing" else
+                  (.status + ":" + (.conclusion // "pending") + ":" + (.id | tostring) + ":" + (.run_attempt | tostring))
+                end
             ' <<<"$response")"
-            if [[ "$ci_state" == completed:success:* && "$security_state" == completed:success:* ]]; then
-              ci_run_id="${ci_state##*:}"
-              security_run_id="${security_state##*:}"
+            if [[ "$ci_state" != missing && "${ci_state##*:}" != 1 ]]; then
+              printf 'latest exact-head CI is not a first attempt: %s\n' "$ci_state" >&2
+              exit 1
+            fi
+            if [[ "$security_state" != missing && "${security_state##*:}" != 1 ]]; then
+              printf 'latest exact-head Security is not a first attempt: %s\n' "$security_state" >&2
+              exit 1
+            fi
+            if [[ "$ci_state" == completed:success:*:1 && "$security_state" == completed:success:*:1 ]]; then
+              IFS=: read -r _ _ ci_run_id _ <<<"$ci_state"
+              IFS=: read -r _ _ security_run_id _ <<<"$security_state"
               break
             fi
-            if [[ "$ci_state" == completed:* && "$ci_state" != completed:success:* ]]; then
+            if [[ "$ci_state" == completed:* && "$ci_state" != completed:success:*:1 ]]; then
               printf 'latest exact-head CI is not successful: %s\n' "$ci_state" >&2
               exit 1
             fi
-            if [[ "$security_state" == completed:* && "$security_state" != completed:success:* ]]; then
+            if [[ "$security_state" == completed:* && "$security_state" != completed:success:*:1 ]]; then
               printf 'latest exact-head Security is not successful: %s\n' "$security_state" >&2
               exit 1
             fi
@@ -402,17 +411,217 @@ jobs:
           set -euo pipefail
           docker pull "$TERMUX_IMAGE"
           docker image inspect "$TERMUX_IMAGE" --format '{{json .RepoDigests}}' | grep -F "$TERMUX_IMAGE_DIGEST"
+          rootfs_image_id="$(docker image inspect "$TERMUX_IMAGE" --format '{{.Id}}')"
+          [[ "$rootfs_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          runtime_context="$RUNNER_TEMP/termux-native-runtime"
+          mkdir -m 700 "$runtime_context"
+          mkdir -m 700 \
+            "$runtime_context/package-inputs" \
+            "$runtime_context/package-inputs/debs" \
+            "$runtime_context/package-inputs/indexes"
+          sudo chown -R 1000:1000 "$runtime_context/package-inputs"
+          docker run --rm \
+            --network bridge \
+            --security-opt seccomp=unconfined \
+            -v "$runtime_context/package-inputs:/runtime-inputs" \
+            "$rootfs_image_id" \
+            bash -c '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install \
+                --download-only \
+                --no-install-recommends \
+                -y \
+                file jq python termux-services
+              find "$PREFIX/var/cache/apt/archives" \
+                -mindepth 1 -maxdepth 1 -type f -name "*.deb" \
+                -exec cp --no-clobber -- "{}" /runtime-inputs/debs/ \;
+              find "$PREFIX/var/lib/apt/lists" \
+                -mindepth 1 -maxdepth 1 -type f -name "*InRelease" \
+                -exec cp --no-clobber -- "{}" /runtime-inputs/indexes/ \;
+              test "$(find /runtime-inputs/debs -mindepth 1 -maxdepth 1 -type f -name "*.deb" | wc -l)" -ge 4
+              test "$(find /runtime-inputs/indexes -mindepth 1 -maxdepth 1 -type f | wc -l)" -ge 1
+            '
+          sudo chown -R "$(id -u):$(id -g)" "$runtime_context/package-inputs"
+          chmod 700 \
+            "$runtime_context/package-inputs" \
+            "$runtime_context/package-inputs/debs" \
+            "$runtime_context/package-inputs/indexes"
+          find "$runtime_context/package-inputs" -type f -exec chmod 600 -- {} +
+          test "$(find "$runtime_context/package-inputs/debs" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          test "$(find "$runtime_context/package-inputs/indexes" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          command -v dpkg-deb >/dev/null
+          SOURCE_SHA="$SOURCE_SHA" \
+          ANDROID_RUN_ID="$GITHUB_RUN_ID" \
+          BASE_DIGEST="$TERMUX_IMAGE_DIGEST" \
+          BASE_IMAGE_ID="$rootfs_image_id" \
+          RUNTIME_CONTEXT="$runtime_context" \
+            python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          root = pathlib.Path(os.environ["RUNTIME_CONTEXT"])
+          deb_root = root / "package-inputs" / "debs"
+          index_root = root / "package-inputs" / "indexes"
+          output = root / "termux-runtime-package-lock-v1.json"
+          if output.exists() or output.is_symlink():
+              raise SystemExit("package lock output already exists")
+
+          def record(path):
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit("package input is not a regular file")
+              size = path.stat().st_size
+              if not 1 <= size <= 268435456:
+                  raise SystemExit("package input size invalid")
+              digest = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return {
+                  "fileName": path.name,
+                  "sha256": digest.hexdigest(),
+                  "bytes": size,
+              }
+
+          packages = []
+          for path in sorted(deb_root.iterdir(), key=lambda item: item.name):
+              metadata = []
+              for field in ("Package", "Version", "Architecture"):
+                  value = subprocess.run(
+                      ["dpkg-deb", "--field", str(path), field],
+                      check=True,
+                      capture_output=True,
+                      text=True,
+                  ).stdout.strip()
+                  metadata.append(value)
+              package, version, architecture = metadata
+              if (
+                  re.fullmatch(r"[a-z0-9][a-z0-9+.-]{0,127}", package) is None
+                  or re.fullmatch(r"[!-~]{1,128}", version) is None
+                  or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", architecture) is None
+              ):
+                  raise SystemExit("Debian package identity invalid")
+              packages.append(
+                  {
+                      "package": package,
+                      "version": version,
+                      "architecture": architecture,
+                      **record(path),
+                  }
+              )
+          packages.sort(
+              key=lambda item: (
+                  item["package"],
+                  item["version"],
+                  item["architecture"],
+                  item["fileName"],
+              )
+          )
+          if not 1 <= len(packages) <= 512:
+              raise SystemExit("Debian package count invalid")
+          identities = {
+              (item["package"], item["version"], item["architecture"])
+              for item in packages
+          }
+          if len(identities) != len(packages):
+              raise SystemExit("duplicate Debian package identity")
+          requested = ["file", "jq", "python", "termux-services"]
+          if not set(requested).issubset({item["package"] for item in packages}):
+              raise SystemExit("requested package bytes were not all frozen")
+
+          indexes = [
+              record(path)
+              for path in sorted(index_root.iterdir(), key=lambda item: item.name)
+          ]
+          if not 1 <= len(indexes) <= 16:
+              raise SystemExit("signed repository index count invalid")
+          value = {
+              "schemaVersion": 1,
+              "lockVersion": "1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "commit": os.environ["SOURCE_SHA"],
+              "androidRunId": os.environ["ANDROID_RUN_ID"],
+              "base": {
+                  "image": "termux/termux-docker:aarch64",
+                  "digest": os.environ["BASE_DIGEST"],
+                  "imageId": os.environ["BASE_IMAGE_ID"],
+              },
+              "requestedPackages": requested,
+              "resolution": {
+                  "resolver": "termux-apt-download-only",
+                  "repositoryMetadataAuthenticated": True,
+                  "packageBytesFrozenBeforeBuild": True,
+                  "finalImageBuildNetwork": "none",
+              },
+              "repositoryIndexes": indexes,
+              "packages": packages,
+          }
+          encoded = (
+              json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+          ).encode()
+          if len(encoded) > 16777216:
+              raise SystemExit("package lock too large")
+          descriptor = os.open(
+              output,
+              os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+              0o600,
+          )
+          with os.fdopen(descriptor, "wb") as destination:
+              destination.write(encoded)
+              destination.flush()
+              os.fsync(destination.fileno())
+          PY
+          chmod 0555 \
+            "$runtime_context/package-inputs/debs" \
+            "$runtime_context/package-inputs/indexes"
+          find "$runtime_context/package-inputs" -type f -exec chmod 0444 -- {} +
+          chmod 0444 "$runtime_context/termux-runtime-package-lock-v1.json"
+          cat >"$runtime_context/Dockerfile" <<'DOCKERFILE'
+          FROM termux/termux-docker:aarch64@sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
+          COPY --chown=0:0 package-inputs/debs/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages/
+          COPY --chown=0:0 package-inputs/indexes/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes/
+          COPY --chown=0:0 termux-runtime-package-lock-v1.json /data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json
+          RUN DEBIAN_FRONTEND=noninteractive apt-get install \
+                --no-download \
+                --no-install-recommends \
+                -y \
+                /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages/*.deb \
+           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages -mindepth 1 -maxdepth 1 -type f -name '*.deb' | wc -l)" -gt 0 \
+           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0 \
+           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes -mindepth 1 -maxdepth 1 -type f | wc -l)" -gt 0 \
+           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0 \
+           && rm -rf /data/data/com.termux/files/usr/var/lib/apt/lists/*
+          DOCKERFILE
+          docker build \
+            --pull=false \
+            --no-cache \
+            --network=none \
+            --iidfile "$runtime_context/image-id" \
+            "$runtime_context"
+          runtime_image_id="$(cat "$runtime_context/image-id")"
+          [[ "$runtime_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$runtime_image_id" != "$rootfs_image_id"
+          test "$(docker image inspect "$runtime_image_id" --format '{{.Id}}')" = "$runtime_image_id"
+          printf 'TERMUX_ROOTFS_IMAGE_ID=%s\n' "$rootfs_image_id" >>"$GITHUB_ENV"
+          printf 'TERMUX_RUNTIME_IMAGE_DIGEST=%s\n' "$runtime_image_id" >>"$GITHUB_ENV"
+          printf 'TERMUX_RUNTIME_CONTEXT=%s\n' "$runtime_context" >>"$GITHUB_ENV"
           docker run --rm \
             --security-opt seccomp=unconfined \
             -v "$GITHUB_WORKSPACE:/workspace:ro" \
             -v "$OUTPUT_ROOT:/output" \
-            "$TERMUX_IMAGE" \
+            "$runtime_image_id" \
             bash -c "
               set -euo pipefail
               export TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64
+              export TERMUX_MCP_AUTOMATED_DEPLOYMENT_ENVIRONMENT=official-termux-docker-native-arm64
               export TERMUX_MCP_TERMUX_IMAGE_DIGEST='$TERMUX_IMAGE_DIGEST'
-              apt update >/dev/null
-              apt install -y file jq >/dev/null
+              export TERMUX_MCP_TERMUX_ROOTFS_IMAGE_ID='$rootfs_image_id'
+              export TERMUX_MCP_TERMUX_RUNTIME_IMAGE_DIGEST='$runtime_image_id'
               bash /workspace/scripts/termux_emulated_gate.sh \\
                 --default-dir /workspace/artifacts/default \\
                 --mcp-dir /workspace/artifacts/mcp-runtime \\
@@ -424,7 +633,7 @@ jobs:
                 --security-run-id '$SECURITY_RUN_ID' \\
                 --android-run-id '$GITHUB_RUN_ID' \\
                 --samples 256 \\
-                --output /output/termux-emulated-evidence.json
+                --output /output/termux-native-aggregate-evidence-v4.json
 
               bash /workspace/scripts/termux_battery_emulated_gate.sh \\
                 --artifact-dir /workspace/artifacts/android-battery-status \\
@@ -463,6 +672,15 @@ jobs:
                 --security-run-id '$SECURITY_RUN_ID' \\
                 --android-run-id '$GITHUB_RUN_ID' \\
                 --output /output/termux-command-emulated-evidence.json
+
+              bash /workspace/scripts/termux_automated_deployment_gate.sh \\
+                --artifact-dir /workspace/artifacts/full-suite \\
+                --expected-commit '$SOURCE_SHA' \\
+                --expected-version '$EXPECTED_VERSION' \\
+                --ci-run-id '$CI_RUN_ID' \\
+                --security-run-id '$SECURITY_RUN_ID' \\
+                --native-run-id '$GITHUB_RUN_ID' \\
+                --output /output/automated-native-deployment-v1.json
             "
 
       - name: Validate emulated evidence
@@ -476,26 +694,31 @@ jobs:
           set -euo pipefail
           sudo chown -R "$(id -u):$(id -g)" "$OUTPUT_ROOT"
           chmod 700 "$OUTPUT_ROOT"
-          report="$OUTPUT_ROOT/termux-emulated-evidence.json"
+          report="$OUTPUT_ROOT/termux-native-aggregate-evidence-v4.json"
           battery_report="$OUTPUT_ROOT/termux-battery-emulated-evidence.json"
           volume_report="$OUTPUT_ROOT/termux-volume-emulated-evidence.json"
           volume_control_report="$OUTPUT_ROOT/termux-volume-control-emulated-evidence.json"
           command_report="$OUTPUT_ROOT/termux-command-emulated-evidence.json"
+          deployment_report="$OUTPUT_ROOT/automated-native-deployment-v1.json"
           test -f "$report"
           test -f "$battery_report"
           test -f "$volume_report"
           test -f "$volume_control_report"
           test -f "$command_report"
+          test -f "$deployment_report"
           test "$(stat -c %a "$report")" = 600
           test "$(stat -c %a "$battery_report")" = 600
           test "$(stat -c %a "$volume_report")" = 600
           test "$(stat -c %a "$volume_control_report")" = 600
           test "$(stat -c %a "$command_report")" = 600
+          test "$(stat -c %a "$deployment_report")" = 600
           jq -e \
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
-            --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 3 and .gateVersion == "3" and .status == "pass"
+            --arg digest "$TERMUX_IMAGE_DIGEST" \
+            --arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID" \
+            --arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST" '
+              .schemaVersion == 4 and .gateVersion == "4" and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
@@ -506,6 +729,9 @@ jobs:
               and .candidate.fullSuiteArtifact.posture == "full-suite"
               and .candidate.fullSuiteArtifact.features == ["full-suite"]
               and .environment.imageDigest == $digest
+              and .environment.rootfsImageId == $rootfs_image_id
+              and .environment.runtimeImageDigest == $runtime_digest
+              and .environment.runtimeImageDigest != $rootfs_image_id
               and .runtimeValidation.status == "pass"
               and .aggregateValidation.status == "pass"
               and .aggregateValidation.defaultDisabled.toolCount == 17
@@ -523,7 +749,11 @@ jobs:
               and .aggregateValidation.independentRuntimeGates == true
               and .aggregateValidation.filesystemMutationsDisabled == true
               and .aggregateValidation.boundedCleanup == true
-              and .aggregateValidation.directPhysicalObservationRequired == true
+              and .aggregateValidation.automatedQualificationComponent == true
+              and .claimBoundary.physicalDeviceObserved == false
+              and .claimBoundary.androidFrameworkObserved == false
+              and .claimBoundary.sustainedPhysicalSoak == false
+              and .claimBoundary.physicalCertification == "not_run"
               and .stress.status == "pass" and .stress.samples == 256
               and .stress.safeRootIdentityPinned == true
               and .stress.safeRootAncestorIdentityPinned == true
@@ -534,12 +764,17 @@ jobs:
           jq -e \
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
-            --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
+            --arg digest "$TERMUX_IMAGE_DIGEST" \
+            --arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID" \
+            --arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST" '
+              .schemaVersion == 3 and .gateVersion == "3" and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
               and .environment.imageDigest == $digest
+              and .environment.rootfsImageId == $rootfs_image_id
+              and .environment.runtimeImageDigest == $runtime_digest
+              and .environment.runtimeImageDigest != $rootfs_image_id
               and .validation.status == "pass"
               and .validation.runtimeDefaultDisabled == true
               and .validation.fixedProgram == true
@@ -558,12 +793,17 @@ jobs:
           jq -e \
             --arg commit "$SOURCE_SHA" \
             --arg android "$GITHUB_RUN_ID" \
-            --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+            --arg digest "$TERMUX_IMAGE_DIGEST" \
+            --arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID" \
+            --arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST" '
+              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.androidRunId == $android
               and .environment.imageDigest == $digest
+              and .environment.rootfsImageId == $rootfs_image_id
+              and .environment.runtimeImageDigest == $runtime_digest
+              and .environment.runtimeImageDigest != $rootfs_image_id
               and .validation.status == "pass"
               and .validation.runtimeDefaultDisabled == true
               and .validation.fixedProgram == true
@@ -589,8 +829,10 @@ jobs:
             --arg ci "$CI_RUN_ID" \
             --arg security "$SECURITY_RUN_ID" \
             --arg android "$GITHUB_RUN_ID" \
-            --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 1 and .gateVersion == "1" and .status == "pass"
+            --arg digest "$TERMUX_IMAGE_DIGEST" \
+            --arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID" \
+            --arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST" '
+              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.version == $version
@@ -598,6 +840,9 @@ jobs:
               and .candidate.securityRunId == $security
               and .candidate.androidRunId == $android
               and .environment.imageDigest == $digest
+              and .environment.rootfsImageId == $rootfs_image_id
+              and .environment.runtimeImageDigest == $runtime_digest
+              and .environment.runtimeImageDigest != $rootfs_image_id
               and .validation.status == "pass"
               and .validation.requests >= 20
               and .validation.exactArtifact == true
@@ -638,8 +883,10 @@ jobs:
             --arg ci "$CI_RUN_ID" \
             --arg security "$SECURITY_RUN_ID" \
             --arg android "$GITHUB_RUN_ID" \
-            --arg digest "$TERMUX_IMAGE_DIGEST" '
-              .schemaVersion == 2 and .gateVersion == "2" and .status == "pass"
+            --arg digest "$TERMUX_IMAGE_DIGEST" \
+            --arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID" \
+            --arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST" '
+              .schemaVersion == 3 and .gateVersion == "3" and .status == "pass"
               and .failureCode == null
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
@@ -655,6 +902,9 @@ jobs:
               and .environment.executionMode == "official-termux-docker-native-arm64"
               and .environment.image == "termux/termux-docker:aarch64"
               and .environment.imageDigest == $digest
+              and .environment.rootfsImageId == $rootfs_image_id
+              and .environment.runtimeImageDigest == $runtime_digest
+              and .environment.runtimeImageDigest != $rootfs_image_id
               and .environment.androidLinker == true
               and .validation.status == "pass"
               and .validation.requests == 29
@@ -688,7 +938,54 @@ jobs:
             ' "$command_report" >/dev/null
           sha256sum "$command_report"
 
-          requirement_report="$OUTPUT_ROOT/termux-observation-requirement.json"
+          jq -e \
+            --arg commit "$SOURCE_SHA" \
+            --arg version "$EXPECTED_VERSION" \
+            --arg ci "$CI_RUN_ID" \
+            --arg security "$SECURITY_RUN_ID" \
+            --arg native "$GITHUB_RUN_ID" \
+            --arg digest "$TERMUX_IMAGE_DIGEST" \
+            --arg rootfs_image_id "$TERMUX_ROOTFS_IMAGE_ID" \
+            --arg runtime_digest "$TERMUX_RUNTIME_IMAGE_DIGEST" '
+              .schemaVersion == 1
+              and .gateVersion == "1"
+              and .status == "pass"
+              and .failureCode == null
+              and .releaseQualificationEligible == false
+              and .qualificationClass == "official_termux_native_automated_v1"
+              and .candidate.repository == "CyberBASSLord-666/termux-mcp-edge"
+              and .candidate.commit == $commit
+              and .candidate.version == $version
+              and .candidate.ciRunId == $ci
+              and .candidate.securityRunId == $security
+              and .candidate.nativeRunId == $native
+              and .candidate.artifact.posture == "full-suite"
+              and .candidate.artifact.features == ["full-suite"]
+              and .scenarioSet.fileName == "automated-native-deployment-scenarios-v1.json"
+              and .scenarioSet.scenarioCount == 6
+              and .environment.executionMode == "official-termux-docker-native-arm64"
+              and .environment.rootfsDigest == $digest
+              and .environment.rootfsImageId == $rootfs_image_id
+              and .environment.runtimeImageDigest == $runtime_digest
+              and .environment.runtimeImageDigest != .environment.rootfsImageId
+              and .environment.androidLinker.observed == true
+              and .environment.androidFrameworkObserved == false
+              and .environment.physicalHardwareObserved == false
+              and .environment.physicalDeviceObserved == false
+              and .environment.sustainedPhysicalSoak == false
+              and .validation.status == "pass"
+              and .validation.nativeArtifactExecuted == true
+              and .validation.isolatedFreshDeploy == true
+              and .validation.failedUpgradeRecovery == true
+              and .validation.supervisedRestart == true
+              and .validation.rollbackRecovery == true
+              and .validation.uninstall == true
+              and .validation.boundedCleanup == true
+              and .validation.physicalCertification == "not_run"
+            ' "$deployment_report" >/dev/null
+          sha256sum "$deployment_report"
+
+          requirement_report="$OUTPUT_ROOT/termux-observation-requirement-v3.json"
           bash scripts/classify_observation_requirement.sh \
             --repository-root "$GITHUB_WORKSPACE" \
             --source-commit fe5f7b80a8ff13c2e39951d16f37b2e37a10a36b \
@@ -702,61 +999,297 @@ jobs:
             --arg commit "$SOURCE_SHA" \
             --arg full_suite_sha "$full_suite_sha" \
             --arg full_suite_manifest_sha "$full_suite_manifest_sha" '
-              .schemaVersion == 2
-              and .classifierVersion == "2"
+              .schemaVersion == 3
+              and .classifierVersion == "3"
               and .status == "pass"
               and .releaseQualificationEligible == false
               and .candidate.commit == $commit
               and .candidate.fullSuiteArtifactSha256 == $full_suite_sha
               and .candidate.fullSuiteManifestSha256 == $full_suite_manifest_sha
               and .emulation.status == "pass"
+              and .evidenceMode == "automated_release_qualification"
+              and .reasonCode == "automated_native_termux_evidence_required"
+              and .nextGate == "assemble_automated_release_qualification"
+              and .claimBoundary.physicalDeviceObserved == false
+              and .claimBoundary.androidFrameworkObserved == false
+              and .claimBoundary.sustainedPhysicalSoak == false
+              and .claimBoundary.physicalCertification == "not_run"
             ' "$requirement_report" >/dev/null
           sha256sum "$requirement_report"
 
-          if jq -e '.inheritanceCandidate == true' "$requirement_report" >/dev/null; then
-            bash scripts/verify_observation_inheritance.sh \
-              --repository-root "$GITHUB_WORKSPACE" \
-              --source-commit fe5f7b80a8ff13c2e39951d16f37b2e37a10a36b \
-              --source-report "$GITHUB_WORKSPACE/docs/release-evidence/v0.5.1-physical-fe5f7b80.json" \
-              --source-report-sha256 677796015065eb193ac78b2dd200de64efccb95a226837a4545c85021cb9283c \
-              --candidate-commit "$SOURCE_SHA" \
-              --emulated-report "$report" \
-              --bridge-commit a97e7cf2734ca3c997abc4e7d2aebaaa9fa856b9 \
-              --bridge-default-sha256 8fb1e89d942e5f925359eb22ea3321d6025baa83ee1da60fe58f1c62fe60dce1 \
-              --bridge-mcp-sha256 e4c68590c02c2861b18392d7fae2b7542f6610e4a52615aee76f66c06cc7358e \
-              --output "$OUTPUT_ROOT/termux-observation-inheritance.json"
+      - name: Freeze native qualification components
+        id: components
+        env:
+          OUTPUT_ROOT: ${{ steps.output.outputs.root }}
+        run: |
+          set -euo pipefail
+          umask 077
+          snapshot="$RUNNER_TEMP/native-qualification-components"
+          test ! -e "$snapshot"
+          mkdir -m 700 "$snapshot"
+          members=(
+            automated-native-deployment-v1.json
+            termux-battery-emulated-evidence.json
+            termux-command-emulated-evidence.json
+            termux-native-aggregate-evidence-v4.json
+            termux-observation-requirement-v3.json
+            termux-volume-control-emulated-evidence.json
+            termux-volume-emulated-evidence.json
+          )
+          for member in "${members[@]}"; do
+            source="$OUTPUT_ROOT/$member"
+            target="$snapshot/$member"
+            test -f "$source"
+            test ! -L "$source"
+            test "$(stat -c %a "$source")" = 600
+            source_sha="$(sha256sum "$source" | awk '{print $1}')"
+            install -m 400 -- "$source" "$target"
+            test -f "$target"
+            test ! -L "$target"
+            test "$(stat -c %a "$target")" = 400
+            test "$(sha256sum "$target" | awk '{print $1}')" = "$source_sha"
+            cmp -s -- "$source" "$target"
+            test "$(sha256sum "$source" | awk '{print $1}')" = "$source_sha"
+          done
+          test "$(find "$snapshot" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 7
+          test "$(find "$snapshot" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          chmod 500 "$snapshot"
+          sha256sum "$snapshot"/*.json
+          printf 'root=%s\n' "$snapshot" >>"$GITHUB_OUTPUT"
 
-            jq -e \
-              --arg commit "$SOURCE_SHA" '
-                .status == "pass"
-                and .releaseQualificationEligible == true
-                and .candidate.commit == $commit
-                and .evidenceMode == "inherited_physical_observation"
-              ' "$OUTPUT_ROOT/termux-observation-inheritance.json" >/dev/null
-            sha256sum "$OUTPUT_ROOT/termux-observation-inheritance.json"
-          else
-            jq -e '
-              .evidenceMode == "physical_observation_required"
-              and .reasonCode == "full_suite_direct_physical_observation_required"
-              and .nextGate == "direct_physical_device_observation"
-              and (.changedInputClasses | index("full_suite_artifact") != null)
-              and (.changedInputClasses | length) >= 1
-            ' "$requirement_report" >/dev/null
-            test ! -e "$OUTPUT_ROOT/termux-observation-inheritance.json"
-          fi
-
-      - name: Upload emulated evidence
+      - name: Upload native qualification components
         # actions/upload-artifact@v7.0.1 resolved 2026-07-10
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: termux-mcp-emulated-evidence
-          path: |
-            ${{ steps.output.outputs.root }}/termux-emulated-evidence.json
-            ${{ steps.output.outputs.root }}/termux-battery-emulated-evidence.json
-            ${{ steps.output.outputs.root }}/termux-volume-emulated-evidence.json
-            ${{ steps.output.outputs.root }}/termux-volume-control-emulated-evidence.json
-            ${{ steps.output.outputs.root }}/termux-command-emulated-evidence.json
-            ${{ steps.output.outputs.root }}/termux-observation-requirement.json
-            ${{ steps.output.outputs.root }}/termux-observation-inheritance.json
+          name: termux-mcp-native-qualification-components
+          path: ${{ steps.components.outputs.root }}/
           if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
+          retention-days: 30
+
+      - name: Freeze replayable qualified runtime snapshot
+        id: runtime-snapshot
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$TERMUX_ROOTFS_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$TERMUX_RUNTIME_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$TERMUX_RUNTIME_IMAGE_DIGEST" != "$TERMUX_ROOTFS_IMAGE_ID"
+          test -d "$TERMUX_RUNTIME_CONTEXT"
+          test ! -L "$TERMUX_RUNTIME_CONTEXT"
+          package_lock="$TERMUX_RUNTIME_CONTEXT/termux-runtime-package-lock-v1.json"
+          test -f "$package_lock"
+          test ! -L "$package_lock"
+          test "$(stat -c %a "$package_lock")" = 444
+
+          snapshot="$RUNNER_TEMP/qualified-runtime-snapshot"
+          test ! -e "$snapshot"
+          mkdir -m 700 "$snapshot"
+          archive="$snapshot/termux-qualified-runtime-image-v1.tar.gz"
+          installed="$TERMUX_RUNTIME_CONTEXT/installed-packages.tsv"
+          inspect_json="$TERMUX_RUNTIME_CONTEXT/runtime-image-inspect.json"
+          runtime_tag="termux-mcp-qualified-runtime:$SOURCE_SHA"
+          docker tag "$TERMUX_RUNTIME_IMAGE_DIGEST" "$runtime_tag"
+          docker save "$runtime_tag" | gzip -n -9 >"$archive"
+          test -s "$archive"
+          test "$(stat -c %s "$archive")" -le 1610612736
+          test "$(od -An -t u1 -j 4 -N 4 "$archive" | tr -d ' ')" = 0000
+          docker image inspect "$TERMUX_RUNTIME_IMAGE_DIGEST" >"$inspect_json"
+          docker run --rm \
+            --network none \
+            --security-opt seccomp=unconfined \
+            "$TERMUX_RUNTIME_IMAGE_DIGEST" \
+            bash -c '
+              set -euo pipefail
+              for required in file jq python python3 sv runsv runsvdir; do
+                command -v "$required" >/dev/null
+              done
+              dpkg-query -W -f="\${Package}\t\${Version}\t\${Architecture}\n" |
+                LC_ALL=C sort
+            ' >"$installed"
+          test -s "$installed"
+          install -m 400 -- \
+            "$package_lock" \
+            "$snapshot/termux-runtime-package-lock-v1.json"
+          SOURCE_SHA="$SOURCE_SHA" \
+          ANDROID_RUN_ID="$GITHUB_RUN_ID" \
+          BASE_DIGEST="$TERMUX_IMAGE_DIGEST" \
+          BASE_IMAGE_ID="$TERMUX_ROOTFS_IMAGE_ID" \
+          RUNTIME_IMAGE_ID="$TERMUX_RUNTIME_IMAGE_DIGEST" \
+          SNAPSHOT_ROOT="$snapshot" \
+          PACKAGE_LOCK="$snapshot/termux-runtime-package-lock-v1.json" \
+          ARCHIVE="$archive" \
+          INSTALLED="$installed" \
+          INSPECT_JSON="$inspect_json" \
+            python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+
+          def digest(path):
+              value = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      value.update(chunk)
+              return value.hexdigest()
+
+          snapshot = pathlib.Path(os.environ["SNAPSHOT_ROOT"])
+          package_lock = pathlib.Path(os.environ["PACKAGE_LOCK"])
+          archive = pathlib.Path(os.environ["ARCHIVE"])
+          installed = pathlib.Path(os.environ["INSTALLED"])
+          inspect_value = json.loads(
+              pathlib.Path(os.environ["INSPECT_JSON"]).read_text(encoding="utf-8")
+          )
+          if not isinstance(inspect_value, list) or len(inspect_value) != 1:
+              raise SystemExit("runtime image inspection invalid")
+          image = inspect_value[0]
+          runtime_id = os.environ["RUNTIME_IMAGE_ID"]
+          expected_tag = f"termux-mcp-qualified-runtime:{os.environ['SOURCE_SHA']}"
+          layers = image.get("RootFS", {}).get("Layers")
+          if (
+              image.get("Id") != runtime_id
+              or image.get("Os") != "linux"
+              or image.get("Architecture") != "arm64"
+              or image.get("RootFS", {}).get("Type") != "layers"
+              or not isinstance(layers, list)
+              or not layers
+              or len(layers) != len(set(layers))
+              or any(
+                  re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
+                  for item in layers
+              )
+              or expected_tag not in (image.get("RepoTags") or [])
+          ):
+              raise SystemExit("runtime image identity invalid")
+
+          packages = []
+          identities = set()
+          inventory = installed.read_bytes()
+          for raw_line in inventory.decode("utf-8").splitlines():
+              fields = raw_line.split("\t")
+              if len(fields) != 3:
+                  raise SystemExit("installed package inventory invalid")
+              package, version, architecture = fields
+              identity = (package, version, architecture)
+              if (
+                  re.fullmatch(r"[a-z0-9][a-z0-9+.-]{0,127}", package) is None
+                  or re.fullmatch(r"[!-~]{1,128}", version) is None
+                  or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", architecture)
+                  is None
+                  or identity in identities
+              ):
+                  raise SystemExit("installed package identity invalid")
+              identities.add(identity)
+              packages.append(
+                  {
+                      "package": package,
+                      "version": version,
+                      "architecture": architecture,
+                  }
+              )
+          if not 1 <= len(packages) <= 4096 or list(identities) == []:
+              raise SystemExit("installed package count invalid")
+          if [
+              (item["package"], item["version"], item["architecture"])
+              for item in packages
+          ] != sorted(identities):
+              raise SystemExit("installed package inventory is not canonical")
+
+          value = {
+              "schemaVersion": 1,
+              "snapshotVersion": "1",
+              "status": "pass",
+              "failureCode": None,
+              "releaseQualificationEligible": False,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "commit": os.environ["SOURCE_SHA"],
+              "androidRunId": os.environ["ANDROID_RUN_ID"],
+              "base": {
+                  "image": "termux/termux-docker:aarch64",
+                  "digest": os.environ["BASE_DIGEST"],
+                  "imageId": os.environ["BASE_IMAGE_ID"],
+              },
+              "runtimeImageId": runtime_id,
+              "platform": {"os": "linux", "architecture": "arm64"},
+              "rootfsLayers": layers,
+              "packageLock": {
+                  "fileName": package_lock.name,
+                  "sha256": digest(package_lock),
+                  "bytes": package_lock.stat().st_size,
+              },
+              "installedPackages": {
+                  "sha256": hashlib.sha256(inventory).hexdigest(),
+                  "count": len(packages),
+                  "packages": packages,
+              },
+              "archive": {
+                  "fileName": archive.name,
+                  "format": "docker-image-archive-v1",
+                  "compression": "gzip-no-name",
+                  "sha256": digest(archive),
+                  "bytes": archive.stat().st_size,
+              },
+              "claimBoundary": {
+                  "physicalDeviceObserved": False,
+                  "androidFrameworkObserved": False,
+                  "sustainedPhysicalSoak": False,
+                  "physicalCertification": "not_run",
+              },
+              "rebuildReproducibilityClaim": False,
+          }
+          encoded = (
+              json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+          ).encode()
+          output = snapshot / "termux-runtime-snapshot-v1.json"
+          descriptor = os.open(
+              output,
+              os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+              0o600,
+          )
+          with os.fdopen(descriptor, "wb") as destination:
+              destination.write(encoded)
+              destination.flush()
+              os.fsync(destination.fileno())
+          PY
+          chmod 400 \
+            "$archive" \
+            "$snapshot/termux-runtime-snapshot-v1.json"
+          expected_names="$(
+            printf '%s\n' \
+              termux-qualified-runtime-image-v1.tar.gz \
+              termux-runtime-package-lock-v1.json \
+              termux-runtime-snapshot-v1.json |
+              LC_ALL=C sort
+          )"
+          actual_names="$(
+            find "$snapshot" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_names" = "$expected_names"
+          test "$(find "$snapshot" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3
+          test "$(find "$snapshot" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          test "$(find "$snapshot" -mindepth 1 -maxdepth 1 -type f ! -perm 400 | wc -l)" = 0
+          chmod 500 "$snapshot"
+          sha256sum "$snapshot"/*
+          printf 'root=%s\n' "$snapshot" >>"$GITHUB_OUTPUT"
+
+      - name: Upload replayable qualified runtime snapshot
+        # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: termux-mcp-qualified-runtime-snapshot
+          path: |
+            ${{ steps.runtime-snapshot.outputs.root }}/termux-qualified-runtime-image-v1.tar.gz
+            ${{ steps.runtime-snapshot.outputs.root }}/termux-runtime-package-lock-v1.json
+            ${{ steps.runtime-snapshot.outputs.root }}/termux-runtime-snapshot-v1.json
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
           retention-days: 30

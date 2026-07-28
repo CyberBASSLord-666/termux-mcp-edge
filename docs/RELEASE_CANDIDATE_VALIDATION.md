@@ -246,9 +246,9 @@ It intentionally excludes:
 
 Reports are created atomically as mode `0600` and existing reports are never overwritten.
 
-## Sustained observation
+## Optional physical sustained observation
 
-Automated endpoint success cannot establish battery, thermal, network, or Android process-restriction stability. The minimum production observation window is 60 minutes.
+Automated evidence does not establish battery, thermal, network, OEM, or Android process-restriction stability on a physical phone. This validator retains its historical 60-minute contract when an operator deliberately requests the separate optional physical-certification tier. It is not an input to `official_termux_native_automated_v1` and is not the ordinary release prerequisite.
 
 Before the observation:
 
@@ -270,9 +270,9 @@ A failed observation uses `fail`, a positive observed duration, and one bounded 
 
 A supplied failed observation makes the validator exit nonzero with `sustained_observation_failed`, even when every automated phase passed. `not_run` may accompany a successful automated report but can never make it release-eligible.
 
-`releaseEligible` becomes true only for a non-fixture validator-v11 `--phase all` report with every phase passing, the exact full-suite artifact bound into schema-v2 evidence, the dedicated full-suite deployment candidate selected, and a valid passing sustained observation. This field is evidence for maintainer review; it does not publish or authorize a release.
+Within the optional physical tier, `releaseEligible` becomes true only for a non-fixture validator-v11 `--phase all` report with every phase passing, the exact full-suite artifact bound into schema-v2 evidence, the dedicated full-suite deployment candidate selected, and a valid passing sustained observation. This field is physical-certification evidence for maintainer review; it does not publish or authorize a release.
 
-The canonical report intentionally models only a direct observation. The historical v0.5.1 observation and its bridge do not bind the full-suite digest and cannot qualify this changed build input; the first full-suite candidate requires a fresh direct physical AArch64 Termux observation. Any future inherited-observation route must explicitly bind the source report, bridge artifact, and full-suite digest under its then-current versioned contract. It cannot alter or relabel a `not_run` canonical report.
+The canonical report intentionally models only a direct physical observation. It cannot be relabeled as automated qualification, and an automated envelope cannot be relabeled as physical certification.
 
 ## Failure and cleanup
 

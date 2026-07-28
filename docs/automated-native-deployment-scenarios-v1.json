@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "scenarioSetVersion": "1",
+  "qualificationClass": "official_termux_native_automated_v1",
+  "scenarios": [
+    {
+      "id": "isolated_fresh_deploy",
+      "execution": "native",
+      "faultInjection": "none",
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "failed_upgrade_recovery",
+      "execution": "native",
+      "faultInjection": "target_scoped_readiness_probe_failure",
+      "expectedOutcome": "recovered"
+    },
+    {
+      "id": "supervised_restart",
+      "execution": "native",
+      "faultInjection": "supervised_process_termination",
+      "expectedOutcome": "restarted"
+    },
+    {
+      "id": "rollback_recovery",
+      "execution": "native",
+      "faultInjection": "target_scoped_readiness_probe_failure",
+      "expectedOutcome": "recovered"
+    },
+    {
+      "id": "uninstall",
+      "execution": "native",
+      "faultInjection": "none",
+      "expectedOutcome": "removed"
+    },
+    {
+      "id": "bounded_cleanup",
+      "execution": "native",
+      "faultInjection": "none",
+      "expectedOutcome": "clean"
+    }
+  ]
+}

@@ -3,35 +3,14 @@ name: CI
 on:
   push:
     branches: [ main ]
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "src/**"
-      - "tests/**"
-      - "benches/**"
-      - "examples/**"
-      - "scripts/**"
-      - "*.md"
-      - "docs/**/*.md"
-      - "docs/release-evidence-schema-v*.json"
-      - "docs/emulated-release-evidence-schema-v*.json"
-      - "docs/android-battery-emulated-evidence-schema-v*.json"
-      - "docs/android-volume-emulated-evidence-schema-v*.json"
-      - "docs/android-volume-control-emulated-evidence-schema-v*.json"
-      - "docs/command-emulated-evidence-schema-v*.json"
-      - "docs/release-observation-requirement-schema-v*.json"
-      - "docs/release-observation-inheritance-schema-v*.json"
-      - "docs/release-physical-qualification-schema-v*.json"
-      - "docs/release-staging-manifest-schema-v*.json"
-      - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
-      - ".github/workflows/*"
   pull_request:
     branches: [ main ]
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "build.rs"
+      - ".cargo/**"
       - "src/**"
       - "tests/**"
       - "benches/**"
@@ -48,7 +27,13 @@ on:
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
       - "docs/release-physical-qualification-schema-v*.json"
+      - "docs/release-automated-qualification-schema-v*.json"
+      - "docs/release-qualification-policy*.json"
+      - "docs/automated-native-deployment-*.json"
       - "docs/release-staging-manifest-schema-v*.json"
+      - "docs/runtime-package-lock-schema-v*.json"
+      - "docs/runtime-snapshot-schema-v*.json"
+      - "docs/runtime-snapshot-replay-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/workflows/*"
   workflow_dispatch:
@@ -148,6 +133,11 @@ jobs:
           bash tests/documentation_contract_test.sh
           bash tests/cross_compile_contract_test.sh
           bash tests/package_physical_qualification_test.sh
+          bash tests/commit_verified_file_test.sh
+          bash tests/termux_automated_deployment_gate_test.sh
+          bash tests/package_automated_qualification_test.sh
+          bash tests/runtime_snapshot_replay_test.sh
+          bash tests/automated_release_qualification_workflow_test.sh
           bash tests/stage_release_assets_test.sh
           bash tests/release_staging_workflow_test.sh
           bash tests/prepare_release_publication_assets_test.sh
@@ -155,7 +145,7 @@ jobs:
           bash tests/release_publication_workflow_test.sh
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
-            docs/command-emulated-evidence-schema-v2.json >/dev/null
+            docs/command-emulated-evidence-schema-v3.json >/dev/null
 
       - name: Verify dependency inputs remained unchanged
         run: git diff --exit-code -- Cargo.toml Cargo.lock

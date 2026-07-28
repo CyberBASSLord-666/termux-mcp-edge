@@ -52,6 +52,8 @@ for marker in \
   'RELEASE_PRODUCTION_PROTECTED' \
   'asset-attachment-reviewer-main-only-v1' \
   'RELEASE_FINAL_PROTECTED' \
+  'RELEASE_FINAL_EXCLUSIVE_MUTATION_FREEZE' \
+  'exclusive-release-main-policy-tag-writers-paused-v1' \
   'final-publication-reviewer-main-only-immutable-v1' \
   'RELEASE_PRODUCTION_POLICY_READ_TOKEN' \
   'RELEASE_FINAL_POLICY_READ_TOKEN' \
@@ -74,6 +76,13 @@ for marker in \
   '408|425|429|500|502|503|504' \
   'sleep "$attempt"' \
   'Present independent record to final reviewer' \
+  'keys == ["phase","qualification","recordType","release","repository","schemaVersion","source","stage","workflow"]' \
+  'class:"official_termux_native_automated_v1"' \
+  'physicalDeviceObserved:false' \
+  'androidFrameworkObserved:false' \
+  'sustainedPhysicalSoak:false' \
+  'physicalCertification:"not_run"' \
+  '(.qualification.runId | type == "string" and test("^[1-9][0-9]*$"))' \
   'Immutable public Release proof passed' \
   'immutable=true' \
   'public_asset_redownloads=16'
@@ -103,6 +112,38 @@ fi
   || fail stage_resolution_must_repeat_in_every_job
 [[ "$(grep -Fc 'prepare_release_publication_assets.sh' "$WORKFLOW")" -eq 5 ]] \
   || fail staged_byte_verification_must_repeat_in_every_job
+for runtime_name in \
+  evidence/runtime/termux-qualified-runtime-image-v1.tar.gz \
+  evidence/runtime/termux-runtime-package-lock-v1.json \
+  evidence/runtime/termux-runtime-snapshot-v1.json \
+  evidence/runtime/termux-runtime-snapshot-replay-v1.json
+do
+  grep -Fq "$runtime_name" "$PREPARER" \
+    || fail "preparer retained-runtime inventory missing: $runtime_name"
+  grep -Fq "$runtime_name" "$PUBLISHER" \
+    || fail "publisher retained-runtime inventory missing: $runtime_name"
+done
+grep -Fq 'qualification["retainedRuntime"] != expected_retained_runtime' "$PREPARER" \
+  || fail qualification_runtime_cross_join_missing
+grep -Fq 'runtime_replay["verification"] != expected_runtime_verification' "$PREPARER" \
+  || fail runtime_offline_replay_cross_join_missing
+grep -Fq 'rebuildReproducibilityClaim:false' "$PUBLISHER" \
+  || fail release_body_rebuild_claim_boundary_missing
+grep -Fq '2147483647' "$PREPARER" \
+  || fail preparer_release_asset_limit_missing
+grep -Fq '2147483647' "$PUBLISHER" \
+  || fail publisher_release_asset_limit_missing
+grep -Fq '16_777_216' "$PREPARER" \
+  || fail preparer_runtime_json_limit_missing
+grep -Fq '16777216' "$PUBLISHER" \
+  || fail publisher_runtime_json_limit_missing
+[[ "$(grep -Fc '$RUNNER_TEMP/release-publication/publication-inputs/assets' "$WORKFLOW")" -eq 10 ]] \
+  || fail atomic_publication_bundle_assets_path_changed
+[[ "$(grep -Fc '$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json' "$WORKFLOW")" -eq 10 ]] \
+  || fail atomic_publication_bundle_receipt_path_changed
+if grep -Eq '\\$RUNNER_TEMP/release-publication/(assets|release-publication-receipt-v1[.]json)' "$WORKFLOW"; then
+  fail legacy_split_publication_paths_must_not_return
+fi
 [[ "$(grep -Fc '[[ "$RUN_ATTEMPT" == 1 ]]' "$WORKFLOW")" -eq 5 ]] \
   || fail reruns_must_be_rejected_in_every_job
 [[ "$(grep -Fc 'actions: read' "$WORKFLOW")" -eq 5 ]] \
@@ -115,12 +156,84 @@ fi
   || fail protected_environment_count_changed
 [[ "$(grep -Fc 'GH_ADMIN_READ_TOKEN:' "$WORKFLOW")" -eq 2 ]] \
   || fail immutable_policy_token_scope_changed
+[[ "$(grep -Rhc 'contents:[[:space:]]*write' "$ROOT/.github/workflows"/*.yml | awk '{total += $1} END {print total + 0}')" -eq 2 ]] \
+  || fail repository_workflow_contents_write_surface_changed
 
 python3 - "$WORKFLOW" <<'PY'
 import pathlib
 import sys
+import yaml
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+document = yaml.safe_load(text)
+jobs = document.get("jobs")
+expected_jobs = {"preflight", "attach-assets", "verify-draft", "publish", "postverify"}
+if not isinstance(jobs, dict) or set(jobs) != expected_jobs:
+    raise SystemExit("publication job inventory changed")
+for job_name, job in jobs.items():
+    if "continue-on-error" in job:
+        raise SystemExit(f"{job_name} job may not ignore failure")
+    if "if" in job:
+        raise SystemExit(f"{job_name} job may not bypass success ordering")
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise SystemExit(f"{job_name} has no steps")
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict) or not isinstance(step.get("name"), str):
+            raise SystemExit(f"{job_name} step {index} is empty or unnamed")
+        if ("run" in step) == ("uses" in step):
+            raise SystemExit(f"{job_name} step {index} must have exactly one action")
+        if "continue-on-error" in step:
+            raise SystemExit(
+                f"{job_name} step {step['name']} may not ignore failure"
+            )
+        if "if" in step:
+            raise SystemExit(
+                f"{job_name} step {step['name']} may not bypass success ordering"
+            )
+
+expected_order = {
+    "attach-assets": [
+        "Require protected asset-attachment environment",
+        "Checkout dispatch main source",
+        "Validate first-attempt dispatch source",
+        "Resolve exact staged artifact again after approval",
+        "Prepare private verification workspace",
+        "Download exact staged tar again after approval",
+        "Reverify staged bytes after approval",
+        "Attach the exact fixed asset set",
+        "Hash closed attachment record",
+        "Retain exact attachment identity record",
+        "Summarize protected attachment",
+    ],
+    "publish": [
+        "Require protected final-publication environment",
+        "Checkout dispatch main source",
+        "Validate first-attempt dispatch source",
+        "Validate retained draft-verification artifact identity",
+        "Download exact independent-verification record",
+        "Verify independent-record bytes before publication",
+        "Resolve exact staged artifact after final approval",
+        "Prepare private verification workspace",
+        "Download exact staged tar after final approval",
+        "Reverify every staged byte after final approval",
+        "Re-download, publish once, and verify immutable response",
+    ],
+    "postverify": [
+        "Checkout dispatch main source",
+        "Validate first-attempt dispatch source",
+        "Resolve exact staged artifact one final time",
+        "Prepare private verification workspace",
+        "Download exact staged tar one final time",
+        "Reverify exact staged bytes one final time",
+        "Verify public immutable identity and bytes",
+    ],
+}
+for job_name, expected_names in expected_order.items():
+    actual_names = [step["name"] for step in jobs[job_name]["steps"]]
+    if actual_names != expected_names:
+        raise SystemExit(f"{job_name} proof/mutation step ordering changed")
+
 lines = text.splitlines()
 run_indent = None
 for line in lines:

@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-qualification-policy-schema-v1.json",
+  "title": "Termux MCP Edge automated native qualification policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "policyVersion",
+    "qualificationClass",
+    "authorization",
+    "repository",
+    "branch",
+    "workflowRequirements",
+    "claimBoundary",
+    "environmentRequirements",
+    "deploymentScenarioSet",
+    "artifactPostures",
+    "requiredEvidence",
+    "requiredGates",
+    "prohibitedClaimFieldTokens"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "policyVersion": {"const": "1"},
+    "qualificationClass": {"const": "official_termux_native_automated_v1"},
+    "authorization": {"const": "release_qualification"},
+    "repository": {"const": "CyberBASSLord-666/termux-mcp-edge"},
+    "branch": {"const": "main"},
+    "workflowRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredWorkflows", "event", "ref", "attempt", "conclusion"],
+      "properties": {
+        "requiredWorkflows": {"const": ["ci", "security", "android"]},
+        "event": {"const": "push"},
+        "ref": {"const": "refs/heads/main"},
+        "attempt": {"const": 1},
+        "conclusion": {"const": "success"}
+      }
+    },
+    "claimBoundary": {"$ref": "#/$defs/claimBoundary"},
+    "environmentRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executionMode",
+        "architecture",
+        "rootfsImage",
+        "rootfsImageDigestRequired",
+        "rootfsImageIdRequired",
+        "derivedRuntimeImageDigestRequired",
+        "runtimeImageMustDifferFromRootfsImageId",
+        "runtimeImageExecutionByDigest",
+        "runtimePackages",
+        "userlandPrefix",
+        "androidAbi",
+        "dynamicLinkerPath"
+      ],
+      "properties": {
+        "executionMode": {"const": "official-termux-docker-native-arm64"},
+        "architecture": {"const": "aarch64"},
+        "rootfsImage": {"const": "termux/termux-docker:aarch64"},
+        "rootfsImageDigestRequired": {"const": true},
+        "rootfsImageIdRequired": {"const": true},
+        "derivedRuntimeImageDigestRequired": {"const": true},
+        "runtimeImageMustDifferFromRootfsImageId": {"const": true},
+        "runtimeImageExecutionByDigest": {"const": true},
+        "runtimePackages": {"const": ["file", "jq", "python", "termux-services"]},
+        "userlandPrefix": {"const": "/data/data/com.termux/files/usr"},
+        "androidAbi": {"const": "android-bionic"},
+        "dynamicLinkerPath": {"const": "/system/bin/linker64"}
+      }
+    },
+    "deploymentScenarioSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "schemaVersion", "scenarioSetVersion", "scenarioCount", "scenarioIds", "sha256"],
+      "properties": {
+        "fileName": {"const": "automated-native-deployment-scenarios-v1.json"},
+        "schemaVersion": {"const": 1},
+        "scenarioSetVersion": {"const": "1"},
+        "scenarioCount": {"const": 6},
+        "scenarioIds": {
+          "const": [
+            "isolated_fresh_deploy",
+            "failed_upgrade_recovery",
+            "supervised_restart",
+            "rollback_recovery",
+            "uninstall",
+            "bounded_cleanup"
+          ]
+        },
+        "sha256": {"const": "dd31d4f89f9f25dba1a1bb1c492fd796f5a2619b215e2d57f3b0e60f9f24b3bb"}
+      }
+    },
+    "artifactPostures": {
+      "const": [
+        "default",
+        "mcp-runtime",
+        "android-battery-status",
+        "android-volume-status",
+        "android-volume-control",
+        "command-execution",
+        "full-suite"
+      ]
+    },
+    "requiredEvidence": {
+      "const": [
+        "aggregate",
+        "deployment",
+        "classifier",
+        "android-battery-status",
+        "android-volume-status",
+        "android-volume-control",
+        "command-execution"
+      ]
+    },
+    "requiredGates": {
+      "const": [
+        "first_attempt_main_workflows",
+        "artifact_lineage",
+        "official_termux_native_runtime",
+        "aggregate_composition",
+        "specialized_provider_boundaries",
+        "isolated_deployment_recovery",
+        "automated_release_classification"
+      ]
+    },
+    "prohibitedClaimFieldTokens": {
+      "const": ["duration", "elapsed", "equivalent", "minute", "time_dilation"]
+    }
+  },
+  "$defs": {
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physicalDeviceObserved",
+        "androidFrameworkObserved",
+        "sustainedPhysicalSoak",
+        "physicalCertification"
+      ],
+      "properties": {
+        "physicalDeviceObserved": {"const": false},
+        "androidFrameworkObserved": {"const": false},
+        "sustainedPhysicalSoak": {"const": false},
+        "physicalCertification": {"const": "not_run"}
+      }
+    }
+  }
+}

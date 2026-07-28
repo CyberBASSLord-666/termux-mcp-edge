@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "1",
+  "qualificationClass": "official_termux_native_automated_v1",
+  "authorization": "release_qualification",
+  "repository": "CyberBASSLord-666/termux-mcp-edge",
+  "branch": "main",
+  "workflowRequirements": {
+    "requiredWorkflows": [
+      "ci",
+      "security",
+      "android"
+    ],
+    "event": "push",
+    "ref": "refs/heads/main",
+    "attempt": 1,
+    "conclusion": "success"
+  },
+  "claimBoundary": {
+    "physicalDeviceObserved": false,
+    "androidFrameworkObserved": false,
+    "sustainedPhysicalSoak": false,
+    "physicalCertification": "not_run"
+  },
+  "environmentRequirements": {
+    "executionMode": "official-termux-docker-native-arm64",
+    "architecture": "aarch64",
+    "rootfsImage": "termux/termux-docker:aarch64",
+    "rootfsImageDigestRequired": true,
+    "rootfsImageIdRequired": true,
+    "derivedRuntimeImageDigestRequired": true,
+    "runtimeImageMustDifferFromRootfsImageId": true,
+    "runtimeImageExecutionByDigest": true,
+    "runtimePackages": [
+      "file",
+      "jq",
+      "python",
+      "termux-services"
+    ],
+    "userlandPrefix": "/data/data/com.termux/files/usr",
+    "androidAbi": "android-bionic",
+    "dynamicLinkerPath": "/system/bin/linker64"
+  },
+  "deploymentScenarioSet": {
+    "fileName": "automated-native-deployment-scenarios-v1.json",
+    "schemaVersion": 1,
+    "scenarioSetVersion": "1",
+    "scenarioCount": 6,
+    "scenarioIds": [
+      "isolated_fresh_deploy",
+      "failed_upgrade_recovery",
+      "supervised_restart",
+      "rollback_recovery",
+      "uninstall",
+      "bounded_cleanup"
+    ],
+    "sha256": "dd31d4f89f9f25dba1a1bb1c492fd796f5a2619b215e2d57f3b0e60f9f24b3bb"
+  },
+  "artifactPostures": [
+    "default",
+    "mcp-runtime",
+    "android-battery-status",
+    "android-volume-status",
+    "android-volume-control",
+    "command-execution",
+    "full-suite"
+  ],
+  "requiredEvidence": [
+    "aggregate",
+    "deployment",
+    "classifier",
+    "android-battery-status",
+    "android-volume-status",
+    "android-volume-control",
+    "command-execution"
+  ],
+  "requiredGates": [
+    "first_attempt_main_workflows",
+    "artifact_lineage",
+    "official_termux_native_runtime",
+    "aggregate_composition",
+    "specialized_provider_boundaries",
+    "isolated_deployment_recovery",
+    "automated_release_classification"
+  ],
+  "prohibitedClaimFieldTokens": [
+    "duration",
+    "elapsed",
+    "equivalent",
+    "minute",
+    "time_dilation"
+  ]
+}
