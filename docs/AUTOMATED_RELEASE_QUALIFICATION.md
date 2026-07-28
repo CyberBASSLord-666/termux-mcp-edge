@@ -8,6 +8,11 @@ successful attempt of the exact `main` Android workflow.
 It does not convert emulation time into physical time and does not claim that a
 container is a phone.
 
+The qualifier checks out only the repository and commit that define its trusted
+workflow (`job.workflow_repository` at `job.workflow_sha`). Before it consumes
+any checked-out helper or artifact, it requires that immutable workflow commit
+to equal the completed Android run's exact `main` head SHA.
+
 Automated release qualification proves the exact artifacts under the digest-pinned official Termux userland on native ARM64, including deterministic Android-provider simulation and isolated deployment recovery. It does not certify physical-device, OEM, battery-aging, thermal-soak, radio, Doze, or Android-framework behavior.
 
 ## Evidence boundary

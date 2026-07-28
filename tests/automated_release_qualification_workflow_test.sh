@@ -90,8 +90,9 @@ if job.get("env") != {
     "ANDROID_RUN_ID": "${{ github.event.workflow_run.id }}",
     "EXPECTED_COMMIT": "${{ github.event.workflow_run.head_sha }}",
     "QUALIFIER_RUN_ATTEMPT": "${{ github.run_attempt }}",
-    "WORKFLOW_DEFINITION_REF": "${{ github.workflow_ref }}",
-    "WORKFLOW_DEFINITION_SHA": "${{ github.workflow_sha }}",
+    "WORKFLOW_DEFINITION_REF": "${{ job.workflow_ref }}",
+    "WORKFLOW_DEFINITION_REPOSITORY": "${{ job.workflow_repository }}",
+    "WORKFLOW_DEFINITION_SHA": "${{ job.workflow_sha }}",
 }:
     raise SystemExit("qualification job identity must come only from workflow_run")
 condition = job.get("if")
@@ -148,11 +149,12 @@ if checkout.get("uses") != "actions/checkout@3d3c42e5aac5ba805825da76410c181273b
     raise SystemExit("checkout action pin changed")
 checkout_with = checkout.get("with")
 if checkout_with != {
-    "ref": "${{ github.event.workflow_run.head_sha }}",
+    "repository": "${{ job.workflow_repository }}",
+    "ref": "${{ job.workflow_sha }}",
     "fetch-depth": 1,
     "persist-credentials": False,
 }:
-    raise SystemExit("checkout must use only the exact event workflow_run head SHA")
+    raise SystemExit("checkout must use only the immutable workflow-definition identity")
 
 download = by_name["Download exact Android artifacts by immutable ID"]
 if download.get("uses") != "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c":
@@ -498,14 +500,18 @@ if grep -Fq '${{ inputs.' "$WORKFLOW" || grep -Fq 'github.event.inputs' "$WORKFL
 fi
 if grep -Fq 'ref: ${{ github.sha }}' "$WORKFLOW" \
   || grep -Fq 'ref: ${{ github.ref }}' "$WORKFLOW" \
-  || grep -Fq 'ref: ${{ github.event.workflow_run.head_branch }}' "$WORKFLOW"; then
-  fail checkout_ref_is_not_exact_event_head_sha
+  || grep -Fq 'ref: ${{ github.event.workflow_run.head_branch }}' "$WORKFLOW" \
+  || grep -Fq 'ref: ${{ github.event.workflow_run.head_sha }}' "$WORKFLOW"; then
+  fail checkout_ref_is_not_immutable_workflow_definition
 fi
 if grep -Fq 'EXPECTED_COMMIT: ${{ github.sha }}' "$WORKFLOW" \
-  || grep -Fq 'EXPECTED_COMMIT: ${{ github.workflow_sha }}' "$WORKFLOW"; then
+  || grep -Fq 'EXPECTED_COMMIT: ${{ github.workflow_sha }}' "$WORKFLOW" \
+  || grep -Fq 'EXPECTED_COMMIT: ${{ job.workflow_sha }}' "$WORKFLOW"; then
   fail source_identity_must_come_only_from_triggering_android_head
 fi
-[[ "$(grep -Fc 'ref: ${{ github.event.workflow_run.head_sha }}' "$WORKFLOW")" -eq 1 ]] \
+[[ "$(grep -Fc 'repository: ${{ job.workflow_repository }}' "$WORKFLOW")" -eq 1 ]] \
+  || fail immutable_checkout_repository_count_changed
+[[ "$(grep -Fc 'ref: ${{ job.workflow_sha }}' "$WORKFLOW")" -eq 1 ]] \
   || fail exact_checkout_ref_count_changed
 [[ "$(grep -Fc "github.run_attempt == '1'" "$WORKFLOW")" -eq 1 ]] \
   || fail qualifier_own_first_attempt_job_guard_changed
@@ -513,6 +519,8 @@ fi
   || fail qualifier_own_first_attempt_shell_guard_changed
 [[ "$(grep -Fc 'test "$WORKFLOW_DEFINITION_SHA" = "$EXPECTED_COMMIT"' "$WORKFLOW")" -eq 1 ]] \
   || fail workflow_definition_sha_binding_changed
+[[ "$(grep -Fc 'test "$WORKFLOW_DEFINITION_REPOSITORY" = "$GITHUB_REPOSITORY"' "$WORKFLOW")" -eq 1 ]] \
+  || fail workflow_definition_repository_binding_changed
 [[ "$(grep -Fc 'automated-release-qualification.yml@refs/heads/main' "$WORKFLOW")" -eq 1 ]] \
   || fail workflow_definition_ref_binding_changed
 [[ "$(grep -Fc 'api_get "$api_root/git/ref/heads/main"' "$WORKFLOW")" -eq 1 ]] \
