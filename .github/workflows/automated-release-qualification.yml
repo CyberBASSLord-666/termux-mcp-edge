@@ -34,16 +34,16 @@ jobs:
       ANDROID_RUN_ID: ${{ github.event.workflow_run.id }}
       EXPECTED_COMMIT: ${{ github.event.workflow_run.head_sha }}
       QUALIFIER_RUN_ATTEMPT: ${{ github.run_attempt }}
-      WORKFLOW_DEFINITION_REF: ${{ job.workflow_ref }}
-      WORKFLOW_DEFINITION_REPOSITORY: ${{ job.workflow_repository }}
-      WORKFLOW_DEFINITION_SHA: ${{ job.workflow_sha }}
+      WORKFLOW_DEFINITION_REF: ${{ github.workflow_ref }}
+      WORKFLOW_DEFINITION_REPOSITORY: ${{ github.repository }}
+      WORKFLOW_DEFINITION_SHA: ${{ github.workflow_sha }}
     steps:
       - name: Checkout exact completed Android source
         # actions/checkout@v7.0.1 resolved 2026-07-24
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 1
           persist-credentials: false
 
