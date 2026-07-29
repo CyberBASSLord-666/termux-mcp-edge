@@ -49,7 +49,7 @@ jobs:
   rust:
     name: Rust validation
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - name: Checkout
         # actions/checkout@v7.0.1 resolved 2026-07-24
@@ -108,16 +108,16 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Tests (default posture)
-        run: cargo test --locked --workspace --all-targets
+        run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets
 
       - name: Tests (MCP runtime posture)
-        run: cargo test --locked --workspace --all-targets --features mcp-runtime
+        run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime
 
       - name: Tests (full-suite posture)
-        run: cargo test --locked --workspace --all-targets --features full-suite
+        run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite
 
       - name: Tests (all features)
-        run: cargo test --locked --workspace --all-targets --all-features
+        run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --all-features
 
       - name: Release build (full-suite posture)
         run: cargo build --locked --release --features full-suite

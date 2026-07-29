@@ -16,6 +16,8 @@ on:
       - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
       - "scripts/termux_release_validate.sh"
+      - "scripts/termux_device_smoke.sh"
+      - "scripts/termux_deploy.sh"
       - "scripts/termux_emulated_gate.sh"
       - "scripts/termux_battery_emulated_gate.sh"
       - "scripts/termux_volume_emulated_gate.sh"
@@ -158,7 +160,7 @@ jobs:
     name: Native ARM64 Termux emulation
     needs: android-aarch64
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 50
+    timeout-minutes: 75
     env:
       TERMUX_IMAGE: termux/termux-docker:aarch64@sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
       TERMUX_IMAGE_DIGEST: sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
@@ -308,7 +310,7 @@ jobs:
             read -r uptime _ </proc/uptime
             printf '%s\n' "${uptime%%.*}"
           }
-          readonly max_wait_seconds=1500
+          readonly max_wait_seconds=2700
           readonly deadline=$(( $(monotonic_seconds) + max_wait_seconds ))
           attempt=0
           while :; do

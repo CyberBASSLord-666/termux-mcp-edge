@@ -272,6 +272,8 @@ grep -Fq 'cargo clippy --locked --workspace --all-targets -- -D warnings' README
   || fail readme_default_clippy_gate_missing
 grep -Fq 'cargo test --locked --workspace --all-targets' README.md \
   || fail readme_default_test_gate_missing
+grep -Fq 'At eight minutes, GNU `timeout` marks the posture failed and sends `TERM`; if it is still running 30 seconds later, `timeout` sends `KILL`.' docs/VALIDATION.md \
+  || fail ci_test_posture_timeout_contract_missing
 grep -Fq 'bash tests/release_staging_workflow_test.sh' README.md \
   || fail readme_release_staging_gate_missing
 grep -Fq 'bash tests/release_publication_workflow_test.sh' README.md \

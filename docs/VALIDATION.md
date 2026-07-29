@@ -15,13 +15,17 @@ Run the same Rust gates enforced by `.github/workflows/ci.yml`:
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
 cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --all-targets --features mcp-runtime
 cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 ```
+
+CI runs each of the four test postures exactly once with normal parallel test semantics. At eight minutes, GNU `timeout` marks the posture failed and sends `TERM`; if it is still running 30 seconds later, `timeout` sends `KILL`. The 45-minute job timeout is the final backstop. Within one workflow attempt there is no retry, ignored failure, or serial fallback that can turn a timed-out posture green, and downstream release qualification rejects rerun attempts.
 
 Build all supported compile-time postures when preparing a release candidate:
 
@@ -41,7 +45,9 @@ The Android run must retain exactly nine artifacts, and the completed-run qualif
 
 Validate downloaded default, `mcp-runtime`, `android-volume-control`, and `full-suite` artifacts with [`RELEASE_CANDIDATE_VALIDATION.md`](RELEASE_CANDIDATE_VALIDATION.md). Validator v11 emits direct evidence schema v2, reconciles four exact manifests/digests, and proves the full-suite 17-disabled/21-enabled truth table without collapsing any runtime or request grant. CI runs the packaging and validator contract tests against deterministic posture fixtures and deployment-manager fixture mode.
 
-The CI workflow first rejects a missing or stale committed dependency graph before any Cargo-aware formatting or cache action can repair it, verifies those steps leave both dependency inputs unchanged, and runs default, minimal `mcp-runtime`, and all-feature Clippy/tests with `--locked`. The Security workflow validates the same locked graph with `cargo audit` and fails on audit findings. The same exact-head workflow also runs pinned CodeQL `security-extended` analysis for Rust source and GitHub Actions workflow code, using buildless extraction and separate SARIF categories. A green CodeQL job proves that analysis and SARIF upload completed; code-scanning alerts must still be inspected and triaged rather than inferred absent from the workflow conclusion alone. CI and Security path filters cover every source and evidence input that can start Android validation, so its native-evidence job can resolve both required companion runs for the same commit. The native job reserves a monotonic, request-timeout-enforced 25-minute polling window inside its 50-minute job budget, which accommodates the 20-minute CodeQL job ceiling while preserving the prior native-validation allowance and requiring both exact-head companions to complete successfully.
+The CI workflow first rejects a missing or stale committed dependency graph before any Cargo-aware formatting or cache action can repair it, verifies those steps leave both dependency inputs unchanged, and runs default, minimal `mcp-runtime`, named `full-suite`, and all-feature Clippy/tests with `--locked`. The Security workflow validates the same locked graph with `cargo audit` and fails on audit findings. The same exact-head workflow also runs pinned CodeQL `security-extended` analysis for Rust source and GitHub Actions workflow code, using buildless extraction and separate SARIF categories. A green CodeQL job proves that analysis and SARIF upload completed; code-scanning alerts must still be inspected and triaged rather than inferred absent from the workflow conclusion alone. CI and Security path filters cover every source and evidence input that can start Android validation, so its native-evidence job can resolve both required companion runs for the same commit. The Rust job's 45-minute backstop composes the four explicit test deadlines with setup, lint, build, and shell-contract work. The native job reserves a monotonic, request-timeout-enforced 45-minute polling window inside its 75-minute job budget, which accommodates that CI ceiling and the 20-minute CodeQL ceiling while preserving the native-validation allowance and requiring both exact-head companions to complete successfully.
+
+On pull requests, CI and Security validate GitHub's synthetic merge ref so integration with the current `main` base is tested; Android additionally builds and records the immutable pull-request head. After merge, all three push workflows validate the exact `main` commit used by ordinary release qualification.
 
 ## Secure Embedding Boundary Validation
 

@@ -34,6 +34,7 @@ assert_contains 'cargo clippy --locked --workspace --all-targets --features mcp-
 assert_contains 'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --features mcp-runtime' "$CI_WORKFLOW"
+assert_contains 'cargo test --locked --workspace --all-targets --features full-suite' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --all-features' "$CI_WORKFLOW"
 [[ "$(grep -Fc 'git diff --exit-code -- Cargo.toml Cargo.lock' "$CI_WORKFLOW")" -eq 4 ]] \
   || fail ci_dependency_input_brackets_changed
@@ -43,8 +44,86 @@ cache_line="$(grep -nF 'uses: Swatinem/rust-cache@' "$CI_WORKFLOW" | head -n1 | 
 [[ "$metadata_line" =~ ^[1-9][0-9]*$ && "$cache_line" =~ ^[1-9][0-9]*$ ]]
 ((metadata_line < cache_line)) || fail locked_metadata_must_precede_cargo_aware_cache
 
+python3 - "$CI_WORKFLOW" <<'PY'
+import pathlib
+import re
+import sys
+
+import yaml
+
+workflow = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+workflow_text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+if "RUST_TEST_THREADS" in workflow_text:
+    raise SystemExit("CI workflow may not serialize the Rust test harness")
+repository_root = pathlib.Path(sys.argv[1]).resolve().parents[2]
+for cargo_config in (
+    repository_root / ".cargo" / "config",
+    repository_root / ".cargo" / "config.toml",
+):
+    if cargo_config.exists() and "RUST_TEST_THREADS" in cargo_config.read_text(encoding="utf-8"):
+        raise SystemExit(f"{cargo_config} may not serialize the Rust test harness")
+job = workflow["jobs"]["rust"]
+if job.get("timeout-minutes") != 45:
+    raise SystemExit("CI Rust job timeout no longer composes its explicit step bounds")
+if any(key in job for key in ("continue-on-error", "if")):
+    raise SystemExit("CI Rust job became conditional or fail-open")
+for owner, defaults in (
+    ("workflow", workflow.get("defaults")),
+    ("CI Rust job", job.get("defaults")),
+):
+    if (
+        isinstance(defaults, dict)
+        and isinstance(defaults.get("run"), dict)
+        and "shell" in defaults["run"]
+    ):
+        raise SystemExit(f"{owner} may not override the runner shell")
+for owner, environment in (
+    ("workflow", workflow.get("env")),
+    ("CI Rust job", job.get("env")),
+):
+    if isinstance(environment, dict) and "RUST_TEST_THREADS" in environment:
+        raise SystemExit(f"{owner} may not serialize the Rust test harness")
+expected = {
+    "Tests (default posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets",
+    "Tests (MCP runtime posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime",
+    "Tests (full-suite posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite",
+    "Tests (all features)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --all-features",
+}
+steps = {
+    step.get("name"): step
+    for step in job["steps"]
+    if step.get("name") in expected
+}
+if set(steps) != set(expected):
+    raise SystemExit("CI test posture set changed")
+for name, command in expected.items():
+    step = steps[name]
+    if step.get("run") != command:
+        raise SystemExit(f"{name} lost its exact locked timeout command")
+    if any(key in step for key in ("continue-on-error", "if", "shell")):
+        raise SystemExit(f"{name} became conditional, fail-open, or shell-overridden")
+    if isinstance(step.get("env"), dict) and "RUST_TEST_THREADS" in step["env"]:
+        raise SystemExit(f"{name} may not serialize the Rust test harness")
+    lowered = command.lower()
+    if "--test-threads" in lowered or "nextest" in lowered or "retry" in lowered:
+        raise SystemExit(f"{name} changed normal one-pass parallel test semantics")
+all_runs = "\n".join(
+    str(step.get("run", ""))
+    for step in job["steps"]
+)
+if len(re.findall(r"\bcargo\s+test\b", all_runs)) != 4:
+    raise SystemExit("CI must invoke exactly four locked Cargo test postures")
+PY
+
 assert_contains 'cargo metadata --locked --format-version 1 --no-deps' "$ANDROID_WORKFLOW"
 assert_contains 'git diff --exit-code -- Cargo.toml Cargo.lock' "$ANDROID_WORKFLOW"
+for protected_runtime_input in \
+  'scripts/termux_device_smoke.sh' \
+  'scripts/termux_deploy.sh'
+do
+  [[ "$(grep -Fc -- "- \"$protected_runtime_input\"" "$ANDROID_WORKFLOW")" == 1 ]] \
+    || fail "protected runtime Android trigger missing or duplicated: $protected_runtime_input"
+done
 [[ "$(grep -Fc -- '- "scripts/commit_verified_file.py"' "$ANDROID_WORKFLOW")" == 1 ]] \
   || fail commit_helper_android_trigger_missing_or_duplicated
 [[ "$(grep -Fc -- '- "scripts/commit_verified_file.py"' "$SECURITY_WORKFLOW")" == 1 ]] \
@@ -156,8 +235,14 @@ for job_name in ("android-aarch64", "termux-emulated"):
             raise SystemExit(
                 f"{job_name} step {step.get('name', index)} may not override the runner shell"
             )
+native_job = workflow["jobs"]["termux-emulated"]
+if native_job.get("timeout-minutes") != 75:
+    raise SystemExit("native Termux job timeout no longer composes polling and validation")
 steps = workflow["jobs"]["termux-emulated"]["steps"]
 names = [step.get("name") for step in steps]
+companion = steps[names.index("Resolve exact companion workflow evidence")]["run"]
+if "readonly max_wait_seconds=2700" not in companion:
+    raise SystemExit("native companion-run polling budget changed")
 start = names.index("Validate emulated evidence")
 if names[start : start + 3] != [
     "Validate emulated evidence",
