@@ -90,9 +90,9 @@ if job.get("env") != {
     "ANDROID_RUN_ID": "${{ github.event.workflow_run.id }}",
     "EXPECTED_COMMIT": "${{ github.event.workflow_run.head_sha }}",
     "QUALIFIER_RUN_ATTEMPT": "${{ github.run_attempt }}",
-    "WORKFLOW_DEFINITION_REF": "${{ job.workflow_ref }}",
-    "WORKFLOW_DEFINITION_REPOSITORY": "${{ job.workflow_repository }}",
-    "WORKFLOW_DEFINITION_SHA": "${{ job.workflow_sha }}",
+    "WORKFLOW_DEFINITION_REF": "${{ github.workflow_ref }}",
+    "WORKFLOW_DEFINITION_REPOSITORY": "${{ github.repository }}",
+    "WORKFLOW_DEFINITION_SHA": "${{ github.workflow_sha }}",
 }:
     raise SystemExit("qualification job identity must come only from workflow_run")
 condition = job.get("if")
@@ -149,8 +149,8 @@ if checkout.get("uses") != "actions/checkout@3d3c42e5aac5ba805825da76410c181273b
     raise SystemExit("checkout action pin changed")
 checkout_with = checkout.get("with")
 if checkout_with != {
-    "repository": "${{ job.workflow_repository }}",
-    "ref": "${{ job.workflow_sha }}",
+    "repository": "${{ github.repository }}",
+    "ref": "${{ github.workflow_sha }}",
     "fetch-depth": 1,
     "persist-credentials": False,
 }:
@@ -498,6 +498,9 @@ fi
 if grep -Fq '${{ inputs.' "$WORKFLOW" || grep -Fq 'github.event.inputs' "$WORKFLOW"; then
   fail operator_input_surface_present
 fi
+if grep -Fq '${{ job.workflow_' "$WORKFLOW"; then
+  fail unsupported_job_workflow_context_present
+fi
 if grep -Fq 'ref: ${{ github.sha }}' "$WORKFLOW" \
   || grep -Fq 'ref: ${{ github.ref }}' "$WORKFLOW" \
   || grep -Fq 'ref: ${{ github.event.workflow_run.head_branch }}' "$WORKFLOW" \
@@ -509,10 +512,16 @@ if grep -Fq 'EXPECTED_COMMIT: ${{ github.sha }}' "$WORKFLOW" \
   || grep -Fq 'EXPECTED_COMMIT: ${{ job.workflow_sha }}' "$WORKFLOW"; then
   fail source_identity_must_come_only_from_triggering_android_head
 fi
-[[ "$(grep -Fc 'repository: ${{ job.workflow_repository }}' "$WORKFLOW")" -eq 1 ]] \
+[[ "$(grep -Fc 'repository: ${{ github.repository }}' "$WORKFLOW")" -eq 2 ]] \
   || fail immutable_checkout_repository_count_changed
-[[ "$(grep -Fc 'ref: ${{ job.workflow_sha }}' "$WORKFLOW")" -eq 1 ]] \
+[[ "$(grep -Fc 'ref: ${{ github.workflow_sha }}' "$WORKFLOW")" -eq 1 ]] \
   || fail exact_checkout_ref_count_changed
+[[ "$(grep -Fc 'WORKFLOW_DEFINITION_REF: ${{ github.workflow_ref }}' "$WORKFLOW")" -eq 1 ]] \
+  || fail workflow_definition_ref_source_changed
+[[ "$(grep -Fc 'WORKFLOW_DEFINITION_REPOSITORY: ${{ github.repository }}' "$WORKFLOW")" -eq 1 ]] \
+  || fail workflow_definition_repository_source_changed
+[[ "$(grep -Fc 'WORKFLOW_DEFINITION_SHA: ${{ github.workflow_sha }}' "$WORKFLOW")" -eq 1 ]] \
+  || fail workflow_definition_sha_source_changed
 [[ "$(grep -Fc "github.run_attempt == '1'" "$WORKFLOW")" -eq 1 ]] \
   || fail qualifier_own_first_attempt_job_guard_changed
 [[ "$(grep -Fc 'test "$QUALIFIER_RUN_ATTEMPT" = 1' "$WORKFLOW")" -eq 1 ]] \
