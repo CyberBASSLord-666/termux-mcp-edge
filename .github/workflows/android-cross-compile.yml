@@ -429,23 +429,66 @@ jobs:
             "$rootfs_image_id" \
             bash -c '
               set -euo pipefail
+              umask 077
               export DEBIAN_FRONTEND=noninteractive
+              readonly runtime_download_root=/runtime-inputs/.apt-cache
+              readonly runtime_download_cache="$runtime_download_root/archives"
+              test ! -e "$runtime_download_root"
+              test ! -L "$runtime_download_root"
+              mkdir -m 700 "$runtime_download_root"
+              mkdir -m 700 "$runtime_download_cache"
+              mkdir -m 700 "$runtime_download_cache/partial"
+              cleanup_runtime_download_cache() {
+                rm -rf -- "$runtime_download_root"
+              }
+              trap cleanup_runtime_download_cache EXIT
               apt-get update
-              apt-get install \
+              apt-get \
+                -o "Dir::Cache::archives=$runtime_download_cache/" \
+                -o APT::Keep-Downloaded-Packages=true \
+                install \
                 --download-only \
                 --no-install-recommends \
                 -y \
                 file jq python termux-services
-              find "$PREFIX/var/cache/apt/archives" \
+              downloaded_deb_count="$(
+                find "$runtime_download_cache" \
+                  -mindepth 1 -maxdepth 1 -type f -name "*.deb" |
+                  wc -l
+              )"
+              [[ "$downloaded_deb_count" =~ ^[1-9][0-9]*$ ]]
+              ((downloaded_deb_count >= 4 && downloaded_deb_count <= 512))
+              find "$runtime_download_cache" \
                 -mindepth 1 -maxdepth 1 -type f -name "*.deb" \
                 -exec cp --no-clobber -- "{}" /runtime-inputs/debs/ \;
               find "$PREFIX/var/lib/apt/lists" \
                 -mindepth 1 -maxdepth 1 -type f -name "*InRelease" \
                 -exec cp --no-clobber -- "{}" /runtime-inputs/indexes/ \;
-              test "$(find /runtime-inputs/debs -mindepth 1 -maxdepth 1 -type f -name "*.deb" | wc -l)" -ge 4
+              frozen_deb_count="$(
+                find /runtime-inputs/debs \
+                  -mindepth 1 -maxdepth 1 -type f -name "*.deb" |
+                  wc -l
+              )"
+              test "$frozen_deb_count" = "$downloaded_deb_count"
               test "$(find /runtime-inputs/indexes -mindepth 1 -maxdepth 1 -type f | wc -l)" -ge 1
+              cleanup_runtime_download_cache
+              trap - EXIT
+              test ! -e "$runtime_download_root"
+              test ! -L "$runtime_download_root"
             '
           sudo chown -R "$(id -u):$(id -g)" "$runtime_context/package-inputs"
+          expected_package_input_names="$(
+            printf '%s\n' debs indexes |
+              LC_ALL=C sort
+          )"
+          actual_package_input_names="$(
+            find "$runtime_context/package-inputs" \
+              -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_package_input_names" = "$expected_package_input_names"
+          test "$(find "$runtime_context/package-inputs" -mindepth 1 -maxdepth 1 -type d | wc -l)" = 2
+          test "$(find "$runtime_context/package-inputs" -mindepth 1 -maxdepth 1 ! -type d | wc -l)" = 0
           chmod 700 \
             "$runtime_context/package-inputs" \
             "$runtime_context/package-inputs/debs" \

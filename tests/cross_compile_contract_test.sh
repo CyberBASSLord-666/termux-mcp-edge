@@ -240,6 +240,79 @@ if native_job.get("timeout-minutes") != 75:
     raise SystemExit("native Termux job timeout no longer composes polling and validation")
 steps = workflow["jobs"]["termux-emulated"]["steps"]
 names = [step.get("name") for step in steps]
+runtime_step = steps[names.index("Run exact artifacts in official Termux environment")]
+runtime_script = runtime_step["run"]
+if "$PREFIX/var/cache/apt/archives" in runtime_script:
+    raise SystemExit("runtime package freeze still assumes the image's APT cache path")
+for marker, count in (
+    ("umask 077", 1),
+    ("readonly runtime_download_root=/runtime-inputs/.apt-cache", 1),
+    ('readonly runtime_download_cache="$runtime_download_root/archives"', 1),
+    ('test ! -e "$runtime_download_root"', 2),
+    ('test ! -L "$runtime_download_root"', 2),
+    ('mkdir -m 700 "$runtime_download_root"', 1),
+    ('mkdir -m 700 "$runtime_download_cache"', 1),
+    ('mkdir -m 700 "$runtime_download_cache/partial"', 1),
+    ("trap cleanup_runtime_download_cache EXIT", 1),
+    ('-o "Dir::Cache::archives=$runtime_download_cache/"', 1),
+    ("-o APT::Keep-Downloaded-Packages=true", 1),
+    ('[[ "$downloaded_deb_count" =~ ^[1-9][0-9]*$ ]]', 1),
+    ("((downloaded_deb_count >= 4 && downloaded_deb_count <= 512))", 1),
+    ('find "$runtime_download_cache"', 2),
+    ('test "$frozen_deb_count" = "$downloaded_deb_count"', 1),
+    ('rm -rf -- "$runtime_download_root"', 1),
+    ("trap - EXIT", 1),
+    ('test "$actual_package_input_names" = "$expected_package_input_names"', 1),
+    (
+        'test "$(find "$runtime_context/package-inputs" -mindepth 1 '
+        '-maxdepth 1 -type d | wc -l)" = 2',
+        1,
+    ),
+    (
+        'test "$(find "$runtime_context/package-inputs" -mindepth 1 '
+        '-maxdepth 1 ! -type d | wc -l)" = 0',
+        1,
+    ),
+):
+    if runtime_script.count(marker) != count:
+        raise SystemExit(f"private APT cache contract changed: {marker}")
+download_start = runtime_script.index(
+    "readonly runtime_download_root=/runtime-inputs/.apt-cache"
+)
+apt_start = runtime_script.index(
+    '-o "Dir::Cache::archives=$runtime_download_cache/"',
+    download_start,
+)
+count_start = runtime_script.index(
+    '[[ "$downloaded_deb_count" =~ ^[1-9][0-9]*$ ]]',
+    apt_start,
+)
+copy_start = runtime_script.index(
+    'find "$runtime_download_cache"',
+    count_start,
+)
+join_start = runtime_script.index(
+    'test "$frozen_deb_count" = "$downloaded_deb_count"',
+    copy_start,
+)
+cleanup_start = runtime_script.index(
+    "cleanup_runtime_download_cache\n    trap - EXIT",
+    join_start,
+)
+inventory_start = runtime_script.index(
+    'test "$actual_package_input_names" = "$expected_package_input_names"',
+    cleanup_start,
+)
+if not (
+    download_start
+    < apt_start
+    < count_start
+    < copy_start
+    < join_start
+    < cleanup_start
+    < inventory_start
+):
+    raise SystemExit("private APT cache freeze/cleanup/inventory ordering changed")
 companion = steps[names.index("Resolve exact companion workflow evidence")]["run"]
 if "readonly max_wait_seconds=2700" not in companion:
     raise SystemExit("native companion-run polling budget changed")
