@@ -1663,11 +1663,7 @@ mod tests {
 
         assert_eq!(
             config.transport.allowed_hosts,
-            [
-                "localhost:49152",
-                "127.0.0.1:49152",
-                "[::1]:49152"
-            ]
+            ["localhost:49152", "127.0.0.1:49152", "[::1]:49152"]
         );
         assert_eq!(
             config.transport.allowed_origins,
@@ -1694,10 +1690,7 @@ mod tests {
         ])
         .expect("explicit exact transport allowlists should remain authoritative");
 
-        assert_eq!(
-            config.transport.allowed_hosts,
-            ["mcp.example.test:443"]
-        );
+        assert_eq!(config.transport.allowed_hosts, ["mcp.example.test:443"]);
         assert_eq!(
             config.transport.allowed_origins,
             ["https://mcp.example.test:443"]

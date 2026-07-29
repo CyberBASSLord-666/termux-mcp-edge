@@ -49,7 +49,10 @@ async fn duplicate_transport_header_response(
 async fn non_text_transport_header_response(header_name: HeaderName) -> Response {
     let (_root, file_tools) = test_file_tools();
     let mut request = Request::post("/mcp")
-        .header(header::AUTHORIZATION, format!("Bearer {TEST_STATIC_PRINCIPAL}"))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {TEST_STATIC_PRINCIPAL}"),
+        )
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::HOST, "localhost:8000")
         .header(header::ORIGIN, "http://localhost:8000")
@@ -202,8 +205,7 @@ async fn duplicate_host_headers_are_rejected_before_body_parsing_without_reflect
         ["localhost:8000", "attacker.example:8000"],
         ["attacker.example:8000", "localhost:8000"],
     ] {
-        let response =
-            duplicate_transport_header_response(header::HOST, values, true).await;
+        let response = duplicate_transport_header_response(header::HOST, values, true).await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let payload = response_json(response).await;
@@ -220,8 +222,7 @@ async fn duplicate_origin_headers_are_rejected_before_body_parsing_without_refle
         ["http://localhost:8000", "https://attacker.example"],
         ["https://attacker.example", "http://localhost:8000"],
     ] {
-        let response =
-            duplicate_transport_header_response(header::ORIGIN, values, true).await;
+        let response = duplicate_transport_header_response(header::ORIGIN, values, true).await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let payload = response_json(response).await;
