@@ -86,7 +86,14 @@ and `termux-services`, requires its local image ID to differ from the base image
 ID, declares and observes UID/GID `1000:1000` for both the offline package build
 and runtime execution, and executes the image by its exact ID. This is a
 container-user requirement, not an Android UID, physical-device, or host
-isolation claim. The final image build has no network access. Its
+isolation claim. Against that exact pinned base image, APT authenticates
+repository metadata, resolves the requested package closure, and downloads
+every required package archive not already supplied by the base. The final
+networkless image build uses only `dpkg --unpack` and
+`dpkg --configure --pending` on those frozen `.deb` bytes, then requires a
+clean package database and exact installed status, package, version, and
+architecture for every archive; it performs no dependency repair or network
+fallback. Its
 content-addressed archive and package records are retained inside the release
 staging tar and replayed offline before qualification. They are not separate
 public Release assets, and every applicable record states

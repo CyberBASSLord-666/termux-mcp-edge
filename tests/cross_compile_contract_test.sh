@@ -143,7 +143,9 @@ python3 - \
   "$QUALIFICATION_POLICY_SCHEMA" <<'PY'
 import json
 import pathlib
+import subprocess
 import sys
+import textwrap
 
 workflow = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 policy = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
@@ -154,40 +156,222 @@ dockerfile_start = workflow.index(
 )
 dockerfile_end = workflow.index("\n          DOCKERFILE", dockerfile_start)
 dockerfile = workflow[dockerfile_start:dockerfile_end]
-if "apt-get update" in dockerfile:
-    raise SystemExit("qualified runtime final build still resolves a live repository")
-for marker in (
-    "COPY --chown=0:0 package-inputs/debs/",
-    "COPY --chown=0:0 package-inputs/indexes/",
-    "termux-runtime-package-lock-v1.json",
-    "--no-download",
-    "/share/termux-mcp/runtime-packages/*.deb",
-    "/share/termux-mcp/runtime-repository-indexes/",
-):
-    if marker not in dockerfile:
-        raise SystemExit(f"offline qualified runtime Dockerfile missing: {marker}")
-copy_positions = [
-    dockerfile.index("COPY --chown=0:0 package-inputs/debs/"),
-    dockerfile.index("COPY --chown=0:0 package-inputs/indexes/"),
-    dockerfile.index("COPY --chown=0:0 termux-runtime-package-lock-v1.json"),
-]
-user_directives = [
-    line.strip()
-    for line in dockerfile.splitlines()
-    if line.strip().startswith("USER ")
-]
-if user_directives != ["USER 1000:1000"]:
-    raise SystemExit("qualified runtime must declare exact non-root user once")
-user_position = dockerfile.index("USER 1000:1000")
-run_position = dockerfile.index("RUN DEBIAN_FRONTEND=noninteractive apt-get install")
-if not max(copy_positions) < user_position < run_position:
-    raise SystemExit("qualified runtime user must follow provenance COPYs and precede apt")
-for forbidden in (
-    "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
-    "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
-):
-    if forbidden in dockerfile:
-        raise SystemExit(f"qualified runtime deletes retained provenance: {forbidden}")
+
+
+def validate_runtime_dockerfile(value):
+    for forbidden in (
+        "apt-get install",
+        "apt-get update",
+        "apt-get -f",
+        "apt install",
+        "pkg install",
+        "dpkg --install",
+        "dpkg -i",
+        "--fix-broken",
+        "--force-",
+        "--ignore-depends",
+        "curl ",
+        "wget ",
+        "|| true",
+        " | ",
+        "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
+        "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
+    ):
+        if forbidden in value:
+            raise ValueError(
+                f"qualified runtime Dockerfile contains forbidden fallback: {forbidden}"
+            )
+    required = (
+        "COPY --chown=0:0 package-inputs/debs/",
+        "COPY --chown=0:0 package-inputs/indexes/",
+        "COPY --chown=0:0 termux-runtime-package-lock-v1.json",
+        "RUN set -eu;",
+        "export LC_ALL=C DEBIAN_FRONTEND=noninteractive",
+        "package_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
+        "index_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
+        "lock_path=/data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json",
+        'deb_markers="$(find "$package_root" -mindepth 1 -maxdepth 1 -type f -name \'*.deb\' -exec printf x \\;)"',
+        'deb_count="${#deb_markers}"',
+        'test "$deb_count" -ge 1',
+        'test "$deb_count" -le 512',
+        'find "$package_root" -mindepth 1 -maxdepth 1 ! -type f',
+        'find "$package_root" -mindepth 2',
+        'test -z "$unexpected_package_inputs"',
+        'test -z "$nested_package_inputs"',
+        'index_markers="$(find "$index_root" -mindepth 1 -maxdepth 1 -type f -exec printf x \\;)"',
+        'test "${#index_markers}" -ge 1',
+        'find "$index_root" -mindepth 1 -maxdepth 1 ! -type f',
+        'find "$index_root" -mindepth 2',
+        'test -z "$unexpected_index_inputs"',
+        'test -z "$nested_index_inputs"',
+        'test -f "$lock_path"',
+        'test ! -L "$lock_path"',
+        'pre_install_audit="$(dpkg --audit)"',
+        'test -z "$pre_install_audit"',
+        'set -- "$package_root"/*.deb',
+        'test "$#" = "$deb_count"',
+        'dpkg --unpack -- "$@"',
+        "dpkg --configure --pending",
+        'post_install_audit="$(dpkg --audit)"',
+        'test -z "$post_install_audit"',
+        'for archive in "$@"; do',
+        'dpkg-deb --field "$archive" Package',
+        'dpkg-deb --field "$archive" Version',
+        'dpkg-deb --field "$archive" Architecture',
+        "dpkg-query -W -f='${Status}\\t${Version}\\t${Architecture}'",
+        "install ok installed\\t%s\\t%s",
+        'test "$actual" = "$expected"',
+        "/share/termux-mcp/runtime-repository-indexes/",
+    )
+    for marker in required:
+        if marker not in value:
+            raise ValueError(
+                f"offline qualified runtime Dockerfile missing: {marker}"
+            )
+    if value.count("$(dpkg --audit)") != 2:
+        raise ValueError(
+            "qualified runtime must audit dpkg immediately before and after install"
+        )
+    copy_positions = [
+        value.index("COPY --chown=0:0 package-inputs/debs/"),
+        value.index("COPY --chown=0:0 package-inputs/indexes/"),
+        value.index("COPY --chown=0:0 termux-runtime-package-lock-v1.json"),
+    ]
+    user_directives = [
+        line.strip()
+        for line in value.splitlines()
+        if line.strip().startswith("USER ")
+    ]
+    if user_directives != ["USER 1000:1000"]:
+        raise ValueError("qualified runtime must declare exact non-root user once")
+    user_position = value.index("USER 1000:1000")
+    run_position = value.index("RUN set -eu;")
+    structure_position = value.index('test "$deb_count" -ge 1')
+    first_audit_position = value.index('pre_install_audit="$(dpkg --audit)"')
+    first_audit_check_position = value.index('test -z "$pre_install_audit"')
+    argument_position = value.index('set -- "$package_root"/*.deb')
+    unpack_position = value.index('dpkg --unpack -- "$@"')
+    configure_position = value.index("dpkg --configure --pending")
+    second_audit_position = value.index(
+        'post_install_audit="$(dpkg --audit)"',
+    )
+    second_audit_check_position = value.index('test -z "$post_install_audit"')
+    identity_loop_position = value.index('for archive in "$@"; do')
+    identity_position = value.index(
+        "dpkg-query -W -f='${Status}\\t${Version}\\t${Architecture}'"
+    )
+    identity_check_position = value.index('test "$actual" = "$expected"')
+    cleanup_position = value.index(
+        "rm -rf /data/data/com.termux/files/usr/var/lib/apt/lists/*"
+    )
+    if not (
+        max(copy_positions)
+        < user_position
+        < run_position
+        < structure_position
+        < first_audit_position
+        < first_audit_check_position
+        < argument_position
+        < unpack_position
+        < configure_position
+        < second_audit_position
+        < second_audit_check_position
+        < identity_loop_position
+        < identity_position
+        < identity_check_position
+        < cleanup_position
+    ):
+        raise ValueError("qualified runtime offline-install order changed")
+
+
+validate_runtime_dockerfile(dockerfile)
+generated_dockerfile = textwrap.dedent(dockerfile.split("\n", 1)[1])
+if generated_dockerfile.count("\nRUN ") != 1:
+    raise SystemExit("qualified runtime Dockerfile RUN count changed")
+runtime_shell = generated_dockerfile.split("\nRUN ", 1)[1]
+for shell in ("bash", "sh"):
+    syntax = subprocess.run(
+        [shell, "-n"],
+        input=runtime_shell,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if syntax.returncode != 0:
+        raise SystemExit(
+            f"qualified runtime RUN shell is invalid under {shell}: "
+            f"{syntax.stderr.strip()}"
+        )
+    audit_failure = subprocess.run(
+        [
+            shell,
+            "-c",
+            "set -eu\n"
+            'pre_install_audit="$(false)"\n'
+            'test -z "$pre_install_audit"\n',
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if (
+        audit_failure.returncode != 1
+        or audit_failure.stdout
+        or audit_failure.stderr
+    ):
+        raise SystemExit(
+            f"{shell} did not propagate a failed standalone dpkg-audit assignment"
+        )
+mutations = {
+    "apt repair fallback": dockerfile.replace(
+        "dpkg --configure --pending;",
+        "dpkg --configure --pending; apt-get -f install;",
+        1,
+    ),
+    "root reset": dockerfile.replace(
+        "USER 1000:1000",
+        "USER 1000:1000\n          USER 0:0",
+        1,
+    ),
+    "missing nested-input check": dockerfile.replace(
+        'nested_package_inputs="$(find "$package_root" -mindepth 2 -print -quit)";',
+        "nested_package_inputs=;",
+        1,
+    ),
+    "missing unpack": dockerfile.replace('dpkg --unpack -- "$@";', "true;", 1),
+    "missing configure": dockerfile.replace(
+        "dpkg --configure --pending;",
+        "true;",
+        1,
+    ),
+    "forced dependency bypass": dockerfile.replace(
+        'dpkg --unpack -- "$@";',
+        'dpkg --unpack --force-depends -- "$@";',
+        1,
+    ),
+    "missing post-install audit": dockerfile.replace(
+        'post_install_audit="$(dpkg --audit)";',
+        "post_install_audit=;",
+        1,
+    ),
+    "missing installed identity join": dockerfile.replace(
+        "dpkg-query -W -f='${Status}\\t${Version}\\t${Architecture}'",
+        "printf unknown",
+        1,
+    ),
+    "missing installed identity assertion": dockerfile.replace(
+        'test "$actual" = "$expected";',
+        "true;",
+        1,
+    ),
+}
+for name, mutation in mutations.items():
+    try:
+        validate_runtime_dockerfile(mutation)
+    except (ValueError, IndexError):
+        continue
+    raise SystemExit(f"qualified runtime Dockerfile mutation was accepted: {name}")
 for marker in (
     'chmod 0555 \\\n            "$runtime_context/package-inputs/debs"',
     'find "$runtime_context/package-inputs" -type f -exec chmod 0444',
@@ -207,6 +391,8 @@ for marker in (
     "repositoryMetadataAuthenticated",
     "packageBytesFrozenBeforeBuild",
     '"finalImageBuildNetwork": "none"',
+    '"method": "termux-dpkg-unpack-configure"',
+    '"dependencyRepair": "none"',
     "dpkg-deb",
 ):
     if marker not in workflow:
@@ -225,6 +411,24 @@ schema_user = schema["properties"]["environmentRequirements"][
 ]["runtimeUser"]["const"]
 if schema_user != "1000:1000":
     raise SystemExit("qualification policy schema runtime user changed")
+lock_schema = json.loads(
+    pathlib.Path(
+        pathlib.Path(sys.argv[1]).resolve().parents[2]
+        / "docs"
+        / "runtime-package-lock-schema-v1.json"
+    ).read_text(encoding="utf-8")
+)
+installation = lock_schema["properties"]["installation"]
+if (
+    "installation" not in lock_schema["required"]
+    or installation["additionalProperties"] is not False
+    or installation["required"] != ["method", "dependencyRepair", "runtimeUser"]
+    or installation["properties"]["method"]["const"]
+    != "termux-dpkg-unpack-configure"
+    or installation["properties"]["dependencyRepair"]["const"] != "none"
+    or installation["properties"]["runtimeUser"]["const"] != "1000:1000"
+):
+    raise SystemExit("runtime package lock installation contract changed")
 PY
 python3 - "$ANDROID_WORKFLOW" <<'PY'
 import sys

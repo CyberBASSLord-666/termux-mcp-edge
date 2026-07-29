@@ -427,6 +427,11 @@ jq -n \
       packageBytesFrozenBeforeBuild:true,
       finalImageBuildNetwork:"none"
     },
+    installation:{
+      method:"termux-dpkg-unpack-configure",
+      dependencyRepair:"none",
+      runtimeUser:"1000:1000"
+    },
     repositoryIndexes:[
       {fileName:"packages.termux.dev_InRelease",sha256:("1"*64),bytes:101}
     ],

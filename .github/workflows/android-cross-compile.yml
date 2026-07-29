@@ -603,6 +603,11 @@ jobs:
                   "packageBytesFrozenBeforeBuild": True,
                   "finalImageBuildNetwork": "none",
               },
+              "installation": {
+                  "method": "termux-dpkg-unpack-configure",
+                  "dependencyRepair": "none",
+                  "runtimeUser": "1000:1000",
+              },
               "repositoryIndexes": indexes,
               "packages": packages,
           }
@@ -632,16 +637,44 @@ jobs:
           COPY --chown=0:0 package-inputs/indexes/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes/
           COPY --chown=0:0 termux-runtime-package-lock-v1.json /data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json
           USER 1000:1000
-          RUN DEBIAN_FRONTEND=noninteractive apt-get install \
-                --no-download \
-                --no-install-recommends \
-                -y \
-                /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages/*.deb \
-           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages -mindepth 1 -maxdepth 1 -type f -name '*.deb' | wc -l)" -gt 0 \
-           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0 \
-           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes -mindepth 1 -maxdepth 1 -type f | wc -l)" -gt 0 \
-           && test "$(find /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0 \
-           && rm -rf /data/data/com.termux/files/usr/var/lib/apt/lists/*
+          RUN set -eu; \
+              export LC_ALL=C DEBIAN_FRONTEND=noninteractive; \
+              package_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-packages; \
+              index_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes; \
+              lock_path=/data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json; \
+              deb_markers="$(find "$package_root" -mindepth 1 -maxdepth 1 -type f -name '*.deb' -exec printf x \;)"; \
+              deb_count="${#deb_markers}"; \
+              test "$deb_count" -ge 1; \
+              test "$deb_count" -le 512; \
+              unexpected_package_inputs="$(find "$package_root" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"; \
+              test -z "$unexpected_package_inputs"; \
+              nested_package_inputs="$(find "$package_root" -mindepth 2 -print -quit)"; \
+              test -z "$nested_package_inputs"; \
+              index_markers="$(find "$index_root" -mindepth 1 -maxdepth 1 -type f -exec printf x \;)"; \
+              test "${#index_markers}" -ge 1; \
+              unexpected_index_inputs="$(find "$index_root" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"; \
+              test -z "$unexpected_index_inputs"; \
+              nested_index_inputs="$(find "$index_root" -mindepth 2 -print -quit)"; \
+              test -z "$nested_index_inputs"; \
+              test -f "$lock_path"; \
+              test ! -L "$lock_path"; \
+              pre_install_audit="$(dpkg --audit)"; \
+              test -z "$pre_install_audit"; \
+              set -- "$package_root"/*.deb; \
+              test "$#" = "$deb_count"; \
+              dpkg --unpack -- "$@"; \
+              dpkg --configure --pending; \
+              post_install_audit="$(dpkg --audit)"; \
+              test -z "$post_install_audit"; \
+              for archive in "$@"; do \
+                package="$(dpkg-deb --field "$archive" Package)"; \
+                version="$(dpkg-deb --field "$archive" Version)"; \
+                architecture="$(dpkg-deb --field "$archive" Architecture)"; \
+                actual="$(dpkg-query -W -f='${Status}\t${Version}\t${Architecture}' "$package")"; \
+                expected="$(printf 'install ok installed\t%s\t%s' "$version" "$architecture")"; \
+                test "$actual" = "$expected"; \
+              done; \
+              rm -rf /data/data/com.termux/files/usr/var/lib/apt/lists/*
           DOCKERFILE
           docker build \
             --pull=false \

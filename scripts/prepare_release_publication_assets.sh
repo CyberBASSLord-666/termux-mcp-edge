@@ -1155,6 +1155,14 @@ expected_runtime_linker = {
     "sha256": deployment_linker["sha256"],
     "bytes": deployment_linker["bytes"],
 }
+locked_runtime_packages = {
+    (item["package"], item["version"], item["architecture"])
+    for item in runtime_package_lock["packages"]
+}
+installed_runtime_packages = {
+    (item["package"], item["version"], item["architecture"])
+    for item in runtime_snapshot["installedPackages"]["packages"]
+}
 if (
     runtime_package_lock["repository"] != repository
     or runtime_package_lock["commit"] != commit
@@ -1169,8 +1177,16 @@ if (
         "packageBytesFrozenBeforeBuild": True,
         "finalImageBuildNetwork": "none",
     }
+    or runtime_package_lock["installation"]
+    != {
+        "method": "termux-dpkg-unpack-configure",
+        "dependencyRepair": "none",
+        "runtimeUser": "1000:1000",
+    }
 ):
     fail("runtime_package_lock_mismatch")
+if not locked_runtime_packages.issubset(installed_runtime_packages):
+    fail("runtime_package_installation_mismatch")
 if (
     runtime_snapshot["repository"] != repository
     or runtime_snapshot["commit"] != commit

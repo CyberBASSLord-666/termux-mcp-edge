@@ -777,7 +777,12 @@ if grep -Fq 'first_readiness_probe' "$SCRIPT" \
 fi
 grep -Fq 'python3 "$COMMIT_HELPER"' "$SCRIPT" \
   || fail_test "deployment evidence does not use the held-FD commit helper"
-if rg -n 'PUBLISH_(LINKED|IDENTITY)|OUTPUT_PUBLISHED' "$SCRIPT" >/dev/null; then
+rollback_state_pattern='PUBLISH_(LINKED|IDENTITY)|OUTPUT_PUBLISHED'
+matcher_fixture="$ROOT/unsafe-publication-state.fixture"
+printf 'OUTPUT_PUBLISHED=1\n' >"$matcher_fixture"
+grep -Eq -- "$rollback_state_pattern" "$matcher_fixture" \
+  || fail_test "unsafe public-output matcher did not execute"
+if grep -Eq -- "$rollback_state_pattern" "$SCRIPT"; then
   fail_test "deployment evidence retains unsafe public-output rollback state"
 fi
 

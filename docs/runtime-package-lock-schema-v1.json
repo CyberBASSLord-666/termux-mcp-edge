@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/runtime-package-lock-schema-v1.json",
   "title": "Termux MCP Edge qualified runtime package-input lock v1",
-  "description": "Closed inventory of the signed repository indexes and exact Debian package bytes frozen before the qualified runtime image is built without network access.",
+  "description": "Closed inventory of the signed repository indexes, exact Debian package bytes needed in addition to the pinned base image, and the non-root installation method used while the qualified runtime image is built without network access.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,6 +14,7 @@
     "base",
     "requestedPackages",
     "resolution",
+    "installation",
     "repositoryIndexes",
     "packages"
   ],
@@ -50,6 +51,16 @@
         "repositoryMetadataAuthenticated": {"const": true},
         "packageBytesFrozenBeforeBuild": {"const": true},
         "finalImageBuildNetwork": {"const": "none"}
+      }
+    },
+    "installation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "dependencyRepair", "runtimeUser"],
+      "properties": {
+        "method": {"const": "termux-dpkg-unpack-configure"},
+        "dependencyRepair": {"const": "none"},
+        "runtimeUser": {"const": "1000:1000"}
       }
     },
     "repositoryIndexes": {

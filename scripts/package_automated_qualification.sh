@@ -1132,6 +1132,7 @@ def validate_runtime_package_lock(value, actual_record, candidate, environment):
             "base",
             "requestedPackages",
             "resolution",
+            "installation",
             "repositoryIndexes",
             "packages",
         },
@@ -1151,6 +1152,12 @@ def validate_runtime_package_lock(value, actual_record, candidate, environment):
             "repositoryMetadataAuthenticated": True,
             "packageBytesFrozenBeforeBuild": True,
             "finalImageBuildNetwork": "none",
+        }
+        or value["installation"]
+        != {
+            "method": "termux-dpkg-unpack-configure",
+            "dependencyRepair": "none",
+            "runtimeUser": "1000:1000",
         }
     ):
         fail(code)
@@ -1487,6 +1494,16 @@ def validate_retained_runtime(
         snapshot,
         lock_record,
     )
+    locked_identities = {
+        (item["package"], item["version"], item["architecture"])
+        for item in package_lock["packages"]
+    }
+    installed_identities = {
+        (item["package"], item["version"], item["architecture"])
+        for item in snapshot["installedPackages"]["packages"]
+    }
+    if not locked_identities.issubset(installed_identities):
+        fail("runtime_package_installation_mismatch")
     expected_base = {
         "image": BASE_IMAGE,
         "digest": aggregate_environment["imageDigest"],

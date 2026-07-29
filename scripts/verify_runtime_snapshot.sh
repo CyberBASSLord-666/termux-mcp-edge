@@ -266,6 +266,7 @@ def validate_package_lock(
             "base",
             "requestedPackages",
             "resolution",
+            "installation",
             "repositoryIndexes",
             "packages",
         },
@@ -286,6 +287,12 @@ def validate_package_lock(
             "repositoryMetadataAuthenticated": True,
             "packageBytesFrozenBeforeBuild": True,
             "finalImageBuildNetwork": "none",
+        }
+        or value["installation"]
+        != {
+            "method": "termux-dpkg-unpack-configure",
+            "dependencyRepair": "none",
+            "runtimeUser": "1000:1000",
         }
     ):
         fail("package_lock_contract_invalid")
@@ -1338,6 +1345,16 @@ printf '%s\t%s\n' \
             "sha256": hashlib.sha256(lock_raw).hexdigest(),
             "bytes": len(lock_raw),
         }
+        locked_identities = {
+            (item["package"], item["version"], item["architecture"])
+            for item in package_lock["packages"]
+        }
+        installed_identities = {
+            (item["package"], item["version"], item["architecture"])
+            for item in packages
+        }
+        if not locked_identities.issubset(installed_identities):
+            fail("runtime_package_installation_mismatch")
         if (
             packages != snapshot["installedPackages"]["packages"]
             or len(packages) != snapshot["installedPackages"]["count"]

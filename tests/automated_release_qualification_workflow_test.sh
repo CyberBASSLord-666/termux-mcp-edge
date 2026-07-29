@@ -566,7 +566,7 @@ fi
 if grep -Eiq -- '(^|[;&|[:space:]])cargo[[:space:]]+(build|check|clippy|fetch|run|test)|(^|[;&|[:space:]])(rustc|rustup)[[:space:]]|ANDROID_NDK|cross_compile' "$WORKFLOW"; then
   fail qualification_workflow_must_consume_not_rebuild
 fi
-if grep -Eiq -- '(^|[;&|[:space:]])docker[[:space:]]+(build|pull)|(^|[;&|[:space:]])(apt|apt-get|pkg)[[:space:]]+(install|update|upgrade)' "$WORKFLOW"; then
+if grep -Eiq -- '(^|[;&|[:space:]])docker[[:space:]]+(build|pull)|(^|[;&|[:space:]])(apt|apt-get|pkg)[[:space:]]+(install|update|upgrade)|(^|[;&|[:space:]])dpkg[[:space:]]+(--unpack|--install|-i|--configure)' "$WORKFLOW"; then
   fail qualification_workflow_must_replay_without_runtime_construction
 fi
 

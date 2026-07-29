@@ -443,6 +443,11 @@ jq -n \
       packageBytesFrozenBeforeBuild:true,
       finalImageBuildNetwork:"none"
     },
+    installation:{
+      method:"termux-dpkg-unpack-configure",
+      dependencyRepair:"none",
+      runtimeUser:"1000:1000"
+    },
     repositoryIndexes:[
       {fileName:"packages.termux.dev_InRelease",sha256:("1"*64),bytes:101}
     ],
@@ -974,6 +979,43 @@ refresh_evidence_record "$case_root" \
   '.evidence.runtime.snapshot.sha256 = $sha | .evidence.runtime.snapshot.bytes = $bytes'
 assert_fails runtime_snapshot_mismatch \
   "$(repack_case "$case_root")" "$ROOT/fail-runtime-rebuild-claim"
+
+case_root="$(make_case runtime-missing-installed-package)"
+runtime_snapshot="$case_root/payload/evidence/runtime/termux-runtime-snapshot-v1.json"
+python3 - "$runtime_snapshot" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+snapshot = json.loads(path.read_text(encoding="utf-8"))
+packages = [
+    item
+    for item in snapshot["installedPackages"]["packages"]
+    if item["package"] != "termux-services"
+]
+if len(packages) + 1 != snapshot["installedPackages"]["count"]:
+    raise SystemExit("missing-package fixture did not remove exactly one package")
+inventory_raw = "".join(
+    f"{item['package']}\t{item['version']}\t{item['architecture']}\n"
+    for item in packages
+).encode()
+snapshot["installedPackages"] = {
+    "sha256": hashlib.sha256(inventory_raw).hexdigest(),
+    "count": len(packages),
+    "packages": packages,
+}
+path.write_text(
+    json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+refresh_evidence_record "$case_root" \
+  evidence/runtime/termux-runtime-snapshot-v1.json \
+  '.evidence.runtime.snapshot.sha256 = $sha | .evidence.runtime.snapshot.bytes = $bytes'
+assert_fails runtime_package_installation_mismatch \
+  "$(repack_case "$case_root")" "$ROOT/fail-runtime-missing-installed-package"
 
 case_root="$(make_case qualification-runtime-byte-substitution)"
 qualification="$case_root/payload/evidence/automated-qualification-v1.json"

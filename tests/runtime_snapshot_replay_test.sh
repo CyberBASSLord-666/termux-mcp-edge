@@ -162,6 +162,11 @@ lock = {
         "packageBytesFrozenBeforeBuild": True,
         "finalImageBuildNetwork": "none",
     },
+    "installation": {
+        "method": "termux-dpkg-unpack-configure",
+        "dependencyRepair": "none",
+        "runtimeUser": "1000:1000",
+    },
     "repositoryIndexes": [
         {"fileName": "packages.termux.dev_InRelease", "sha256": "e" * 64, "bytes": 1}
     ],
@@ -750,6 +755,9 @@ original_packages="$MOCK_RUNTIME_PACKAGES"
 MOCK_RUNTIME_PACKAGES="${MOCK_RUNTIME_PACKAGES/1.1/9.9}"
 export MOCK_RUNTIME_PACKAGES
 expect_failure package_drift "$TMP/fixture"
+grep -Fq 'ERROR: runtime_package_installation_mismatch' \
+  "$TMP/package_drift.log" \
+  || fail package_drift_failed_for_wrong_reason
 MOCK_RUNTIME_PACKAGES="$original_packages"
 export MOCK_RUNTIME_PACKAGES
 
@@ -819,7 +827,10 @@ for forbidden in \
   'docker pull' \
   'apt-get install' \
   'apt-get update' \
-  'pkg install'
+  'pkg install' \
+  'dpkg --unpack' \
+  'dpkg --install' \
+  'dpkg --configure'
 do
   if grep -Fq "$forbidden" "$VERIFIER"; then
     fail "replay verifier contains construction/network command: $forbidden"

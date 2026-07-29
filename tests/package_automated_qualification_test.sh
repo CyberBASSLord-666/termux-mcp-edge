@@ -401,6 +401,11 @@ jq -n \
       packageBytesFrozenBeforeBuild:true,
       finalImageBuildNetwork:"none"
     },
+    installation:{
+      method:"termux-dpkg-unpack-configure",
+      dependencyRepair:"none",
+      runtimeUser:"1000:1000"
+    },
     repositoryIndexes:[
       {fileName:"packages.termux.dev_InRelease",sha256:("1"*64),bytes:101}
     ],
@@ -689,6 +694,14 @@ RUNTIME_LOCK_OVERRIDE="$ROOT/runtime-lock-duplicate/termux-runtime-package-lock-
   assert_fails duplicate_json_key \
   "$OUTPUTS/runtime-lock-duplicate/automated-qualification-v1.json"
 
+INVALID_INSTALL_LOCK="$(make_variant \
+  "$RUNTIME_LOCK" "$ROOT/runtime-installation-method" \
+  termux-runtime-package-lock-v1.json \
+  '.installation.method = "termux-apt-local-archives"')"
+RUNTIME_LOCK_OVERRIDE="$INVALID_INSTALL_LOCK" \
+  assert_fails runtime_package_lock_contract_invalid \
+  "$OUTPUTS/runtime-installation-method/automated-qualification-v1.json"
+
 FALSE_REBUILD_SNAPSHOT="$(make_variant \
   "$RUNTIME_SNAPSHOT" "$ROOT/runtime-false-rebuild" \
   termux-runtime-snapshot-v1.json '.rebuildReproducibilityClaim = true')"
@@ -709,6 +722,63 @@ SKIPPED_REPLAY="$(make_variant \
 RUNTIME_REPLAY_OVERRIDE="$SKIPPED_REPLAY" \
   assert_fails runtime_replay_verification_invalid \
   "$OUTPUTS/runtime-skipped-verification/automated-qualification-v1.json"
+
+MISSING_INSTALL_ROOT="$ROOT/runtime-missing-installed-package"
+mkdir -m 700 "$MISSING_INSTALL_ROOT"
+python3 - \
+  "$RUNTIME_SNAPSHOT" \
+  "$RUNTIME_REPLAY" \
+  "$MISSING_INSTALL_ROOT/termux-runtime-snapshot-v1.json" \
+  "$MISSING_INSTALL_ROOT/termux-runtime-snapshot-replay-v1.json" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+source_snapshot = pathlib.Path(sys.argv[1])
+source_replay = pathlib.Path(sys.argv[2])
+output_snapshot = pathlib.Path(sys.argv[3])
+output_replay = pathlib.Path(sys.argv[4])
+snapshot = json.loads(source_snapshot.read_text(encoding="utf-8"))
+packages = [
+    item
+    for item in snapshot["installedPackages"]["packages"]
+    if item["package"] != "termux-services"
+]
+if len(packages) + 1 != snapshot["installedPackages"]["count"]:
+    raise SystemExit("missing-package fixture did not remove exactly one package")
+inventory_raw = "".join(
+    f"{item['package']}\t{item['version']}\t{item['architecture']}\n"
+    for item in packages
+).encode()
+snapshot["installedPackages"] = {
+    "sha256": hashlib.sha256(inventory_raw).hexdigest(),
+    "count": len(packages),
+    "packages": packages,
+}
+snapshot_raw = (
+    json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\n"
+).encode()
+output_snapshot.write_bytes(snapshot_raw)
+replay = json.loads(source_replay.read_text(encoding="utf-8"))
+replay["snapshot"]["manifest"]["sha256"] = hashlib.sha256(snapshot_raw).hexdigest()
+replay["snapshot"]["manifest"]["bytes"] = len(snapshot_raw)
+replay["installedPackages"] = {
+    "sha256": snapshot["installedPackages"]["sha256"],
+    "count": snapshot["installedPackages"]["count"],
+}
+output_replay.write_text(
+    json.dumps(replay, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+chmod 600 \
+  "$MISSING_INSTALL_ROOT/termux-runtime-snapshot-v1.json" \
+  "$MISSING_INSTALL_ROOT/termux-runtime-snapshot-replay-v1.json"
+RUNTIME_SNAPSHOT_OVERRIDE="$MISSING_INSTALL_ROOT/termux-runtime-snapshot-v1.json" \
+RUNTIME_REPLAY_OVERRIDE="$MISSING_INSTALL_ROOT/termux-runtime-snapshot-replay-v1.json" \
+  assert_fails runtime_package_installation_mismatch \
+  "$OUTPUTS/runtime-missing-installed-package/automated-qualification-v1.json"
 
 mkdir -m 700 "$ROOT/runtime-snapshot-substitution"
 cp -- "$RUNTIME_SNAPSHOT" \
