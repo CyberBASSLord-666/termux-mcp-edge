@@ -59,8 +59,8 @@ fn nested_cargo_test_guard() -> MutexGuard<'static, ()> {
 }
 
 fn remaining_nested_cargo_timeout() -> Duration {
-    let deadline = NESTED_CARGO_SUITE_DEADLINE
-        .get_or_init(|| Instant::now() + NESTED_CARGO_SUITE_TIMEOUT);
+    let deadline =
+        NESTED_CARGO_SUITE_DEADLINE.get_or_init(|| Instant::now() + NESTED_CARGO_SUITE_TIMEOUT);
     let remaining = deadline.saturating_duration_since(Instant::now());
     assert!(
         !remaining.is_zero(),
@@ -92,9 +92,8 @@ fn capture_file(label: &str, file: &mut fs::File) -> Result<Vec<u8>, String> {
     file.seek(SeekFrom::Start(0))
         .map_err(|error| format!("{label} capture seek failed: {error}"))?;
     let retained_limit = MAX_RETAINED_CAPTURE_BYTES + 1;
-    let mut output = Vec::with_capacity(
-        usize::try_from(retained_limit).expect("capture bound must fit usize"),
-    );
+    let mut output =
+        Vec::with_capacity(usize::try_from(retained_limit).expect("capture bound must fit usize"));
     file.take(retained_limit)
         .read_to_end(&mut output)
         .map_err(|error| format!("{label} capture failed: {error}"))?;
@@ -106,10 +105,7 @@ fn capture_file(label: &str, file: &mut fs::File) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-fn checked_group_termination(
-    label: &str,
-    process_group: &ProcessGroupGuard,
-) -> Result<(), String> {
+fn checked_group_termination(label: &str, process_group: &ProcessGroupGuard) -> Result<(), String> {
     match process_group.terminate() {
         Ok(()) | Err(Errno::SRCH) => Ok(()),
         Err(error) => Err(format!("{label} process-group termination failed: {error}")),
@@ -164,25 +160,18 @@ fn run_bounded_command(
         .map_err(|error| format!("{label} stderr capture setup failed: {error}"))?;
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::from(
-            stdout
-                .try_clone()
-                .map_err(|error| format!("{label} stdout capture clone failed: {error}"))?,
-        ))
-        .stderr(Stdio::from(
-            stderr
-                .try_clone()
-                .map_err(|error| format!("{label} stderr capture clone failed: {error}"))?,
-        ))
+        .stdout(Stdio::from(stdout.try_clone().map_err(|error| {
+            format!("{label} stdout capture clone failed: {error}")
+        })?))
+        .stderr(Stdio::from(stderr.try_clone().map_err(|error| {
+            format!("{label} stderr capture clone failed: {error}")
+        })?))
         .process_group(0);
 
     let mut child = command
         .spawn()
         .map_err(|error| format!("{label} spawn failed: {error}"))?;
-    let Some(process_group) = i32::try_from(child.id())
-        .ok()
-        .and_then(Pid::from_raw)
-    else {
+    let Some(process_group) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) else {
         let _ = child.kill();
         child
             .wait()
@@ -257,12 +246,7 @@ fn write_probe_source(root: &Path, source: &str) {
     fs::write(root.join("src/main.rs"), source).unwrap();
 }
 
-fn run_cargo(
-    label: &str,
-    root: &Path,
-    target: &Path,
-    arguments: &[&str],
-) -> std::process::Output {
+fn run_cargo(label: &str, root: &Path, target: &Path, arguments: &[&str]) -> std::process::Output {
     // These temporary downstream-consumer probes intentionally have no committed
     // lockfile. They remain offline and run beneath the root suite's locked Cargo
     // invocation; no probe output is packaged or used as a release artifact.
