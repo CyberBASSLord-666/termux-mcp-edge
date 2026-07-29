@@ -13,7 +13,7 @@ This guide separates six things that are easy to confuse:
 
 The staging and publication lanes are separate workflows with separate permissions and approvals. Staging has no `contents: write` permission and no tag, Release, package, deployment, or OIDC permission. A staged tar says `publicationState: "staged_not_released"` and `releaseEligible: false` even though the automated qualification inside it independently says `releaseEligible:true`. Publication can consume that exact tar but cannot rebuild a candidate, restage different bytes, or change the staging record.
 
-The repository is public, and GitHub Actions artifacts are available to signed-in people with repository read access. The staged tar and both staging dispatch files are therefore **not confidential storage**. Draft assets are access-restricted while the Release is a draft, but they must still be treated as non-confidential because the same release-intended bytes already exist in the public-repository staging artifact. Published Release assets are public. Never put the raw harness report, credentials, personal data, private device paths, or other secrets in a workflow input, stage, draft, or public asset.
+The repository is public, and GitHub Actions artifacts are available to signed-in people with repository read access. The staged tar and the three non-secret scalar staging inputs are therefore **not confidential storage**. Draft assets are access-restricted while the Release is a draft, but they must still be treated as non-confidential because the same release-intended bytes already exist in the public-repository staging artifact. Published Release assets are public. Never put the raw harness report, credentials, personal data, private device paths, or other secrets in a workflow input, stage, draft, or public asset.
 
 No operator should install from a workflow bundle, staged tar, or draft Release as though it were a durable public release. Public installation begins only after the protected final job publishes the independently verified draft, GitHub reports `immutable: true`, and the public proof job re-downloads all sixteen governed assets and verifies their exact bytes. Before publication the annotated tag is protected but is not yet made immutable by GitHub's immutable-release control.
 
@@ -128,6 +128,112 @@ Dispatch `Publish Immutable Release` from [`.github/workflows/publish-release.ym
 
 Preflight is read-only. It requires the dispatch workflow/ref/SHA and current `main` to identify the same commit; validates the version-derived protected annotated tag and supplied tag-object SHA; resolves the exact successful first-attempt staging run from the supplied artifact ID; requires the one named unexpired staging artifact by both ID and server digest; downloads that raw tar by ID with digest mismatch as an error; and validates the complete staging tar, manifest, provenance, evidence lineage, member allowlist, and fixed sixteen-asset projection. It also requires the supplied Release ID to be the one `draft: true`, `prerelease: false`, exact-tag draft with the exact version title, blank body, and zero assets. An existing published Release, another draft for the tag, a lightweight/moved tag, or any pre-existing asset is a hard failure.
 
+## Operator worksheet (v0.6.0)
+
+Use this worksheet for one unchanged candidate. Record values only from GitHub or the exact checked-out commit; never guess an ID or digest, and never paste a credential into a workflow input.
+
+| Checkpoint | Exact value to record |
+| --- | --- |
+| Candidate | `expected_commit=<40-character current main SHA>` |
+| Candidate | `version=0.6.0` |
+| Candidate | `android_run_id=<successful first-attempt Android push run ID>` |
+| Stage result | `staging_run_id=<successful first-attempt staging run ID>` |
+| Stage result | `staged_artifact_id=<ID from the successful staging summary>` |
+| Stage result | `staged_artifact_sha256=<raw tar SHA-256 from the same summary>` |
+| Protected tag | `expected_tag_object_sha=<annotated tag object SHA>` |
+| Empty draft | `draft_release_id=<numeric ID of the one exact-tag empty draft>` |
+| Public proof | `release_id=<same Release ID>` |
+| Public proof | `release_url=<immutable public Release URL>` |
+| Public proof | `asset_count=16` and `immutable=true` |
+
+Follow these steps in order:
+
+1. Open **Actions → Stage Release Assets → Run workflow**, select `main`, and enter only `expected_commit`, `version`, and `android_run_id`. Approve `release-qualification` only after checking its actual environment protections. Wait for a terminal first-attempt success. Record `staging_run_id` from the numeric `/actions/runs/<id>` segment of that successful run's URL, then copy `staged_artifact_id` and `staged_artifact_sha256` from the same run's summary.
+2. Verify immutable Releases, the active no-bypass `v*` tag ruleset, both publication environments, their disjoint reviewers, and the documented environment-only guards and credentials. Stop if any control is missing.
+3. After staging succeeds, an authorized maintainer may create and push the annotated tag without force:
+
+   ```bash
+   set -euo pipefail
+
+   RELEASE_REPO=CyberBASSLord-666/termux-mcp-edge
+   RELEASE_REMOTE_URL="https://github.com/$RELEASE_REPO.git"
+   RELEASE_VERSION=0.6.0
+   RELEASE_COMMIT=PASTE_40_CHARACTER_EXPECTED_COMMIT_HERE
+   RELEASE_TAG="v$RELEASE_VERSION"
+
+   test "${#RELEASE_COMMIT}" -eq 40
+   case "$RELEASE_COMMIT" in
+     *[!0-9a-f]*) printf 'stop: expected_commit is not lowercase hexadecimal\n' >&2; exit 1 ;;
+   esac
+   git fetch --no-tags "$RELEASE_REMOTE_URL" main
+   test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+   if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+     printf 'stop: local tag already exists: %s\n' "$RELEASE_TAG" >&2
+     exit 1
+   fi
+   REMOTE_TAG_MATCHES="$(
+     git ls-remote --refs "$RELEASE_REMOTE_URL" "refs/tags/$RELEASE_TAG"
+   )"
+   if test -n "$REMOTE_TAG_MATCHES"; then
+     printf 'stop: remote tag already exists: %s\n' "$RELEASE_TAG" >&2
+     exit 1
+   fi
+   git tag -a "$RELEASE_TAG" "$RELEASE_COMMIT" -m "$RELEASE_TAG"
+   TAG_OBJECT_SHA="$(git rev-parse "$RELEASE_TAG^{tag}")"
+   git push "$RELEASE_REMOTE_URL" \
+     "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+   REMOTE_TAG_OBJECT_SHA="$(
+     git ls-remote --refs "$RELEASE_REMOTE_URL" "refs/tags/$RELEASE_TAG" |
+       awk 'NR == 1 { sha = $1 } END { if (NR != 1) exit 1; print sha }'
+   )"
+   test "$REMOTE_TAG_OBJECT_SHA" = "$TAG_OBJECT_SHA"
+   printf '%s\n' "$TAG_OBJECT_SHA"
+   ```
+
+   Copy the final command's 40-character result as `expected_tag_object_sha`. A pre-existing tag, a lightweight tag, a different target, or any need for `--force` is a stop condition.
+4. Open **Releases → Draft a new release**, choose the existing `v0.6.0` tag, set the title to exactly `v0.6.0`, leave the body completely blank, leave prerelease disabled, attach nothing, and save as a draft. There must be exactly one draft for the tag and it must have zero assets.
+5. Capture the numeric draft ID with an authenticated GitHub CLI plus `jq`, or obtain the same ID from an independently authenticated paginated Releases API read:
+
+   ```bash
+   set -euo pipefail
+
+   RELEASE_REPO=CyberBASSLord-666/termux-mcp-edge
+   RELEASE_VERSION=0.6.0
+
+   DRAFT_RELEASE_ID="$(
+     gh api --paginate --slurp "repos/$RELEASE_REPO/releases?per_page=100" |
+       jq -er \
+         --arg release_tag "v$RELEASE_VERSION" \
+         --arg release_name "v$RELEASE_VERSION" '
+           add
+           | [ .[] | select(.tag_name == $release_tag) ] as $matches
+           | if ($matches | length) != 1 then
+               error("expected exactly one Release for the tag")
+             elif (
+               $matches[0].draft == true and
+               $matches[0].prerelease == false and
+               $matches[0].name == $release_name and
+               (($matches[0].body // "") == "") and
+               (($matches[0].assets | length) == 0)
+             ) then
+               $matches[0].id
+             else
+               error("exact-tag Release is not the required empty draft")
+             end
+         '
+   )"
+   test "$(printf '%s\n' "$DRAFT_RELEASE_ID" | sed '/^$/d' | wc -l | tr -d ' ')" = 1
+   case "$DRAFT_RELEASE_ID" in
+     ''|*[!0-9]*) printf 'stop: draft Release ID is not one numeric value\n' >&2; exit 1 ;;
+   esac
+   printf '%s\n' "$DRAFT_RELEASE_ID"
+   ```
+
+   The paginated response is flattened before filtering: exactly one Release with the exact tag must exist, and that sole object must be the conforming empty draft. Exactly one numeric line is allowed. Record it as `draft_release_id`; zero or multiple tag matches, or one nonconforming match, is a stop condition.
+6. Open **Actions → Publish Immutable Release → Run workflow**, select `main`, and enter the six recorded values: `expected_commit`, `version`, `expected_tag_object_sha`, `staged_artifact_id`, `staged_artifact_sha256`, and `draft_release_id`.
+7. The `release-production` reviewer sees the successful read-only preflight and the pending protected job's workflow definition; the attachment job's repeated checks execute only after approval. The independent verification record does not exist yet. The disjoint `release-final` reviewer acts only after the fresh read-only verification job has retained that record and rendered its summary.
+8. Record success only when the final read-only job reports the same Release ID, `immutable: true`, exactly sixteen governed assets, and successful public byte-for-byte re-download. Copy that run link and the public Release URL into the closure record for issues #301 and #310.
+
 ## Publication state machine
 
 The protected workflow has one-way states and does not skip or combine them:
@@ -145,7 +251,7 @@ GitHub makes a tag and attached assets immutable only when an immutable Release 
 
 The Release body is bound before upload and contains only deterministic facts already available at that boundary: source and annotated-tag identity, staging/CI/Security/Android run identities, staging artifact and tar digest, toolchain/target/NDK versions, the expected sixteen names/sizes/SHA-256 values, operational limitations, and deployment/governance links. It intentionally does not claim server-assigned Release asset IDs, later approval identities, or a future immutable/public result.
 
-The separate workflow record covers those later facts. The protected attachment and independent verification jobs each retain a closed JSON identity record for 30 days. Those records bind the publication workflow run, Release ID, stage identity, release-body/expected-asset-set digests, and every server-assigned asset ID, name, size, state, content type, API/download URL, and server SHA-256 digest. Their job summaries bind the record file SHA-256 and Actions artifact ID/server digest. The verification record's exact workflow-run link is the review context for the `release-production` and `release-final` protected-job decisions. Because both jobs intentionally set `deployment: false`, they create no GitHub Deployment record; the workflow therefore does not guess or copy reviewer identities into a pre-approval record. Use the linked run's environment-review UI, together with any applicable GitHub audit-log evidence, when human-review attribution must be preserved outside the retained artifacts. The final job must consume the exact retained verification record, and the post-verification summary records the immutable public Release identity after the public byte proof succeeds.
+The separate workflow record covers those later facts. The protected attachment and independent verification jobs each retain a closed JSON identity record for 30 days. Those records bind the publication workflow run, Release ID, stage identity, release-body/expected-asset-set digests, and every server-assigned asset ID, name, size, state, content type, API/download URL, and server SHA-256 digest. Their job summaries bind the record file SHA-256 and Actions artifact ID/server digest. The `release-production` reviewer uses the linked run's successful read-only preflight and the pending protected job's workflow definition; the protected attachment checks execute only after approval. The independent verification record does not exist until after that approval and attachment. Its exact workflow-run link and summary are then review context for the disjoint `release-final` decision. Because both protected jobs intentionally set `deployment: false`, they create no GitHub Deployment record; the workflow therefore does not guess or copy reviewer identities into a pre-approval record. Use the linked run's environment-review UI, together with any applicable GitHub audit-log evidence, when human-review attribution must be preserved outside the retained artifacts. The final job must consume the exact retained verification record, and the post-verification summary records the immutable public Release identity after the public byte proof succeeds.
 
 These workflow records contain only public release provenance, not credentials or private device data. They supplement the deterministic Release body; they are not seventeenth Release assets and are not described as permanent once their documented retention expires.
 

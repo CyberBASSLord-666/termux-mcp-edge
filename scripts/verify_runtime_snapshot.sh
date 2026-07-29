@@ -113,6 +113,28 @@ def exact_keys(value: Any, expected: set[str], reason: str) -> None:
         fail(reason)
 
 
+def strict_json_equal(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(actual, dict):
+        return (
+            set(actual) == set(expected)
+            and all(
+                strict_json_equal(actual[key], expected[key])
+                for key in actual
+            )
+        )
+    if isinstance(actual, list):
+        return (
+            len(actual) == len(expected)
+            and all(
+                strict_json_equal(actual_item, expected_item)
+                for actual_item, expected_item in zip(actual, expected)
+            )
+        )
+    return bool(actual == expected)
+
+
 def strict_int(value: Any, minimum: int, maximum: int, reason: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         fail(reason)
@@ -558,7 +580,7 @@ def parse_archive(
             fail(reason)
         return f"sha256:{digest.hexdigest()}"
 
-    def validate_config(config_raw: bytes) -> None:
+    def validate_config(config_raw: bytes) -> dict[str, Any]:
         if hashlib.sha256(config_raw).hexdigest() != expected_digest:
             fail("archive_config_digest_mismatch")
         config = parse_json(config_raw, "archive_config_invalid")
@@ -573,6 +595,205 @@ def parse_archive(
             or config["rootfs"].get("diff_ids") != expected_layers
         ):
             fail("archive_config_invalid")
+        return config
+
+    def validate_oci_legacy_metadata(
+        archive: tarfile.TarFile,
+        metadata_names: set[str],
+        config: dict[str, Any],
+        expected_diff_ids: list[str],
+    ) -> None:
+        reason = "archive_legacy_metadata_invalid"
+        if len(metadata_names) != len(expected_diff_ids):
+            fail(reason)
+        runtime_config = config.get("config")
+        created = config.get("created")
+        if not isinstance(runtime_config, dict) or not isinstance(created, str):
+            fail(reason)
+
+        moby_v28_config_fields: list[tuple[str, Any, bool]] = [
+            ("Hostname", "", False),
+            ("Domainname", "", False),
+            ("User", "", False),
+            ("AttachStdin", False, False),
+            ("AttachStdout", False, False),
+            ("AttachStderr", False, False),
+            ("ExposedPorts", None, True),
+            ("Tty", False, False),
+            ("OpenStdin", False, False),
+            ("StdinOnce", False, False),
+            ("Env", None, False),
+            ("Cmd", None, False),
+            ("Healthcheck", None, True),
+            ("ArgsEscaped", False, True),
+            ("Image", "", False),
+            ("Volumes", None, False),
+            ("WorkingDir", "", False),
+            ("Entrypoint", None, False),
+            ("NetworkDisabled", False, True),
+            ("MacAddress", "", True),
+            ("OnBuild", None, False),
+            ("Labels", None, False),
+            ("StopSignal", "", True),
+            ("StopTimeout", None, True),
+            ("Shell", None, True),
+        ]
+        moby_v29_config_fields = [
+            (name, default, True if name == "OnBuild" else omit)
+            for name, default, omit in moby_v28_config_fields
+            if name != "MacAddress"
+        ]
+
+        def json_bytes(value: Any) -> bytes:
+            try:
+                text = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                fail(reason)
+            return (
+                text.replace("&", r"\u0026")
+                .replace("<", r"\u003c")
+                .replace(">", r"\u003e")
+                .replace("\u2028", r"\u2028")
+                .replace("\u2029", r"\u2029")
+                .encode()
+            )
+
+        def omitted(name: str, value: Any) -> bool:
+            if name in {"ExposedPorts", "OnBuild", "Shell"}:
+                return value is None or value == {} or value == []
+            if name in {"Healthcheck", "StopTimeout"}:
+                return value is None
+            if name in {"ArgsEscaped", "NetworkDisabled"}:
+                return value is False
+            if name in {"MacAddress", "StopSignal"}:
+                return value == ""
+            return False
+
+        def go_config_raw(
+            sparse: dict[str, Any],
+            fields: list[tuple[str, Any, bool]],
+        ) -> bytes:
+            allowed = {name for name, _default, _omit in fields}
+            if set(sparse) - allowed:
+                fail(reason)
+            values = {
+                name: default
+                for name, default, _omit in fields
+            }
+            values.update(sparse)
+            pairs = []
+            for name, _default, omit_empty in fields:
+                value = values[name]
+                if omit_empty and omitted(name, value):
+                    continue
+                pairs.append(json_bytes(name) + b":" + json_bytes(value))
+            return b"{" + b",".join(pairs) + b"}"
+
+        def sorted_raw_map(fields: dict[str, bytes]) -> bytes:
+            return b"{" + b",".join(
+                json_bytes(key) + b":" + fields[key]
+                for key in sorted(fields)
+            ) + b"}"
+
+        def chain_ids() -> list[str]:
+            values: list[str] = []
+            for diff_id in expected_diff_ids:
+                if not values:
+                    chain_id = diff_id
+                else:
+                    chain_id = "sha256:" + hashlib.sha256(
+                        f"{values[-1]} {diff_id}".encode()
+                    ).hexdigest()
+                values.append(chain_id)
+            return values
+
+        def expected_metadata(
+            config_fields: list[tuple[str, Any, bool]],
+        ) -> dict[str, bytes]:
+            values: dict[str, bytes] = {}
+            parent_id: str | None = None
+            chains = chain_ids()
+            for index, chain_id in enumerate(chains):
+                terminal = index == len(chains) - 1
+                record_created = (
+                    created if terminal else "1970-01-01T00:00:00Z"
+                )
+                create_fields = {
+                    "container_config": go_config_raw({}, config_fields),
+                    "created": json_bytes(record_created),
+                    "layer_id": json_bytes(chain_id),
+                }
+                if parent_id is not None:
+                    create_fields["parent"] = json_bytes(
+                        f"sha256:{parent_id}"
+                    )
+                if terminal:
+                    create_fields["config"] = go_config_raw(
+                        runtime_config,
+                        config_fields,
+                    )
+                    create_fields["architecture"] = json_bytes("arm64")
+                    create_fields["os"] = json_bytes("linux")
+                image_id = hashlib.sha256(
+                    sorted_raw_map(create_fields)
+                ).hexdigest()
+
+                record_pairs: list[tuple[str, bytes]] = [
+                    ("id", json_bytes(image_id)),
+                ]
+                if parent_id is not None:
+                    record_pairs.append(("parent", json_bytes(parent_id)))
+                record_pairs.extend(
+                    [
+                        ("created", json_bytes(record_created)),
+                        (
+                            "container_config",
+                            go_config_raw({}, config_fields),
+                        ),
+                    ]
+                )
+                if terminal:
+                    record_pairs.extend(
+                        [
+                            (
+                                "config",
+                                go_config_raw(runtime_config, config_fields),
+                            ),
+                            ("architecture", json_bytes("arm64")),
+                        ]
+                    )
+                record_pairs.append(("os", json_bytes("linux")))
+                raw = b"{" + b",".join(
+                    json_bytes(key) + b":" + value
+                    for key, value in record_pairs
+                ) + b"}"
+                name = f"blobs/sha256/{hashlib.sha256(raw).hexdigest()}"
+                values[name] = raw
+                parent_id = image_id
+            return values
+
+        observed: dict[str, bytes] = {}
+        for name in metadata_names:
+            digest = name.removeprefix("blobs/sha256/")
+            if SHA_RE.fullmatch(digest) is None:
+                fail(reason)
+            raw = read_member(archive, name, 4_194_304, reason)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                fail(reason)
+            parse_json(raw, reason)
+            observed[name] = raw
+
+        accepted_profiles = (
+            expected_metadata(moby_v28_config_fields),
+            expected_metadata(moby_v29_config_fields),
+        )
+        if not any(observed == expected for expected in accepted_profiles):
+            fail(reason)
 
     def validate_annotations(value: Any, reason: str) -> None:
         if not isinstance(value, dict) or len(value) > 64:
@@ -619,18 +840,24 @@ def parse_archive(
         }:
             fail(reason)
 
-    def validate_repositories(raw: bytes) -> None:
+    def validate_repositories(
+        raw: bytes,
+        expected_layer_digest: str | None = None,
+    ) -> None:
         value = parse_json(raw, "archive_repositories_invalid")
         if not isinstance(value, dict) or len(value) != 1:
             fail("archive_repositories_invalid")
         repository, tags = next(iter(value.items()))
         if (
-            not isinstance(repository, str)
-            or not repository.endswith("termux-mcp-qualified-runtime")
+            repository != "termux-mcp-qualified-runtime"
             or not isinstance(tags, dict)
             or set(tags) != {expected_commit}
             or not isinstance(tags[expected_commit], str)
             or re.fullmatch(r"[0-9a-f]{64}", tags[expected_commit]) is None
+            or (
+                expected_layer_digest is not None
+                and tags[expected_commit] != expected_layer_digest
+            )
         ):
             fail("archive_repositories_invalid")
 
@@ -792,7 +1019,7 @@ def parse_archive(
                     "application/vnd.oci.image.manifest.v1+json",
                     "application/vnd.docker.distribution.manifest.v2+json",
                 },
-                require_platform=True,
+                require_platform=False,
                 reason="archive_oci_index_invalid",
             )
             tag_bound = False
@@ -860,12 +1087,13 @@ def parse_archive(
             )
             if len(config_raw) != config_descriptor["size"]:
                 fail("archive_oci_config_descriptor_mismatch")
-            validate_config(config_raw)
+            validated_config = validate_config(config_raw)
 
             referenced_blobs = {manifest_name, config_name}
             layer_names = []
+            layer_descriptors = manifest["layers"]
             for descriptor, expected_diff_id in zip(
-                manifest["layers"],
+                layer_descriptors,
                 expected_layers,
             ):
                 validate_descriptor(
@@ -908,6 +1136,7 @@ def parse_archive(
                 "index.json",
                 *referenced_blobs,
             }
+            has_layer_sources = False
             if "manifest.json" in file_members:
                 legacy = parse_json(
                     read_member(
@@ -921,17 +1150,50 @@ def parse_archive(
                 if not isinstance(legacy, list) or len(legacy) != 1:
                     fail("archive_manifest_invalid")
                 entry = legacy[0]
-                exact_keys(
-                    entry,
+                if not isinstance(entry, dict) or set(entry) not in (
                     {"Config", "RepoTags", "Layers"},
-                    "archive_manifest_invalid",
-                )
+                    {"Config", "RepoTags", "Layers", "LayerSources"},
+                ):
+                    fail("archive_manifest_invalid")
                 if (
                     entry["Config"] not in (expected_config, config_name)
                     or entry["RepoTags"] != [expected_tag]
                     or entry["Layers"] != layer_names
                 ):
                     fail("archive_manifest_invalid")
+                has_layer_sources = "LayerSources" in entry
+                if has_layer_sources:
+                    if any(
+                        descriptor["mediaType"]
+                        != "application/vnd.oci.image.layer.v1.tar"
+                        or descriptor["digest"] != expected_diff_id
+                        for descriptor, expected_diff_id in zip(
+                            layer_descriptors,
+                            expected_layers,
+                        )
+                    ):
+                        fail("archive_manifest_invalid")
+                    layer_sources = entry["LayerSources"]
+                    expected_sources = {
+                        expected_diff_id: {
+                            "mediaType": descriptor["mediaType"],
+                            "size": descriptor["size"],
+                            "digest": descriptor["digest"],
+                        }
+                        for descriptor, expected_diff_id in zip(
+                            layer_descriptors,
+                            expected_layers,
+                        )
+                    }
+                    if (
+                        not isinstance(layer_sources, dict)
+                        or len(layer_sources) != len(layer_descriptors)
+                        or not strict_json_equal(
+                            layer_sources,
+                            expected_sources,
+                        )
+                    ):
+                        fail("archive_manifest_invalid")
                 tag_bound = True
                 allowed_files.add("manifest.json")
             if "repositories" in file_members:
@@ -941,12 +1203,33 @@ def parse_archive(
                         "repositories",
                         4_194_304,
                         "archive_repositories_invalid",
-                    )
+                    ),
+                    (
+                        expected_layers[-1]
+                        if has_layer_sources
+                        else layer_descriptors[-1]["digest"]
+                    ).removeprefix("sha256:"),
                 )
                 tag_bound = True
                 allowed_files.add("repositories")
             if not tag_bound:
                 fail("archive_runtime_tag_unbound")
+            metadata_names = set(file_members) - allowed_files
+            if "manifest.json" in file_members and has_layer_sources:
+                if "repositories" not in file_members:
+                    fail("archive_repositories_invalid")
+                if any(
+                    re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name) is None
+                    for name in metadata_names
+                ):
+                    fail("archive_unreferenced_member")
+                validate_oci_legacy_metadata(
+                    archive,
+                    metadata_names,
+                    validated_config,
+                    expected_layers,
+                )
+                allowed_files.update(metadata_names)
             if set(file_members) != allowed_files:
                 fail("archive_unreferenced_member")
             validate_directories(allowed_files)

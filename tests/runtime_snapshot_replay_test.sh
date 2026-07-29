@@ -47,8 +47,9 @@ case "${1:-} ${2:-}" in
     reference="${3:-}"
     [[ "$reference" == "$MOCK_RUNTIME_ID" || "$reference" == "$MOCK_RUNTIME_TAG" ]] \
       || exit 1
-    printf '[{"Id":"%s","Os":"linux","Architecture":"arm64","Config":{"User":"%s"},"RepoTags":["%s"],"RootFS":{"Type":"layers","Layers":["%s"]}}]\n' \
-      "$MOCK_RUNTIME_ID" "$MOCK_RUNTIME_USER" "$MOCK_RUNTIME_TAG" "$MOCK_RUNTIME_LAYER"
+    printf '[{"Id":"%s","Os":"linux","Architecture":"arm64","Config":{"User":"%s"},"RepoTags":["%s"],"RootFS":{"Type":"layers","Layers":%s}}]\n' \
+      "$MOCK_RUNTIME_ID" "$MOCK_RUNTIME_USER" "$MOCK_RUNTIME_TAG" \
+      "$MOCK_RUNTIME_LAYERS_JSON"
     ;;
   "load --input")
     [[ -f "${3:-}" ]]
@@ -96,14 +97,36 @@ commit = "a" * 40
 run_id = "12345"
 base_digest = "sha256:" + "b" * 64
 base_id = "sha256:" + "c" * 64
-layer_raw = b"fixture-layer"
-layer = "sha256:" + hashlib.sha256(layer_raw).hexdigest()
+layer_raws = [f"fixture-layer-{index}".encode() for index in range(1, 7)]
+layers = [
+    "sha256:" + hashlib.sha256(layer_raw).hexdigest()
+    for layer_raw in layer_raws
+]
 config = json.dumps(
     {
         "architecture": "arm64",
-        "config": {"User": "1000:1000"},
+        "config": {
+            "User": "1000:1000",
+            "Env": [
+                "PATH=/data/data/com.termux/files/usr/bin",
+                "ANDROID_DATA=/data",
+                "ANDROID_ROOT=/system",
+                "HOME=/data/data/com.termux/files/home",
+                "LANG=en_US.UTF-8",
+                "PREFIX=/data/data/com.termux/files/usr",
+                "TMPDIR=/data/data/com.termux/files/usr/tmp",
+                "TZ=UTC",
+                "TERM=xterm",
+            ],
+            "Entrypoint": ["/entrypoint.sh"],
+            "Cmd": ["login"],
+            "WorkingDir": "/data/data/com.termux/files/home",
+            "ArgsEscaped": True,
+            "Shell": ["sh", "-c"],
+        },
+        "created": "2026-07-29T04:16:01.453185543Z",
         "os": "linux",
-        "rootfs": {"type": "layers", "diff_ids": [layer]},
+        "rootfs": {"type": "layers", "diff_ids": layers},
     },
     sort_keys=True,
     separators=(",", ":"),
@@ -179,21 +202,28 @@ manifest = [
     {
         "Config": f"{runtime_id.removeprefix('sha256:')}.json",
         "RepoTags": [runtime_tag],
-        "Layers": ["runtime/layer.tar"],
+        "Layers": [
+            f"runtime/{index}/layer.tar"
+            for index in range(1, len(layer_raws) + 1)
+        ],
     }
 ]
 archive_path = root / "termux-qualified-runtime-image-v1.tar.gz"
 with archive_path.open("wb") as raw:
     with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w") as archive:
-            for name, data in (
+            members = [
                 (f"{runtime_id.removeprefix('sha256:')}.json", config),
-                ("runtime/layer.tar", layer_raw),
+                *(
+                    (f"runtime/{index}/layer.tar", layer_raw)
+                    for index, layer_raw in enumerate(layer_raws, 1)
+                ),
                 (
                     "manifest.json",
                     json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode(),
                 ),
-            ):
+            ]
+            for name, data in members:
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
                 info.mode = 0o644
@@ -216,7 +246,7 @@ snapshot = {
     "base": lock["base"],
     "runtimeImageId": runtime_id,
     "platform": {"os": "linux", "architecture": "arm64"},
-    "rootfsLayers": [layer],
+    "rootfsLayers": layers,
     "packageLock": {
         "fileName": "termux-runtime-package-lock-v1.json",
         "sha256": hashlib.sha256(lock_raw).hexdigest(),
@@ -283,7 +313,8 @@ deployment = {
         (
             f"MOCK_RUNTIME_ID={runtime_id}",
             f"MOCK_RUNTIME_TAG={runtime_tag}",
-            f"MOCK_RUNTIME_LAYER={layer}",
+            "MOCK_RUNTIME_LAYERS_JSON="
+            + json.dumps(layers, separators=(",", ":")),
             "MOCK_RUNTIME_USER=1000:1000",
             "MOCK_RUNTIME_UID_GID=1000:1000",
             "MOCK_LINKER_SHA=" + "f" * 64,
@@ -312,22 +343,34 @@ deployment = {
 )
 
 oci_root = root.parent / "oci-fixture"
+oci_v29_root = root.parent / "oci-v29-fixture"
 oci_root.mkdir(mode=0o700)
-for name in (
-    "termux-runtime-package-lock-v1.json",
-    "termux-native-aggregate-evidence-v4.json",
-    "automated-native-deployment-v1.json",
-    "fixture-env",
-):
-    (oci_root / name).write_bytes((root / name).read_bytes())
+oci_v29_root.mkdir(mode=0o700)
+for destination in (oci_root, oci_v29_root):
+    for name in (
+        "termux-runtime-package-lock-v1.json",
+        "termux-native-aggregate-evidence-v4.json",
+        "automated-native-deployment-v1.json",
+        "fixture-env",
+    ):
+        (destination / name).write_bytes((root / name).read_bytes())
 
-layer_buffer = io.BytesIO()
-with gzip.GzipFile(fileobj=layer_buffer, mode="wb", filename="", mtime=0) as layer_gzip:
-    layer_gzip.write(layer_raw)
-layer_blob = layer_buffer.getvalue()
-layer_blob_digest = hashlib.sha256(layer_blob).hexdigest()
-layer_name = f"blobs/sha256/{layer_blob_digest}"
 config_name = f"blobs/sha256/{runtime_id.removeprefix('sha256:')}"
+layer_blobs = []
+layer_names = []
+layer_descriptors = []
+for layer_raw, diff_id in zip(layer_raws, layers):
+    layer_blob = layer_raw
+    layer_blob_digest = diff_id.removeprefix("sha256:")
+    layer_blobs.append(layer_blob)
+    layer_names.append(f"blobs/sha256/{layer_blob_digest}")
+    layer_descriptors.append(
+        {
+            "mediaType": "application/vnd.oci.image.layer.v1.tar",
+            "digest": f"sha256:{layer_blob_digest}",
+            "size": len(layer_blob),
+        }
+    )
 oci_manifest = {
     "schemaVersion": 2,
     "mediaType": "application/vnd.oci.image.manifest.v1+json",
@@ -335,15 +378,8 @@ oci_manifest = {
         "mediaType": "application/vnd.oci.image.config.v1+json",
         "digest": runtime_id,
         "size": len(config),
-        "platform": {"architecture": "arm64", "os": "linux"},
     },
-    "layers": [
-        {
-            "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
-            "digest": f"sha256:{layer_blob_digest}",
-            "size": len(layer_blob),
-        }
-    ],
+    "layers": layer_descriptors,
 }
 oci_manifest_raw = json.dumps(
     oci_manifest, sort_keys=True, separators=(",", ":")
@@ -362,7 +398,6 @@ oci_index = {
                 "io.containerd.image.name": f"docker.io/library/{runtime_tag}",
                 "org.opencontainers.image.ref.name": commit,
             },
-            "platform": {"architecture": "arm64", "os": "linux"},
         }
     ],
 }
@@ -370,66 +405,292 @@ legacy_manifest = [
     {
         "Config": config_name,
         "RepoTags": [runtime_tag],
-        "Layers": [layer_name],
+        "Layers": layer_names,
+        "LayerSources": {
+            diff_id: {
+                "mediaType": descriptor["mediaType"],
+                "size": descriptor["size"],
+                "digest": descriptor["digest"],
+            }
+            for diff_id, descriptor in zip(layers, layer_descriptors)
+        },
     }
 ]
-repositories = {
-    "termux-mcp-qualified-runtime": {commit: layer_blob_digest}
-}
-oci_archive_path = oci_root / "termux-qualified-runtime-image-v1.tar.gz"
-with oci_archive_path.open("wb") as raw:
-    with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w") as archive:
-            for directory in ("blobs/", "blobs/sha256/"):
-                info = tarfile.TarInfo(directory)
-                info.type = tarfile.DIRTYPE
-                info.mode = 0o755
-                info.mtime = 0
-                archive.addfile(info)
-            for name, data in (
-                (
-                    "oci-layout",
-                    json.dumps(
-                        {"imageLayoutVersion": "1.0.0"},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode(),
-                ),
-                (
-                    "index.json",
-                    json.dumps(
-                        oci_index, sort_keys=True, separators=(",", ":")
-                    ).encode(),
-                ),
-                (oci_manifest_name, oci_manifest_raw),
-                (config_name, config),
-                (layer_name, layer_blob),
-                (
-                    "manifest.json",
-                    json.dumps(
-                        legacy_manifest, sort_keys=True, separators=(",", ":")
-                    ).encode(),
-                ),
-                (
-                    "repositories",
-                    json.dumps(
-                        repositories, sort_keys=True, separators=(",", ":")
-                    ).encode(),
-                ),
-            ):
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                info.mode = 0o644
-                info.mtime = 0
-                archive.addfile(info, io.BytesIO(data))
-oci_archive_raw = oci_archive_path.read_bytes()
-oci_snapshot = json.loads(json.dumps(snapshot))
-oci_snapshot["archive"]["sha256"] = hashlib.sha256(oci_archive_raw).hexdigest()
-oci_snapshot["archive"]["bytes"] = len(oci_archive_raw)
-(oci_root / "termux-runtime-snapshot-v1.json").write_text(
-    json.dumps(oci_snapshot, sort_keys=True, separators=(",", ":")) + "\n",
-    encoding="utf-8",
+config_fields_v28 = [
+    ("Hostname", "", False),
+    ("Domainname", "", False),
+    ("User", "", False),
+    ("AttachStdin", False, False),
+    ("AttachStdout", False, False),
+    ("AttachStderr", False, False),
+    ("ExposedPorts", None, True),
+    ("Tty", False, False),
+    ("OpenStdin", False, False),
+    ("StdinOnce", False, False),
+    ("Env", None, False),
+    ("Cmd", None, False),
+    ("Healthcheck", None, True),
+    ("ArgsEscaped", False, True),
+    ("Image", "", False),
+    ("Volumes", None, False),
+    ("WorkingDir", "", False),
+    ("Entrypoint", None, False),
+    ("NetworkDisabled", False, True),
+    ("MacAddress", "", True),
+    ("OnBuild", None, False),
+    ("Labels", None, False),
+    ("StopSignal", "", True),
+    ("StopTimeout", None, True),
+    ("Shell", None, True),
+]
+config_fields_v29 = [
+    (name, default, True if name == "OnBuild" else omit)
+    for name, default, omit in config_fields_v28
+    if name != "MacAddress"
+]
+
+def go_json(value):
+    text = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    return (
+        text.replace("&", r"\u0026")
+        .replace("<", r"\u003c")
+        .replace(">", r"\u003e")
+        .replace("\u2028", r"\u2028")
+        .replace("\u2029", r"\u2029")
+        .encode()
+    )
+
+def omitted(name, value):
+    if name in {"ExposedPorts", "OnBuild", "Shell"}:
+        return value is None or value == {} or value == []
+    if name in {"Healthcheck", "StopTimeout"}:
+        return value is None
+    if name in {"ArgsEscaped", "NetworkDisabled"}:
+        return value is False
+    if name in {"MacAddress", "StopSignal"}:
+        return value == ""
+    return False
+
+def go_config_raw(sparse, fields):
+    allowed = {name for name, _default, _omit in fields}
+    if set(sparse) - allowed:
+        raise SystemExit("fixture runtime config unsupported")
+    values = {name: default for name, default, _omit in fields}
+    values.update(sparse)
+    pairs = []
+    for name, _default, omit_empty in fields:
+        value = values[name]
+        if omit_empty and omitted(name, value):
+            continue
+        pairs.append(go_json(name) + b":" + go_json(value))
+    return b"{" + b",".join(pairs) + b"}"
+
+def sorted_raw_map(fields):
+    return b"{" + b",".join(
+        go_json(key) + b":" + fields[key]
+        for key in sorted(fields)
+    ) + b"}"
+
+def moby_legacy_records(diff_ids, image_config, fields):
+    chain_ids = []
+    for diff_id in diff_ids:
+        chain_id = (
+            diff_id
+            if not chain_ids
+            else "sha256:" + hashlib.sha256(
+                f"{chain_ids[-1]} {diff_id}".encode()
+            ).hexdigest()
+        )
+        chain_ids.append(chain_id)
+    result = []
+    parent_id = None
+    for index, chain_id in enumerate(chain_ids):
+        terminal = index == len(chain_ids) - 1
+        record_created = (
+            image_config["created"]
+            if terminal
+            else "1970-01-01T00:00:00Z"
+        )
+        create_fields = {
+            "container_config": go_config_raw({}, fields),
+            "created": go_json(record_created),
+            "layer_id": go_json(chain_id),
+        }
+        if parent_id is not None:
+            create_fields["parent"] = go_json(f"sha256:{parent_id}")
+        if terminal:
+            create_fields["config"] = go_config_raw(
+                image_config["config"],
+                fields,
+            )
+            create_fields["architecture"] = go_json(
+                image_config["architecture"]
+            )
+            create_fields["os"] = go_json(image_config["os"])
+        image_id = hashlib.sha256(
+            sorted_raw_map(create_fields)
+        ).hexdigest()
+        record_pairs = [("id", go_json(image_id))]
+        if parent_id is not None:
+            record_pairs.append(("parent", go_json(parent_id)))
+        record_pairs.extend(
+            [
+                ("created", go_json(record_created)),
+                ("container_config", go_config_raw({}, fields)),
+            ]
+        )
+        if terminal:
+            record_pairs.extend(
+                [
+                    (
+                        "config",
+                        go_config_raw(image_config["config"], fields),
+                    ),
+                    (
+                        "architecture",
+                        go_json(image_config["architecture"]),
+                    ),
+                ]
+            )
+        record_pairs.append(("os", go_json(image_config["os"])))
+        raw = b"{" + b",".join(
+            go_json(key) + b":" + value
+            for key, value in record_pairs
+        ) + b"}"
+        result.append(
+            ("blobs/sha256/" + hashlib.sha256(raw).hexdigest(), raw)
+        )
+        parent_id = image_id
+    return result
+
+config_doc = json.loads(config)
+legacy_metadata_v28 = moby_legacy_records(
+    layers,
+    config_doc,
+    config_fields_v28,
 )
+legacy_metadata_v29 = moby_legacy_records(
+    layers,
+    config_doc,
+    config_fields_v29,
+)
+expected_v28_ids = [
+    "cf0ede2642e424d4d48cb8015214e299baa4c1dec750f806cfbd8e1d7b626360",
+    "a9bde2bf224ae50639f63b3da61e069e83683acfdb18bffdb61a727b8811e06a",
+    "782d853bf1f461852b7b992a10e4938a38a44218ceb7086d232f730877985de9",
+    "492ac3ebfe5641c7b3a30d5e4770cf4dba611a56c256008e7c52eb36e936e592",
+    "323adfa5f234e043c7a9e205710d52c26efc77ba888a78cc9e2a051d8e8bc1eb",
+    "704e4583718ad44243c24a3b61c7a1989b0ac091e61c4424d4a7ec8e53ea5749",
+]
+expected_v29_ids = [
+    "f17e41d764ef10d85df93dfd3447177e044a4cc3f7744760d5b52c00b3eb57ea",
+    "3f61b42f2afd0fb92c6a8b654957a0872ef1fdc95b65f02c51e77f211bd6326a",
+    "6df0ca6d709be3a75309597420b9714765ccf15ff6f06ab7571937d55bd7dbe9",
+    "5dd4505c4d244bab2426bde5aeffe3cbcf5bb0a10e5bb9905a062407340b0431",
+    "840a0f2762ad23fdd3371e008c49927a6fcf607d86da56e5c32b0d1fe811ccc1",
+    "6d11f415dfeae2c9fc0c549003ebb49f34faf5e734c843a1cd737fb70cc4786c",
+]
+if [
+    json.loads(raw)["id"]
+    for _name, raw in legacy_metadata_v28
+] != expected_v28_ids:
+    raise SystemExit("Moby v28 CreateID fixture oracle mismatch")
+if [
+    json.loads(raw)["id"]
+    for _name, raw in legacy_metadata_v29
+] != expected_v29_ids:
+    raise SystemExit("Docker 29 CreateID fixture oracle mismatch")
+repositories = {
+    "termux-mcp-qualified-runtime": {
+        commit: layer_descriptors[-1]["digest"].removeprefix("sha256:")
+    }
+}
+
+def write_oci_fixture(destination, metadata_records):
+    archive_path = (
+        destination / "termux-qualified-runtime-image-v1.tar.gz"
+    )
+    with archive_path.open("wb") as raw:
+        with gzip.GzipFile(
+            fileobj=raw,
+            mode="wb",
+            filename="",
+            mtime=0,
+        ) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w") as archive:
+                for directory in ("blobs/", "blobs/sha256/"):
+                    info = tarfile.TarInfo(directory)
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    info.mtime = 0
+                    archive.addfile(info)
+                members = [
+                    (
+                        "oci-layout",
+                        json.dumps(
+                            {"imageLayoutVersion": "1.0.0"},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode(),
+                    ),
+                    (
+                        "index.json",
+                        json.dumps(
+                            oci_index,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode(),
+                    ),
+                    (oci_manifest_name, oci_manifest_raw),
+                    (config_name, config),
+                    *zip(layer_names, layer_blobs),
+                    *metadata_records,
+                    (
+                        "manifest.json",
+                        json.dumps(
+                            legacy_manifest,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode(),
+                    ),
+                    (
+                        "repositories",
+                        json.dumps(
+                            repositories,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode(),
+                    ),
+                ]
+                for name, data in members:
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    info.mode = 0o644
+                    info.mtime = 0
+                    archive.addfile(info, io.BytesIO(data))
+    archive_raw = archive_path.read_bytes()
+    oci_snapshot = json.loads(json.dumps(snapshot))
+    oci_snapshot["archive"]["sha256"] = hashlib.sha256(
+        archive_raw
+    ).hexdigest()
+    oci_snapshot["archive"]["bytes"] = len(archive_raw)
+    (destination / "termux-runtime-snapshot-v1.json").write_text(
+        json.dumps(
+            oci_snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+write_oci_fixture(oci_root, legacy_metadata_v28)
+write_oci_fixture(oci_v29_root, legacy_metadata_v29)
 PY
 
 while IFS='=' read -r key value; do
@@ -516,6 +777,22 @@ jq -e \
   || fail valid_oci_replay_report_invalid
 [[ ! -e "$MOCK_DOCKER_STATE" ]] || fail oci_replay_did_not_remove_loaded_image
 
+mkdir -m 700 "$TMP/oci-v29-success"
+run_verifier \
+  "$TMP/oci-v29-fixture" \
+  "$TMP/oci-v29-success/termux-runtime-snapshot-replay-v1.json" \
+  >"$TMP/oci-v29-success.log"
+jq -e \
+  --arg runtime "$MOCK_RUNTIME_ID" '
+    .status == "pass"
+    and .runtimeImageId == $runtime
+    and .verification.singleImageArchive == true
+    and .verification.platformVerified == true
+    and .verification.runtimeNetworkAccess == false
+  ' "$TMP/oci-v29-success/termux-runtime-snapshot-replay-v1.json" >/dev/null \
+  || fail valid_oci_v29_replay_report_invalid
+[[ ! -e "$MOCK_DOCKER_STATE" ]] || fail oci_v29_replay_did_not_remove_loaded_image
+
 expect_failure() {
   local name="$1"
   local fixture="$2"
@@ -573,17 +850,258 @@ def file_index(name):
         raise SystemExit(f"fixture member lookup failed: {name}")
     return matches[0]
 
+def oci_metadata_indexes():
+    index_value = json.loads(entries[file_index("index.json")][1])
+    manifest_digest = index_value["manifests"][0]["digest"].removeprefix("sha256:")
+    manifest_name = f"blobs/sha256/{manifest_digest}"
+    manifest_value = json.loads(entries[file_index(manifest_name)][1])
+    referenced = {
+        manifest_name,
+        "blobs/sha256/" + manifest_value["config"]["digest"].removeprefix("sha256:"),
+        *(
+            "blobs/sha256/" + descriptor["digest"].removeprefix("sha256:")
+            for descriptor in manifest_value["layers"]
+        ),
+    }
+    return [
+        index
+        for index, entry in enumerate(entries)
+        if entry[1] is not None
+        and entry[0].startswith("blobs/sha256/")
+        and entry[0] not in referenced
+    ]
+
+def replace_content_addressed_json(index, value):
+    raw = json.dumps(value, separators=(",", ":")).encode()
+    entries[index][0] = "blobs/sha256/" + hashlib.sha256(raw).hexdigest()
+    entries[index][1] = raw
+
+def oci_metadata_records():
+    indexes = oci_metadata_indexes()
+    if len(indexes) != 6:
+        raise SystemExit("fixture legacy metadata lookup failed")
+    return [
+        (index, json.loads(entries[index][1]))
+        for index in indexes
+    ]
+
+def oci_metadata_chain():
+    records = oci_metadata_records()
+    roots = [
+        item
+        for item in records
+        if "parent" not in item[1]
+    ]
+    if len(roots) != 1:
+        raise SystemExit("fixture legacy metadata root lookup failed")
+    children = {}
+    for item in records:
+        parent = item[1].get("parent")
+        if parent is not None:
+            if parent in children:
+                raise SystemExit("fixture legacy metadata branch found")
+            children[parent] = item
+    ordered = []
+    current = roots[0]
+    while True:
+        ordered.append(current)
+        child = children.get(current[1]["id"])
+        if child is None:
+            break
+        current = child
+    if len(ordered) != len(records):
+        raise SystemExit("fixture legacy metadata chain incomplete")
+    return ordered
+
 if operation == "unreferenced":
     entries.append(["unreferenced.bin", b"unreferenced", 0o644])
 elif operation == "unsafe":
     entries.append(["../escape", b"escape", 0o644])
+elif operation == "oci-generic-compressed":
+    metadata_indexes = oci_metadata_indexes()
+    index_index = file_index("index.json")
+    index_value = json.loads(entries[index_index][1])
+    old_manifest_digest = (
+        index_value["manifests"][0]["digest"].removeprefix("sha256:")
+    )
+    manifest_index = file_index(f"blobs/sha256/{old_manifest_digest}")
+    manifest_value = json.loads(entries[manifest_index][1])
+    compressed_names = []
+    for descriptor in manifest_value["layers"]:
+        old_name = (
+            "blobs/sha256/"
+            + descriptor["digest"].removeprefix("sha256:")
+        )
+        layer_index = file_index(old_name)
+        buffer = io.BytesIO()
+        with gzip.GzipFile(
+            fileobj=buffer,
+            mode="wb",
+            filename="",
+            mtime=0,
+        ) as compressed:
+            compressed.write(entries[layer_index][1])
+        compressed_raw = buffer.getvalue()
+        compressed_digest = hashlib.sha256(compressed_raw).hexdigest()
+        compressed_name = f"blobs/sha256/{compressed_digest}"
+        entries[layer_index][0] = compressed_name
+        entries[layer_index][1] = compressed_raw
+        descriptor["mediaType"] = (
+            "application/vnd.oci.image.layer.v1.tar+gzip"
+        )
+        descriptor["digest"] = f"sha256:{compressed_digest}"
+        descriptor["size"] = len(compressed_raw)
+        compressed_names.append(compressed_name)
+    manifest_raw = json.dumps(
+        manifest_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    manifest_digest = hashlib.sha256(manifest_raw).hexdigest()
+    entries[manifest_index][0] = f"blobs/sha256/{manifest_digest}"
+    entries[manifest_index][1] = manifest_raw
+    index_value["manifests"][0]["digest"] = f"sha256:{manifest_digest}"
+    index_value["manifests"][0]["size"] = len(manifest_raw)
+    entries[index_index][1] = json.dumps(
+        index_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    legacy_index = file_index("manifest.json")
+    legacy_value = json.loads(entries[legacy_index][1])
+    legacy_value[0]["Layers"] = compressed_names
+    del legacy_value[0]["LayerSources"]
+    entries[legacy_index][1] = json.dumps(
+        legacy_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    repositories_index = file_index("repositories")
+    repositories_value = json.loads(entries[repositories_index][1])
+    repository = next(iter(repositories_value))
+    tag = next(iter(repositories_value[repository]))
+    repositories_value[repository][tag] = (
+        manifest_value["layers"][-1]["digest"].removeprefix("sha256:")
+    )
+    entries[repositories_index][1] = json.dumps(
+        repositories_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    for metadata_index in sorted(metadata_indexes, reverse=True):
+        del entries[metadata_index]
 elif operation == "oci-platform":
     index = file_index("index.json")
     value = json.loads(entries[index][1])
-    value["manifests"][0]["platform"]["architecture"] = "amd64"
+    value["manifests"][0]["platform"] = {
+        "architecture": "amd64",
+        "os": "linux",
+    }
     entries[index][1] = json.dumps(
         value, sort_keys=True, separators=(",", ":")
     ).encode()
+elif operation == "oci-layer-sources-mismatch":
+    manifest_index = file_index("manifest.json")
+    value = json.loads(entries[manifest_index][1])
+    source = next(iter(value[0]["LayerSources"].values()))
+    source["size"] += 1
+    entries[manifest_index][1] = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode()
+elif operation == "oci-layer-sources-extra":
+    manifest_index = file_index("manifest.json")
+    value = json.loads(entries[manifest_index][1])
+    source = dict(next(iter(value[0]["LayerSources"].values())))
+    value[0]["LayerSources"]["sha256:" + "0" * 64] = source
+    entries[manifest_index][1] = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode()
+elif operation == "oci-layer-sources-float":
+    manifest_index = file_index("manifest.json")
+    value = json.loads(entries[manifest_index][1])
+    source = next(iter(value[0]["LayerSources"].values()))
+    source["size"] = float(source["size"])
+    entries[manifest_index][1] = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode()
+elif operation == "oci-layer-sources-missing":
+    manifest_index = file_index("manifest.json")
+    value = json.loads(entries[manifest_index][1])
+    del value[0]["LayerSources"]
+    entries[manifest_index][1] = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode()
+elif operation == "oci-repositories-mismatch":
+    repositories_index = file_index("repositories")
+    value = json.loads(entries[repositories_index][1])
+    repository = next(iter(value))
+    tag = next(iter(value[repository]))
+    value[repository][tag] = "0" * 64
+    entries[repositories_index][1] = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode()
+elif operation == "oci-legacy-metadata-substitution":
+    records = oci_metadata_records()
+    entries[records[0][0]][1] += b" "
+elif operation == "oci-legacy-metadata-extra-key":
+    records = oci_metadata_records()
+    index, value = records[0]
+    value["unexpected"] = True
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-cycle":
+    records = oci_metadata_records()
+    index, value = next(
+        (index, value)
+        for index, value in records
+        if value.get("architecture") == "arm64"
+    )
+    value["parent"] = value["id"]
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-fork":
+    records = oci_metadata_chain()
+    root = records[0][1]
+    index, value = records[2]
+    value["parent"] = root["id"]
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-created":
+    records = oci_metadata_chain()
+    index, value = records[2]
+    value["created"] = "2026-07-29T04:16:01.453185543Z"
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-config":
+    records = oci_metadata_records()
+    index, value = next(
+        (index, value)
+        for index, value in records
+        if value.get("architecture") == "arm64"
+    )
+    value["config"]["User"] = "0:0"
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-duplicate-id":
+    records = oci_metadata_chain()
+    index, value = records[2]
+    value["id"] = records[1][1]["id"]
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-rewrite-chain":
+    records = oci_metadata_chain()
+    replacement_ids = [
+        f"{index:x}" * 64
+        for index in range(10, 10 + len(records))
+    ]
+    for position, (index, value) in enumerate(records):
+        value["id"] = replacement_ids[position]
+        if position:
+            value["parent"] = replacement_ids[position - 1]
+        replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-bool-int":
+    records = oci_metadata_chain()
+    index, value = records[0]
+    value["container_config"]["AttachStdin"] = 0
+    replace_content_addressed_json(index, value)
+elif operation == "oci-legacy-metadata-extra":
+    records = oci_metadata_records()
+    value = dict(records[0][1])
+    value["id"] = "7" * 64
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    entries.append(
+        [
+            "blobs/sha256/" + hashlib.sha256(raw).hexdigest(),
+            raw,
+            0o644,
+        ]
+    )
 elif operation == "oci-manifest-substitution":
     index_value = json.loads(entries[file_index("index.json")][1])
     digest = index_value["manifests"][0]["digest"].removeprefix("sha256:")
@@ -697,6 +1215,26 @@ PY
     "$destination/termux-runtime-snapshot-v1.json"
 }
 
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-generic-compressed" \
+  oci-generic-compressed
+mkdir -m 700 "$TMP/oci-generic-compressed-output"
+run_verifier \
+  "$TMP/oci-generic-compressed" \
+  "$TMP/oci-generic-compressed-output/termux-runtime-snapshot-replay-v1.json" \
+  >"$TMP/oci-generic-compressed.log"
+jq -e \
+  --arg runtime "$MOCK_RUNTIME_ID" '
+    .status == "pass"
+    and .runtimeImageId == $runtime
+    and .verification.singleImageArchive == true
+    and .verification.rootfsLayersVerified == true
+    and .verification.runtimeNetworkAccess == false
+  ' "$TMP/oci-generic-compressed-output/termux-runtime-snapshot-replay-v1.json" \
+  >/dev/null || fail valid_compressed_oci_replay_report_invalid
+[[ ! -e "$MOCK_DOCKER_STATE" ]] \
+  || fail compressed_oci_replay_did_not_remove_loaded_image
+
 cp -a "$TMP/fixture" "$TMP/archive-substitution"
 printf X >>"$TMP/archive-substitution/termux-qualified-runtime-image-v1.tar.gz"
 expect_failure archive_substitution "$TMP/archive-substitution"
@@ -722,6 +1260,91 @@ expect_failure unsafe_member "$TMP/unsafe-member"
 mutate_archive_fixture \
   "$TMP/oci-fixture" "$TMP/oci-platform" oci-platform
 expect_failure oci_platform "$TMP/oci-platform"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-layer-sources-mismatch" \
+  oci-layer-sources-mismatch
+expect_failure oci_layer_sources_mismatch "$TMP/oci-layer-sources-mismatch"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-layer-sources-extra" \
+  oci-layer-sources-extra
+expect_failure oci_layer_sources_extra "$TMP/oci-layer-sources-extra"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-layer-sources-float" \
+  oci-layer-sources-float
+expect_failure oci_layer_sources_float "$TMP/oci-layer-sources-float"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-layer-sources-missing" \
+  oci-layer-sources-missing
+expect_failure oci_layer_sources_missing "$TMP/oci-layer-sources-missing"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-repositories-mismatch" \
+  oci-repositories-mismatch
+expect_failure oci_repositories_mismatch "$TMP/oci-repositories-mismatch"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-substitution" \
+  oci-legacy-metadata-substitution
+expect_failure \
+  oci_legacy_metadata_substitution \
+  "$TMP/oci-legacy-metadata-substitution"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-extra-key" \
+  oci-legacy-metadata-extra-key
+expect_failure \
+  oci_legacy_metadata_extra_key \
+  "$TMP/oci-legacy-metadata-extra-key"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-cycle" \
+  oci-legacy-metadata-cycle
+expect_failure oci_legacy_metadata_cycle "$TMP/oci-legacy-metadata-cycle"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-fork" \
+  oci-legacy-metadata-fork
+expect_failure oci_legacy_metadata_fork "$TMP/oci-legacy-metadata-fork"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-created" \
+  oci-legacy-metadata-created
+expect_failure oci_legacy_metadata_created "$TMP/oci-legacy-metadata-created"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-config" \
+  oci-legacy-metadata-config
+expect_failure oci_legacy_metadata_config "$TMP/oci-legacy-metadata-config"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-duplicate-id" \
+  oci-legacy-metadata-duplicate-id
+expect_failure \
+  oci_legacy_metadata_duplicate_id \
+  "$TMP/oci-legacy-metadata-duplicate-id"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-rewrite-chain" \
+  oci-legacy-metadata-rewrite-chain
+expect_failure \
+  oci_legacy_metadata_rewrite_chain \
+  "$TMP/oci-legacy-metadata-rewrite-chain"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-bool-int" \
+  oci-legacy-metadata-bool-int
+expect_failure \
+  oci_legacy_metadata_bool_int \
+  "$TMP/oci-legacy-metadata-bool-int"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-legacy-metadata-extra" \
+  oci-legacy-metadata-extra
+expect_failure oci_legacy_metadata_extra "$TMP/oci-legacy-metadata-extra"
 
 mutate_archive_fixture \
   "$TMP/oci-fixture" "$TMP/oci-manifest-substitution" oci-manifest-substitution
