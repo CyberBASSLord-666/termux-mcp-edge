@@ -167,6 +167,11 @@ grep -Fq 'The staged Actions artifact is retained for 30 days' docs/PUBLIC_RELEA
   || fail staging_retention_window_missing
 grep -Fq 'not confidential storage' docs/PUBLIC_RELEASE.md \
   || fail public_repository_artifact_confidentiality_boundary_missing
+grep -Fq 'the three non-secret scalar staging inputs' docs/PUBLIC_RELEASE.md \
+  || fail staging_scalar_input_confidentiality_boundary_missing
+if grep -Fq 'both staging dispatch files' docs/PUBLIC_RELEASE.md; then
+  fail stale_staging_dispatch_file_wording_present
+fi
 grep -Fq 'release-automated-qualification-schema-v1.json' docs/PUBLIC_RELEASE.md \
   || fail automated_qualification_schema_link_missing
 grep -Fq 'release-staging-manifest-schema-v2.json' docs/PUBLIC_RELEASE.md \
@@ -223,7 +228,81 @@ grep -Fq 'downloads that exact current-run verification artifact by server-assig
   || fail publication_same_run_verification_record_gate_missing
 grep -Fq 'The Release body is bound before upload and contains only deterministic facts already available at that boundary' docs/PUBLIC_RELEASE.md \
   || fail publication_body_timing_boundary_missing
-grep -Fq 'Because both jobs intentionally set `deployment: false`, they create no GitHub Deployment record' docs/PUBLIC_RELEASE.md \
+grep -Fq '## Operator worksheet (v0.6.0)' docs/PUBLIC_RELEASE.md \
+  || fail publication_operator_worksheet_missing
+for worksheet_field in \
+  'expected_commit=<40-character current main SHA>' \
+  'android_run_id=<successful first-attempt Android push run ID>' \
+  'staged_artifact_id=<ID from the successful staging summary>' \
+  'staged_artifact_sha256=<raw tar SHA-256 from the same summary>' \
+  'expected_tag_object_sha=<annotated tag object SHA>' \
+  'draft_release_id=<numeric ID of the one exact-tag empty draft>' \
+  'asset_count=16' \
+  'immutable=true'
+do
+  grep -Fq "$worksheet_field" docs/PUBLIC_RELEASE.md \
+    || fail "publication_operator_worksheet_field_missing_$worksheet_field"
+done
+grep -Fq 'The `release-production` reviewer sees the successful read-only preflight and the pending protected job'\''s workflow definition' docs/PUBLIC_RELEASE.md \
+  || fail publication_production_reviewer_context_missing
+grep -Fq 'the attachment job'\''s repeated checks execute only after approval' docs/PUBLIC_RELEASE.md \
+  || fail publication_production_postapproval_check_timing_missing
+grep -Fq 'The independent verification record does not exist yet.' docs/PUBLIC_RELEASE.md \
+  || fail publication_verification_record_timing_missing
+grep -Fq 'The disjoint `release-final` reviewer acts only after the fresh read-only verification job has retained that record' docs/PUBLIC_RELEASE.md \
+  || fail publication_final_reviewer_context_missing
+if grep -Fq 'attachment job'\''s current checks' docs/PUBLIC_RELEASE.md; then
+  fail publication_preapproval_attachment_check_overclaim_present
+fi
+for tag_safety_contract in \
+  'set -euo pipefail' \
+  'RELEASE_REMOTE_URL="https://github.com/$RELEASE_REPO.git"' \
+  'RELEASE_COMMIT=PASTE_40_CHARACTER_EXPECTED_COMMIT_HERE' \
+  'test "${#RELEASE_COMMIT}" -eq 40' \
+  'expected_commit is not lowercase hexadecimal' \
+  'git fetch --no-tags "$RELEASE_REMOTE_URL" main' \
+  'git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"' \
+  'REMOTE_TAG_MATCHES="$(' \
+  'git ls-remote --refs "$RELEASE_REMOTE_URL" "refs/tags/$RELEASE_TAG"' \
+  'if test -n "$REMOTE_TAG_MATCHES"; then' \
+  'git push "$RELEASE_REMOTE_URL"' \
+  'test "$REMOTE_TAG_OBJECT_SHA" = "$TAG_OBJECT_SHA"'
+do
+  grep -Fq "$tag_safety_contract" docs/PUBLIC_RELEASE.md \
+    || fail "publication_tag_safety_contract_missing_$tag_safety_contract"
+done
+if grep -Fq 'RELEASE_COMMIT=<copy' docs/PUBLIC_RELEASE.md; then
+  fail unsafe_shell_redirection_placeholder_present
+fi
+if grep -Fq 'git ls-remote --exit-code' docs/PUBLIC_RELEASE.md; then
+  fail remote_tag_transport_failure_can_look_absent
+fi
+grep -Fq 'Record `staging_run_id` from the numeric `/actions/runs/<id>` segment' docs/PUBLIC_RELEASE.md \
+  || fail staging_run_id_capture_source_missing
+grep -Fq '$matches[0].prerelease == false' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_prerelease_filter_missing
+grep -Fq 'gh api --paginate --slurp "repos/$RELEASE_REPO/releases?per_page=100" |' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_pagination_flattening_missing
+grep -Fq 'jq -er' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_external_jq_missing
+if grep -Eq 'gh api .*--slurp .*--jq|gh api .*--jq .*--slurp' docs/PUBLIC_RELEASE.md; then
+  fail unsupported_gh_slurp_jq_combination_present
+fi
+grep -Fq '[ .[] | select(.tag_name == $release_tag) ] as $matches' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_exact_tag_inventory_missing
+grep -Fq 'if ($matches | length) != 1 then' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_exact_tag_uniqueness_missing
+grep -Fq 'error("expected exactly one Release for the tag")' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_tag_count_error_missing
+grep -Fq '(($matches[0].body // "") == "")' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_blank_body_filter_missing
+grep -Fq '(($matches[0].assets | length) == 0)' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_zero_assets_filter_missing
+grep -Fq 'error("exact-tag Release is not the required empty draft")' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_object_contract_error_missing
+grep -Fq 'draft Release ID is not one numeric value' docs/PUBLIC_RELEASE.md \
+  || fail draft_capture_single_numeric_guard_missing
+grep -Fq 'Because both protected jobs intentionally set `deployment: false`, they create no GitHub Deployment record' docs/PUBLIC_RELEASE.md \
   || fail publication_record_deployment_semantics_missing
 grep -Fq "Use the linked run's environment-review UI" docs/PUBLIC_RELEASE.md \
   || fail publication_record_review_context_missing
@@ -235,6 +314,14 @@ grep -Fq 'reasserts the already-verified `prerelease: false` state, and explicit
   || fail publication_patch_scope_documentation_missing
 grep -Fq 'Server-assigned and post-upload facts belong to the separate workflow publication record' docs/RELEASE_GOVERNANCE.md \
   || fail governance_separate_publication_record_missing
+grep -Fq 'The `release-production` reviewer sees the linked run'\''s successful read-only preflight and the pending protected job'\''s workflow definition' docs/RELEASE_GOVERNANCE.md \
+  || fail governance_production_reviewer_context_missing
+grep -Fq 'the attachment job'\''s repeated checks execute only after approval' docs/RELEASE_GOVERNANCE.md \
+  || fail governance_production_postapproval_check_timing_missing
+grep -Fq 'The independent-verification record does not exist until that approval and attachment succeed' docs/RELEASE_GOVERNANCE.md \
+  || fail governance_verification_record_timing_missing
+grep -Fq 'before the disjoint final environment review' docs/RELEASE_GOVERNANCE.md \
+  || fail governance_final_reviewer_context_missing
 if grep -Fq 'Every GitHub Release body must record' docs/RELEASE_GOVERNANCE.md; then
   fail governance_preupload_body_overclaim_present
 fi
