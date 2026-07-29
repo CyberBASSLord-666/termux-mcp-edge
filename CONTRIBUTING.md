@@ -31,6 +31,11 @@ bash tests/setup_named_tunnel_test.sh
 bash tests/documentation_contract_test.sh
 bash tests/cross_compile_contract_test.sh
 bash tests/package_physical_qualification_test.sh
+bash tests/commit_verified_file_test.sh
+bash tests/termux_automated_deployment_gate_test.sh
+bash tests/package_automated_qualification_test.sh
+bash tests/runtime_snapshot_replay_test.sh
+bash tests/automated_release_qualification_workflow_test.sh
 bash tests/stage_release_assets_test.sh
 bash tests/release_staging_workflow_test.sh
 bash tests/prepare_release_publication_assets_test.sh

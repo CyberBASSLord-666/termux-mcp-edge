@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/automated-native-deployment-scenarios-schema-v1.json",
+  "title": "Termux MCP automated native deployment scenario set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scenarioSetVersion",
+    "qualificationClass",
+    "scenarios"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "scenarioSetVersion": {"const": "1"},
+    "qualificationClass": {"const": "official_termux_native_automated_v1"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "prefixItems": [
+        {
+          "const": {
+            "id": "isolated_fresh_deploy",
+            "execution": "native",
+            "faultInjection": "none",
+            "expectedOutcome": "pass"
+          }
+        },
+        {
+          "const": {
+            "id": "failed_upgrade_recovery",
+            "execution": "native",
+            "faultInjection": "target_scoped_readiness_probe_failure",
+            "expectedOutcome": "recovered"
+          }
+        },
+        {
+          "const": {
+            "id": "supervised_restart",
+            "execution": "native",
+            "faultInjection": "supervised_process_termination",
+            "expectedOutcome": "restarted"
+          }
+        },
+        {
+          "const": {
+            "id": "rollback_recovery",
+            "execution": "native",
+            "faultInjection": "target_scoped_readiness_probe_failure",
+            "expectedOutcome": "recovered"
+          }
+        },
+        {
+          "const": {
+            "id": "uninstall",
+            "execution": "native",
+            "faultInjection": "none",
+            "expectedOutcome": "removed"
+          }
+        },
+        {
+          "const": {
+            "id": "bounded_cleanup",
+            "execution": "native",
+            "faultInjection": "none",
+            "expectedOutcome": "clean"
+          }
+        }
+      ],
+      "items": false
+    }
+  }
+}

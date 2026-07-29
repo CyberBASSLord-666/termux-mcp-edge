@@ -95,27 +95,62 @@ grep -Fq 'termux-mcp-server-aarch64-linux-android-full-suite' docs/ANDROID_ARTIF
   || fail android_full_suite_workflow_artifact_missing
 grep -Fq 'termux-mcp-server-v0.6.0-aarch64-linux-android-full-suite' docs/ANDROID_ARTIFACTS.md \
   || fail android_full_suite_durable_asset_missing
-grep -Fq 'validator v11' docs/RELEASE_GOVERNANCE.md \
-  || fail release_governance_validator_v11_missing
-grep -Fq 'schema v2' docs/V0.6.0_RELEASE_CANDIDATE.md \
-  || fail release_candidate_schema_v2_missing
-grep -Fq 'schema/gate-v3' docs/V0.6.0_RELEASE_CANDIDATE.md \
-  || fail release_candidate_aggregate_v3_missing
+grep -Fq 'official_termux_native_automated_v1' docs/RELEASE_GOVERNANCE.md \
+  || fail release_governance_automated_qualification_missing
+grep -Fq 'closed automated envelope' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_automated_envelope_missing
+grep -Fq 'schema/gate-v4' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_aggregate_v4_missing
 grep -Fq 'harness v11' docs/DEVICE_PRODUCTION_GATE.md \
   || fail device_harness_v11_missing
-grep -Fq 'separately records the digest of its locked on-device native build' docs/DEVICE_PRODUCTION_GATE.md \
+grep -Fq 'separately records its locked on-device native-build digest' docs/DEVICE_PRODUCTION_GATE.md \
   || fail device_harness_native_digest_boundary_missing
-grep -Fq 'Validator v11 verifies the downloaded workflow manifest and schema v2 binds the workflow full-suite binary digest' docs/DEVICE_PRODUCTION_GATE.md \
-  || fail workflow_artifact_digest_boundary_missing
+grep -Fq 'optional physical-certification tier' docs/DEVICE_PRODUCTION_GATE.md \
+  || fail device_harness_optional_tier_missing
 if grep -Eiq 'device[- ]harness[^.]*bound to (the )?(exact )?full-suite digest|harness[^.]*same full-suite digest' \
   docs/DEVICE_PRODUCTION_GATE.md docs/RELEASE_GOVERNANCE.md \
   docs/V0.6.0_RELEASE_CANDIDATE.md docs/EMULATED_RELEASE_GATE.md docs/OPERATIONS.md; then
   fail cross_toolchain_digest_equality_claim
 fi
-grep -Fq 'fresh direct physical' docs/V0.6.0_RELEASE_CANDIDATE.md \
-  || fail release_candidate_fresh_physical_observation_missing
-grep -Fq 'cannot qualify' docs/V0.6.0_RELEASE_CANDIDATE.md \
-  || fail release_candidate_historical_bridge_exclusion_missing
+grep -Fq 'official_termux_native_automated_v1' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_qualification_class_missing
+grep -Fq 'physicalDeviceObserved": false' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_qualification_physical_boundary_missing
+grep -Fq 'androidFrameworkObserved": false' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_qualification_framework_boundary_missing
+grep -Fq 'sustainedPhysicalSoak": false' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_qualification_soak_boundary_missing
+grep -Fq 'physicalCertification": "not_run"' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_qualification_certification_boundary_missing
+grep -Fq 'same exact qualified full-suite artifact and version' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_deployment_same_version_boundary_missing
+grep -Fq 'they do not prove compatibility between' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_deployment_cross_version_nonclaim_missing
+grep -Fq 'different application versions.' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_deployment_cross_version_nonclaim_missing
+if grep -Fq 'on-device install/upgrade/rollback smoke procedure succeeds' docs/PRODUCTION_READINESS.md; then
+  fail ordinary_release_physical_smoke_prerequisite_stale
+fi
+if grep -Fq 'Release validator v11 and device harness v11 must' docs/PRODUCTION_READINESS.md; then
+  fail ordinary_release_device_harness_prerequisite_stale
+fi
+qualification_boundary='Automated release qualification proves the exact artifacts under the digest-pinned official Termux userland on native ARM64, including deterministic Android-provider simulation and isolated deployment recovery. It does not certify physical-device, OEM, battery-aging, thermal-soak, radio, Doze, or Android-framework behavior.'
+for document in \
+  README.md \
+  CHANGELOG.md \
+  docs/ANDROID_ARTIFACTS.md \
+  docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  docs/EMULATED_RELEASE_GATE.md \
+  docs/PUBLIC_RELEASE.md \
+  docs/RELEASE_GOVERNANCE.md \
+  docs/SECURITY.md \
+  docs/VALIDATION.md \
+  docs/V0.6.0_RELEASE_CANDIDATE.md \
+  docs/operator-validation.md
+do
+  grep -Fq "$qualification_boundary" "$document" \
+    || fail "automated_qualification_boundary_missing_${document//\//_}"
+done
 grep -Fq 'At initial preparation, no `v0.6.0` tag or GitHub Release existed' docs/V0.6.0_RELEASE_CANDIDATE.md \
   || fail release_candidate_historical_no_tag_boundary_missing
 grep -Fq 'Current release authority comes only from the immutable public Release' docs/V0.6.0_RELEASE_CANDIDATE.md \
@@ -132,14 +167,14 @@ grep -Fq 'The staged Actions artifact is retained for 30 days' docs/PUBLIC_RELEA
   || fail staging_retention_window_missing
 grep -Fq 'not confidential storage' docs/PUBLIC_RELEASE.md \
   || fail public_repository_artifact_confidentiality_boundary_missing
-grep -Fq 'release-physical-qualification-schema-v1.json' docs/PUBLIC_RELEASE.md \
-  || fail physical_qualification_schema_link_missing
-grep -Fq 'release-staging-manifest-schema-v1.json' docs/PUBLIC_RELEASE.md \
+grep -Fq 'release-automated-qualification-schema-v1.json' docs/PUBLIC_RELEASE.md \
+  || fail automated_qualification_schema_link_missing
+grep -Fq 'release-staging-manifest-schema-v2.json' docs/PUBLIC_RELEASE.md \
   || fail release_staging_schema_link_missing
-grep -Fq 'The current lane cannot accept one' docs/PUBLIC_RELEASE.md \
-  || fail oversized_dispatch_stop_condition_missing
-grep -Fq 'separate native-device full-suite digest' docs/PUBLIC_RELEASE.md \
-  || fail public_release_digest_lineage_missing
+grep -Fq 'There is no evidence bundle to encode and no physical-evidence workflow input' docs/PUBLIC_RELEASE.md \
+  || fail operator_evidence_dispatch_removed
+grep -Fq 'cannot be submitted to the automated route' docs/PUBLIC_RELEASE.md \
+  || fail physical_qualification_class_isolation_missing
 grep -Fq 'first-attempt successful CI, Security, and Android push runs' docs/RELEASE_GOVERNANCE.md \
   || fail release_first_attempt_only_boundary_missing
 grep -Fq 'Pre-create one **empty draft** GitHub Release' docs/RELEASE_GOVERNANCE.md \
@@ -150,6 +185,12 @@ grep -Fq 'RELEASE_PRODUCTION_PROTECTED=asset-attachment-reviewer-main-only-v1' d
   || fail release_production_environment_guard_missing
 grep -Fq 'RELEASE_FINAL_PROTECTED=final-publication-reviewer-main-only-immutable-v1' docs/PUBLIC_RELEASE.md \
   || fail release_final_environment_guard_missing
+grep -Fq 'RELEASE_FINAL_EXCLUSIVE_MUTATION_FREEZE=exclusive-release-main-policy-tag-writers-paused-v1' docs/PUBLIC_RELEASE.md \
+  || fail release_final_mutation_freeze_guard_missing
+grep -Fq "GitHub's Release update API has no compare-and-swap precondition" docs/PUBLIC_RELEASE.md \
+  || fail publication_non_atomic_api_boundary_missing
+grep -Fq 'The workflow'\''s repeated API reads are latest-observed checks, not an atomic repository-wide lock.' docs/PUBLIC_RELEASE.md \
+  || fail publication_latest_observed_boundary_missing
 grep -Fq '`RELEASE_PRODUCTION_POLICY_READ_TOKEN`' docs/PUBLIC_RELEASE.md \
   || fail release_production_policy_read_credential_missing
 grep -Fq '`RELEASE_FINAL_POLICY_READ_TOKEN`' docs/PUBLIC_RELEASE.md \
@@ -201,7 +242,7 @@ grep -Fq '`immutable: true`' docs/PUBLIC_RELEASE.md \
   || fail publication_immutable_true_proof_missing
 grep -Fq 'public sixteen-asset re-download proof' docs/PUBLIC_RELEASE.md \
   || fail publication_public_redownload_proof_missing
-grep -Fq 'workflow never auto-deletes a draft, asset, tag, or staging artifact' docs/PUBLIC_RELEASE.md \
+grep -Fq 'workflow never auto-deletes or repairs a draft, asset, tag, or staging artifact' docs/PUBLIC_RELEASE.md \
   || fail publication_no_automatic_deletion_recovery_missing
 grep -Fq 'Workflow bundles, stages, tags, and drafts are not installation sources' README.md \
   || fail readme_nonrelease_installation_boundary_missing
@@ -218,7 +259,7 @@ markers = [
     "**Pre-created empty draft.**",
     "**Protected attachment.**",
     "**Independent byte verification.**",
-    "**Separate final approval.**",
+    "**Separate final approval and mutation freeze.**",
     "**Immutable public proof.**",
 ]
 positions = [text.index(marker) for marker in markers]
@@ -231,6 +272,8 @@ grep -Fq 'cargo clippy --locked --workspace --all-targets -- -D warnings' README
   || fail readme_default_clippy_gate_missing
 grep -Fq 'cargo test --locked --workspace --all-targets' README.md \
   || fail readme_default_test_gate_missing
+grep -Fq 'At eight minutes, GNU `timeout` marks the posture failed and sends `TERM`; if it is still running 30 seconds later, `timeout` sends `KILL`.' docs/VALIDATION.md \
+  || fail ci_test_posture_timeout_contract_missing
 grep -Fq 'bash tests/release_staging_workflow_test.sh' README.md \
   || fail readme_release_staging_gate_missing
 grep -Fq 'bash tests/release_publication_workflow_test.sh' README.md \
@@ -239,14 +282,114 @@ grep -Fq 'bash tests/prepare_release_publication_assets_test.sh' README.md \
   || fail readme_release_publication_preparer_gate_missing
 grep -Fq 'bash tests/publish_release_assets_test.sh' README.md \
   || fail readme_release_publication_api_gate_missing
+grep -Fq 'bash tests/termux_automated_deployment_gate_test.sh' README.md \
+  || fail readme_automated_deployment_gate_missing
+grep -Fq 'bash tests/package_automated_qualification_test.sh' README.md \
+  || fail readme_automated_qualification_package_gate_missing
+grep -Fq 'bash tests/runtime_snapshot_replay_test.sh' README.md \
+  || fail readme_runtime_snapshot_replay_gate_missing
+grep -Fq 'bash tests/runtime_snapshot_replay_test.sh' .github/workflows/ci.yml \
+  || fail ci_runtime_snapshot_replay_gate_missing
+grep -Fq 'bash tests/automated_release_qualification_workflow_test.sh' README.md \
+  || fail readme_automated_qualification_workflow_gate_missing
 grep -Fq 'bash tests/release_publication_workflow_test.sh' CONTRIBUTING.md \
   || fail contributing_release_publication_gate_missing
 grep -Fq 'bash tests/prepare_release_publication_assets_test.sh' CONTRIBUTING.md \
   || fail contributing_release_publication_preparer_gate_missing
 grep -Fq 'bash tests/publish_release_assets_test.sh' CONTRIBUTING.md \
   || fail contributing_release_publication_api_gate_missing
-[[ "$(grep -Fc 'retention-days: 30' .github/workflows/android-cross-compile.yml)" -eq 2 ]] \
+grep -Fq 'bash tests/termux_automated_deployment_gate_test.sh' CONTRIBUTING.md \
+  || fail contributing_automated_deployment_gate_missing
+grep -Fq 'bash tests/package_automated_qualification_test.sh' CONTRIBUTING.md \
+  || fail contributing_automated_qualification_package_gate_missing
+grep -Fq 'bash tests/runtime_snapshot_replay_test.sh' CONTRIBUTING.md \
+  || fail contributing_runtime_snapshot_replay_gate_missing
+grep -Fq 'bash tests/automated_release_qualification_workflow_test.sh' CONTRIBUTING.md \
+  || fail contributing_automated_qualification_workflow_gate_missing
+grep -Fq 'only when requesting the separate optional physical-certification tier' docs/VALIDATION.md \
+  || fail validation_optional_physical_certification_boundary_missing
+grep -Fq 'separate completed-run qualifier and protected staging review' docs/ANDROID_ARTIFACTS.md \
+  || fail android_artifact_retention_purpose_stale
+grep -Fq 'automated-native-deployment-scenarios-schema-v1.json' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_deployment_scenario_schema_documentation_missing
+grep -Fq 'complete qualification boundary' README.md \
+  || fail readme_qualification_publication_authority_conflated
+if grep -Fq 'ordinary release authority' \
+  README.md docs/AUTOMATED_RELEASE_QUALIFICATION.md docs/DEVICE_PRODUCTION_GATE.md; then
+  fail qualification_class_mislabeled_as_publication_authority
+fi
+[[ "$(grep -Fc 'retention-days: 30' .github/workflows/android-cross-compile.yml)" -eq 3 ]] \
   || fail android_qualification_retention_contract_changed
+grep -Fq 'exactly nine artifacts' docs/PUBLIC_RELEASE.md \
+  || fail public_release_android_artifact_count_missing
+grep -Fq 'twelve members' docs/PUBLIC_RELEASE.md \
+  || fail public_release_qualifier_member_count_missing
+grep -Fq 'exactly nine artifacts' docs/ANDROID_ARTIFACTS.md \
+  || fail android_artifact_inventory_count_missing
+grep -Fq 'twelve-member' docs/AUTOMATED_RELEASE_QUALIFICATION.md \
+  || fail automated_qualification_member_count_missing
+for runtime_name in \
+  termux-qualified-runtime-image-v1.tar.gz \
+  termux-runtime-package-lock-v1.json \
+  termux-runtime-snapshot-v1.json \
+  termux-runtime-snapshot-replay-v1.json
+do
+  grep -Fq "$runtime_name" scripts/prepare_release_publication_assets.sh \
+    || fail "publication_runtime_inventory_missing_$runtime_name"
+done
+for claim in \
+  'physicalDeviceObserved:false' \
+  'androidFrameworkObserved:false' \
+  'sustainedPhysicalSoak:false' \
+  'physicalCertification:"not_run"' \
+  'rebuildReproducibilityClaim:false'
+do
+  grep -Fq "$claim" README.md \
+    || fail "readme_automated_negative_claim_missing_$claim"
+  grep -Fq "$claim" docs/PRODUCTION_READINESS.md \
+    || fail "production_readiness_negative_claim_missing_$claim"
+done
+for workflow in \
+  .github/workflows/ci.yml \
+  .github/workflows/security.yml \
+  .github/workflows/android-cross-compile.yml
+do
+  for schema_pattern in \
+    'docs/runtime-package-lock-schema-v*.json' \
+    'docs/runtime-snapshot-schema-v*.json' \
+    'docs/runtime-snapshot-replay-schema-v*.json'
+  do
+    grep -Fq "$schema_pattern" "$workflow" \
+      || fail "runtime_schema_trigger_missing_${workflow}_${schema_pattern}"
+  done
+done
+grep -Fq 'scripts/verify_runtime_snapshot.sh' .github/workflows/security.yml \
+  || fail security_runtime_snapshot_verifier_trigger_missing
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+qualification = json.loads(
+    Path("docs/release-automated-qualification-schema-v1.json").read_text()
+)
+if "retainedRuntime" not in qualification["required"]:
+    raise SystemExit("qualification retainedRuntime requirement missing")
+if set(qualification["$defs"]["retainedRuntime"]["required"]) != {
+    "runtimeImageId", "base", "archive", "packageLock", "snapshot", "replay",
+    "installedPackages", "androidLinker", "verification", "claimBoundary",
+    "rebuildReproducibilityClaim",
+}:
+    raise SystemExit("qualification retainedRuntime inventory changed")
+
+stage = json.loads(
+    Path("docs/release-staging-manifest-schema-v2.json").read_text()
+)
+runtime = stage["properties"]["evidence"]["properties"]["runtime"]
+if runtime.get("additionalProperties") is not False:
+    raise SystemExit("staging runtime record is not closed")
+if set(runtime["required"]) != {"archive", "packageLock", "snapshot", "replay"}:
+    raise SystemExit("staging runtime record inventory changed")
+PY
 if grep -Eq '^[[:space:]]+tags:' .github/workflows/android-cross-compile.yml; then
   fail tag_triggered_android_rebuild_present
 fi

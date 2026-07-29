@@ -128,8 +128,8 @@ jobs:
           bash scripts/prepare_release_publication_assets.sh \
             --stage-tar "$stage_tar" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$EXPECTED_COMMIT" \
             --version "$EXPECTED_VERSION"
@@ -147,8 +147,8 @@ jobs:
             --staged-artifact-id "$STAGED_ARTIFACT_ID" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
             --draft-release-id "$DRAFT_RELEASE_ID" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             >"$RUNNER_TEMP/release-publication/preflight-identity.txt"
 
   attach-assets:
@@ -245,8 +245,8 @@ jobs:
           bash scripts/prepare_release_publication_assets.sh \
             --stage-tar "$stage_tar" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$EXPECTED_COMMIT" \
             --version "$EXPECTED_VERSION"
@@ -265,8 +265,8 @@ jobs:
             --staged-artifact-id "$STAGED_ARTIFACT_ID" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
             --draft-release-id "$DRAFT_RELEASE_ID" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --record "$RUNNER_TEMP/release-publication/release-attachment-record-v1.json" \
             >"$RUNNER_TEMP/release-publication/attachment-identity.txt"
 
@@ -406,8 +406,8 @@ jobs:
           bash scripts/prepare_release_publication_assets.sh \
             --stage-tar "$stage_tar" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$EXPECTED_COMMIT" \
             --version "$EXPECTED_VERSION"
@@ -425,8 +425,8 @@ jobs:
             --staged-artifact-id "$STAGED_ARTIFACT_ID" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
             --draft-release-id "$DRAFT_RELEASE_ID" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --record "$RUNNER_TEMP/release-publication/release-draft-verification-record-v1.json" \
             >"$RUNNER_TEMP/release-publication/draft-verification-identity.txt"
 
@@ -494,7 +494,11 @@ jobs:
       - name: Require protected final-publication environment
         env:
           ENVIRONMENT_GUARD: ${{ vars.RELEASE_FINAL_PROTECTED }}
-        run: test "$ENVIRONMENT_GUARD" = final-publication-reviewer-main-only-immutable-v1
+          MUTATION_FREEZE_GUARD: ${{ vars.RELEASE_FINAL_EXCLUSIVE_MUTATION_FREEZE }}
+        run: |
+          set -euo pipefail
+          test "$ENVIRONMENT_GUARD" = final-publication-reviewer-main-only-immutable-v1
+          test "$MUTATION_FREEZE_GUARD" = exclusive-release-main-policy-tag-writers-paused-v1
 
       - name: Checkout dispatch main source
         # actions/checkout@v7.0.1 resolved 2026-07-24
@@ -622,10 +626,21 @@ jobs:
           chmod 600 "$record"
           test "$(sha256sum -- "$record" | awk '{print $1}')" = "$VERIFICATION_RECORD_FILE_SHA256"
           jq -e '
-            keys == ["phase","recordType","release","repository","schemaVersion","source","stage","workflow"]
+            keys == ["phase","qualification","recordType","release","repository","schemaVersion","source","stage","workflow"]
             and .schemaVersion == 1
             and .recordType == "release-publication-identity"
             and .phase == "verify"
+            and .qualification == {
+              class:"official_termux_native_automated_v1",
+              runId:.qualification.runId,
+              claimBoundary:{
+                physicalDeviceObserved:false,
+                androidFrameworkObserved:false,
+                sustainedPhysicalSoak:false,
+                physicalCertification:"not_run"
+              }
+            }
+            and (.qualification.runId | type == "string" and test("^[1-9][0-9]*$"))
             and .release.assetCount == 16
             and (.release.assets | type == "array" and length == 16)
           ' "$record" >/dev/null
@@ -674,8 +689,8 @@ jobs:
           bash scripts/prepare_release_publication_assets.sh \
             --stage-tar "$stage_tar" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$EXPECTED_COMMIT" \
             --version "$EXPECTED_VERSION"
@@ -694,8 +709,8 @@ jobs:
             --staged-artifact-id "$STAGED_ARTIFACT_ID" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
             --draft-release-id "$DRAFT_RELEASE_ID" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --verification-record "$RUNNER_TEMP/release-publication/verification-record/release-draft-verification-record-v1.json" \
             >"$RUNNER_TEMP/release-publication/publication-identity.txt"
 
@@ -785,8 +800,8 @@ jobs:
           bash scripts/prepare_release_publication_assets.sh \
             --stage-tar "$stage_tar" \
             --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
-            --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-            --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json" \
+            --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+            --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json" \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$EXPECTED_COMMIT" \
             --version "$EXPECTED_VERSION"
@@ -808,6 +823,6 @@ jobs:
               --staged-artifact-id "$STAGED_ARTIFACT_ID" \
               --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
               --draft-release-id "$DRAFT_RELEASE_ID" \
-              --assets-dir "$RUNNER_TEMP/release-publication/assets" \
-              --receipt "$RUNNER_TEMP/release-publication/release-publication-receipt-v1.json"
+              --assets-dir "$RUNNER_TEMP/release-publication/publication-inputs/assets" \
+              --receipt "$RUNNER_TEMP/release-publication/publication-inputs/release-publication-receipt-v1.json"
           } | tee "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/runtime-snapshot-replay-schema-v1.json",
+  "title": "Termux MCP Edge independent qualified-runtime replay evidence v1",
+  "description": "Closed non-authoritative report proving that a fresh native ARM64 runner loaded and executed the retained image archive by exact image ID without package or runtime network access.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "replayVersion",
+    "status",
+    "failureCode",
+    "releaseQualificationEligible",
+    "repository",
+    "commit",
+    "runtimeImageId",
+    "snapshot",
+    "packageLock",
+    "installedPackages",
+    "androidLinker",
+    "verification",
+    "claimBoundary",
+    "rebuildReproducibilityClaim"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "replayVersion": {"const": "1"},
+    "status": {"const": "pass"},
+    "failureCode": {"const": null},
+    "releaseQualificationEligible": {"const": false},
+    "repository": {"const": "CyberBASSLord-666/termux-mcp-edge"},
+    "commit": {"$ref": "#/$defs/commit"},
+    "runtimeImageId": {"$ref": "#/$defs/ociDigest"},
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "archive"],
+      "properties": {
+        "manifest": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {
+              "type": "object",
+              "properties": {
+                "fileName": {"const": "termux-runtime-snapshot-v1.json"}
+              }
+            }
+          ]
+        },
+        "archive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fileName", "format", "compression", "sha256", "bytes"],
+          "properties": {
+            "fileName": {
+              "const": "termux-qualified-runtime-image-v1.tar.gz"
+            },
+            "format": {"const": "docker-image-archive-v1"},
+            "compression": {"const": "gzip-no-name"},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1610612736
+            }
+          }
+        }
+      }
+    },
+    "packageLock": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {
+          "type": "object",
+          "properties": {
+            "fileName": {"const": "termux-runtime-package-lock-v1.json"}
+          }
+        }
+      ]
+    },
+    "installedPackages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "count"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    },
+    "androidLinker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": {"const": "/system/bin/linker64"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archiveDigestVerified",
+        "singleImageArchive",
+        "loadedImageIdVerified",
+        "platformVerified",
+        "runtimeUserVerified",
+        "rootfsLayersVerified",
+        "packageLockVerified",
+        "packageInputBytesVerified",
+        "repositoryIndexBytesVerified",
+        "installedPackageInventoryVerified",
+        "requiredRuntimeCommandsVerified",
+        "androidLinkerVerified",
+        "runtimeNetworkAccess"
+      ],
+      "properties": {
+        "archiveDigestVerified": {"const": true},
+        "singleImageArchive": {"const": true},
+        "loadedImageIdVerified": {"const": true},
+        "platformVerified": {"const": true},
+        "runtimeUserVerified": {"const": true},
+        "rootfsLayersVerified": {"const": true},
+        "packageLockVerified": {"const": true},
+        "packageInputBytesVerified": {"const": true},
+        "repositoryIndexBytesVerified": {"const": true},
+        "installedPackageInventoryVerified": {"const": true},
+        "requiredRuntimeCommandsVerified": {"const": true},
+        "androidLinkerVerified": {"const": true},
+        "runtimeNetworkAccess": {"const": false}
+      }
+    },
+    "claimBoundary": {"$ref": "#/$defs/claimBoundary"},
+    "rebuildReproducibilityClaim": {"const": false}
+  },
+  "$defs": {
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ociDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "fileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "bytes"],
+      "properties": {
+        "fileName": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        }
+      }
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physicalDeviceObserved",
+        "androidFrameworkObserved",
+        "sustainedPhysicalSoak",
+        "physicalCertification"
+      ],
+      "properties": {
+        "physicalDeviceObserved": {"const": false},
+        "androidFrameworkObserved": {"const": false},
+        "sustainedPhysicalSoak": {"const": false},
+        "physicalCertification": {"const": "not_run"}
+      }
+    }
+  }
+}

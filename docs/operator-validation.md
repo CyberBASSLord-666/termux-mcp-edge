@@ -176,7 +176,7 @@ Expected enabled evidence:
 - Endless stdout/stderr, a descendant retaining either pipe, and a disconnected caller all terminate within the same fixed deadline, leave no provider process-group survivor, and do not accumulate background supervisors.
 - Successful and denied calls increment only the documented aggregate audit labels.
 
-The native ARM64 official-Termux CI gate performs these automated process/transport checks with a fixed-path fixture and publishes strict v2 battery evidence. A physical release check, when required by the observation classifier, is for battery/OEM/Android behavior only; routine feature PRs do not require an operator to repeat a 60-minute idle window.
+The native ARM64 official-Termux CI gate performs these automated process/transport checks with a fixed-path fixture and publishes strict v3 battery evidence. Optional physical certification is for battery/OEM/Android behavior only; routine feature PRs and ordinary automated release qualification do not require an operator to repeat a 60-minute idle window.
 
 ## Optional Android volume checks
 
@@ -199,7 +199,9 @@ Expected enabled evidence:
 - Output overflow, pipe-holding descendants, and disconnected callers leave no provider process-group survivor or detached supervisor.
 - Successful and denied calls increment only documented stable aggregate audit labels.
 
-The native ARM64 official-Termux workflow automates these checks and publishes strict v1 volume evidence. Physical-device audio-policy or OEM behavior remains separate release evidence when applicable; routine feature development does not require a long idle observation.
+The native ARM64 official-Termux workflow automates these checks and publishes strict v2 volume evidence. Physical-device audio-policy or OEM behavior remains an optional, separately named certification tier; routine feature development and ordinary automated release qualification do not require a long idle observation.
+
+Automated release qualification proves the exact artifacts under the digest-pinned official Termux userland on native ARM64, including deterministic Android-provider simulation and isolated deployment recovery. It does not certify physical-device, OEM, battery-aging, thermal-soak, radio, Doze, or Android-framework behavior.
 
 ## Optional Android volume-control checks
 
@@ -213,7 +215,7 @@ Use [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md) and prove the compl
 - Conflicting mutations fail without queueing. Timeout, output overflow, pipe holders, and caller cancellation leave no process-group survivor; cancellation after consumption does not cancel verification/restoration.
 - Forced setter and verification failures prove both rollback-confirmed and rollback-unconfirmed stable reasons. Audit counters retain only stable aggregate labels.
 
-Native ARM64 official-Termux evidence is deterministic development qualification. A later physical check, if the release classifier requires it, evaluates device/OEM audio-policy behavior without repeating an arbitrary idle-monitoring window.
+Native ARM64 official-Termux evidence is deterministic automated qualification. A physical check may be requested separately to certify device/OEM audio-policy behavior, but it is optional and cannot replace, broaden, or be merged into the automated class.
 
 ## Optional fixed command profile checks
 
@@ -237,7 +239,7 @@ Expected enabled evidence:
 - Runtime status reports `fixed_read_only_server_diagnostics` while arbitrary execution and high-impact controls remain false.
 - Audit counters record three allowed fixed profiles and stable denied reasons without profile text, argv, cwd, environment, or output.
 
-The native ARM64 official-Termux command gate automates these deterministic checks and publishes strict v2 evidence with exactly 29 MCP requests plus a separate wrong-name construction-failure phase. That phase requires `McpRouterBuildError::CommandClientUnavailable`, probes health while construction is live, proves the already-bound listener never serves and no service-start log appears, and rejects bearer-token or filesystem-path disclosure. The combined phase starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and calls `execution_boundary` to prove both retained identities. Command schema v1 is historical-only. The deterministic gate does not run or require a long monitoring window.
+The native ARM64 official-Termux command gate automates these deterministic checks and publishes strict v3 evidence with exactly 29 MCP requests plus a separate wrong-name construction-failure phase. That phase requires `McpRouterBuildError::CommandClientUnavailable`, probes health while construction is live, proves the already-bound listener never serves and no service-start log appears, and rejects bearer-token or filesystem-path disclosure. The combined phase starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and calls `execution_boundary` to prove both retained identities. Command schemas v1 and v2 are historical-only. The deterministic gate does not run or require a long monitoring window.
 
 ## Capability-token boundary checks
 

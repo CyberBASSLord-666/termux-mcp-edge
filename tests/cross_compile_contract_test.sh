@@ -6,6 +6,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SCRIPT="$ROOT/scripts/cross_compile.sh"
 CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
 ANDROID_WORKFLOW="$ROOT/.github/workflows/android-cross-compile.yml"
+SECURITY_WORKFLOW="$ROOT/.github/workflows/security.yml"
+QUALIFICATION_POLICY="$ROOT/docs/release-qualification-policy-v1.json"
+QUALIFICATION_POLICY_SCHEMA="$ROOT/docs/release-qualification-policy-schema-v1.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 
@@ -31,6 +34,7 @@ assert_contains 'cargo clippy --locked --workspace --all-targets --features mcp-
 assert_contains 'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --features mcp-runtime' "$CI_WORKFLOW"
+assert_contains 'cargo test --locked --workspace --all-targets --features full-suite' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --all-features' "$CI_WORKFLOW"
 [[ "$(grep -Fc 'git diff --exit-code -- Cargo.toml Cargo.lock' "$CI_WORKFLOW")" -eq 4 ]] \
   || fail ci_dependency_input_brackets_changed
@@ -40,8 +44,574 @@ cache_line="$(grep -nF 'uses: Swatinem/rust-cache@' "$CI_WORKFLOW" | head -n1 | 
 [[ "$metadata_line" =~ ^[1-9][0-9]*$ && "$cache_line" =~ ^[1-9][0-9]*$ ]]
 ((metadata_line < cache_line)) || fail locked_metadata_must_precede_cargo_aware_cache
 
+python3 - "$CI_WORKFLOW" <<'PY'
+import pathlib
+import re
+import sys
+
+import yaml
+
+workflow = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+workflow_text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+if "RUST_TEST_THREADS" in workflow_text:
+    raise SystemExit("CI workflow may not serialize the Rust test harness")
+repository_root = pathlib.Path(sys.argv[1]).resolve().parents[2]
+for cargo_config in (
+    repository_root / ".cargo" / "config",
+    repository_root / ".cargo" / "config.toml",
+):
+    if cargo_config.exists() and "RUST_TEST_THREADS" in cargo_config.read_text(encoding="utf-8"):
+        raise SystemExit(f"{cargo_config} may not serialize the Rust test harness")
+job = workflow["jobs"]["rust"]
+if job.get("timeout-minutes") != 45:
+    raise SystemExit("CI Rust job timeout no longer composes its explicit step bounds")
+if any(key in job for key in ("continue-on-error", "if")):
+    raise SystemExit("CI Rust job became conditional or fail-open")
+for owner, defaults in (
+    ("workflow", workflow.get("defaults")),
+    ("CI Rust job", job.get("defaults")),
+):
+    if (
+        isinstance(defaults, dict)
+        and isinstance(defaults.get("run"), dict)
+        and "shell" in defaults["run"]
+    ):
+        raise SystemExit(f"{owner} may not override the runner shell")
+for owner, environment in (
+    ("workflow", workflow.get("env")),
+    ("CI Rust job", job.get("env")),
+):
+    if isinstance(environment, dict) and "RUST_TEST_THREADS" in environment:
+        raise SystemExit(f"{owner} may not serialize the Rust test harness")
+expected = {
+    "Tests (default posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets",
+    "Tests (MCP runtime posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime",
+    "Tests (full-suite posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite",
+    "Tests (all features)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --all-features",
+}
+steps = {
+    step.get("name"): step
+    for step in job["steps"]
+    if step.get("name") in expected
+}
+if set(steps) != set(expected):
+    raise SystemExit("CI test posture set changed")
+for name, command in expected.items():
+    step = steps[name]
+    if step.get("run") != command:
+        raise SystemExit(f"{name} lost its exact locked timeout command")
+    if any(key in step for key in ("continue-on-error", "if", "shell")):
+        raise SystemExit(f"{name} became conditional, fail-open, or shell-overridden")
+    if isinstance(step.get("env"), dict) and "RUST_TEST_THREADS" in step["env"]:
+        raise SystemExit(f"{name} may not serialize the Rust test harness")
+    lowered = command.lower()
+    if "--test-threads" in lowered or "nextest" in lowered or "retry" in lowered:
+        raise SystemExit(f"{name} changed normal one-pass parallel test semantics")
+all_runs = "\n".join(
+    str(step.get("run", ""))
+    for step in job["steps"]
+)
+if len(re.findall(r"\bcargo\s+test\b", all_runs)) != 4:
+    raise SystemExit("CI must invoke exactly four locked Cargo test postures")
+PY
+
 assert_contains 'cargo metadata --locked --format-version 1 --no-deps' "$ANDROID_WORKFLOW"
 assert_contains 'git diff --exit-code -- Cargo.toml Cargo.lock' "$ANDROID_WORKFLOW"
+for protected_runtime_input in \
+  'scripts/termux_device_smoke.sh' \
+  'scripts/termux_deploy.sh'
+do
+  [[ "$(grep -Fc -- "- \"$protected_runtime_input\"" "$ANDROID_WORKFLOW")" == 1 ]] \
+    || fail "protected runtime Android trigger missing or duplicated: $protected_runtime_input"
+done
+[[ "$(grep -Fc -- '- "scripts/commit_verified_file.py"' "$ANDROID_WORKFLOW")" == 1 ]] \
+  || fail commit_helper_android_trigger_missing_or_duplicated
+[[ "$(grep -Fc -- '- "scripts/commit_verified_file.py"' "$SECURITY_WORKFLOW")" == 1 ]] \
+  || fail commit_helper_security_trigger_missing_or_duplicated
+for runtime_input in \
+  'scripts/verify_runtime_snapshot.sh' \
+  'docs/runtime-package-lock-schema-v*.json' \
+  'docs/runtime-snapshot-schema-v*.json' \
+  'docs/runtime-snapshot-replay-schema-v*.json'
+do
+  [[ "$(grep -Fc -- "- \"$runtime_input\"" "$ANDROID_WORKFLOW")" == 1 ]] \
+    || fail "runtime snapshot Android trigger missing or duplicated: $runtime_input"
+done
+python3 - \
+  "$ANDROID_WORKFLOW" \
+  "$QUALIFICATION_POLICY" \
+  "$QUALIFICATION_POLICY_SCHEMA" <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+import textwrap
+
+workflow = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+policy = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+schema = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+expected = ["file", "jq", "python", "termux-services"]
+dockerfile_start = workflow.index(
+    "cat >\"$runtime_context/Dockerfile\" <<'DOCKERFILE'"
+)
+dockerfile_end = workflow.index("\n          DOCKERFILE", dockerfile_start)
+dockerfile = workflow[dockerfile_start:dockerfile_end]
+
+
+def validate_runtime_dockerfile(value):
+    for forbidden in (
+        "apt-get install",
+        "apt-get update",
+        "apt-get -f",
+        "apt install",
+        "pkg install",
+        "dpkg --install",
+        "dpkg -i",
+        "--fix-broken",
+        "--force-",
+        "--ignore-depends",
+        "curl ",
+        "wget ",
+        "|| true",
+        " | ",
+        "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
+        "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
+    ):
+        if forbidden in value:
+            raise ValueError(
+                f"qualified runtime Dockerfile contains forbidden fallback: {forbidden}"
+            )
+    required = (
+        "COPY --chown=0:0 package-inputs/debs/",
+        "COPY --chown=0:0 package-inputs/indexes/",
+        "COPY --chown=0:0 termux-runtime-package-lock-v1.json",
+        "RUN set -eu;",
+        "export LC_ALL=C DEBIAN_FRONTEND=noninteractive",
+        "package_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
+        "index_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
+        "lock_path=/data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json",
+        'deb_markers="$(find "$package_root" -mindepth 1 -maxdepth 1 -type f -name \'*.deb\' -exec printf x \\;)"',
+        'deb_count="${#deb_markers}"',
+        'test "$deb_count" -ge 1',
+        'test "$deb_count" -le 512',
+        'find "$package_root" -mindepth 1 -maxdepth 1 ! -type f',
+        'find "$package_root" -mindepth 2',
+        'test -z "$unexpected_package_inputs"',
+        'test -z "$nested_package_inputs"',
+        'index_markers="$(find "$index_root" -mindepth 1 -maxdepth 1 -type f -exec printf x \\;)"',
+        'test "${#index_markers}" -ge 1',
+        'find "$index_root" -mindepth 1 -maxdepth 1 ! -type f',
+        'find "$index_root" -mindepth 2',
+        'test -z "$unexpected_index_inputs"',
+        'test -z "$nested_index_inputs"',
+        'test -f "$lock_path"',
+        'test ! -L "$lock_path"',
+        'pre_install_audit="$(dpkg --audit)"',
+        'test -z "$pre_install_audit"',
+        'set -- "$package_root"/*.deb',
+        'test "$#" = "$deb_count"',
+        'dpkg --unpack -- "$@"',
+        "dpkg --configure --pending",
+        'post_install_audit="$(dpkg --audit)"',
+        'test -z "$post_install_audit"',
+        'for archive in "$@"; do',
+        'dpkg-deb --field "$archive" Package',
+        'dpkg-deb --field "$archive" Version',
+        'dpkg-deb --field "$archive" Architecture',
+        "dpkg-query -W -f='${Status}\\t${Version}\\t${Architecture}'",
+        "install ok installed\\t%s\\t%s",
+        'test "$actual" = "$expected"',
+        "/share/termux-mcp/runtime-repository-indexes/",
+    )
+    for marker in required:
+        if marker not in value:
+            raise ValueError(
+                f"offline qualified runtime Dockerfile missing: {marker}"
+            )
+    if value.count("$(dpkg --audit)") != 2:
+        raise ValueError(
+            "qualified runtime must audit dpkg immediately before and after install"
+        )
+    copy_positions = [
+        value.index("COPY --chown=0:0 package-inputs/debs/"),
+        value.index("COPY --chown=0:0 package-inputs/indexes/"),
+        value.index("COPY --chown=0:0 termux-runtime-package-lock-v1.json"),
+    ]
+    user_directives = [
+        line.strip()
+        for line in value.splitlines()
+        if line.strip().startswith("USER ")
+    ]
+    if user_directives != ["USER 1000:1000"]:
+        raise ValueError("qualified runtime must declare exact non-root user once")
+    user_position = value.index("USER 1000:1000")
+    run_position = value.index("RUN set -eu;")
+    structure_position = value.index('test "$deb_count" -ge 1')
+    first_audit_position = value.index('pre_install_audit="$(dpkg --audit)"')
+    first_audit_check_position = value.index('test -z "$pre_install_audit"')
+    argument_position = value.index('set -- "$package_root"/*.deb')
+    unpack_position = value.index('dpkg --unpack -- "$@"')
+    configure_position = value.index("dpkg --configure --pending")
+    second_audit_position = value.index(
+        'post_install_audit="$(dpkg --audit)"',
+    )
+    second_audit_check_position = value.index('test -z "$post_install_audit"')
+    identity_loop_position = value.index('for archive in "$@"; do')
+    identity_position = value.index(
+        "dpkg-query -W -f='${Status}\\t${Version}\\t${Architecture}'"
+    )
+    identity_check_position = value.index('test "$actual" = "$expected"')
+    cleanup_position = value.index(
+        "rm -rf /data/data/com.termux/files/usr/var/lib/apt/lists/*"
+    )
+    if not (
+        max(copy_positions)
+        < user_position
+        < run_position
+        < structure_position
+        < first_audit_position
+        < first_audit_check_position
+        < argument_position
+        < unpack_position
+        < configure_position
+        < second_audit_position
+        < second_audit_check_position
+        < identity_loop_position
+        < identity_position
+        < identity_check_position
+        < cleanup_position
+    ):
+        raise ValueError("qualified runtime offline-install order changed")
+
+
+validate_runtime_dockerfile(dockerfile)
+generated_dockerfile = textwrap.dedent(dockerfile.split("\n", 1)[1])
+if generated_dockerfile.count("\nRUN ") != 1:
+    raise SystemExit("qualified runtime Dockerfile RUN count changed")
+runtime_shell = generated_dockerfile.split("\nRUN ", 1)[1]
+for shell in ("bash", "sh"):
+    syntax = subprocess.run(
+        [shell, "-n"],
+        input=runtime_shell,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if syntax.returncode != 0:
+        raise SystemExit(
+            f"qualified runtime RUN shell is invalid under {shell}: "
+            f"{syntax.stderr.strip()}"
+        )
+    audit_failure = subprocess.run(
+        [
+            shell,
+            "-c",
+            "set -eu\n"
+            'pre_install_audit="$(false)"\n'
+            'test -z "$pre_install_audit"\n',
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if (
+        audit_failure.returncode != 1
+        or audit_failure.stdout
+        or audit_failure.stderr
+    ):
+        raise SystemExit(
+            f"{shell} did not propagate a failed standalone dpkg-audit assignment"
+        )
+mutations = {
+    "apt repair fallback": dockerfile.replace(
+        "dpkg --configure --pending;",
+        "dpkg --configure --pending; apt-get -f install;",
+        1,
+    ),
+    "root reset": dockerfile.replace(
+        "USER 1000:1000",
+        "USER 1000:1000\n          USER 0:0",
+        1,
+    ),
+    "missing nested-input check": dockerfile.replace(
+        'nested_package_inputs="$(find "$package_root" -mindepth 2 -print -quit)";',
+        "nested_package_inputs=;",
+        1,
+    ),
+    "missing unpack": dockerfile.replace('dpkg --unpack -- "$@";', "true;", 1),
+    "missing configure": dockerfile.replace(
+        "dpkg --configure --pending;",
+        "true;",
+        1,
+    ),
+    "forced dependency bypass": dockerfile.replace(
+        'dpkg --unpack -- "$@";',
+        'dpkg --unpack --force-depends -- "$@";',
+        1,
+    ),
+    "missing post-install audit": dockerfile.replace(
+        'post_install_audit="$(dpkg --audit)";',
+        "post_install_audit=;",
+        1,
+    ),
+    "missing installed identity join": dockerfile.replace(
+        "dpkg-query -W -f='${Status}\\t${Version}\\t${Architecture}'",
+        "printf unknown",
+        1,
+    ),
+    "missing installed identity assertion": dockerfile.replace(
+        'test "$actual" = "$expected";',
+        "true;",
+        1,
+    ),
+}
+for name, mutation in mutations.items():
+    try:
+        validate_runtime_dockerfile(mutation)
+    except (ValueError, IndexError):
+        continue
+    raise SystemExit(f"qualified runtime Dockerfile mutation was accepted: {name}")
+for marker in (
+    'chmod 0555 \\\n            "$runtime_context/package-inputs/debs"',
+    'find "$runtime_context/package-inputs" -type f -exec chmod 0444',
+    'chmod 0444 "$runtime_context/termux-runtime-package-lock-v1.json"',
+):
+    if marker not in workflow:
+        raise SystemExit(f"retained provenance is not immutable in image: {marker}")
+build_start = workflow.index("docker build \\", dockerfile_end)
+build_end = workflow.index('"$runtime_context"', build_start)
+build = workflow[build_start:build_end]
+for marker in ("--pull=false", "--no-cache", "--network=none", "--iidfile"):
+    if marker not in build:
+        raise SystemExit(f"qualified runtime build is not closed: {marker}")
+for marker in (
+    "--download-only",
+    "file jq python termux-services",
+    "repositoryMetadataAuthenticated",
+    "packageBytesFrozenBeforeBuild",
+    '"finalImageBuildNetwork": "none"',
+    '"method": "termux-dpkg-unpack-configure"',
+    '"dependencyRepair": "none"',
+    "dpkg-deb",
+):
+    if marker not in workflow:
+        raise SystemExit(f"runtime package freeze contract missing: {marker}")
+if policy["environmentRequirements"]["runtimePackages"] != expected:
+    raise SystemExit("qualification policy runtime package list changed")
+if policy["environmentRequirements"].get("runtimeUser") != "1000:1000":
+    raise SystemExit("qualification policy runtime user changed")
+schema_packages = schema["properties"]["environmentRequirements"][
+    "properties"
+]["runtimePackages"]["const"]
+if schema_packages != expected:
+    raise SystemExit("qualification policy schema runtime package list changed")
+schema_user = schema["properties"]["environmentRequirements"][
+    "properties"
+]["runtimeUser"]["const"]
+if schema_user != "1000:1000":
+    raise SystemExit("qualification policy schema runtime user changed")
+lock_schema = json.loads(
+    pathlib.Path(
+        pathlib.Path(sys.argv[1]).resolve().parents[2]
+        / "docs"
+        / "runtime-package-lock-schema-v1.json"
+    ).read_text(encoding="utf-8")
+)
+installation = lock_schema["properties"]["installation"]
+if (
+    "installation" not in lock_schema["required"]
+    or installation["additionalProperties"] is not False
+    or installation["required"] != ["method", "dependencyRepair", "runtimeUser"]
+    or installation["properties"]["method"]["const"]
+    != "termux-dpkg-unpack-configure"
+    or installation["properties"]["dependencyRepair"]["const"] != "none"
+    or installation["properties"]["runtimeUser"]["const"] != "1000:1000"
+):
+    raise SystemExit("runtime package lock installation contract changed")
+PY
+python3 - "$ANDROID_WORKFLOW" <<'PY'
+import sys
+import yaml
+
+workflow = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+workflow_defaults = workflow.get("defaults")
+if (
+    isinstance(workflow_defaults, dict)
+    and isinstance(workflow_defaults.get("run"), dict)
+    and "shell" in workflow_defaults["run"]
+):
+    raise SystemExit("workflow may not override the runner shell")
+for job_name in ("android-aarch64", "termux-emulated"):
+    job = workflow["jobs"][job_name]
+    if "continue-on-error" in job:
+        raise SystemExit(f"{job_name} job may not ignore failure")
+    job_defaults = job.get("defaults")
+    if (
+        isinstance(job_defaults, dict)
+        and isinstance(job_defaults.get("run"), dict)
+        and "shell" in job_defaults["run"]
+    ):
+        raise SystemExit(f"{job_name} job may not override the runner shell")
+    for index, step in enumerate(job["steps"]):
+        if "continue-on-error" in step or "if" in step:
+            raise SystemExit(
+                f"{job_name} step {step.get('name', index)} is conditional or fail-open"
+            )
+        if "shell" in step:
+            raise SystemExit(
+                f"{job_name} step {step.get('name', index)} may not override the runner shell"
+            )
+native_job = workflow["jobs"]["termux-emulated"]
+if native_job.get("timeout-minutes") != 75:
+    raise SystemExit("native Termux job timeout no longer composes polling and validation")
+steps = workflow["jobs"]["termux-emulated"]["steps"]
+names = [step.get("name") for step in steps]
+runtime_step = steps[names.index("Run exact artifacts in official Termux environment")]
+runtime_script = runtime_step["run"]
+for marker in (
+    """test "$(docker image inspect "$runtime_image_id" --format '{{.Config.User}}')" = "1000:1000" """.strip(),
+    r'test \"\$(id -u):\$(id -g)\" = \"1000:1000\"',
+):
+    if runtime_script.count(marker) != 1:
+        raise SystemExit(f"qualified runtime user check changed: {marker}")
+if "$PREFIX/var/cache/apt/archives" in runtime_script:
+    raise SystemExit("runtime package freeze still assumes the image's APT cache path")
+for marker, count in (
+    ("umask 077", 1),
+    ("readonly runtime_download_root=/runtime-inputs/.apt-cache", 1),
+    ('readonly runtime_download_cache="$runtime_download_root/archives"', 1),
+    ('test ! -e "$runtime_download_root"', 2),
+    ('test ! -L "$runtime_download_root"', 2),
+    ('mkdir -m 700 "$runtime_download_root"', 1),
+    ('mkdir -m 700 "$runtime_download_cache"', 1),
+    ('mkdir -m 700 "$runtime_download_cache/partial"', 1),
+    ("trap cleanup_runtime_download_cache EXIT", 1),
+    ('-o "Dir::Cache::archives=$runtime_download_cache/"', 1),
+    ("-o APT::Keep-Downloaded-Packages=true", 1),
+    ('[[ "$downloaded_deb_count" =~ ^[1-9][0-9]*$ ]]', 1),
+    ("((downloaded_deb_count >= 4 && downloaded_deb_count <= 512))", 1),
+    ('find "$runtime_download_cache"', 2),
+    ('test "$frozen_deb_count" = "$downloaded_deb_count"', 1),
+    ('rm -rf -- "$runtime_download_root"', 1),
+    ("trap - EXIT", 1),
+    ('test "$actual_package_input_names" = "$expected_package_input_names"', 1),
+    (
+        'test "$(find "$runtime_context/package-inputs" -mindepth 1 '
+        '-maxdepth 1 -type d | wc -l)" = 2',
+        1,
+    ),
+    (
+        'test "$(find "$runtime_context/package-inputs" -mindepth 1 '
+        '-maxdepth 1 ! -type d | wc -l)" = 0',
+        1,
+    ),
+):
+    if runtime_script.count(marker) != count:
+        raise SystemExit(f"private APT cache contract changed: {marker}")
+download_start = runtime_script.index(
+    "readonly runtime_download_root=/runtime-inputs/.apt-cache"
+)
+apt_start = runtime_script.index(
+    '-o "Dir::Cache::archives=$runtime_download_cache/"',
+    download_start,
+)
+count_start = runtime_script.index(
+    '[[ "$downloaded_deb_count" =~ ^[1-9][0-9]*$ ]]',
+    apt_start,
+)
+copy_start = runtime_script.index(
+    'find "$runtime_download_cache"',
+    count_start,
+)
+join_start = runtime_script.index(
+    'test "$frozen_deb_count" = "$downloaded_deb_count"',
+    copy_start,
+)
+cleanup_start = runtime_script.index(
+    "cleanup_runtime_download_cache\n    trap - EXIT",
+    join_start,
+)
+inventory_start = runtime_script.index(
+    'test "$actual_package_input_names" = "$expected_package_input_names"',
+    cleanup_start,
+)
+if not (
+    download_start
+    < apt_start
+    < count_start
+    < copy_start
+    < join_start
+    < cleanup_start
+    < inventory_start
+):
+    raise SystemExit("private APT cache freeze/cleanup/inventory ordering changed")
+companion = steps[names.index("Resolve exact companion workflow evidence")]["run"]
+if "readonly max_wait_seconds=2700" not in companion:
+    raise SystemExit("native companion-run polling budget changed")
+start = names.index("Validate emulated evidence")
+if names[start : start + 3] != [
+    "Validate emulated evidence",
+    "Freeze native qualification components",
+    "Upload native qualification components",
+]:
+    raise SystemExit("validate/freeze/upload qualification ordering changed")
+upload = steps[start + 2]
+expected_upload = {
+    "name": "termux-mcp-native-qualification-components",
+    "path": "${{ steps.components.outputs.root }}/",
+    "if-no-files-found": "error",
+    "include-hidden-files": False,
+    "compression-level": 0,
+    "overwrite": False,
+    "retention-days": 30,
+}
+if upload.get("uses") != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a":
+    raise SystemExit("qualification component upload action pin changed")
+if upload.get("with") != expected_upload:
+    raise SystemExit("qualification component upload options changed")
+
+runtime_start = names.index("Freeze replayable qualified runtime snapshot")
+if names[runtime_start : runtime_start + 2] != [
+    "Freeze replayable qualified runtime snapshot",
+    "Upload replayable qualified runtime snapshot",
+]:
+    raise SystemExit("runtime snapshot freeze/upload ordering changed")
+if runtime_start != start + 3:
+    raise SystemExit("runtime snapshot must follow validated component publication")
+runtime_upload = steps[runtime_start + 1]
+if runtime_upload.get("uses") != "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a":
+    raise SystemExit("runtime snapshot upload action pin changed")
+runtime_with = runtime_upload.get("with")
+expected_runtime_paths = "\n".join(
+    (
+        "${{ steps.runtime-snapshot.outputs.root }}/termux-qualified-runtime-image-v1.tar.gz",
+        "${{ steps.runtime-snapshot.outputs.root }}/termux-runtime-package-lock-v1.json",
+        "${{ steps.runtime-snapshot.outputs.root }}/termux-runtime-snapshot-v1.json",
+    )
+) + "\n"
+if runtime_with != {
+    "name": "termux-mcp-qualified-runtime-snapshot",
+    "path": expected_runtime_paths,
+    "if-no-files-found": "error",
+    "include-hidden-files": False,
+    "compression-level": 0,
+    "overwrite": False,
+    "retention-days": 30,
+}:
+    raise SystemExit("runtime snapshot upload options changed")
+freeze_script = steps[runtime_start]["run"]
+for marker in (
+    'docker save "$runtime_tag" | gzip -n -9',
+    "--network none",
+    'test "$(id -u):$(id -g)" = "1000:1000"',
+    'image["Config"].get("User") != "1000:1000"',
+    '"rebuildReproducibilityClaim": False',
+    'test "$(find "$snapshot" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3',
+):
+    if marker not in freeze_script:
+        raise SystemExit(f"runtime snapshot freeze contract missing: {marker}")
+PY
 
 mkdir -p "$TMP/bin" "$TMP/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
 CARGO_LOG="$TMP/cargo.log"

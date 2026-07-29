@@ -1,0 +1,825 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/automated-native-deployment-evidence-schema-v1.json",
+  "title": "Termux MCP Edge automated native deployment evidence v1",
+  "description": "Closed component evidence for deterministic deployment and recovery scenarios executed in an isolated, official native ARM64 Termux rootfs. This report never claims Android framework observation, physical hardware observation, a sustained physical soak, or standalone release qualification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateVersion",
+    "status",
+    "failureCode",
+    "releaseQualificationEligible",
+    "qualificationClass",
+    "startedAt",
+    "completedAt",
+    "candidate",
+    "scenarioSet",
+    "environment",
+    "validation"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "pass"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "failureCode": {
+            "const": null
+          },
+          "environment": {
+            "type": "object",
+            "properties": {
+              "architecture": {
+                "const": "aarch64"
+              },
+              "executionMode": {
+                "const": "official-termux-docker-native-arm64"
+              },
+              "rootfsImage": {
+                "const": "termux/termux-docker:aarch64"
+              },
+              "rootfsDigest": {
+                "$ref": "#/$defs/imageDigest"
+              },
+              "rootfsImageId": {
+                "$ref": "#/$defs/imageDigest"
+              },
+              "runtimeImageDigest": {
+                "$ref": "#/$defs/imageDigest"
+              },
+              "termuxPrefix": {
+                "const": "/data/data/com.termux/files/usr"
+              },
+              "androidLinker": {
+                "type": "object",
+                "properties": {
+                  "observed": {
+                    "const": true
+                  },
+                  "path": {
+                    "const": "/system/bin/linker64"
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/sha256"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16777216
+                  }
+                }
+              },
+              "runitSupervisorObserved": {
+                "const": true
+              }
+            }
+          },
+          "validation": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "pass"
+              },
+              "nativeArtifactExecuted": {
+                "const": true
+              },
+              "isolatedFreshDeploy": {
+                "const": true
+              },
+              "failedUpgradeRecovery": {
+                "const": true
+              },
+              "supervisedRestart": {
+                "const": true
+              },
+              "rollbackRecovery": {
+                "const": true
+              },
+              "uninstall": {
+                "const": true
+              },
+              "boundedCleanup": {
+                "const": true
+              },
+              "runitSupervisorObserved": {
+                "const": true
+              },
+              "realLoopbackProbes": {
+                "const": true
+              },
+              "scenarioResults": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "const": "native"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "const": "fixture"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "failureCode": {
+            "const": null
+          },
+          "environment": {
+            "type": "object",
+            "properties": {
+              "executionMode": {
+                "const": "fixture-host-test"
+              },
+              "rootfsImage": {
+                "const": null
+              },
+              "rootfsDigest": {
+                "const": null
+              },
+              "rootfsImageId": {
+                "const": null
+              },
+              "runtimeImageDigest": {
+                "const": null
+              },
+              "androidLinker": {
+                "type": "object",
+                "properties": {
+                  "observed": {
+                    "const": false
+                  },
+                  "path": {
+                    "const": null
+                  },
+                  "sha256": {
+                    "const": null
+                  },
+                  "bytes": {
+                    "const": null
+                  }
+                }
+              },
+              "runitSupervisorObserved": {
+                "const": false
+              }
+            }
+          },
+          "validation": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "fixture"
+              },
+              "nativeArtifactExecuted": {
+                "const": false
+              },
+              "isolatedFreshDeploy": {
+                "const": false
+              },
+              "failedUpgradeRecovery": {
+                "const": false
+              },
+              "supervisedRestart": {
+                "const": false
+              },
+              "rollbackRecovery": {
+                "const": false
+              },
+              "uninstall": {
+                "const": false
+              },
+              "boundedCleanup": {
+                "const": false
+              },
+              "runitSupervisorObserved": {
+                "const": false
+              },
+              "realLoopbackProbes": {
+                "const": false
+              },
+              "scenarioResults": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "execution": {
+                      "const": "fixture"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "gateVersion": {
+      "const": "1"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fixture"
+      ]
+    },
+    "failureCode": {
+      "const": null
+    },
+    "releaseQualificationEligible": {
+      "const": false
+    },
+    "qualificationClass": {
+      "const": "official_termux_native_automated_v1"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "commit",
+        "version",
+        "ciRunId",
+        "securityRunId",
+        "nativeRunId",
+        "artifact"
+      ],
+      "properties": {
+        "repository": {
+          "const": "CyberBASSLord-666/termux-mcp-edge"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "ciRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "securityRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "nativeRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifactName",
+            "posture",
+            "features",
+            "sha256",
+            "manifestSha256",
+            "bytes",
+            "target",
+            "elf"
+          ],
+          "properties": {
+            "artifactName": {
+              "const": "termux-mcp-server-aarch64-linux-android-full-suite"
+            },
+            "posture": {
+              "const": "full-suite"
+            },
+            "features": {
+              "const": [
+                "full-suite"
+              ]
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "manifestSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "target": {
+              "const": "aarch64-linux-android"
+            },
+            "elf": {
+              "const": "aarch64-android-elf"
+            }
+          }
+        }
+      }
+    },
+    "scenarioSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fileName",
+        "schemaVersion",
+        "scenarioSetVersion",
+        "sha256",
+        "scenarioCount",
+        "scenarioIds"
+      ],
+      "properties": {
+        "fileName": {
+          "const": "automated-native-deployment-scenarios-v1.json"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "scenarioSetVersion": {
+          "const": "1"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "scenarioCount": {
+          "const": 6
+        },
+        "scenarioIds": {
+          "const": [
+            "isolated_fresh_deploy",
+            "failed_upgrade_recovery",
+            "supervised_restart",
+            "rollback_recovery",
+            "uninstall",
+            "bounded_cleanup"
+          ]
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "executionMode",
+        "rootfsImage",
+        "rootfsDigest",
+        "rootfsImageId",
+        "runtimeImageDigest",
+        "termuxPrefix",
+        "androidLinker",
+        "supervisor",
+        "runitSupervisorObserved",
+        "androidFrameworkObserved",
+        "physicalHardwareObserved",
+        "physicalDeviceObserved",
+        "sustainedPhysicalSoak"
+      ],
+      "properties": {
+        "architecture": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,32}$"
+        },
+        "executionMode": {
+          "enum": [
+            "official-termux-docker-native-arm64",
+            "fixture-host-test"
+          ]
+        },
+        "rootfsImage": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "rootfsDigest": {
+          "description": "Pinned registry manifest digest for the official base image.",
+          "oneOf": [
+            {
+              "const": null
+            },
+            {
+              "$ref": "#/$defs/imageDigest"
+            }
+          ]
+        },
+        "rootfsImageId": {
+          "description": "Local Docker config/image ID materialized from the pinned base manifest.",
+          "oneOf": [
+            {
+              "const": null
+            },
+            {
+              "$ref": "#/$defs/imageDigest"
+            }
+          ]
+        },
+        "runtimeImageDigest": {
+          "description": "Ephemeral local Docker config/image ID for the derived validation image; not a registry manifest or reproducibility claim.",
+          "oneOf": [
+            {
+              "const": null
+            },
+            {
+              "$ref": "#/$defs/imageDigest"
+            }
+          ]
+        },
+        "termuxPrefix": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "androidLinker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "observed",
+            "path",
+            "sha256",
+            "bytes"
+          ],
+          "properties": {
+            "observed": {
+              "type": "boolean"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "sha256": {
+              "oneOf": [
+                {
+                  "const": null
+                },
+                {
+                  "$ref": "#/$defs/sha256"
+                }
+              ]
+            },
+            "bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 16777216
+            }
+          }
+        },
+        "supervisor": {
+          "const": "runit"
+        },
+        "runitSupervisorObserved": {
+          "type": "boolean"
+        },
+        "androidFrameworkObserved": {
+          "const": false
+        },
+        "physicalHardwareObserved": {
+          "const": false
+        },
+        "physicalDeviceObserved": {
+          "const": false
+        },
+        "sustainedPhysicalSoak": {
+          "const": false
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "scenarioResults",
+        "artifactManifestStrict",
+        "scenarioSetStrict",
+        "nativeArtifactExecuted",
+        "isolatedFreshDeploy",
+        "failedUpgradeRecovery",
+        "supervisedRestart",
+        "rollbackRecovery",
+        "uninstall",
+        "boundedCleanup",
+        "exactArtifact",
+        "isolatedServiceRoot",
+        "runitSupervisorObserved",
+        "realLoopbackProbes",
+        "probeFaultInjectionBounded",
+        "outputNoClobber",
+        "workspaceRemoved",
+        "serviceRemoved",
+        "runsvdirTerminated",
+        "physicalCertification"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pass",
+            "fixture"
+          ]
+        },
+        "scenarioResults": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/freshDeployResult"
+            },
+            {
+              "$ref": "#/$defs/failedUpgradeResult"
+            },
+            {
+              "$ref": "#/$defs/supervisedRestartResult"
+            },
+            {
+              "$ref": "#/$defs/rollbackRecoveryResult"
+            },
+            {
+              "$ref": "#/$defs/uninstallResult"
+            },
+            {
+              "$ref": "#/$defs/boundedCleanupResult"
+            }
+          ],
+          "items": false
+        },
+        "artifactManifestStrict": {
+          "const": true
+        },
+        "scenarioSetStrict": {
+          "const": true
+        },
+        "nativeArtifactExecuted": {
+          "type": "boolean"
+        },
+        "isolatedFreshDeploy": {
+          "type": "boolean"
+        },
+        "failedUpgradeRecovery": {
+          "type": "boolean"
+        },
+        "supervisedRestart": {
+          "type": "boolean"
+        },
+        "rollbackRecovery": {
+          "type": "boolean"
+        },
+        "uninstall": {
+          "type": "boolean"
+        },
+        "boundedCleanup": {
+          "type": "boolean"
+        },
+        "exactArtifact": {
+          "const": true
+        },
+        "isolatedServiceRoot": {
+          "const": true
+        },
+        "runitSupervisorObserved": {
+          "type": "boolean"
+        },
+        "realLoopbackProbes": {
+          "type": "boolean"
+        },
+        "probeFaultInjectionBounded": {
+          "const": true
+        },
+        "outputNoClobber": {
+          "const": true
+        },
+        "workspaceRemoved": {
+          "const": true
+        },
+        "serviceRemoved": {
+          "const": true
+        },
+        "runsvdirTerminated": {
+          "const": true
+        },
+        "physicalCertification": {
+          "const": "not_run"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "imageDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "scenarioResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "execution",
+        "outcome",
+        "faultBoundary"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "execution": {
+          "enum": [
+            "native",
+            "fixture"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "pass",
+            "recovered",
+            "restarted",
+            "removed",
+            "clean"
+          ]
+        },
+        "faultBoundary": {
+          "enum": [
+            "none",
+            "target_readiness_probe",
+            "supervised_process"
+          ]
+        }
+      }
+    },
+    "freshDeployResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "isolated_fresh_deploy"
+            },
+            "outcome": {
+              "const": "pass"
+            },
+            "faultBoundary": {
+              "const": "none"
+            }
+          }
+        }
+      ]
+    },
+    "failedUpgradeResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "failed_upgrade_recovery"
+            },
+            "outcome": {
+              "const": "recovered"
+            },
+            "faultBoundary": {
+              "const": "target_readiness_probe"
+            }
+          }
+        }
+      ]
+    },
+    "supervisedRestartResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "supervised_restart"
+            },
+            "outcome": {
+              "const": "restarted"
+            },
+            "faultBoundary": {
+              "const": "supervised_process"
+            }
+          }
+        }
+      ]
+    },
+    "rollbackRecoveryResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "rollback_recovery"
+            },
+            "outcome": {
+              "const": "recovered"
+            },
+            "faultBoundary": {
+              "const": "target_readiness_probe"
+            }
+          }
+        }
+      ]
+    },
+    "uninstallResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "uninstall"
+            },
+            "outcome": {
+              "const": "removed"
+            },
+            "faultBoundary": {
+              "const": "none"
+            }
+          }
+        }
+      ]
+    },
+    "boundedCleanupResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "const": "bounded_cleanup"
+            },
+            "outcome": {
+              "const": "clean"
+            },
+            "faultBoundary": {
+              "const": "none"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

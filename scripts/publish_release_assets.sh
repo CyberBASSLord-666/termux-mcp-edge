@@ -77,9 +77,15 @@ while (($# > 0)); do
   esac
 done
 
-for command_name in awk basename cmp curl dirname find grep jq mktemp mv realpath rm sed sha256sum sleep sort stat tail tar wc; do
+for command_name in awk bash basename chmod cmp cp curl dirname find grep jq mkdir mktemp mv python3 realpath rm sed sha256sum sleep sort stat tail tar wc; do
   command -v "$command_name" >/dev/null 2>&1 || fail required_command_missing
 done
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" \
+  || fail script_directory_resolution_failed
+LATEST_WORKFLOW_RUN_JQ="$SCRIPT_DIR/latest_workflow_run.jq"
+[[ -f "$LATEST_WORKFLOW_RUN_JQ" && ! -L "$LATEST_WORKFLOW_RUN_JQ" ]] \
+  || fail latest_workflow_run_module_invalid
 
 [[ "$REPOSITORY" == "CyberBASSLord-666/termux-mcp-edge" ]] || fail repository_invalid
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail commit_invalid
@@ -183,7 +189,16 @@ WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/termux-mcp-release-publish.XXXXXXXX")" \
   || fail temporary_directory_create_failed
 [[ "$WORK_ROOT" == "${TMPDIR:-/tmp}"/termux-mcp-release-publish.* ]] \
   || fail temporary_directory_invalid
+RECORD_TEMP=""
+RECORD_TEMP_IDENTITY=""
 cleanup() {
+  if [[ -n "${RECORD_TEMP:-}" && -n "${RECORD_TEMP_IDENTITY:-}" \
+    && -f "$RECORD_TEMP" && ! -L "$RECORD_TEMP" ]]; then
+    current_record_temp_identity="$(stat -Lc '%d:%i' -- "$RECORD_TEMP" 2>/dev/null || true)"
+    if [[ "$current_record_temp_identity" == "$RECORD_TEMP_IDENTITY" ]]; then
+      rm -f -- "$RECORD_TEMP" >/dev/null 2>&1 || true
+    fi
+  fi
   if [[ -n "${WORK_ROOT:-}" && -d "$WORK_ROOT" \
     && "$WORK_ROOT" == "${TMPDIR:-/tmp}"/termux-mcp-release-publish.* ]]; then
     rm -rf -- "$WORK_ROOT" >/dev/null 2>&1 || true
@@ -370,7 +385,7 @@ resolve_stage() {
       and .name == $name
       and .digest == $digest
       and .expired == false
-      and (.size_in_bytes | type == "number" and floor == . and . >= 1 and . <= 536870912)
+      and (.size_in_bytes | type == "number" and floor == . and . >= 1 and . <= 2147483647)
       and (.workflow_run.id | type == "number" and floor == . and . >= 1)
       and .workflow_run.repository_id == $repository_id
       and .workflow_run.head_repository_id == $repository_id
@@ -443,8 +458,79 @@ EXPECTED_NAMES_FILE="$WORK_ROOT/expected-asset-names"
 EXPECTED_NAMES_JSON="$(jq -R -s 'split("\n")[:-1]' "$EXPECTED_NAMES_FILE")" \
   || fail expected_asset_set_invalid
 
+strict_json_file() {
+  local path="$1" error_code="$2"
+  python3 - "$path" <<'PY' || fail "$error_code"
+import json
+import pathlib
+import sys
+
+def closed_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate key")
+        value[key] = item
+    return value
+
+def reject_constant(_value):
+    raise ValueError("non-finite number")
+
+with pathlib.Path(sys.argv[1]).open("r", encoding="utf-8") as source:
+    json.load(
+        source,
+        object_pairs_hook=closed_object,
+        parse_constant=reject_constant,
+    )
+PY
+}
+
+snapshot_publication_inputs() {
+  local source_assets="$ASSETS_DIR" source_receipt="$RECEIPT"
+  local snapshot_root="$WORK_ROOT/publication-input-snapshot"
+  local snapshot_assets="$snapshot_root/assets"
+  local snapshot_receipt="$snapshot_root/release-publication-receipt-v1.json"
+  local actual_entries name
+
+  actual_entries="$(find "$source_assets" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)" \
+    || fail assets_directory_enumeration_failed
+  [[ "$actual_entries" == "$(<"$EXPECTED_NAMES_FILE")" ]] || fail local_asset_set_mismatch
+  if find "$source_assets" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+    fail local_asset_type_invalid
+  fi
+  if find "$source_assets" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .; then
+    fail local_asset_link_detected
+  fi
+
+  mkdir -m 700 -- "$snapshot_root" "$snapshot_assets" \
+    || fail publication_input_snapshot_failed
+  cp -P -- "$source_receipt" "$snapshot_receipt" \
+    || fail publication_input_snapshot_failed
+  while IFS= read -r name; do
+    cp -P -- "$source_assets/$name" "$snapshot_assets/$name" \
+      || fail publication_input_snapshot_failed
+  done <"$EXPECTED_NAMES_FILE"
+
+  [[ -f "$snapshot_receipt" && ! -L "$snapshot_receipt" ]] \
+    || fail publication_input_snapshot_failed
+  actual_entries="$(find "$snapshot_assets" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort)" \
+    || fail publication_input_snapshot_failed
+  [[ "$actual_entries" == "$(<"$EXPECTED_NAMES_FILE")" ]] \
+    || fail publication_input_snapshot_failed
+  if find "$snapshot_assets" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+    fail publication_input_snapshot_failed
+  fi
+  if find "$snapshot_assets" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .; then
+    fail publication_input_snapshot_failed
+  fi
+
+  ASSETS_DIR="$snapshot_assets"
+  RECEIPT="$snapshot_receipt"
+}
+
 validate_local_assets() {
   local actual_entries name path expected_size expected_sha actual_size actual_sha
+  strict_json_file "$RECEIPT" receipt_json_invalid
   jq -e \
     --arg repository "$REPOSITORY" \
     --arg commit "$COMMIT" \
@@ -461,7 +547,7 @@ validate_local_assets() {
       and (.stageTar | keys == ["name","sha256","size"])
       and .stageTar.name == $tar_name
       and .stageTar.sha256 == $tar_sha
-      and (.stageTar.size | type == "number" and floor == . and . >= 1 and . <= 536870912)
+      and (.stageTar.size | type == "number" and floor == . and . >= 1 and . <= 2147483647)
       and (.assets | type == "array" and length == 16)
       and ([.assets[].name] == $names)
       and ([.assets[].name] | unique | length == 16)
@@ -469,7 +555,11 @@ validate_local_assets() {
         (keys == ["name","sha256","size","sourceStageMember"])
         and (.name | test("^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$"))
         and (.sha256 | test("^[0-9a-f]{64}$"))
-        and (.size | type == "number" and floor == . and . >= 1 and . <= 536870912)
+        and (.size | type == "number" and floor == . and . >= 1)
+        and (if .name == $tar_name
+          then .size <= 2147483647
+          else .size <= 67108864
+          end)
         and (if .name == $tar_name
           then .sourceStageMember == null
           else .sourceStageMember == .name
@@ -504,10 +594,54 @@ validate_local_assets() {
     "$(stat -c '%s' -- "$ASSETS_DIR/$STAGE_TAR_NAME")" ]] || fail stage_tar_size_mismatch
 }
 
-STAGING_MANIFEST="$WORK_ROOT/release-staging-manifest-v1.json"
+reverify_publication_inputs() {
+  local script_dir repository_root preparer reverified_root reverified_bundle
+  local reverified_assets reverified_receipt
+  local name
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" \
+    || fail script_directory_resolution_failed
+  repository_root="$(cd -- "$script_dir/.." && pwd -P)" \
+    || fail repository_root_resolution_failed
+  preparer="$repository_root/scripts/prepare_release_publication_assets.sh"
+  [[ -f "$preparer" && ! -L "$preparer" ]] || fail publication_preparer_invalid
+
+  reverified_root="$WORK_ROOT/reverified-publication-inputs"
+  reverified_bundle="$reverified_root/publication-inputs"
+  reverified_assets="$reverified_bundle/assets"
+  reverified_receipt="$reverified_bundle/release-publication-receipt-v1.json"
+  mkdir -m 700 -- "$reverified_root" || fail publication_inputs_reverification_failed
+  if ! bash "$preparer" \
+    --stage-tar "$ASSETS_DIR/$STAGE_TAR_NAME" \
+    --staged-artifact-sha256 "$STAGED_ARTIFACT_SHA256" \
+    --assets-dir "$reverified_assets" \
+    --receipt "$reverified_receipt" \
+    --repository "$REPOSITORY" \
+    --commit "$COMMIT" \
+    --version "$VERSION" \
+    >"$WORK_ROOT/reverified-publication-inputs.stdout" \
+    2>"$WORK_ROOT/reverified-publication-inputs.stderr"
+  then
+    fail publication_inputs_reverification_failed
+  fi
+
+  cmp -s -- "$RECEIPT" "$reverified_receipt" \
+    || fail publication_receipt_stage_join_mismatch
+  while IFS= read -r name; do
+    cmp -s -- "$ASSETS_DIR/$name" "$reverified_assets/$name" \
+      || fail publication_asset_stage_join_mismatch
+  done <"$EXPECTED_NAMES_FILE"
+
+  ASSETS_DIR="$reverified_assets"
+  RECEIPT="$reverified_receipt"
+}
+
+STAGING_MANIFEST="$WORK_ROOT/release-staging-manifest-v2.json"
 CI_RUN_ID=""
 SECURITY_RUN_ID=""
 ANDROID_RUN_ID=""
+QUALIFICATION_RUN_ID=""
+QUALIFICATION_CLASS=""
+CLAIM_BOUNDARY_JSON=""
 RUST_VERSION=""
 NDK_VERSION=""
 RELEASE_BODY="$WORK_ROOT/release-body.md"
@@ -515,25 +649,60 @@ RELEASE_BODY_SHA256=""
 RELEASE_ASSETS_SHA256=""
 
 load_release_metadata() {
-  tar -xOf "$ASSETS_DIR/$STAGE_TAR_NAME" ./release-staging-manifest-v1.json \
+  tar -xOf "$ASSETS_DIR/$STAGE_TAR_NAME" ./release-staging-manifest-v2.json \
     >"$STAGING_MANIFEST" 2>/dev/null || fail staging_manifest_extract_failed
   jq -e \
     --arg repository "$REPOSITORY" --arg commit "$COMMIT" --arg version "$VERSION" '
-      (keys == ["artifacts","checksums","commit","evidence","license","publicationState","releaseEligible","repository","schemaVersion","target","version","workflowRuns"])
-      and .schemaVersion == 1
+      (keys == ["artifacts","checksums","claimBoundary","commit","evidence","license","publicationState","qualificationClass","releaseEligible","repository","schemaVersion","target","version","workflowRuns"])
+      and .schemaVersion == 2
       and .publicationState == "staged_not_released"
       and .releaseEligible == false
+      and .qualificationClass == "official_termux_native_automated_v1"
+      and .claimBoundary == {
+        physicalDeviceObserved:false,
+        androidFrameworkObserved:false,
+        sustainedPhysicalSoak:false,
+        physicalCertification:"not_run"
+      }
       and .repository == $repository
       and .commit == $commit
       and .version == $version
       and .target == "aarch64-linux-android"
-      and (.workflowRuns | keys == ["android","ci","security"])
+      and (.workflowRuns | keys == ["android","ci","qualification","security"])
       and all(.workflowRuns[]; type == "string" and test("^[1-9][0-9]*$"))
+      and (.evidence | keys == ["aggregate","classifier","deployment","qualification","runtime","specialized"])
+      and (.evidence.runtime | keys == ["archive","packageLock","replay","snapshot"])
+      and .evidence.runtime.archive.fileName
+        == "evidence/runtime/termux-qualified-runtime-image-v1.tar.gz"
+      and .evidence.runtime.packageLock.fileName
+        == "evidence/runtime/termux-runtime-package-lock-v1.json"
+      and .evidence.runtime.snapshot.fileName
+        == "evidence/runtime/termux-runtime-snapshot-v1.json"
+      and .evidence.runtime.replay.fileName
+        == "evidence/runtime/termux-runtime-snapshot-replay-v1.json"
+      and all(.evidence.runtime[];
+        keys == ["bytes","fileName","sha256"]
+        and (.sha256 | test("^[0-9a-f]{64}$"))
+        and (.bytes | type == "number" and floor == . and . >= 1))
+      and .evidence.runtime.archive.bytes <= 1610612736
+      and ([
+        .evidence.runtime.packageLock,
+        .evidence.runtime.snapshot,
+        .evidence.runtime.replay
+      ] | all(.bytes <= 16777216))
       and (.artifacts | length == 7)
     ' "$STAGING_MANIFEST" >/dev/null || fail staging_manifest_identity_mismatch
   CI_RUN_ID="$(jq -r '.workflowRuns.ci' "$STAGING_MANIFEST")"
   SECURITY_RUN_ID="$(jq -r '.workflowRuns.security' "$STAGING_MANIFEST")"
   ANDROID_RUN_ID="$(jq -r '.workflowRuns.android' "$STAGING_MANIFEST")"
+  QUALIFICATION_RUN_ID="$(jq -r '.workflowRuns.qualification' "$STAGING_MANIFEST")"
+  QUALIFICATION_CLASS="$(jq -r '.qualificationClass' "$STAGING_MANIFEST")"
+  CLAIM_BOUNDARY_JSON="$(jq -cS '.claimBoundary' "$STAGING_MANIFEST")"
+  [[ "$QUALIFICATION_CLASS" == official_termux_native_automated_v1 ]] \
+    || fail staging_manifest_identity_mismatch
+  [[ "$CLAIM_BOUNDARY_JSON" == \
+    '{"androidFrameworkObserved":false,"physicalCertification":"not_run","physicalDeviceObserved":false,"sustainedPhysicalSoak":false}' ]] \
+    || fail staging_manifest_identity_mismatch
 
   local script_dir repository_root
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" \
@@ -553,10 +722,131 @@ load_release_metadata() {
   [[ "$NDK_VERSION" =~ ^r[0-9]+[a-z]$ ]] || fail android_ndk_version_invalid
 }
 
+verify_latest_qualification_runs() {
+  local expected_name workflow_file run_id slug run_json runs_json
+  for contract in \
+    "CI|ci.yml|$CI_RUN_ID|ci" \
+    "Security|security.yml|$SECURITY_RUN_ID|security" \
+    "Android Cross Compile|android-cross-compile.yml|$ANDROID_RUN_ID|android"
+  do
+    IFS='|' read -r expected_name workflow_file run_id slug <<<"$contract"
+    [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || fail qualification_run_identity_mismatch
+    run_json="$WORK_ROOT/$slug.qualification-run.json"
+    runs_json="$WORK_ROOT/$slug.qualification-runs.json"
+    api_get "$GH_TOKEN" "$API_ROOT/actions/runs/$run_id" "$run_json"
+    jq -e \
+      --arg name "$expected_name" \
+      --arg path ".github/workflows/$workflow_file" \
+      --arg repository "$REPOSITORY" \
+      --arg commit "$COMMIT" \
+      --argjson run_id "$run_id" '
+        .id == $run_id
+        and .name == $name
+        and .path == $path
+        and .event == "push"
+        and .head_branch == "main"
+        and .head_sha == $commit
+        and .status == "completed"
+        and .conclusion == "success"
+        and .run_attempt == 1
+        and .repository.full_name == $repository
+        and .head_repository.full_name == $repository
+      ' "$run_json" >/dev/null || fail qualification_run_identity_mismatch
+    api_get "$GH_TOKEN" \
+      "$API_ROOT/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$COMMIT&per_page=100" \
+      "$runs_json"
+    jq -L "$SCRIPT_DIR" -e \
+      --arg name "$expected_name" \
+      --arg path ".github/workflows/$workflow_file" \
+      --arg repository "$REPOSITORY" \
+      --arg commit "$COMMIT" \
+      --argjson run_id "$run_id" '
+        include "latest_workflow_run";
+        complete_workflow_run_page
+        |
+        [
+          .[]
+          | select(
+              .name == $name
+              and .path == $path
+              and .event == "push"
+              and .head_branch == "main"
+              and .head_sha == $commit
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            )
+        ]
+        | latest_workflow_run as $latest
+        | $latest != null
+        and $latest.id == $run_id
+        and $latest.status == "completed"
+        and $latest.conclusion == "success"
+        and $latest.run_attempt == 1
+      ' "$runs_json" >/dev/null || fail qualification_run_not_latest
+  done
+
+  local qualification_title qualification_run_json qualification_runs_json
+  qualification_title="Qualify Android run $ANDROID_RUN_ID at $COMMIT"
+  qualification_run_json="$WORK_ROOT/qualification.qualification-run.json"
+  qualification_runs_json="$WORK_ROOT/qualification.qualification-runs.json"
+  api_get "$GH_TOKEN" "$API_ROOT/actions/runs/$QUALIFICATION_RUN_ID" \
+    "$qualification_run_json"
+  jq -e \
+    --arg repository "$REPOSITORY" \
+    --arg title "$qualification_title" \
+    --arg commit "$COMMIT" \
+    --argjson run_id "$QUALIFICATION_RUN_ID" '
+      .id == $run_id
+      and .name == "Automated Release Qualification"
+      and .display_title == $title
+      and .path == ".github/workflows/automated-release-qualification.yml"
+      and .event == "workflow_run"
+      and .head_branch == "main"
+      and .head_sha == $commit
+      and .status == "completed"
+      and .conclusion == "success"
+      and .run_attempt == 1
+      and .repository.full_name == $repository
+      and .head_repository.full_name == $repository
+    ' "$qualification_run_json" >/dev/null || fail qualification_run_identity_mismatch
+  api_get "$GH_TOKEN" \
+    "$API_ROOT/actions/workflows/automated-release-qualification.yml/runs?branch=main&event=workflow_run&head_sha=$COMMIT&per_page=100" \
+    "$qualification_runs_json"
+  jq -L "$SCRIPT_DIR" -e \
+    --arg repository "$REPOSITORY" \
+    --arg title "$qualification_title" \
+    --arg commit "$COMMIT" \
+    --argjson run_id "$QUALIFICATION_RUN_ID" '
+      include "latest_workflow_run";
+      complete_workflow_run_page
+      |
+      [
+        .[]
+        | select(
+            .display_title == $title
+            and .name == "Automated Release Qualification"
+            and .path == ".github/workflows/automated-release-qualification.yml"
+            and .event == "workflow_run"
+            and .head_branch == "main"
+            and .head_sha == $commit
+            and .repository.full_name == $repository
+            and .head_repository.full_name == $repository
+          )
+      ]
+      | latest_workflow_run as $latest
+      | $latest != null
+      and $latest.id == $run_id
+      and $latest.status == "completed"
+      and $latest.conclusion == "success"
+      and $latest.run_attempt == 1
+    ' "$qualification_runs_json" >/dev/null || fail qualification_run_not_latest
+}
+
 generate_release_body() {
   {
     printf '# termux-mcp-server v%s\n\n' "$VERSION"
-    printf 'Production Android/Termux release built and qualified from exact `main`.\n\n'
+    printf 'Production Android/Termux release built and qualified from exact `main` under `%s`.\n\n' \
+      "$QUALIFICATION_CLASS"
     printf '## Immutable provenance\n\n'
     printf -- '- Source commit: [`%s`](%s/%s/commit/%s)\n' \
       "$COMMIT" "$SERVER_BASE" "$REPOSITORY" "$COMMIT"
@@ -567,13 +857,22 @@ generate_release_body() {
     printf -- '- Staged tar SHA-256: `%s`\n' "$STAGED_ARTIFACT_SHA256"
     printf -- '- CI / Security / Android runs: `%s` / `%s` / `%s`\n' \
       "$CI_RUN_ID" "$SECURITY_RUN_ID" "$ANDROID_RUN_ID"
+    printf -- '- Automated qualification run: [`%s`](%s/%s/actions/runs/%s)\n' \
+      "$QUALIFICATION_RUN_ID" "$SERVER_BASE" "$REPOSITORY" "$QUALIFICATION_RUN_ID"
     printf -- '- Rust / Android target / NDK: `%s` / `aarch64-linux-android` / `%s`\n\n' \
       "$RUST_VERSION" "$NDK_VERSION"
+    printf '## Qualification boundary\n\n'
+    printf -- '- Official native ARM64 Termux automation: passed.\n'
+    printf -- '- Physical device observed: no.\n'
+    printf -- '- Android framework observed: no.\n'
+    printf -- '- Sustained physical soak: no.\n'
+    printf -- '- Physical certification: not run.\n'
+    printf -- '- Rebuild reproducibility claim: no (`rebuildReproducibilityClaim:false`).\n\n'
     printf '## Release assets\n\n'
     printf '| Asset | Bytes | SHA-256 |\n'
     printf '| --- | ---: | --- |\n'
     jq -r '.assets[] | "| `\(.name)` | \(.size) | `\(.sha256)` |"' "$RECEIPT"
-    printf '\nThe provenance tar is the unchanged staged Actions artifact. The other assets are exact member bytes from that tar; no release-time rebuild occurred.\n\n'
+    printf '\nThe provenance tar is the unchanged staged Actions artifact. It retains the governed runtime archive, package lock, snapshot, and offline replay record; those four files are not separate Release assets. The other assets are exact member bytes from that tar; no release-time rebuild occurred.\n\n'
     printf '## Operational boundary\n\n'
     printf -- '- Select the least-privilege posture that provides the required capability set.\n'
     printf -- '- High-impact filesystem and volume mutations remain separately runtime-gated and grant-gated.\n'
@@ -764,6 +1063,7 @@ verify_immutable_policy() {
 
 refresh_full_state() {
   resolve_stage
+  verify_latest_qualification_runs
   [[ "$STAGE_SIZE" == "$(jq -r '.stageTar.size | tostring' "$RECEIPT")" ]] \
     || fail staged_artifact_size_mismatch
   verify_tag
@@ -833,6 +1133,9 @@ build_identity_record() {
     --arg release_body_sha256 "$RELEASE_BODY_SHA256" \
     --arg expected_asset_set_sha256 "$RELEASE_ASSETS_SHA256" \
     --arg server_assets_sha256 "$server_assets_sha256" \
+    --arg qualification_class "$QUALIFICATION_CLASS" \
+    --arg qualification_run_id "$QUALIFICATION_RUN_ID" \
+    --argjson claim_boundary "$CLAIM_BOUNDARY_JSON" \
     --slurpfile assets "$projected_assets" '
       {
         schemaVersion:1,
@@ -851,6 +1154,11 @@ build_identity_record() {
           version:$version,
           tag:$tag,
           tagObjectSha:$tag_object_sha
+        },
+        qualification:{
+          class:$qualification_class,
+          runId:$qualification_run_id,
+          claimBoundary:$claim_boundary
         },
         stage:{
           runId:$stage_run_id,
@@ -875,12 +1183,44 @@ build_identity_record() {
 
 write_identity_record() {
   local phase="$1" temporary
-  temporary="$WORK_ROOT/$phase-identity-record-v1.json"
+  local expected_identity expected_sha256 expected_size
+  local record_identity_before record_identity_after record_sha256 record_size
+  temporary="$(
+    mktemp "$(dirname -- "$RECORD")/.${phase}-identity-record-v1.XXXXXXXX"
+  )" || fail identity_record_temporary_create_failed
+  [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%a' -- "$temporary")" == 600 ]] \
+    || fail identity_record_temporary_create_failed
+  RECORD_TEMP="$temporary"
+  RECORD_TEMP_IDENTITY="$(stat -Lc '%d:%i' -- "$temporary")" \
+    || fail identity_record_temporary_create_failed
   build_identity_record "$phase" "$temporary"
+  expected_identity="$(stat -Lc '%d:%i' -- "$temporary")" \
+    || fail identity_record_identity_failed
+  [[ "$expected_identity" == "$RECORD_TEMP_IDENTITY" ]] \
+    || fail identity_record_identity_failed
+  expected_size="$(stat -c '%s' -- "$temporary")" \
+    || fail identity_record_identity_failed
+  expected_sha256="$(sha256sum -- "$temporary" | awk '{print $1}')" \
+    || fail identity_record_identity_failed
   mv -T -n -- "$temporary" "$RECORD" 2>/dev/null || true
   [[ ! -e "$temporary" && ! -L "$temporary" ]] || fail identity_record_publish_raced
+  RECORD_TEMP=""
+  RECORD_TEMP_IDENTITY=""
   [[ -f "$RECORD" && ! -L "$RECORD" && "$(stat -c '%a' -- "$RECORD")" == 600 ]] \
     || fail identity_record_publish_failed
+  record_identity_before="$(stat -Lc '%d:%i' -- "$RECORD")" \
+    || fail identity_record_publish_replaced
+  record_size="$(stat -c '%s' -- "$RECORD")" \
+    || fail identity_record_publish_replaced
+  record_sha256="$(sha256sum -- "$RECORD" | awk '{print $1}')" \
+    || fail identity_record_publish_replaced
+  record_identity_after="$(stat -Lc '%d:%i' -- "$RECORD")" \
+    || fail identity_record_publish_replaced
+  [[ "$record_identity_before" == "$expected_identity" \
+    && "$record_identity_after" == "$expected_identity" \
+    && "$record_size" == "$expected_size" \
+    && "$record_sha256" == "$expected_sha256" ]] \
+    || fail identity_record_publish_replaced
 }
 
 validate_draft_verification_record() {
@@ -900,8 +1240,11 @@ emit_outputs() {
   printf 'release_asset_count=16\n'
 }
 
+snapshot_publication_inputs
 validate_local_assets
+reverify_publication_inputs
 load_release_metadata
+verify_latest_qualification_runs
 resolve_stage
 [[ "$STAGE_SIZE" == "$(jq -r '.stageTar.size | tostring' "$RECEIPT")" ]] \
   || fail staged_artifact_size_mismatch
@@ -936,7 +1279,7 @@ case "$MODE" in
 
     uploaded_count=0
     while IFS= read -r asset_name; do
-      refresh_release
+      refresh_full_state
       assert_bound_draft
       assert_server_asset_prefix "$uploaded_count"
       upload_response="$WORK_ROOT/upload-$uploaded_count.json"

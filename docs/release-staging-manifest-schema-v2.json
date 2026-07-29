@@ -1,0 +1,393 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/release-staging-manifest-schema-v2.json",
+  "title": "Termux MCP Edge automated release staging manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "publicationState",
+    "releaseEligible",
+    "qualificationClass",
+    "claimBoundary",
+    "repository",
+    "commit",
+    "version",
+    "target",
+    "workflowRuns",
+    "checksums",
+    "license",
+    "evidence",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "publicationState": {"const": "staged_not_released"},
+    "releaseEligible": {"const": false},
+    "qualificationClass": {"const": "official_termux_native_automated_v1"},
+    "claimBoundary": {"$ref": "#/$defs/claimBoundary"},
+    "repository": {"const": "CyberBASSLord-666/termux-mcp-edge"},
+    "commit": {"$ref": "#/$defs/sha1"},
+    "version": {"$ref": "#/$defs/version"},
+    "target": {"const": "aarch64-linux-android"},
+    "workflowRuns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ci", "security", "android", "qualification"],
+      "properties": {
+        "ci": {"$ref": "#/$defs/runId"},
+        "security": {"$ref": "#/$defs/runId"},
+        "android": {"$ref": "#/$defs/runId"},
+        "qualification": {"$ref": "#/$defs/runId"}
+      }
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "combinedFileName"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "combinedFileName": {"const": "SHA256SUMS"}
+      }
+    },
+    "license": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "LICENSE"}}}
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["qualification", "aggregate", "deployment", "classifier", "runtime", "specialized"],
+      "properties": {
+        "qualification": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/automated-qualification-v1.json"}}}
+          ]
+        },
+        "aggregate": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/termux-native-aggregate-evidence-v4.json"}}}
+          ]
+        },
+        "deployment": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/automated-native-deployment-v1.json"}}}
+          ]
+        },
+        "classifier": {
+          "allOf": [
+            {"$ref": "#/$defs/fileRecord"},
+            {"type": "object", "properties": {"fileName": {"const": "evidence/termux-observation-requirement-v3.json"}}}
+          ]
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["archive", "packageLock", "snapshot", "replay"],
+          "properties": {
+            "archive": {"$ref": "#/$defs/runtimeArchiveRecord"},
+            "packageLock": {
+              "allOf": [
+                {"$ref": "#/$defs/runtimeJsonRecord"},
+                {"type": "object", "properties": {"fileName": {"const": "evidence/runtime/termux-runtime-package-lock-v1.json"}}}
+              ]
+            },
+            "snapshot": {
+              "allOf": [
+                {"$ref": "#/$defs/runtimeJsonRecord"},
+                {"type": "object", "properties": {"fileName": {"const": "evidence/runtime/termux-runtime-snapshot-v1.json"}}}
+              ]
+            },
+            "replay": {
+              "allOf": [
+                {"$ref": "#/$defs/runtimeJsonRecord"},
+                {"type": "object", "properties": {"fileName": {"const": "evidence/runtime/termux-runtime-snapshot-replay-v1.json"}}}
+              ]
+            }
+          }
+        },
+        "specialized": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "prefixItems": [
+            {"$ref": "#/$defs/batteryEvidence"},
+            {"$ref": "#/$defs/volumeEvidence"},
+            {"$ref": "#/$defs/volumeControlEvidence"},
+            {"$ref": "#/$defs/commandEvidence"}
+          ],
+          "items": false
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "prefixItems": [
+        {"$ref": "#/$defs/defaultArtifact"},
+        {"$ref": "#/$defs/mcpRuntimeArtifact"},
+        {"$ref": "#/$defs/batteryArtifact"},
+        {"$ref": "#/$defs/volumeArtifact"},
+        {"$ref": "#/$defs/volumeControlArtifact"},
+        {"$ref": "#/$defs/commandArtifact"},
+        {"$ref": "#/$defs/fullSuiteArtifact"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+    "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "fileName": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physicalDeviceObserved",
+        "androidFrameworkObserved",
+        "sustainedPhysicalSoak",
+        "physicalCertification"
+      ],
+      "properties": {
+        "physicalDeviceObserved": {"const": false},
+        "androidFrameworkObserved": {"const": false},
+        "sustainedPhysicalSoak": {"const": false},
+        "physicalCertification": {"const": "not_run"}
+      }
+    },
+    "fileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "bytes"],
+      "properties": {
+        "fileName": {"$ref": "#/$defs/fileName"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    },
+    "runtimeArchiveRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "bytes"],
+      "properties": {
+        "fileName": {"const": "evidence/runtime/termux-qualified-runtime-image-v1.tar.gz"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1610612736}
+      }
+    },
+    "runtimeJsonRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "bytes"],
+      "properties": {
+        "fileName": {"$ref": "#/$defs/fileName"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 16777216}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "posture",
+        "features",
+        "workflowArtifactName",
+        "workflowFileName",
+        "workflowManifestFileName",
+        "workflowManifestSha256",
+        "releaseFileName",
+        "checksumFileName",
+        "sha256",
+        "bytes",
+        "elf"
+      ],
+      "properties": {
+        "posture": {
+          "enum": [
+            "default",
+            "mcp-runtime",
+            "android-battery-status",
+            "android-volume-status",
+            "android-volume-control",
+            "command-execution",
+            "full-suite"
+          ]
+        },
+        "features": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "mcp-runtime",
+              "android-battery-status",
+              "android-volume-status",
+              "android-volume-control",
+              "command-execution",
+              "full-suite"
+            ]
+          }
+        },
+        "workflowArtifactName": {"$ref": "#/$defs/fileName"},
+        "workflowFileName": {"const": "termux-mcp-server"},
+        "workflowManifestFileName": {"$ref": "#/$defs/fileName"},
+        "workflowManifestSha256": {"$ref": "#/$defs/sha256"},
+        "releaseFileName": {"$ref": "#/$defs/fileName"},
+        "checksumFileName": {"$ref": "#/$defs/fileName"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "elf": {"const": "aarch64-android-elf"}
+      }
+    },
+    "defaultArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "default"},
+            "features": {"const": []},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-default"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-default\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-default$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-default\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "mcpRuntimeArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "mcp-runtime"},
+            "features": {"const": ["mcp-runtime"]},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-mcp-runtime"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-mcp-runtime\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-mcp-runtime$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-mcp-runtime\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "batteryArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "android-battery-status"},
+            "features": {"const": ["android-battery-status"]},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-android-battery-status"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-battery-status\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-battery-status$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-battery-status\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "volumeArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "android-volume-status"},
+            "features": {"const": ["android-volume-status"]},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-android-volume-status"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-volume-status\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-volume-status$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-volume-status\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "volumeControlArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "android-volume-control"},
+            "features": {"const": ["android-volume-control"]},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-android-volume-control"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-volume-control\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-volume-control$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-android-volume-control\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "commandArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "command-execution"},
+            "features": {"const": ["command-execution"]},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-command-execution"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-command-execution\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-command-execution$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-command-execution\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "fullSuiteArtifact": {
+      "allOf": [
+        {"$ref": "#/$defs/artifact"},
+        {
+          "type": "object",
+          "properties": {
+            "posture": {"const": "full-suite"},
+            "features": {"const": ["full-suite"]},
+            "workflowArtifactName": {"const": "termux-mcp-server-aarch64-linux-android-full-suite"},
+            "workflowManifestFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-full-suite\\.workflow-manifest\\.json$"},
+            "releaseFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-full-suite$"},
+            "checksumFileName": {"type": "string", "pattern": "^termux-mcp-server-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}-aarch64-linux-android-full-suite\\.sha256$"}
+          }
+        }
+      ]
+    },
+    "batteryEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/termux-battery-emulated-evidence.json"}}}
+      ]
+    },
+    "volumeEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/termux-volume-emulated-evidence.json"}}}
+      ]
+    },
+    "volumeControlEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/termux-volume-control-emulated-evidence.json"}}}
+      ]
+    },
+    "commandEvidence": {
+      "allOf": [
+        {"$ref": "#/$defs/fileRecord"},
+        {"type": "object", "properties": {"fileName": {"const": "evidence/termux-command-emulated-evidence.json"}}}
+      ]
+    }
+  }
+}

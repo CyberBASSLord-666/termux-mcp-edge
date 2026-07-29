@@ -26,59 +26,31 @@ The emulated job starts only after all seven governed Android postures complete:
 - the battery artifact's exact manifest/digest/version/ELF posture, disabled-default discovery, enabled fixed-program invocation, zero arguments, cleared inherited environment, normalized field allowlist, sensitive-field redaction, prompt endless stdout/stderr rejection, isolated process-group termination, stdout/stderr pipe-holding descendant cleanup, caller-cancellation cleanup, stable API failure, audit-visible gate state, and continued absence of Android control, command execution, and high-impact tools.
 - the volume artifact's exact manifest/digest/version/ELF posture, disabled-default discovery, fixed zero-argument `termux-volume` invocation, cleared inherited environment, exact six-stream parsing, canonical ordering, unknown-field rejection without reflection, prompt endless stdout/stderr rejection, the shared supervisor's process-group/pipe-holder/caller-cancellation cleanup, stable API failure, audit-visible gate state, and continued absence of volume mutation, Android control, command execution, and high-impact tools.
 - the volume-control artifact's exact posture, incompatible-build rejection, disabled/enabled discovery and runtime truth, exact schema, preview non-consumption, grant binding/replay/header context, fixed two-argument execution, fresh maximum, verified mutation, rollback confirmed/unconfirmed, non-queueing concurrency, cancellation-independent recovery, supervisor cleanup, and private aggregate audits.
-- the command artifact's exact manifest/digest/version/ELF posture plus the exact default artifact, default-build compile rejection, command-build runtime-disabled hiding, enabled exact profile/schema discovery, exact-name candidate-to-loaded-image device/inode attestation, `/proc/self/exe` spawning, descriptor-pinned non-root safe cwd, empty environment, null stdin, immutable 5-second/16 KiB/4 KiB maxima, rejected override fields and unknown profiles, stable audit counters, and continued absence of arbitrary commands, Android control, and high-impact tools. Its v2 runtime phase performs exactly 29 MCP requests, starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and proves neither can redirect execution. A separate wrong-name phase requires typed construction failure before request serving and verifies that diagnostics disclose neither the bearer token nor filesystem paths.
+- the command artifact's exact manifest/digest/version/ELF posture plus the exact default artifact, default-build compile rejection, command-build runtime-disabled hiding, enabled exact profile/schema discovery, exact-name candidate-to-loaded-image device/inode attestation, `/proc/self/exe` spawning, descriptor-pinned non-root safe cwd, empty environment, null stdin, immutable 5-second/16 KiB/4 KiB maxima, rejected override fields and unknown profiles, stable audit counters, and continued absence of arbitrary commands, Android control, and high-impact tools. Its v3 runtime phase performs exactly 29 MCP requests, starts the server from `/`, replaces both executable and safe-root pathnames after initialization, and proves neither can redirect execution. A separate wrong-name phase requires typed construction failure before request serving and verifies that diagnostics disclose neither the bearer token nor filesystem paths.
 - the full-suite artifact's distinct digest and manifest digest, exact `full-suite` posture/features, unchanged installed basename `termux-mcp-server`, exactly 17 tools with all optional runtime gates off, exactly 18 in each of four one-gate postures, and exactly 21 with all four enabled together. The aggregate probe completes the selected provider/profile call in every isolated posture, dispatches create/copy/trash/write while their mutation gates are disabled, verifies unchanged source/target/quarantine state, and proves that compile inclusion does not enable or couple constituent gates.
 
-The canonical runtime validator remains authoritative for detailed protocol checks. The aggregate wrapper emits sanitized [`emulated-release-evidence-schema-v3.json`](emulated-release-evidence-schema-v3.json) evidence with `schemaVersion:3` and `gateVersion:"3"`. Schema v3 retains the baseline lifetime-pinning and stress evidence, adds the exact full-suite binary/manifest identity, 17/18/21 truth table, `independentRuntimeGates:true`, and records that direct physical observation is required. The battery wrapper emits [`android-battery-emulated-evidence-schema-v2.json`](android-battery-emulated-evidence-schema-v2.json), the volume-status wrapper emits [`android-volume-emulated-evidence-schema-v1.json`](android-volume-emulated-evidence-schema-v1.json), the request-authorized volume-control wrapper emits [`android-volume-control-emulated-evidence-schema-v1.json`](android-volume-control-emulated-evidence-schema-v1.json), and the command wrapper emits [`command-emulated-evidence-schema-v2.json`](command-emulated-evidence-schema-v2.json). Older aggregate schemas remain historical only. No emulation report sets the canonical validator's direct-observation `releaseEligible` field.
+The canonical runtime validator remains authoritative for detailed protocol checks. The aggregate wrapper emits sanitized [`emulated-release-evidence-schema-v4.json`](emulated-release-evidence-schema-v4.json) evidence with `schemaVersion:4` and `gateVersion:"4"`. Schema v4 retains the lifetime-pinning, stress, exact full-suite identity, 17/18/21 truth table, and independent-gate proof from v3. It replaces the old release-policy assertion with an explicit claim boundary and closed covered/not-covered lists. The battery wrapper emits [`android-battery-emulated-evidence-schema-v3.json`](android-battery-emulated-evidence-schema-v3.json), the volume-status wrapper emits [`android-volume-emulated-evidence-schema-v2.json`](android-volume-emulated-evidence-schema-v2.json), the request-authorized volume-control wrapper emits [`android-volume-control-emulated-evidence-schema-v2.json`](android-volume-control-emulated-evidence-schema-v2.json), and the command wrapper emits [`command-emulated-evidence-schema-v3.json`](command-emulated-evidence-schema-v3.json). Older aggregate and specialized schemas remain immutable historical evidence and are not accepted as current qualification components.
 
-Lifetime-pinning evidence is intentionally layered. Host regressions cover invalid-root rejection and perform root and ancestor rename/replacement, clone-sharing, redaction, and replacement-root grant-mismatch attacks. The exact native artifact gate independently exercises root and ancestor replacement plus successful startup, readiness, descriptor-relative calls, and grant flows in the Termux/Bionic environment. Together they validate this filesystem authority boundary without an arbitrary 60-minute monitoring run; neither emulation nor idle elapsed time is substituted for a focused physical check when the observation classifier identifies genuinely device-only storage or OEM behavior.
+Lifetime-pinning evidence is intentionally layered. Host regressions cover invalid-root rejection and perform root and ancestor rename/replacement, clone-sharing, redaction, and replacement-root grant-mismatch attacks. The exact native artifact gate independently exercises root and ancestor replacement plus successful startup, readiness, descriptor-relative calls, and grant flows in the Termux/Bionic environment.
 
-## Development qualification versus release observation
+## Automated release route
 
-Native Termux emulation is a required CI check for runtime-changing pull requests. A runtime change is not a CI failure merely because an older physical-device observation cannot be reused. After emulation passes, classifier v2 emits a sanitized report conforming to [`release-observation-requirement-schema-v2.json`](release-observation-requirement-schema-v2.json) and binds the full-suite binary and manifest digests:
+Native official-Termux execution is required for runtime-changing pull requests and exact-`main` candidates. Classifier v3 emits [`release-observation-requirement-schema-v3.json`](release-observation-requirement-schema-v3.json) with:
 
-- `observation_inheritance_candidate` means protected runtime/deployment and normalized Cargo inputs still match the physical source. The separate inheritance verifier must still prove ancestry, exact artifact digests, and every other release condition before release eligibility can become true.
-- `physical_observation_required` means runtime/deployment or Cargo/dependency inputs changed. Development CI passes when the exact artifacts and all automated gates pass, but `releaseQualificationEligible` remains false and a later release process must obtain new direct physical evidence.
+- `evidenceMode:"automated_release_qualification"`;
+- `reasonCode:"automated_native_termux_evidence_required"`;
+- `nextGate:"assemble_automated_release_qualification"`;
+- `releaseQualificationEligible:false`; and
+- the exact negative claim boundary.
 
-The classifier itself always sets `releaseQualificationEligible:false`. It cannot waive, synthesize, or inherit a physical result.
+The classifier binds the aggregate report, exact candidate identity, full-suite binary and manifest digests, workflow run IDs, image digest, and stress sample count. Runtime and dependency comparisons remain audit facts; they do not select a weaker evidence class. The classifier cannot grant release eligibility.
 
-## Physical-observation inheritance
+On a first-attempt exact-`main` push, Android runs the committed six-scenario isolated deployment/recovery gate and uploads seven frozen component reports without a release-eligibility conclusion. A separate read-only `workflow_run` qualifier revalidates the exact Android, CI, Security, artifact, and current-main identities before invoking `scripts/package_automated_qualification.sh`. Only that post-run assembler can emit `automated-qualification-v1.json` with `releaseEligible:true`.
 
-An emulator cannot establish battery, thermal, OEM process-management, device audio-policy, or mobile-radio behavior. Those properties may be inherited from an already completed physical observation only when [`verify_observation_inheritance.sh`](../scripts/verify_observation_inheritance.sh) proves every condition below:
+Automated release qualification proves the exact artifacts under the digest-pinned official Termux userland on native ARM64, including deterministic Android-provider simulation and isolated deployment recovery. It does not certify physical-device, OEM, battery-aging, thermal-soak, radio, Doze, or Android-framework behavior. See [`AUTOMATED_RELEASE_QUALIFICATION.md`](AUTOMATED_RELEASE_QUALIFICATION.md).
 
-1. The source report is sanitized, schema-valid, non-fixture, fully passing, physically observed for at least 60 minutes, and identified by an expected SHA-256 digest.
-2. The source commit is an ancestor of a previously qualified bridge commit, and the candidate is a descendant of that bridge.
-3. `src/**`, `build.rs`, `.cargo/**`, the Rust toolchain pin, cross-compilation script, artifact packager, deployment manager, device gate, canonical validator, and direct-evidence schema are unchanged from the physically observed source.
-4. `Cargo.toml` and `Cargo.lock` are structurally identical after removing only the root package version.
-5. Exact candidate default and `mcp-runtime` binary digests match the independently qualified bridge digests.
-6. Exact-head CI and Security pass, every candidate Android build posture passes, the default and `mcp-runtime` digests match the qualified bridge, and the native ARM64 official-Termux emulation report passes.
+## Historical physical evidence
 
-The verifier emits a sanitized report conforming to [`release-observation-inheritance-schema-v1.json`](release-observation-inheritance-schema-v1.json). `releaseQualificationEligible: true` means the combined direct physical source evidence and exact candidate evidence satisfy this narrow inheritance route. It is review evidence, not permission to tag or publish.
+The physical validator, device harness, observation-inheritance verifier, and their versioned schemas remain available for optional physical certification and historical audit. They are not accepted as `official_termux_native_automated_v1`, cannot be substituted into automated staging, and cannot add physical claims to an automated record.
 
-## Stop conditions
-
-Observation inheritance is forbidden when any of these changes:
-
-- runtime source or enabled feature surface;
-- any dependency, dependency feature, build profile, or Rust toolchain;
-- authentication, Host/Origin, request/session/resource, filesystem, audit, or shutdown behavior;
-- deployment, service supervision, configuration parsing, upgrade, recovery, rollback, or uninstall logic;
-- either exact bridge artifact digest;
-- the required Termux image digest or native ARM64 execution posture.
-
-Such a candidate requires a new direct physical observation before release qualification, but does not require a user to run a 60-minute observation merely to validate or merge a development PR. A failed or missing emulator result still fails CI and blocks both classification routes.
-
-## v0.6.0 fresh-observation boundary
-
-The committed source report [`release-evidence/v0.5.1-physical-fe5f7b80.json`](release-evidence/v0.5.1-physical-fe5f7b80.json) remains valid historical evidence for the surface it observed. Its SHA-256 digest is:
-
-```text
-677796015065eb193ac78b2dd200de64efccb95a226837a4545c85021cb9283c
-```
-
-The historical bridge commit is `a97e7cf2734ca3c997abc4e7d2aebaaa9fa856b9`, with independently downloaded digests:
-
-- default: `8fb1e89d942e5f925359eb22ea3321d6025baa83ee1da60fe58f1c62fe60dce1`;
-- `mcp-runtime`: `e4c68590c02c2861b18392d7fae2b7542f6610e4a52615aee76f66c06cc7358e`.
-
-The new `full-suite` feature, seventh artifact, aggregate runtime truth table, and full-suite digest binding change the protected runtime/build surface and have no matching historical bridge artifact. Therefore the final v0.6.0 candidate cannot use this v0.5.1 inheritance route. It requires a fresh direct AArch64 Termux observation from device harness v11 against the same immutable commit, with its separately recorded native-build digest, and a validator-v11 direct schema-v2 report bound to the exact workflow artifact digest with `releaseEligible:true`. This gate prepares that evidence; it does not authorize tagging or publication.
+The committed v0.5.1 report and bridge digests remain historical evidence for the surface they observed. No current ordinary release depends on inheriting or recreating its operator-entered observation duration.

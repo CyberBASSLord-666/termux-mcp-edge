@@ -158,4 +158,6 @@ Default and all-feature validation must cover:
 - identity-safe preservation of foreign regular, symlink, directory, FIFO, socket, and substituted objects;
 - actual-id 16 KiB response preflight before consumption;
 - content/path/digest/grant-free responses, logs, counters, fixtures, and evidence; and
-- default and all-feature format, Clippy, tests, Security, Android cross-builds, emulated native gates, and physical native Termux validation of the exact candidate.
+- default and all-feature format, Clippy, tests, Security, Android cross-builds,
+  automated native official-Termux gates, and optional separately identified
+  physical-device certification of the exact candidate.

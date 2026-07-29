@@ -218,7 +218,9 @@ audio-policy or OEM behavior requires separate device evidence.
 The exact-artifact native gate is
 [`termux_volume_control_emulated_gate.sh`](../scripts/termux_volume_control_emulated_gate.sh).
 Its sanitized output must conform to
-[`android-volume-control-emulated-evidence-schema-v1.json`](android-volume-control-emulated-evidence-schema-v1.json)
+[`android-volume-control-emulated-evidence-schema-v2.json`](android-volume-control-emulated-evidence-schema-v2.json)
 and deliberately records `longObservationRequired: false`; it replaces repeated
 idle monitoring for deterministic process, protocol, authorization, recovery,
-and audit contracts without claiming to emulate device audio policy.
+and audit contracts without claiming to emulate device audio policy. Schema v2
+also binds the pinned base-userland identity separately from the derived
+runtime-image identity.

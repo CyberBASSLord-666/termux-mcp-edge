@@ -244,7 +244,7 @@ Implemented scope:
 - The cancellation-safe shared process supervisor with process-group isolation, immediate termination, cleanup reserve, and authoritative direct-child reaping
 - UTF-8 and zero-exit success requirements; stable non-sensitive failures with no partial output
 - Hidden disabled discovery, runtime-disabled direct-call denial, and aggregate audit counters using only reason codes and numeric profile ordinals
-- Exact-source command artifact within the seven-artifact matrix and strict-v2 native ARM64 official-Termux validation with exactly 29 MCP requests plus a separate typed wrong-name construction-failure phase, executable/cwd pathname replacement, pre-service rejection and redaction evidence, and complete provenance/artifact/environment checks
+- Exact-source command artifact within the seven-artifact matrix and strict-v3 native ARM64 official-Termux validation with exactly 29 MCP requests plus a separate typed wrong-name construction-failure phase, executable/cwd pathname replacement, pre-service rejection and redaction evidence, complete provenance/artifact/environment checks, and separate base-userland/runtime-image identity binding
 
 Denied:
 

@@ -350,13 +350,20 @@ Do not manually repoint release links outside the project releases directory. Pr
 1. Run format, named full-suite and raw all-feature Clippy/tests, and deployment shell tests with locked dependency resolution.
 2. Build the default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, `command-execution`, and `full-suite` release postures.
 3. Confirm Security when Cargo, lockfile, or Security-workflow inputs change.
-4. Cross-compile and validate all seven governed Android postures, including native ARM64 official-Termux aggregate schema/gate-v3 evidence and the 17-disabled/21-enabled full-suite truth table.
+4. Cross-compile and validate all seven governed Android postures, including native ARM64 official-Termux aggregate schema/gate-v4 evidence, the 17/18/21 full-suite truth table, classifier v3, and isolated deployment/recovery.
 5. Record and verify each posture-specific artifact's SHA-256 digest.
 6. Verify AArch64 Android ELF identity, size, and `--version` against the intended release as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md).
 7. Install or upgrade through `scripts/termux_deploy.sh`.
 8. Confirm deployment status, runit state, health, readiness, and authenticated discovery.
 9. Validate representative allowed and denied MCP calls, including the independent disabled/enabled file-write gate, exact-binary grant issuance, authorized create/replace, mismatch/replay denials, fixed mode/limits, no-replace creation, irreversible exchange, bounded retained recovery artifacts, reserved-namespace isolation, and private audit/result surfaces.
 10. Exercise rollback before declaring production readiness.
-11. Obtain a fresh direct physical AArch64 observation with device harness v11 against the same immutable commit and retain its separate native-build digest. Validator-v11/schema-v2 evidence—not the independently built harness binary—binds the exact workflow full-suite digest; the v0.5.1 bridge cannot qualify this candidate.
+11. For ordinary releases, require the closed `official_termux_native_automated_v1` envelope from the first successful exact-`main` Android run. Optional physical certification remains a distinct evidence tier and cannot be inferred from automated qualification.
+
+The automated upgrade and rollback qualification scenarios deliberately use a
+second isolated release target containing the same exact candidate version.
+They prove deployment transaction and recovery behavior, not cross-version
+migration compatibility. Qualify migrations separately against an
+authenticated historical artifact when a release changes persistent formats or
+upgrade semantics.
 
 Do not describe fixed server diagnostics as arbitrary command execution or exact-stream volume control as general Android authority. Shells, caller-selected commands, and unrelated high-impact tools remain unavailable until their independent gates, tests, audit behavior, and recovery semantics are complete.

@@ -2,16 +2,16 @@
 
 This guide separates six things that are easy to confuse:
 
-1. **Workflow bundles** are the seven three-file Android artifacts produced by one exact successful `Android Cross Compile` run. They are qualification inputs, not public downloads.
-2. **Automated evidence** is the native ARM64 Termux evidence from that same run. It proves the exact downloaded workflow binaries behaved as specified, but it does not replace a real-device observation.
-3. **Physical evidence** is validator-v11/schema-v2 evidence plus a harness-v11 report from the same immutable commit. The harness records a separate locked on-device build digest; it is not claimed byte-identical to the workflow-built full-suite binary.
-4. **A release stage** is a deterministic tar containing byte-for-byte copies of the seven qualified workflow binaries under their final versioned names. It is still not a tag or GitHub Release.
+1. **Workflow bundles** are the seven three-file Android posture artifacts produced by one exact successful `Android Cross Compile` run. They are qualification inputs, not public downloads.
+2. **Automated component and runtime evidence** are two additional Android artifacts: the seven-file aggregate/provider/classifier/deployment component set and the three-file retained-runtime snapshot containing the runtime archive, package lock, and snapshot record. No component grants release eligibility alone.
+3. **Automated qualification** is one twelve-member artifact: the seven unchanged components, four retained-runtime records (archive, package lock, snapshot, and offline replay), and the closed `official_termux_native_automated_v1` envelope emitted only by the separate first-attempt post-run qualifier.
+4. **A release stage** is a deterministic tar containing byte-for-byte copies of the seven qualified workflow binaries plus the governed runtime evidence under `evidence/runtime/`. It is still not a tag or GitHub Release.
 5. **A draft Release** is a pre-created empty GitHub Release for one pre-existing protected annotated tag. Attaching verified assets does not make the draft an installation source or publication authority.
 6. **A public Release** becomes the durable distribution channel only after independent byte verification, a separate protected final approval, publication, an `immutable: true` response, and successful public re-download proof.
 
 ## Current boundary
 
-The staging and publication lanes are separate workflows with separate permissions and approvals. Staging has no `contents: write` permission and no tag, Release, package, deployment, or OIDC permission. A staged tar says `publicationState: "staged_not_released"` and `releaseEligible: false` even though the physical validator report inside it must independently say `releaseEligible: true`. Publication can consume that exact tar but cannot rebuild a candidate, restage different bytes, or change the staging record.
+The staging and publication lanes are separate workflows with separate permissions and approvals. Staging has no `contents: write` permission and no tag, Release, package, deployment, or OIDC permission. A staged tar says `publicationState: "staged_not_released"` and `releaseEligible: false` even though the automated qualification inside it independently says `releaseEligible:true`. Publication can consume that exact tar but cannot rebuild a candidate, restage different bytes, or change the staging record.
 
 The repository is public, and GitHub Actions artifacts are available to signed-in people with repository read access. The staged tar and both staging dispatch files are therefore **not confidential storage**. Draft assets are access-restricted while the Release is a draft, but they must still be treated as non-confidential because the same release-intended bytes already exist in the public-repository staging artifact. Published Release assets are public. Never put the raw harness report, credentials, personal data, private device paths, or other secrets in a workflow input, stage, draft, or public asset.
 
@@ -41,11 +41,13 @@ Publication requires two additional pre-created environments with disjoint eligi
 | Environment | Purpose | Required environment-only guard | Required environment-only policy credential |
 | --- | --- | --- | --- |
 | `release-production` | Attach the fixed asset set to the exact empty draft | `RELEASE_PRODUCTION_PROTECTED=asset-attachment-reviewer-main-only-v1` | `RELEASE_PRODUCTION_POLICY_READ_TOKEN` |
-| `release-final` | Reverify and publish the already verified draft | `RELEASE_FINAL_PROTECTED=final-publication-reviewer-main-only-immutable-v1` | `RELEASE_FINAL_POLICY_READ_TOKEN` |
+| `release-final` | Reverify and publish the already verified draft | `RELEASE_FINAL_PROTECTED=final-publication-reviewer-main-only-immutable-v1` and `RELEASE_FINAL_EXCLUSIVE_MUTATION_FREEZE=exclusive-release-main-policy-tag-writers-paused-v1` | `RELEASE_FINAL_POLICY_READ_TOKEN` |
 
 Each environment must require a trusted reviewer who is not the workflow initiator, prevent self-review, allow only `main`, disable administrator bypass, and expose only its own guard and policy credential. The two eligible-reviewer sets must be disjoint; a person eligible to approve asset attachment must not be eligible to approve final publication. For this personal-account repository, that requires the owner plus at least two additional trusted collaborators. If those distinct reviewers are unavailable, publication stops rather than weakening either boundary.
 
-Organization and repository variable scopes must not define `RELEASE_PRODUCTION_PROTECTED` or `RELEASE_FINAL_PROTECTED`; each guard exists only in its named environment. Organization, repository, and other environment secret scopes must not define either policy-token name. `RELEASE_PRODUCTION_POLICY_READ_TOKEN` and `RELEASE_FINAL_POLICY_READ_TOKEN` must be separate fine-grained credentials limited to this repository's **Administration: read** permission. They are used only for a bounded authenticated `GET` of the immutable-releases policy; they have no Contents, Actions, Workflows, Packages, Deployments, or identity-token write authority and are never used to create, update, upload, publish, or delete a Release.
+Organization and repository variable scopes must not define `RELEASE_PRODUCTION_PROTECTED`, `RELEASE_FINAL_PROTECTED`, or `RELEASE_FINAL_EXCLUSIVE_MUTATION_FREEZE`; each guard exists only in its named environment. Organization, repository, and other environment secret scopes must not define either policy-token name. `RELEASE_PRODUCTION_POLICY_READ_TOKEN` and `RELEASE_FINAL_POLICY_READ_TOKEN` must be separate fine-grained credentials limited to this repository's **Administration: read** permission. They are used only for a bounded authenticated `GET` of the immutable-releases policy; they have no Contents, Actions, Workflows, Packages, Deployments, or identity-token write authority and are never used to create, update, upload, publish, or delete a Release.
+
+GitHub's Release update API has no compare-and-swap precondition spanning the final asset listing and the irreversible publish PATCH. Final approval therefore asserts an exclusive mutation freeze: from approval until the PATCH response is resolved, every other human, app, token, and workflow with Release-write authority is paused; repository-settings writers may not change immutable-release policy; tag and ruleset writers may not move, delete, recreate, or weaken protection for the candidate tag; `main` is not advanced; and no CI, Security, Android, qualification, staging, or publication rerun is started. Repository workflows enforce that only this publication workflow declares `contents: write`; administrators must also suspend or exclude external contents, settings, ruleset, and tag writers for this bounded window. The workflow's repeated API reads are latest-observed checks, not an atomic repository-wide lock.
 
 An administrator must also complete and independently review all of the following before the publication workflow is dispatched:
 
@@ -58,72 +60,38 @@ The publication workflow never creates a tag or Release. This prevents the Relea
 
 ## Qualification inputs
 
-Use one first-attempt successful `Android Cross Compile` push run from the exact current `main` commit. Its artifacts are retained for 30 days and must consist of exactly:
+Use one first-attempt successful `Android Cross Compile` push run from the exact current `main` commit. The run retains exactly nine artifacts for 30 days:
 
 - the seven governed posture bundles listed in [Android validation artifacts](ANDROID_ARTIFACTS.md); and
-- `termux-mcp-emulated-evidence`.
+- `termux-mcp-native-qualification-components`, containing exactly the seven frozen component reports; and
+- `termux-mcp-qualified-runtime-snapshot`, containing exactly the retained runtime archive, package lock, and snapshot record.
 
-The workflow rejects expired, missing, duplicate, extra, pull-request, tag, fork, stale, rerun, incomplete, or failed inputs. It revalidates the current `main` ref, source SHA, run identity, manifest, checksum, size, target, ELF identity, feature posture, aggregate evidence, and companion CI/Security runs before and after environment approval.
+That successful Android run triggers the read-only `Automated Release Qualification` workflow. The qualifier must itself be a successful first attempt and emits exactly one artifact, `termux-mcp-native-qualification-evidence`, containing twelve members: the seven unchanged components, the runtime archive, package lock, snapshot, newly generated offline replay record, and `automated-qualification-v1.json`. Protected staging discovers this qualifier from its exact Android-run ID and source-commit run title; no qualifier ID is a dispatch input.
 
-Run the downloaded-artifact validator and physical device harness exactly as described in [release-candidate validation](RELEASE_CANDIDATE_VALIDATION.md) and the [device production gate](DEVICE_PRODUCTION_GATE.md). Then use `scripts/package_physical_qualification.sh --help` to create the [`physical-qualification-v1.json` closed-schema envelope](release-physical-qualification-schema-v1.json). The packager:
+The workflow rejects expired, missing, duplicate, extra, pull-request, tag, fork, stale, rerun, incomplete, failed, or substituted Android and qualifier inputs. It revalidates the current `main` ref; exact source SHA; all four CI, Security, Android, and qualifier run IDs; both workflow paths and event types; artifact IDs and server digests; manifest/checksum/size/target/ELF posture; and evidence lineage before and after environment approval.
 
-- requires validator v11, schema v2, non-fixture status, every phase passing, AArch64, at least 60 stable minutes, and `releaseEligible: true`;
-- requires the harness-v11 final PASS and cleanup contract;
-- binds the CI, Security, and Android run IDs;
-- records SHA-256 for the sanitized validator report and private raw harness report;
-- records the workflow full-suite digest and separate native-device full-suite digest without equating them; and
-- emits no device paths, identifiers, command output, bearer material, or raw harness content.
+The exact qualifier artifact must contain the aggregate v4 report, four specialized provider reports, classifier v3, the six-scenario native deployment report, all four retained-runtime members, and `automated-qualification-v1.json`. The qualification envelope must conform to [`release-automated-qualification-schema-v1.json`](release-automated-qualification-schema-v1.json), bind its own qualifier run ID, the source Android run, the committed [`release-qualification-policy-v1.json`](release-qualification-policy-v1.json), and deployment scenario set by digest, and carry this exact boundary:
 
-Keep the raw harness report private. The reviewer compares the private report to the envelope's digest out of band:
-
-```bash
-test "$(sha256sum /absolute/path/device-harness-v11.txt | awk '{print $1}')" = \
-  "$(jq -r .rawHarnessReportSha256 /absolute/path/dispatch-v1/physical-qualification-v1.json)"
+```json
+{
+  "physicalDeviceObserved": false,
+  "androidFrameworkObserved": false,
+  "sustainedPhysicalSoak": false,
+  "physicalCertification": "not_run"
+}
 ```
 
-The packager requires canonical absolute mode-`0600` report paths and a new absolute output directory beneath an existing mode-`0700` parent. A typical device-side preparation is:
+Every automated record states `physicalDeviceObserved:false`, `androidFrameworkObserved:false`, `sustainedPhysicalSoak:false`, `physicalCertification:"not_run"`, and `rebuildReproducibilityClaim:false` where the runtime contract applies. There is no evidence bundle to encode and no physical-evidence workflow input. There is also no qualification-class or qualifier-run workflow input. Staging downloads the seven Android bundles, the retained-runtime snapshot, and the separately produced automated qualification by their exact Actions artifact IDs. `package_physical_qualification.sh` remains available for a separately named optional physical-certification tier; its output cannot be submitted to the automated route.
 
-```bash
-EVIDENCE_PARENT="$HOME/.local/share/termux-mcp-release-evidence"
-install -d -m 700 "$EVIDENCE_PARENT"
-chmod 600 /absolute/path/release-validator-v11.json /absolute/path/device-harness-v11.txt
-scripts/package_physical_qualification.sh \
-  --validator-report /absolute/path/release-validator-v11.json \
-  --harness-report /absolute/path/device-harness-v11.txt \
-  --output-dir "$EVIDENCE_PARENT/dispatch-v1"
-```
-
-On failure the command removes only its private unpublished staging directory. On success the output contains exactly the unchanged validator report and the sanitized envelope; it never copies the raw harness report.
-
-## Dispatch bundle
-
-Create a gzip-compressed tar containing exactly these two regular files at its root:
-
-- `release-validator-v11.json`
-- `physical-qualification-v1.json`
-
-Encode it as single-line base64 and record the SHA-256 of the compressed bytes. The encoded value must be at most 60,000 characters. Do not truncate or split an oversized bundle. The current lane cannot accept one; stop and add a separately reviewed intake path before staging.
-
-```bash
-PHYSICAL_ARCHIVE="$EVIDENCE_PARENT/physical-qualification-v1.tar.gz"
-tar --format=gnu --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-  -C "$EVIDENCE_PARENT/dispatch-v1" \
-  -cf - physical-qualification-v1.json release-validator-v11.json \
-  | gzip -n -9 >"$PHYSICAL_ARCHIVE"
-PHYSICAL_BUNDLE_SHA256="$(sha256sum "$PHYSICAL_ARCHIVE" | awk '{print $1}')"
-PHYSICAL_BUNDLE_GZIP_BASE64="$(base64 -w0 "$PHYSICAL_ARCHIVE")"
-(( ${#PHYSICAL_BUNDLE_GZIP_BASE64} <= 60000 ))
-```
+Automated release qualification proves the exact artifacts under the digest-pinned official Termux userland on native ARM64, including deterministic Android-provider simulation and isolated deployment recovery. It does not certify physical-device, OEM, battery-aging, thermal-soak, radio, Doze, or Android-framework behavior.
 
 Dispatch `Stage Release Assets` from `main` with:
 
 - `expected_commit`: the lowercase 40-character exact current `main` SHA;
 - `version`: the exact `Cargo.toml` version;
-- `android_run_id`: the qualifying first-attempt Android run;
-- `physical_bundle_sha256`: the compressed bundle digest; and
-- `physical_bundle_gzip_base64`: the single-line encoded bundle.
+- `android_run_id`: the qualifying first-attempt Android run.
 
-The input is sanitized but the workflow still masks it and never prints it. Masking reduces accidental log disclosure; it does not make a workflow-dispatch input confidential. Preflight performs the complete verification without producing a retained artifact. The protected `stage` job repeats every check after approval, performs a final current-`main` check, and then uploads one raw deterministic tar.
+Preflight performs the complete verification without producing a retained artifact. The protected `stage` job repeats every check after approval, performs a final current-`main` check, and then uploads one raw deterministic tar.
 
 ## Staged payload
 
@@ -132,11 +100,12 @@ For v0.6.0 the tar is named `termux-mcp-server-v0.6.0-release-stage-<sha12>.tar`
 - seven byte-identical binaries under the final `termux-mcp-server-v0.6.0-aarch64-linux-android-<posture>` names;
 - one checksum sidecar per binary and a combined `SHA256SUMS`;
 - the unchanged workflow manifests under unambiguous names;
-- sanitized validator, native-emulation, classifier, and physical-qualification evidence;
+- the automated qualification plus its aggregate, specialized, classifier, and deployment evidence;
+- the retained runtime archive, package lock, snapshot, and offline replay record under `evidence/runtime/`;
 - `LICENSE`; and
-- [`release-staging-manifest-v1.json`](release-staging-manifest-schema-v1.json), validated by its closed schema.
+- [`release-staging-manifest-v2.json`](release-staging-manifest-schema-v2.json), validated by its closed schema.
 
-The staging manifest binds the exact source and workflow run IDs, every source and staged digest, every preserved manifest/evidence digest, and the deterministic member inventory. Renaming never changes binary bytes. Any assembler mismatch before upload leaves no local staging tar. The final step also requires the raw-upload server digest to equal the locally computed tar digest. The staged Actions artifact is retained for 30 days. Because this read-only workflow intentionally cannot delete Actions artifacts, a failure after upload can leave an **unqualified** artifact until an administrator deletes it or retention expires; only a successful workflow summary with matching IDs and digests identifies a qualified stage.
+The staging manifest binds the exact source plus CI, Security, Android, and qualifier workflow run IDs, qualification class and negative claim boundary, every source and staged digest, all four retained-runtime records, every preserved manifest/evidence digest, and the deterministic member inventory. Renaming never changes binary bytes. Any assembler mismatch before upload leaves no local staging tar. The final step also requires the raw-upload server digest to equal the locally computed tar digest. The staged Actions artifact is retained for 30 days. Because this read-only workflow intentionally cannot delete Actions artifacts, a failure after upload can leave an **unqualified** artifact until an administrator deletes it or retention expires; only a successful workflow summary with matching IDs and digests identifies a qualified stage.
 
 ## Fixed public asset set
 
@@ -147,9 +116,9 @@ The v0.6.0 draft must begin empty and, after the protected attachment job, conta
 3. `SHA256SUMS`; and
 4. the unchanged raw `termux-mcp-server-v0.6.0-release-stage-<sha12>.tar` downloaded from the exact staging Actions artifact.
 
-The first fifteen files are byte-for-byte members extracted from that tar. The sixteenth is the tar itself, byte-for-byte unchanged. The closed `release-staging-manifest-v1.json`, workflow manifests, LICENSE, and sanitized evidence remain inside the raw tar and are not separate GitHub Release assets. A different count, filename, byte length, digest, upload state, or duplicate name fails the draft.
+The first fifteen files are byte-for-byte members extracted from that tar. The sixteenth is the tar itself, byte-for-byte unchanged. The closed `release-staging-manifest-v2.json`, workflow manifests, LICENSE, sanitized evidence, and all four retained-runtime members remain only inside the raw tar and are not separate GitHub Release assets. A different count, filename, byte length, digest, upload state, or duplicate name fails the draft.
 
-`scripts/prepare_release_publication_assets.sh` validates this projection and emits a private `release-publication-receipt-v1.json` for workflow comparison. The receipt is verification state, not a seventeenth Release asset, and must not be uploaded.
+`scripts/prepare_release_publication_assets.sh` validates this projection in a private bundle and exposes the complete `assets/` directory plus `release-publication-receipt-v1.json` with one atomic no-replace directory rename. Bundle-directory existence is the completion marker: an incomplete run exposes neither sibling, and a competing bundle is never replaced or deleted. The receipt is verification state, not a seventeenth Release asset; it remains private and must not be uploaded.
 
 GitHub automatically offers tag-derived source ZIP and tar archives. Those generated downloads are not members of the sixteen-asset contract, are not Android binaries, and are not covered by the publisher's asset digest or `verify-asset` proof. The v0.6.0 contract also makes no separate SBOM or third-party-notice asset claim. Adding any new durable asset requires a separately reviewed staging and publication contract change; it must not be appended during a live release.
 
@@ -165,9 +134,9 @@ The protected workflow has one-way states and does not skip or combine them:
 
 1. **Public, non-confidential stage.** The staging workflow has already emitted one exact raw tar. It remains `staged_not_released` and is not an installation source.
 2. **Pre-created empty draft.** An authorized maintainer creates the protected annotated tag and empty draft outside the workflow. Neither object alone authorizes installation.
-3. **Protected attachment.** The `release-production` job waits for its environment reviewer, requires `RELEASE_PRODUCTION_PROTECTED=asset-attachment-reviewer-main-only-v1`, verifies the immutable-release policy with `RELEASE_PRODUCTION_POLICY_READ_TOKEN`, and repeats every source, tag, run, artifact, tar, manifest, draft, and zero-asset check. Only then does its job-local `contents: write` token bind the deterministic, provenance-derived release body and attach the fixed sixteen assets. It cannot create or publish a Release, create or move a tag, change the title or prerelease state, delete or replace an asset, or rebuild anything. It retains a closed attachment record with all sixteen server-assigned identities and presents the record digests in the job summary.
+3. **Protected attachment.** The `release-production` job waits for its environment reviewer, requires `RELEASE_PRODUCTION_PROTECTED=asset-attachment-reviewer-main-only-v1`, verifies the immutable-release policy with `RELEASE_PRODUCTION_POLICY_READ_TOKEN`, and repeats every source, tag, run, artifact, tar, manifest, draft, and zero-asset check. Only then does its job-local `contents: write` token bind the deterministic, provenance-derived release body and attach the fixed sixteen assets. GitHub provides no atomic precondition across each validating read and the following body PATCH or asset POST. Concurrent mutation can therefore only cause validation or attachment to fail and leave an unpublished, non-resumable partial draft; the workflow never automatically deletes or repairs it. It cannot create or publish a Release, create or move a tag, change the title or prerelease state, delete or replace an asset, or rebuild anything. It retains a closed attachment record with all sixteen server-assigned identities and presents the record digests in the job summary.
 4. **Independent byte verification.** A fresh read-only job takes only the recorded draft Release ID and expected identities. It lists exactly sixteen uploaded assets, rejects `starter` or non-uploaded state, binds every asset ID/name/size/server digest, downloads every asset afresh by ID, and compares every byte to a separately downloaded exact staging tar. It re-runs `SHA256SUMS`, all seven sidecars, the closed staging-manifest checks, and the raw-tar digest. This job has no release-write permission. It retains the closed JSON verification record for 30 days and renders its run, Release, source, stage, record hashes, and sixteen asset identities in a reviewer-readable job summary.
-5. **Separate final approval.** Only after independent verification and record retention succeed may the `release-final` job wait for its disjoint reviewer. After approval it downloads that exact current-run verification artifact by server-assigned ID, requires the recorded Actions digest and file SHA-256, and semantically reproduces the record from the current draft before and immediately before mutation. It also requires `RELEASE_FINAL_PROTECTED=final-publication-reviewer-main-only-immutable-v1`, verifies the immutable-release policy with `RELEASE_FINAL_POLICY_READ_TOKEN`, and repeats current-main, tag, stage, asset-ID, server-digest, fresh-download, checksum, and byte-equality checks. Its exact PATCH changes `draft` from `true` to `false`, reasserts the already-verified `prerelease: false` state, and explicitly requests this Release as latest; it makes no tag, asset, title, or body mutation.
+5. **Separate final approval and mutation freeze.** Only after independent verification and record retention succeed may the `release-final` job wait for its disjoint reviewer. The reviewer must first establish the bounded exclusive-writer freeze above. After approval the job downloads that exact current-run verification artifact by server-assigned ID, requires the recorded Actions digest and file SHA-256, and semantically reproduces the record from the current draft before and immediately before mutation. It requires both final-environment guards, verifies the immutable-release policy with `RELEASE_FINAL_POLICY_READ_TOKEN`, and repeats current-main, tag, stage, asset-ID, server-digest, fresh-download, checksum, and byte-equality checks. Its exact PATCH changes `draft` from `true` to `false`, reasserts the already-verified `prerelease: false` state, and explicitly requests this Release as latest; it makes no tag, asset, title, or body mutation.
 6. **Immutable public proof.** Publication success is not the PATCH response alone. A fresh public read-back must report the exact Release ID/tag/commit, `draft: false`, `prerelease: false`, and `immutable: true`. A final read-only proof then downloads all sixteen assets through their public URLs without the policy credential, verifies the exact allowlist and every byte/digest against the retained identities, and records the immutable Release URL, identity, asset count, and successful public proof in its summary.
 
 GitHub makes a tag and attached assets immutable only when an immutable Release is published. Before step 5 the ruleset protects the annotated tag, but documentation must not call it a GitHub-immutable tag. The environments provide separate approval checkpoints; the configured disjoint reviewer sets provide the human separation.
@@ -184,7 +153,7 @@ These workflow records contain only public release provenance, not credentials o
 
 Creating a draft, attaching assets, and publishing are not one atomic operation. The workflow therefore fails closed as follows:
 
-- an attachment error may leave a partial draft, but the workflow never auto-deletes a draft, asset, tag, or staging artifact;
+- an attachment error, including a concurrent change between a validating GET and a body PATCH or asset POST, may leave a partial draft; that draft is unpublished and non-resumable, and the workflow never auto-deletes or repairs a draft, asset, tag, or staging artifact;
 - a verification mismatch leaves the draft unpublished and blocks the final job;
 - a denied, rejected, or expired final approval leaves the verified draft unpublished;
 - every GitHub workflow rerun is rejected by the first-attempt guard; after inspecting and explicitly retiring or cleaning any partial draft back to the documented empty state, an administrator must start a fresh reviewed dispatch; and
@@ -194,10 +163,11 @@ Once GitHub reports the Release immutable, its tag and assets are not repaired, 
 
 ## Publication prerequisites
 
-The checked-in workflow and documentation do not satisfy administrator-only or physical-device gates by themselves. A publication dispatch must remain blocked unless all of the following are true for one unchanged current-main commit:
+The checked-in workflow and documentation do not satisfy administrator-only publication controls by themselves. A publication dispatch must remain blocked unless all of the following are true for one unchanged current-main commit:
 
-- exact-main first-attempt CI, Security, Android/native validation, fresh validator-v11/schema-v2 physical qualification, and the protected stage all pass;
+- exact-main first-attempt CI, Security, Android/native validation, automated qualification, and the protected stage all pass;
 - the `release-qualification`, `release-production`, and `release-final` environments exist with their documented guards, branch rules, bypass posture, and reviewer separation;
+- the final reviewer can establish the documented exclusive Release/main/settings/tag/ruleset/workflow mutation freeze for the complete final-publication window;
 - the two separate environment-only Administration-read policy credentials exist and immutable releases are enabled;
 - the active `v*` tag ruleset exists and the exact annotated version tag is protected at the qualified commit;
 - the exact-tag draft is pre-created with the exact version title, a blank body, and zero assets; and

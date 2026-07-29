@@ -15,14 +15,6 @@ on:
         description: First-attempt successful Android Cross Compile push run
         required: true
         type: string
-      physical_bundle_sha256:
-        description: SHA-256 of the gzip-compressed physical evidence bundle
-        required: true
-        type: string
-      physical_bundle_gzip_base64:
-        description: Single-line base64 of the sanitized two-file physical evidence bundle
-        required: true
-        type: string
 
 permissions:
   actions: read
@@ -36,9 +28,15 @@ jobs:
   preflight:
     name: Verify exact release inputs
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     outputs:
-      artifact_ids: ${{ steps.upstream.outputs.artifact_ids }}
+      android_artifact_ids: ${{ steps.upstream.outputs.android_artifact_ids }}
+      android_artifact_set_sha256: ${{ steps.upstream.outputs.android_artifact_set_sha256 }}
+      runtime_artifact_id: ${{ steps.upstream.outputs.runtime_artifact_id }}
+      runtime_artifact_digest: ${{ steps.upstream.outputs.runtime_artifact_digest }}
+      qualification_run_id: ${{ steps.upstream.outputs.qualification_run_id }}
+      qualification_artifact_id: ${{ steps.upstream.outputs.qualification_artifact_id }}
+      qualification_artifact_digest: ${{ steps.upstream.outputs.qualification_artifact_digest }}
     steps:
       - name: Checkout dispatch main candidate
         # actions/checkout@v7.0.1 resolved 2026-07-24
@@ -54,38 +52,33 @@ jobs:
           ANDROID_RUN_ID: ${{ inputs.android_run_id }}
           DISPATCH_REF: ${{ github.ref }}
           DISPATCH_SHA: ${{ github.sha }}
-          PHYSICAL_BUNDLE_SHA256: ${{ inputs.physical_bundle_sha256 }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           umask 077
           jq -e '
-            .inputs.physical_bundle_gzip_base64 as $value
-            | ($value | type == "string")
-            and (($value | length) > 0 and ($value | length) <= 60000)
-            and ($value | test("^[A-Za-z0-9+/]+={0,2}$"))
-            and (($value | length) % 4 == 0)
+            (.inputs | keys | sort) == [
+              "android_run_id",
+              "expected_commit",
+              "version"
+            ]
           ' "$GITHUB_EVENT_PATH" >/dev/null
-          PHYSICAL_BUNDLE_GZIP_BASE64="$(jq -er '.inputs.physical_bundle_gzip_base64' "$GITHUB_EVENT_PATH")"
-          [[ "$DISPATCH_REF" == refs/heads/main ]]
+          test "$DISPATCH_REF" = refs/heads/main
+          test "$RUN_ATTEMPT" = 1
           [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$DISPATCH_SHA" == "$EXPECTED_COMMIT" ]]
+          test "$DISPATCH_SHA" = "$EXPECTED_COMMIT"
           [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           [[ "$ANDROID_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$PHYSICAL_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} > 0))
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} <= 60000))
-          [[ "$PHYSICAL_BUNDLE_GZIP_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} % 4 == 0))
-          printf '::add-mask::%s\n' "$PHYSICAL_BUNDLE_GZIP_BASE64"
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           test -z "$(git status --short)"
           test "$(sed -n '0,/^version = /s/^version = "\([^"]*\)"/\1/p' Cargo.toml)" = "$EXPECTED_VERSION"
 
-      - name: Verify upstream run and exact artifact set
+      - name: Resolve exact Android bundles and independent qualification
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_VERSION: ${{ inputs.version }}
           ANDROID_RUN_ID: ${{ inputs.android_run_id }}
         run: |
           set -euo pipefail
@@ -99,10 +92,577 @@ jobs:
               -H 'X-GitHub-Api-Version: 2022-11-28' \
               "$1"
           }
+          verify_push_run() {
+            local expected_name="$1" workflow_file="$2" run_id="$3" output="$4"
+            local list_output="${output%.json}.runs.json"
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+            api_get "$api_root/actions/runs/$run_id" >"$output"
+            jq -e \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
+              --argjson run_id "$run_id" '
+                .id == $run_id
+                and .name == $name
+                and .path == $path
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $sha
+                and .status == "completed"
+                and .conclusion == "success"
+                and .run_attempt == 1
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
+              ' "$output" >/dev/null
+            api_get "$api_root/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" \
+              >"$list_output"
+            jq -L scripts -e \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
+              --argjson run_id "$run_id" '
+                include "latest_workflow_run";
+                complete_workflow_run_page
+                |
+                [
+                  .[]
+                  | select(
+                      .name == $name
+                      and .path == $path
+                      and .event == "push"
+                      and .head_branch == "main"
+                      and .head_sha == $sha
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                    )
+                ]
+                | latest_workflow_run as $latest
+                | $latest != null
+                and $latest.id == $run_id
+                and $latest.status == "completed"
+                and $latest.conclusion == "success"
+                and $latest.run_attempt == 1
+              ' "$list_output" >/dev/null
+          }
+
           api_get "$api_root/git/ref/heads/main" >main-ref.json
           jq -e --arg sha "$EXPECTED_COMMIT" \
             '.object.type == "commit" and .object.sha == $sha' main-ref.json >/dev/null
 
+          verify_push_run "Android Cross Compile" android-cross-compile.yml \
+            "$ANDROID_RUN_ID" android-run.json
+
+          api_get "$api_root/actions/runs/$ANDROID_RUN_ID/artifacts?per_page=100" \
+            >android-artifacts.json
+          expected_android_names='[
+            "termux-mcp-native-qualification-components",
+            "termux-mcp-qualified-runtime-snapshot",
+            "termux-mcp-server-aarch64-linux-android-android-battery-status",
+            "termux-mcp-server-aarch64-linux-android-android-volume-control",
+            "termux-mcp-server-aarch64-linux-android-android-volume-status",
+            "termux-mcp-server-aarch64-linux-android-command-execution",
+            "termux-mcp-server-aarch64-linux-android-default",
+            "termux-mcp-server-aarch64-linux-android-full-suite",
+            "termux-mcp-server-aarch64-linux-android-mcp-runtime"
+          ]'
+          jq -e \
+            --argjson expected "$expected_android_names" \
+            --argjson run_id "$ANDROID_RUN_ID" '
+              .total_count == 9
+              and (.artifacts | length) == 9
+              and ([.artifacts[].name] | sort) == ($expected | sort)
+              and ([.artifacts[].id] | unique | length) == 9
+              and all(.artifacts[];
+                .expired == false
+                and (.size_in_bytes | type == "number" and floor == . and . >= 1)
+                and (.digest | test("^sha256:[0-9a-f]{64}$"))
+                and .workflow_run.id == $run_id
+              )
+            ' android-artifacts.json >/dev/null
+          android_artifact_ids="$(
+            jq -r '
+              [
+                .artifacts
+                | sort_by(.name)[]
+                | select(
+                    .name != "termux-mcp-native-qualification-components"
+                    and .name != "termux-mcp-qualified-runtime-snapshot"
+                  )
+                | (.id | tostring)
+              ] | join(",")
+            ' android-artifacts.json
+          )"
+          [[ "$android_artifact_ids" =~ ^[1-9][0-9]*(,[1-9][0-9]*){6}$ ]]
+          runtime_artifact_id="$(
+            jq -er '
+              .artifacts[]
+              | select(.name == "termux-mcp-qualified-runtime-snapshot")
+              | .id
+            ' android-artifacts.json
+          )"
+          runtime_artifact_digest="$(
+            jq -er '
+              .artifacts[]
+              | select(.name == "termux-mcp-qualified-runtime-snapshot")
+              | .digest
+            ' android-artifacts.json
+          )"
+          [[ "$runtime_artifact_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$runtime_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          android_artifact_set_sha256="$(
+            jq -cS '
+              [
+                .artifacts
+                | sort_by(.name)[]
+                | {
+                    id,
+                    name,
+                    digest,
+                    expired:.expired,
+                    sizeInBytes:.size_in_bytes,
+                    workflowRunId:.workflow_run.id
+                  }
+              ]
+            ' android-artifacts.json | sha256sum | awk '{print $1}'
+          )"
+          [[ "$android_artifact_set_sha256" =~ ^[0-9a-f]{64}$ ]]
+
+          expected_title="Qualify Android run $ANDROID_RUN_ID at $EXPECTED_COMMIT"
+          api_get "$api_root/actions/workflows/automated-release-qualification.yml/runs?branch=main&event=workflow_run&head_sha=$EXPECTED_COMMIT&per_page=100" \
+            >qualification-runs.json
+          jq -L scripts -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "$expected_title" \
+            --arg commit "$EXPECTED_COMMIT" '
+              include "latest_workflow_run";
+              complete_workflow_run_page
+              |
+              [
+                .[]
+                | select(
+                    .display_title == $title
+                    and .name == "Automated Release Qualification"
+                    and .path == ".github/workflows/automated-release-qualification.yml"
+                    and .event == "workflow_run"
+                    and .head_branch == "main"
+                    and .head_sha == $commit
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  )
+              ]
+              | latest_workflow_run as $latest
+              | $latest != null
+              and $latest.status == "completed"
+              and $latest.conclusion == "success"
+              and $latest.run_attempt == 1
+            ' qualification-runs.json >/dev/null
+          qualification_run_id="$(
+            jq -L scripts -r \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg title "$expected_title" \
+              --arg commit "$EXPECTED_COMMIT" '
+                include "latest_workflow_run";
+                complete_workflow_run_page
+                |
+                [
+                  .[]
+                  | select(
+                      .display_title == $title
+                      and .name == "Automated Release Qualification"
+                      and .path == ".github/workflows/automated-release-qualification.yml"
+                      and .event == "workflow_run"
+                      and .head_branch == "main"
+                      and .head_sha == $commit
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                    )
+                ]
+                | latest_workflow_run
+                | .id
+              ' \
+              qualification-runs.json
+          )"
+          [[ "$qualification_run_id" =~ ^[1-9][0-9]*$ ]]
+          api_get "$api_root/actions/runs/$qualification_run_id" >qualification-run.json
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "$expected_title" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson run_id "$qualification_run_id" '
+              .id == $run_id
+              and .name == "Automated Release Qualification"
+              and .display_title == $title
+              and .path == ".github/workflows/automated-release-qualification.yml"
+              and .event == "workflow_run"
+              and .head_branch == "main"
+              and .head_sha == $commit
+              and .status == "completed"
+              and .conclusion == "success"
+              and .run_attempt == 1
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' qualification-run.json >/dev/null
+          api_get "$api_root/actions/runs/$qualification_run_id/artifacts?per_page=100" \
+            >qualification-artifacts.json
+          jq -e --argjson run_id "$qualification_run_id" '
+            .total_count == 1
+            and (.artifacts | length) == 1
+            and .artifacts[0].name == "termux-mcp-native-qualification-evidence"
+            and .artifacts[0].expired == false
+            and (.artifacts[0].id | type == "number" and floor == . and . >= 1)
+            and (.artifacts[0].size_in_bytes | type == "number" and floor == . and . >= 1)
+            and (.artifacts[0].digest | test("^sha256:[0-9a-f]{64}$"))
+            and .artifacts[0].workflow_run.id == $run_id
+          ' qualification-artifacts.json >/dev/null
+          qualification_artifact_id="$(jq -r '.artifacts[0].id' qualification-artifacts.json)"
+          qualification_artifact_digest="$(jq -r '.artifacts[0].digest' qualification-artifacts.json)"
+          [[ "$qualification_artifact_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$qualification_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          {
+            printf 'android_artifact_ids=%s\n' "$android_artifact_ids"
+            printf 'android_artifact_set_sha256=%s\n' "$android_artifact_set_sha256"
+            printf 'runtime_artifact_id=%s\n' "$runtime_artifact_id"
+            printf 'runtime_artifact_digest=%s\n' "$runtime_artifact_digest"
+            printf 'qualification_run_id=%s\n' "$qualification_run_id"
+            printf 'qualification_artifact_id=%s\n' "$qualification_artifact_id"
+            printf 'qualification_artifact_digest=%s\n' "$qualification_artifact_digest"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Download exact seven Android bundles by ID
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.upstream.outputs.android_artifact_ids }}
+          path: upstream/android
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.android_run_id }}
+          digest-mismatch: error
+
+      - name: Download exact independent qualification by ID
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.upstream.outputs.qualification_artifact_id }}
+          path: upstream/qualification
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.upstream.outputs.qualification_run_id }}
+          digest-mismatch: error
+
+      - name: Download exact qualified runtime snapshot by ID
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.upstream.outputs.runtime_artifact_id }}
+          path: upstream/runtime
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.android_run_id }}
+          digest-mismatch: error
+
+      - name: Verify companion runs and assemble throwaway stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+          ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+          QUALIFICATION_RUN_ID: ${{ steps.upstream.outputs.qualification_run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          expected_android_artifact_names="$(
+            printf '%s\n' \
+              termux-mcp-server-aarch64-linux-android-android-battery-status \
+              termux-mcp-server-aarch64-linux-android-android-volume-control \
+              termux-mcp-server-aarch64-linux-android-android-volume-status \
+              termux-mcp-server-aarch64-linux-android-command-execution \
+              termux-mcp-server-aarch64-linux-android-default \
+              termux-mcp-server-aarch64-linux-android-full-suite \
+              termux-mcp-server-aarch64-linux-android-mcp-runtime |
+              LC_ALL=C sort
+          )"
+          actual_android_artifact_names="$(
+            find upstream/android -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_android_artifact_names" = "$expected_android_artifact_names"
+          expected_bundle_names="$(
+            printf '%s\n' SHA256SUMS artifact-manifest.json termux-mcp-server |
+              LC_ALL=C sort
+          )"
+          for artifact_name in $expected_android_artifact_names; do
+            artifact_dir="upstream/android/$artifact_name"
+            test -d "$artifact_dir"
+            test ! -L "$artifact_dir"
+            actual_bundle_names="$(
+              find "$artifact_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+                LC_ALL=C sort
+            )"
+            test "$actual_bundle_names" = "$expected_bundle_names"
+            for metadata in SHA256SUMS artifact-manifest.json; do
+              test -f "$artifact_dir/$metadata"
+              test ! -L "$artifact_dir/$metadata"
+              test ! -x "$artifact_dir/$metadata"
+            done
+            binary="$artifact_dir/termux-mcp-server"
+            test -f "$binary"
+            test ! -L "$binary"
+            chmod 755 -- "$binary"
+            test "$(stat -c %a "$binary")" = 755
+          done
+          evidence_dir="upstream/qualification"
+          expected_evidence_members="$(
+            printf '%s\n' \
+              automated-native-deployment-v1.json \
+              automated-qualification-v1.json \
+              termux-battery-emulated-evidence.json \
+              termux-command-emulated-evidence.json \
+              termux-native-aggregate-evidence-v4.json \
+              termux-observation-requirement-v3.json \
+              termux-qualified-runtime-image-v1.tar.gz \
+              termux-runtime-package-lock-v1.json \
+              termux-runtime-snapshot-replay-v1.json \
+              termux-runtime-snapshot-v1.json \
+              termux-volume-control-emulated-evidence.json \
+              termux-volume-emulated-evidence.json |
+              LC_ALL=C sort
+          )"
+          actual_evidence_members="$(
+            find "$evidence_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_evidence_members" = "$expected_evidence_members"
+          test "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 12
+          test "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          for member in "$evidence_dir"/*; do
+            test -f "$member"
+            test ! -L "$member"
+            chmod 600 -- "$member"
+            test "$(stat -c %a "$member")" = 600
+          done
+          runtime_dir="upstream/runtime"
+          expected_runtime_members="$(
+            printf '%s\n' \
+              termux-qualified-runtime-image-v1.tar.gz \
+              termux-runtime-package-lock-v1.json \
+              termux-runtime-snapshot-v1.json |
+              LC_ALL=C sort
+          )"
+          actual_runtime_members="$(
+            find "$runtime_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_runtime_members" = "$expected_runtime_members"
+          test "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3
+          test "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          for member in \
+            termux-qualified-runtime-image-v1.tar.gz \
+            termux-runtime-package-lock-v1.json \
+            termux-runtime-snapshot-v1.json
+          do
+            test -f "$runtime_dir/$member"
+            test ! -L "$runtime_dir/$member"
+            chmod 600 -- "$runtime_dir/$member"
+            test "$(stat -c %a "$runtime_dir/$member")" = 600
+            cmp -s -- "$runtime_dir/$member" "$evidence_dir/$member"
+          done
+          component_dir="$RUNNER_TEMP/native-qualification-components"
+          test ! -e "$component_dir"
+          mkdir -m 700 "$component_dir"
+          for member in \
+            termux-native-aggregate-evidence-v4.json \
+            termux-battery-emulated-evidence.json \
+            termux-volume-emulated-evidence.json \
+            termux-volume-control-emulated-evidence.json \
+            termux-command-emulated-evidence.json \
+            termux-observation-requirement-v3.json
+          do
+            test -f "$evidence_dir/$member"
+            test ! -L "$evidence_dir/$member"
+            install -m 600 -- "$evidence_dir/$member" "$component_dir/$member"
+          done
+          aggregate="$evidence_dir/termux-native-aggregate-evidence-v4.json"
+          qualification="$evidence_dir/automated-qualification-v1.json"
+          deployment="$evidence_dir/automated-native-deployment-v1.json"
+          runtime_archive="$evidence_dir/termux-qualified-runtime-image-v1.tar.gz"
+          runtime_package_lock="$evidence_dir/termux-runtime-package-lock-v1.json"
+          runtime_replay="$evidence_dir/termux-runtime-snapshot-replay-v1.json"
+          runtime_snapshot="$evidence_dir/termux-runtime-snapshot-v1.json"
+          ci_run_id="$(jq -r .candidate.ciRunId "$aggregate")"
+          security_run_id="$(jq -r .candidate.securityRunId "$aggregate")"
+          test "$(jq -r .candidate.androidRunId "$aggregate")" = "$ANDROID_RUN_ID"
+          test "$(jq -r .qualificationRun.runId "$qualification")" = "$QUALIFICATION_RUN_ID"
+
+          api_root="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          api_get() {
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$1"
+          }
+          for contract in "CI|ci.yml|$ci_run_id" "Security|security.yml|$security_run_id"; do
+            IFS='|' read -r expected_name workflow_file run_id <<<"$contract"
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+            api_get "$api_root/actions/runs/$run_id" >"$RUNNER_TEMP/$workflow_file.run.json"
+            jq -e \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
+              --argjson run_id "$run_id" '
+                .id == $run_id
+                and .name == $name
+                and .path == $path
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $sha
+                and .status == "completed"
+                and .conclusion == "success"
+                and .run_attempt == 1
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
+              ' "$RUNNER_TEMP/$workflow_file.run.json" >/dev/null
+            api_get "$api_root/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" \
+              >"$RUNNER_TEMP/$workflow_file.runs.json"
+            jq -L scripts -e \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
+              --argjson run_id "$run_id" '
+                include "latest_workflow_run";
+                complete_workflow_run_page
+                |
+                [
+                  .[]
+                  | select(
+                      .name == $name
+                      and .path == $path
+                      and .event == "push"
+                      and .head_branch == "main"
+                      and .head_sha == $sha
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                    )
+                ]
+                | latest_workflow_run as $latest
+                | $latest != null
+                and $latest.id == $run_id
+                and $latest.status == "completed"
+                and $latest.conclusion == "success"
+                and $latest.run_attempt == 1
+              ' "$RUNNER_TEMP/$workflow_file.runs.json" >/dev/null
+          done
+
+          chmod 700 scripts/stage_release_assets.sh
+          preflight_output="$RUNNER_TEMP/termux-mcp-server-v${EXPECTED_VERSION}-release-stage-${EXPECTED_COMMIT:0:12}.tar"
+          scripts/stage_release_assets.sh \
+            --default-dir upstream/android/termux-mcp-server-aarch64-linux-android-default \
+            --mcp-runtime-dir upstream/android/termux-mcp-server-aarch64-linux-android-mcp-runtime \
+            --android-battery-status-dir upstream/android/termux-mcp-server-aarch64-linux-android-android-battery-status \
+            --android-volume-status-dir upstream/android/termux-mcp-server-aarch64-linux-android-android-volume-status \
+            --android-volume-control-dir upstream/android/termux-mcp-server-aarch64-linux-android-android-volume-control \
+            --command-execution-dir upstream/android/termux-mcp-server-aarch64-linux-android-command-execution \
+            --full-suite-dir upstream/android/termux-mcp-server-aarch64-linux-android-full-suite \
+            --emulated-evidence-dir "$component_dir" \
+            --automated-qualification "$qualification" \
+            --deployment-evidence "$deployment" \
+            --runtime-archive "$runtime_archive" \
+            --runtime-package-lock "$runtime_package_lock" \
+            --runtime-snapshot "$runtime_snapshot" \
+            --runtime-replay "$runtime_replay" \
+            --license LICENSE \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --version "$EXPECTED_VERSION" \
+            --ci-run-id "$ci_run_id" \
+            --security-run-id "$security_run_id" \
+            --android-run-id "$ANDROID_RUN_ID" \
+            --qualification-run-id "$QUALIFICATION_RUN_ID" \
+            --output "$preflight_output"
+          test -f "$preflight_output"
+          test ! -L "$preflight_output"
+          tar -tf "$preflight_output" >/dev/null
+          rm -f -- "$preflight_output"
+
+  stage:
+    name: Assemble protected pre-release stage
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: release-qualification
+      deployment: false
+    steps:
+      - name: Require pre-created protected environment
+        env:
+          ENVIRONMENT_GUARD: ${{ vars.RELEASE_QUALIFICATION_PROTECTED }}
+        run: test "$ENVIRONMENT_GUARD" = required-reviewer-main-only-v1
+
+      - name: Checkout dispatch main candidate after approval
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Revalidate exact upstream identities after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+          ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+          QUALIFICATION_RUN_ID: ${{ needs.preflight.outputs.qualification_run_id }}
+          QUALIFICATION_ARTIFACT_ID: ${{ needs.preflight.outputs.qualification_artifact_id }}
+          QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.qualification_artifact_digest }}
+          RUNTIME_ARTIFACT_ID: ${{ needs.preflight.outputs.runtime_artifact_id }}
+          RUNTIME_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.runtime_artifact_digest }}
+          EXPECTED_ANDROID_ARTIFACT_SET_SHA256: ${{ needs.preflight.outputs.android_artifact_set_sha256 }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          jq -e '
+            (.inputs | keys | sort) == [
+              "android_run_id",
+              "expected_commit",
+              "version"
+            ]
+          ' "$GITHUB_EVENT_PATH" >/dev/null
+          test "$DISPATCH_REF" = refs/heads/main
+          test "$RUN_ATTEMPT" = 1
+          test "$DISPATCH_SHA" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -z "$(git status --short)"
+          test "$(sed -n '0,/^version = /s/^version = "\([^"]*\)"/\1/p' Cargo.toml)" = "$EXPECTED_VERSION"
+          [[ "$ANDROID_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$QUALIFICATION_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$QUALIFICATION_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$RUNTIME_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RUNTIME_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_ANDROID_ARTIFACT_SET_SHA256" =~ ^[0-9a-f]{64}$ ]]
+
+          api_root="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          api_get() {
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$1"
+          }
+          api_get "$api_root/git/ref/heads/main" >main-ref.json
+          jq -e --arg sha "$EXPECTED_COMMIT" \
+            '.object.type == "commit" and .object.sha == $sha' main-ref.json >/dev/null
           api_get "$api_root/actions/runs/$ANDROID_RUN_ID" >android-run.json
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
@@ -120,260 +680,39 @@ jobs:
               and .repository.full_name == $repository
               and .head_repository.full_name == $repository
             ' android-run.json >/dev/null
-
-          api_get "$api_root/actions/workflows/android-cross-compile.yml/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" >android-runs.json
-          jq -e --argjson run_id "$ANDROID_RUN_ID" '
-            (.workflow_runs | length) >= 1
-            and .workflow_runs[0].id == $run_id
-            and .workflow_runs[0].run_attempt == 1
-            and .workflow_runs[0].status == "completed"
-            and .workflow_runs[0].conclusion == "success"
-          ' android-runs.json >/dev/null
-
-          api_get "$api_root/actions/runs/$ANDROID_RUN_ID/artifacts?per_page=100" >artifacts.json
-          expected_names='[
-            "termux-mcp-emulated-evidence",
-            "termux-mcp-server-aarch64-linux-android-android-battery-status",
-            "termux-mcp-server-aarch64-linux-android-android-volume-control",
-            "termux-mcp-server-aarch64-linux-android-android-volume-status",
-            "termux-mcp-server-aarch64-linux-android-command-execution",
-            "termux-mcp-server-aarch64-linux-android-default",
-            "termux-mcp-server-aarch64-linux-android-full-suite",
-            "termux-mcp-server-aarch64-linux-android-mcp-runtime"
-          ]'
-          jq -e --argjson expected "$expected_names" '
-            .total_count == 8
-            and ([.artifacts[].name] | sort) == ($expected | sort)
-            and ([.artifacts[].id] | unique | length) == 8
-            and all(.artifacts[];
-              (.expired == false)
-              and (.size_in_bytes >= 1)
-              and (.digest | test("^sha256:[0-9a-f]{64}$"))
-            )
-          ' artifacts.json >/dev/null
-          artifact_ids="$(jq -r '[.artifacts | sort_by(.name)[] | (.id | tostring)] | join(",")' artifacts.json)"
-          [[ "$artifact_ids" =~ ^[1-9][0-9]*(,[1-9][0-9]*){7}$ ]]
-          printf 'artifact_ids=%s\n' "$artifact_ids" >>"$GITHUB_OUTPUT"
-
-      - name: Download exact upstream artifacts by ID
-        # actions/download-artifact@v8.0.1 resolved 2026-07-19
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ steps.upstream.outputs.artifact_ids }}
-          path: upstream
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.android_run_id }}
-          digest-mismatch: error
-
-      - name: Decode sanitized physical evidence
-        env:
-          PHYSICAL_BUNDLE_SHA256: ${{ inputs.physical_bundle_sha256 }}
-        run: |
-          set -euo pipefail
-          umask 077
-          jq -e '
-            .inputs.physical_bundle_gzip_base64 as $value
-            | ($value | type == "string")
-            and (($value | length) > 0 and ($value | length) <= 60000)
-            and ($value | test("^[A-Za-z0-9+/]+={0,2}$"))
-            and (($value | length) % 4 == 0)
-          ' "$GITHUB_EVENT_PATH" >/dev/null
-          PHYSICAL_BUNDLE_GZIP_BASE64="$(jq -er '.inputs.physical_bundle_gzip_base64' "$GITHUB_EVENT_PATH")"
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} > 0))
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} <= 60000))
-          [[ "$PHYSICAL_BUNDLE_GZIP_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} % 4 == 0))
-          printf '::add-mask::%s\n' "$PHYSICAL_BUNDLE_GZIP_BASE64"
-          archive="$RUNNER_TEMP/physical-evidence.tar.gz"
-          output="$RUNNER_TEMP/physical-evidence"
-          mkdir -m 700 "$output"
-          printf '%s' "$PHYSICAL_BUNDLE_GZIP_BASE64" | base64 --decode >"$archive"
-          test "$(sha256sum "$archive" | awk '{print $1}')" = "$PHYSICAL_BUNDLE_SHA256"
-          gzip -t "$archive"
-          ARCHIVE="$archive" OUTPUT="$output" python3 - <<'PY'
-          import os
-          import pathlib
-          import tarfile
-
-          archive = pathlib.Path(os.environ["ARCHIVE"])
-          output = pathlib.Path(os.environ["OUTPUT"])
-          expected = ["physical-qualification-v1.json", "release-validator-v11.json"]
-          with tarfile.open(archive, "r:gz") as source:
-              members = source.getmembers()
-              if sorted(member.name for member in members) != expected:
-                  raise SystemExit("physical evidence bundle members are not exact")
-              for member in members:
-                  if not member.isfile() or member.size < 2 or member.size > 4_194_304:
-                      raise SystemExit("physical evidence bundle contains an invalid member")
-                  handle = source.extractfile(member)
-                  if handle is None:
-                      raise SystemExit("physical evidence member could not be read")
-                  target = output / member.name
-                  target.write_bytes(handle.read())
-                  target.chmod(0o600)
-          PY
-
-      - name: Verify companion runs and assemble throwaway stage
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          EXPECTED_VERSION: ${{ inputs.version }}
-          ANDROID_RUN_ID: ${{ inputs.android_run_id }}
-        run: |
-          set -euo pipefail
-          umask 077
-          evidence_dir="upstream/termux-mcp-emulated-evidence"
-          aggregate="$evidence_dir/termux-emulated-evidence.json"
-          test -f "$aggregate"
-          test ! -L "$aggregate"
-          ci_run_id="$(jq -r .candidate.ciRunId "$aggregate")"
-          security_run_id="$(jq -r .candidate.securityRunId "$aggregate")"
-          test "$(jq -r .candidate.androidRunId "$aggregate")" = "$ANDROID_RUN_ID"
-          api_root="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
-          api_get() {
-            curl --fail-with-body --silent --show-error \
-              --connect-timeout 10 --max-time 30 \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "$1"
-          }
-          for contract in "CI|ci.yml|$ci_run_id" "Security|security.yml|$security_run_id"; do
-            IFS='|' read -r expected_name workflow_file run_id <<<"$contract"
-            [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
-            api_get "$api_root/actions/runs/$run_id" >"$RUNNER_TEMP/$workflow_file.run.json"
-            jq -e \
-              --arg name "$expected_name" --arg path ".github/workflows/$workflow_file" \
-              --arg repository "$GITHUB_REPOSITORY" --arg sha "$EXPECTED_COMMIT" \
-              --argjson run_id "$run_id" '
-                .id == $run_id and .name == $name and .path == $path
-                and .event == "push" and .head_branch == "main" and .head_sha == $sha
-                and .status == "completed" and .conclusion == "success" and .run_attempt == 1
-                and .repository.full_name == $repository and .head_repository.full_name == $repository
-              ' "$RUNNER_TEMP/$workflow_file.run.json" >/dev/null
-            api_get "$api_root/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" >"$RUNNER_TEMP/$workflow_file.runs.json"
-            jq -e --argjson run_id "$run_id" '
-              (.workflow_runs | length) >= 1 and .workflow_runs[0].id == $run_id
-              and .workflow_runs[0].run_attempt == 1
-              and .workflow_runs[0].status == "completed"
-              and .workflow_runs[0].conclusion == "success"
-            ' "$RUNNER_TEMP/$workflow_file.runs.json" >/dev/null
-          done
-          chmod 700 scripts/stage_release_assets.sh
-          preflight_output="$RUNNER_TEMP/termux-mcp-server-v${EXPECTED_VERSION}-release-stage-${EXPECTED_COMMIT:0:12}.tar"
-          scripts/stage_release_assets.sh \
-            --default-dir upstream/termux-mcp-server-aarch64-linux-android-default \
-            --mcp-runtime-dir upstream/termux-mcp-server-aarch64-linux-android-mcp-runtime \
-            --android-battery-status-dir upstream/termux-mcp-server-aarch64-linux-android-android-battery-status \
-            --android-volume-status-dir upstream/termux-mcp-server-aarch64-linux-android-android-volume-status \
-            --android-volume-control-dir upstream/termux-mcp-server-aarch64-linux-android-android-volume-control \
-            --command-execution-dir upstream/termux-mcp-server-aarch64-linux-android-command-execution \
-            --full-suite-dir upstream/termux-mcp-server-aarch64-linux-android-full-suite \
-            --emulated-evidence-dir "$evidence_dir" \
-            --validator-evidence "$RUNNER_TEMP/physical-evidence/release-validator-v11.json" \
-            --physical-qualification "$RUNNER_TEMP/physical-evidence/physical-qualification-v1.json" \
-            --license LICENSE \
-            --repository "$GITHUB_REPOSITORY" \
-            --commit "$EXPECTED_COMMIT" \
-            --version "$EXPECTED_VERSION" \
-            --ci-run-id "$ci_run_id" \
-            --security-run-id "$security_run_id" \
-            --android-run-id "$ANDROID_RUN_ID" \
-            --output "$preflight_output"
-          test -f "$preflight_output"
-          test ! -L "$preflight_output"
-          tar -tf "$preflight_output" >/dev/null
-          rm -f -- "$preflight_output"
-
-  stage:
-    name: Assemble protected pre-release stage
-    needs: preflight
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment:
-      name: release-qualification
-      deployment: false
-    steps:
-      - name: Require pre-created protected environment
-        env:
-          ENVIRONMENT_GUARD: ${{ vars.RELEASE_QUALIFICATION_PROTECTED }}
-        run: test "$ENVIRONMENT_GUARD" = required-reviewer-main-only-v1
-
-      - name: Checkout dispatch main candidate after approval
-        # actions/checkout@v7.0.1 resolved 2026-07-24
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Revalidate source and upstream run after approval
-        id: upstream
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          EXPECTED_VERSION: ${{ inputs.version }}
-          ANDROID_RUN_ID: ${{ inputs.android_run_id }}
-          DISPATCH_REF: ${{ github.ref }}
-          DISPATCH_SHA: ${{ github.sha }}
-          EXPECTED_ARTIFACT_IDS: ${{ needs.preflight.outputs.artifact_ids }}
-          PHYSICAL_BUNDLE_SHA256: ${{ inputs.physical_bundle_sha256 }}
-        run: |
-          set -euo pipefail
-          umask 077
-          jq -e '
-            .inputs.physical_bundle_gzip_base64 as $value
-            | ($value | type == "string")
-            and (($value | length) > 0 and ($value | length) <= 60000)
-            and ($value | test("^[A-Za-z0-9+/]+={0,2}$"))
-            and (($value | length) % 4 == 0)
-          ' "$GITHUB_EVENT_PATH" >/dev/null
-          PHYSICAL_BUNDLE_GZIP_BASE64="$(jq -er '.inputs.physical_bundle_gzip_base64' "$GITHUB_EVENT_PATH")"
-          [[ "$DISPATCH_REF" == refs/heads/main ]]
-          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$DISPATCH_SHA" == "$EXPECTED_COMMIT" ]]
-          [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$ANDROID_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$PHYSICAL_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} > 0))
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} <= 60000))
-          [[ "$PHYSICAL_BUNDLE_GZIP_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} % 4 == 0))
-          printf '::add-mask::%s\n' "$PHYSICAL_BUNDLE_GZIP_BASE64"
-          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-          test -z "$(git status --short)"
-          test "$(sed -n '0,/^version = /s/^version = "\([^"]*\)"/\1/p' Cargo.toml)" = "$EXPECTED_VERSION"
-          api_root="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
-          api_get() {
-            curl --fail-with-body --silent --show-error \
-              --connect-timeout 10 --max-time 30 \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "$1"
-          }
-          api_get "$api_root/git/ref/heads/main" >main-ref.json
-          jq -e --arg sha "$EXPECTED_COMMIT" '.object.type == "commit" and .object.sha == $sha' main-ref.json >/dev/null
-          api_get "$api_root/actions/runs/$ANDROID_RUN_ID" >android-run.json
-          jq -e \
-            --arg repository "$GITHUB_REPOSITORY" --arg sha "$EXPECTED_COMMIT" \
+          api_get "$api_root/actions/workflows/android-cross-compile.yml/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" \
+            >android-runs.json
+          jq -L scripts -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sha "$EXPECTED_COMMIT" \
             --argjson run_id "$ANDROID_RUN_ID" '
-              .id == $run_id and .name == "Android Cross Compile"
-              and .path == ".github/workflows/android-cross-compile.yml"
-              and .event == "push" and .head_branch == "main" and .head_sha == $sha
-              and .status == "completed" and .conclusion == "success" and .run_attempt == 1
-              and .repository.full_name == $repository and .head_repository.full_name == $repository
-            ' android-run.json >/dev/null
-          api_get "$api_root/actions/workflows/android-cross-compile.yml/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" >android-runs.json
-          jq -e --argjson run_id "$ANDROID_RUN_ID" '
-            (.workflow_runs | length) >= 1 and .workflow_runs[0].id == $run_id
-            and .workflow_runs[0].run_attempt == 1
-            and .workflow_runs[0].status == "completed"
-            and .workflow_runs[0].conclusion == "success"
-          ' android-runs.json >/dev/null
-          api_get "$api_root/actions/runs/$ANDROID_RUN_ID/artifacts?per_page=100" >artifacts.json
-          expected_names='[
-            "termux-mcp-emulated-evidence",
+              include "latest_workflow_run";
+              complete_workflow_run_page
+              |
+              [
+                .[]
+                | select(
+                    .name == "Android Cross Compile"
+                    and .path == ".github/workflows/android-cross-compile.yml"
+                    and .event == "push"
+                    and .head_branch == "main"
+                    and .head_sha == $sha
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  )
+              ]
+              | latest_workflow_run as $latest
+              | $latest != null
+              and $latest.id == $run_id
+              and $latest.status == "completed"
+              and $latest.conclusion == "success"
+              and $latest.run_attempt == 1
+            ' android-runs.json >/dev/null
+          api_get "$api_root/actions/runs/$ANDROID_RUN_ID/artifacts?per_page=100" \
+            >android-artifacts.json
+          expected_android_names='[
+            "termux-mcp-native-qualification-components",
+            "termux-mcp-qualified-runtime-snapshot",
             "termux-mcp-server-aarch64-linux-android-android-battery-status",
             "termux-mcp-server-aarch64-linux-android-android-volume-control",
             "termux-mcp-server-aarch64-linux-android-android-volume-status",
@@ -382,77 +721,145 @@ jobs:
             "termux-mcp-server-aarch64-linux-android-full-suite",
             "termux-mcp-server-aarch64-linux-android-mcp-runtime"
           ]'
-          jq -e --argjson expected "$expected_names" '
-            .total_count == 8
+          jq -e \
+            --argjson expected "$expected_android_names" \
+            --argjson runtime_artifact_id "$RUNTIME_ARTIFACT_ID" \
+            --arg runtime_artifact_digest "$RUNTIME_ARTIFACT_DIGEST" \
+            --argjson run_id "$ANDROID_RUN_ID" '
+            .total_count == 9
+            and (.artifacts | length) == 9
             and ([.artifacts[].name] | sort) == ($expected | sort)
-            and ([.artifacts[].id] | unique | length) == 8
+            and ([.artifacts[].id] | unique | length) == 9
             and all(.artifacts[];
-              (.expired == false) and (.size_in_bytes >= 1)
+              .expired == false
+              and (.size_in_bytes | type == "number" and floor == . and . >= 1)
               and (.digest | test("^sha256:[0-9a-f]{64}$"))
+              and .workflow_run.id == $run_id
             )
-          ' artifacts.json >/dev/null
-          artifact_ids="$(jq -r '[.artifacts | sort_by(.name)[] | (.id | tostring)] | join(",")' artifacts.json)"
-          test "$artifact_ids" = "$EXPECTED_ARTIFACT_IDS"
-          printf 'artifact_ids=%s\n' "$artifact_ids" >>"$GITHUB_OUTPUT"
+            and (
+              .artifacts[]
+              | select(.name == "termux-mcp-qualified-runtime-snapshot")
+              | .id == $runtime_artifact_id
+                and .digest == $runtime_artifact_digest
+                and .expired == false
+            )
+          ' android-artifacts.json >/dev/null
+          android_artifact_set_sha256="$(
+            jq -cS '
+              [
+                .artifacts
+                | sort_by(.name)[]
+                | {
+                    id,
+                    name,
+                    digest,
+                    expired:.expired,
+                    sizeInBytes:.size_in_bytes,
+                    workflowRunId:.workflow_run.id
+                  }
+              ]
+            ' android-artifacts.json | sha256sum | awk '{print $1}'
+          )"
+          test "$android_artifact_set_sha256" = "$EXPECTED_ANDROID_ARTIFACT_SET_SHA256"
 
-      - name: Re-download exact upstream artifacts by ID
+          expected_title="Qualify Android run $ANDROID_RUN_ID at $EXPECTED_COMMIT"
+          api_get "$api_root/actions/runs/$QUALIFICATION_RUN_ID" >qualification-run.json
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "$expected_title" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson run_id "$QUALIFICATION_RUN_ID" '
+              .id == $run_id
+              and .name == "Automated Release Qualification"
+              and .display_title == $title
+              and .path == ".github/workflows/automated-release-qualification.yml"
+              and .event == "workflow_run"
+              and .head_branch == "main"
+              and .head_sha == $commit
+              and .status == "completed"
+              and .conclusion == "success"
+              and .run_attempt == 1
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' qualification-run.json >/dev/null
+          api_get "$api_root/actions/workflows/automated-release-qualification.yml/runs?branch=main&event=workflow_run&head_sha=$EXPECTED_COMMIT&per_page=100" \
+            >qualification-runs.json
+          jq -L scripts -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "$expected_title" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson run_id "$QUALIFICATION_RUN_ID" '
+              include "latest_workflow_run";
+              complete_workflow_run_page
+              |
+              [
+                .[]
+                | select(
+                    .display_title == $title
+                    and .name == "Automated Release Qualification"
+                    and .path == ".github/workflows/automated-release-qualification.yml"
+                    and .event == "workflow_run"
+                    and .head_branch == "main"
+                    and .head_sha == $commit
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  )
+              ]
+              | latest_workflow_run as $latest
+              | $latest != null
+              and $latest.id == $run_id
+              and $latest.status == "completed"
+              and $latest.conclusion == "success"
+              and $latest.run_attempt == 1
+            ' qualification-runs.json >/dev/null
+          api_get "$api_root/actions/runs/$QUALIFICATION_RUN_ID/artifacts?per_page=100" \
+            >qualification-artifacts.json
+          jq -e \
+            --arg digest "$QUALIFICATION_ARTIFACT_DIGEST" \
+            --argjson artifact_id "$QUALIFICATION_ARTIFACT_ID" \
+            --argjson run_id "$QUALIFICATION_RUN_ID" '
+              .total_count == 1
+              and (.artifacts | length) == 1
+              and .artifacts[0].id == $artifact_id
+              and .artifacts[0].name == "termux-mcp-native-qualification-evidence"
+              and .artifacts[0].digest == $digest
+              and .artifacts[0].expired == false
+              and (.artifacts[0].size_in_bytes | type == "number" and floor == . and . >= 1)
+              and .artifacts[0].workflow_run.id == $run_id
+            ' qualification-artifacts.json >/dev/null
+
+      - name: Re-download exact seven Android bundles by ID
         # actions/download-artifact@v8.0.1 resolved 2026-07-19
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ steps.upstream.outputs.artifact_ids }}
-          path: upstream
+          artifact-ids: ${{ needs.preflight.outputs.android_artifact_ids }}
+          path: upstream/android
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ inputs.android_run_id }}
           digest-mismatch: error
 
-      - name: Re-decode sanitized physical evidence
-        env:
-          PHYSICAL_BUNDLE_SHA256: ${{ inputs.physical_bundle_sha256 }}
-        run: |
-          set -euo pipefail
-          umask 077
-          jq -e '
-            .inputs.physical_bundle_gzip_base64 as $value
-            | ($value | type == "string")
-            and (($value | length) > 0 and ($value | length) <= 60000)
-            and ($value | test("^[A-Za-z0-9+/]+={0,2}$"))
-            and (($value | length) % 4 == 0)
-          ' "$GITHUB_EVENT_PATH" >/dev/null
-          PHYSICAL_BUNDLE_GZIP_BASE64="$(jq -er '.inputs.physical_bundle_gzip_base64' "$GITHUB_EVENT_PATH")"
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} > 0))
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} <= 60000))
-          [[ "$PHYSICAL_BUNDLE_GZIP_BASE64" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]
-          ((${#PHYSICAL_BUNDLE_GZIP_BASE64} % 4 == 0))
-          printf '::add-mask::%s\n' "$PHYSICAL_BUNDLE_GZIP_BASE64"
-          archive="$RUNNER_TEMP/physical-evidence.tar.gz"
-          output="$RUNNER_TEMP/physical-evidence"
-          mkdir -m 700 "$output"
-          printf '%s' "$PHYSICAL_BUNDLE_GZIP_BASE64" | base64 --decode >"$archive"
-          test "$(sha256sum "$archive" | awk '{print $1}')" = "$PHYSICAL_BUNDLE_SHA256"
-          gzip -t "$archive"
-          ARCHIVE="$archive" OUTPUT="$output" python3 - <<'PY'
-          import os
-          import pathlib
-          import tarfile
+      - name: Re-download exact independent qualification by ID
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.qualification_artifact_id }}
+          path: upstream/qualification
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.preflight.outputs.qualification_run_id }}
+          digest-mismatch: error
 
-          archive = pathlib.Path(os.environ["ARCHIVE"])
-          output = pathlib.Path(os.environ["OUTPUT"])
-          expected = ["physical-qualification-v1.json", "release-validator-v11.json"]
-          with tarfile.open(archive, "r:gz") as source:
-              members = source.getmembers()
-              if sorted(member.name for member in members) != expected:
-                  raise SystemExit("physical evidence bundle members are not exact")
-              for member in members:
-                  if not member.isfile() or member.size < 2 or member.size > 4_194_304:
-                      raise SystemExit("physical evidence bundle contains an invalid member")
-                  handle = source.extractfile(member)
-                  if handle is None:
-                      raise SystemExit("physical evidence member could not be read")
-                  target = output / member.name
-                  target.write_bytes(handle.read())
-                  target.chmod(0o600)
-          PY
+      - name: Re-download exact qualified runtime snapshot by ID
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.preflight.outputs.runtime_artifact_id }}
+          path: upstream/runtime
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.android_run_id }}
+          digest-mismatch: error
 
       - name: Repeat evidence checks and assemble deterministic stage
         env:
@@ -460,16 +867,136 @@ jobs:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           EXPECTED_VERSION: ${{ inputs.version }}
           ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+          QUALIFICATION_RUN_ID: ${{ needs.preflight.outputs.qualification_run_id }}
         run: |
           set -euo pipefail
           umask 077
-          evidence_dir="upstream/termux-mcp-emulated-evidence"
-          aggregate="$evidence_dir/termux-emulated-evidence.json"
-          test -f "$aggregate"
-          test ! -L "$aggregate"
+          expected_android_artifact_names="$(
+            printf '%s\n' \
+              termux-mcp-server-aarch64-linux-android-android-battery-status \
+              termux-mcp-server-aarch64-linux-android-android-volume-control \
+              termux-mcp-server-aarch64-linux-android-android-volume-status \
+              termux-mcp-server-aarch64-linux-android-command-execution \
+              termux-mcp-server-aarch64-linux-android-default \
+              termux-mcp-server-aarch64-linux-android-full-suite \
+              termux-mcp-server-aarch64-linux-android-mcp-runtime |
+              LC_ALL=C sort
+          )"
+          actual_android_artifact_names="$(
+            find upstream/android -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_android_artifact_names" = "$expected_android_artifact_names"
+          expected_bundle_names="$(
+            printf '%s\n' SHA256SUMS artifact-manifest.json termux-mcp-server |
+              LC_ALL=C sort
+          )"
+          for artifact_name in $expected_android_artifact_names; do
+            artifact_dir="upstream/android/$artifact_name"
+            test -d "$artifact_dir"
+            test ! -L "$artifact_dir"
+            actual_bundle_names="$(
+              find "$artifact_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+                LC_ALL=C sort
+            )"
+            test "$actual_bundle_names" = "$expected_bundle_names"
+            for metadata in SHA256SUMS artifact-manifest.json; do
+              test -f "$artifact_dir/$metadata"
+              test ! -L "$artifact_dir/$metadata"
+              test ! -x "$artifact_dir/$metadata"
+            done
+            binary="$artifact_dir/termux-mcp-server"
+            test -f "$binary"
+            test ! -L "$binary"
+            chmod 755 -- "$binary"
+            test "$(stat -c %a "$binary")" = 755
+          done
+          evidence_dir="upstream/qualification"
+          expected_evidence_members="$(
+            printf '%s\n' \
+              automated-native-deployment-v1.json \
+              automated-qualification-v1.json \
+              termux-battery-emulated-evidence.json \
+              termux-command-emulated-evidence.json \
+              termux-native-aggregate-evidence-v4.json \
+              termux-observation-requirement-v3.json \
+              termux-qualified-runtime-image-v1.tar.gz \
+              termux-runtime-package-lock-v1.json \
+              termux-runtime-snapshot-replay-v1.json \
+              termux-runtime-snapshot-v1.json \
+              termux-volume-control-emulated-evidence.json \
+              termux-volume-emulated-evidence.json |
+              LC_ALL=C sort
+          )"
+          actual_evidence_members="$(
+            find "$evidence_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_evidence_members" = "$expected_evidence_members"
+          test "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 12
+          test "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          for member in "$evidence_dir"/*; do
+            test -f "$member"
+            test ! -L "$member"
+            chmod 600 -- "$member"
+            test "$(stat -c %a "$member")" = 600
+          done
+          runtime_dir="upstream/runtime"
+          expected_runtime_members="$(
+            printf '%s\n' \
+              termux-qualified-runtime-image-v1.tar.gz \
+              termux-runtime-package-lock-v1.json \
+              termux-runtime-snapshot-v1.json |
+              LC_ALL=C sort
+          )"
+          actual_runtime_members="$(
+            find "$runtime_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort
+          )"
+          test "$actual_runtime_members" = "$expected_runtime_members"
+          test "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3
+          test "$(find "$runtime_dir" -mindepth 1 -maxdepth 1 ! -type f | wc -l)" = 0
+          for member in \
+            termux-qualified-runtime-image-v1.tar.gz \
+            termux-runtime-package-lock-v1.json \
+            termux-runtime-snapshot-v1.json
+          do
+            test -f "$runtime_dir/$member"
+            test ! -L "$runtime_dir/$member"
+            chmod 600 -- "$runtime_dir/$member"
+            test "$(stat -c %a "$runtime_dir/$member")" = 600
+            cmp -s -- "$runtime_dir/$member" "$evidence_dir/$member"
+          done
+          component_dir="$RUNNER_TEMP/native-qualification-components"
+          test ! -e "$component_dir"
+          mkdir -m 700 "$component_dir"
+          for member in \
+            termux-native-aggregate-evidence-v4.json \
+            termux-battery-emulated-evidence.json \
+            termux-volume-emulated-evidence.json \
+            termux-volume-control-emulated-evidence.json \
+            termux-command-emulated-evidence.json \
+            termux-observation-requirement-v3.json
+          do
+            test -f "$evidence_dir/$member"
+            test ! -L "$evidence_dir/$member"
+            install -m 600 -- "$evidence_dir/$member" "$component_dir/$member"
+          done
+          aggregate="$evidence_dir/termux-native-aggregate-evidence-v4.json"
+          qualification="$evidence_dir/automated-qualification-v1.json"
+          deployment="$evidence_dir/automated-native-deployment-v1.json"
+          runtime_archive="$evidence_dir/termux-qualified-runtime-image-v1.tar.gz"
+          runtime_package_lock="$evidence_dir/termux-runtime-package-lock-v1.json"
+          runtime_replay="$evidence_dir/termux-runtime-snapshot-replay-v1.json"
+          runtime_snapshot="$evidence_dir/termux-runtime-snapshot-v1.json"
           ci_run_id="$(jq -r .candidate.ciRunId "$aggregate")"
           security_run_id="$(jq -r .candidate.securityRunId "$aggregate")"
+          [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$security_run_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           test "$(jq -r .candidate.androidRunId "$aggregate")" = "$ANDROID_RUN_ID"
+          test "$(jq -r .qualificationRun.runId "$qualification")" = "$QUALIFICATION_RUN_ID"
+
           api_root="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
           api_get() {
             curl --fail-with-body --silent --show-error \
@@ -484,39 +1011,77 @@ jobs:
             [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
             api_get "$api_root/actions/runs/$run_id" >"$RUNNER_TEMP/$workflow_file.run.json"
             jq -e \
-              --arg name "$expected_name" --arg path ".github/workflows/$workflow_file" \
-              --arg repository "$GITHUB_REPOSITORY" --arg sha "$EXPECTED_COMMIT" \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
               --argjson run_id "$run_id" '
-                .id == $run_id and .name == $name and .path == $path
-                and .event == "push" and .head_branch == "main" and .head_sha == $sha
-                and .status == "completed" and .conclusion == "success" and .run_attempt == 1
-                and .repository.full_name == $repository and .head_repository.full_name == $repository
+                .id == $run_id
+                and .name == $name
+                and .path == $path
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $sha
+                and .status == "completed"
+                and .conclusion == "success"
+                and .run_attempt == 1
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
               ' "$RUNNER_TEMP/$workflow_file.run.json" >/dev/null
-            api_get "$api_root/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" >"$RUNNER_TEMP/$workflow_file.runs.json"
-            jq -e --argjson run_id "$run_id" '
-              (.workflow_runs | length) >= 1 and .workflow_runs[0].id == $run_id
-              and .workflow_runs[0].run_attempt == 1
-              and .workflow_runs[0].status == "completed"
-              and .workflow_runs[0].conclusion == "success"
-            ' "$RUNNER_TEMP/$workflow_file.runs.json" >/dev/null
+            api_get "$api_root/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" \
+              >"$RUNNER_TEMP/$workflow_file.runs.json"
+            jq -L scripts -e \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
+              --argjson run_id "$run_id" '
+                include "latest_workflow_run";
+                complete_workflow_run_page
+                |
+                [
+                  .[]
+                  | select(
+                      .name == $name
+                      and .path == $path
+                      and .event == "push"
+                      and .head_branch == "main"
+                      and .head_sha == $sha
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                    )
+                ]
+                | latest_workflow_run as $latest
+                | $latest != null
+                and $latest.id == $run_id
+                and $latest.status == "completed"
+                and $latest.conclusion == "success"
+                and $latest.run_attempt == 1
+              ' "$RUNNER_TEMP/$workflow_file.runs.json" >/dev/null
           done
           printf 'CI_RUN_ID=%s\n' "$ci_run_id" >>"$GITHUB_ENV"
           printf 'SECURITY_RUN_ID=%s\n' "$security_run_id" >>"$GITHUB_ENV"
+          printf 'QUALIFICATION_RUN_ID=%s\n' "$QUALIFICATION_RUN_ID" >>"$GITHUB_ENV"
+
           output_dir="$RUNNER_TEMP/release-stage"
           mkdir -m 700 "$output_dir"
           output="$output_dir/termux-mcp-server-v${EXPECTED_VERSION}-release-stage-${EXPECTED_COMMIT:0:12}.tar"
           chmod 700 scripts/stage_release_assets.sh
           scripts/stage_release_assets.sh \
-            --default-dir upstream/termux-mcp-server-aarch64-linux-android-default \
-            --mcp-runtime-dir upstream/termux-mcp-server-aarch64-linux-android-mcp-runtime \
-            --android-battery-status-dir upstream/termux-mcp-server-aarch64-linux-android-android-battery-status \
-            --android-volume-status-dir upstream/termux-mcp-server-aarch64-linux-android-android-volume-status \
-            --android-volume-control-dir upstream/termux-mcp-server-aarch64-linux-android-android-volume-control \
-            --command-execution-dir upstream/termux-mcp-server-aarch64-linux-android-command-execution \
-            --full-suite-dir upstream/termux-mcp-server-aarch64-linux-android-full-suite \
-            --emulated-evidence-dir "$evidence_dir" \
-            --validator-evidence "$RUNNER_TEMP/physical-evidence/release-validator-v11.json" \
-            --physical-qualification "$RUNNER_TEMP/physical-evidence/physical-qualification-v1.json" \
+            --default-dir upstream/android/termux-mcp-server-aarch64-linux-android-default \
+            --mcp-runtime-dir upstream/android/termux-mcp-server-aarch64-linux-android-mcp-runtime \
+            --android-battery-status-dir upstream/android/termux-mcp-server-aarch64-linux-android-android-battery-status \
+            --android-volume-status-dir upstream/android/termux-mcp-server-aarch64-linux-android-android-volume-status \
+            --android-volume-control-dir upstream/android/termux-mcp-server-aarch64-linux-android-android-volume-control \
+            --command-execution-dir upstream/android/termux-mcp-server-aarch64-linux-android-command-execution \
+            --full-suite-dir upstream/android/termux-mcp-server-aarch64-linux-android-full-suite \
+            --emulated-evidence-dir "$component_dir" \
+            --automated-qualification "$qualification" \
+            --deployment-evidence "$deployment" \
+            --runtime-archive "$runtime_archive" \
+            --runtime-package-lock "$runtime_package_lock" \
+            --runtime-snapshot "$runtime_snapshot" \
+            --runtime-replay "$runtime_replay" \
             --license LICENSE \
             --repository "$GITHUB_REPOSITORY" \
             --commit "$EXPECTED_COMMIT" \
@@ -524,6 +1089,7 @@ jobs:
             --ci-run-id "$ci_run_id" \
             --security-run-id "$security_run_id" \
             --android-run-id "$ANDROID_RUN_ID" \
+            --qualification-run-id "$QUALIFICATION_RUN_ID" \
             --output "$output"
           test -f "$output"
           test ! -L "$output"
@@ -535,7 +1101,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           ANDROID_RUN_ID: ${{ inputs.android_run_id }}
-          EXPECTED_ARTIFACT_IDS: ${{ steps.upstream.outputs.artifact_ids }}
+          QUALIFICATION_RUN_ID: ${{ needs.preflight.outputs.qualification_run_id }}
+          QUALIFICATION_ARTIFACT_ID: ${{ needs.preflight.outputs.qualification_artifact_id }}
+          QUALIFICATION_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.qualification_artifact_digest }}
+          RUNTIME_ARTIFACT_ID: ${{ needs.preflight.outputs.runtime_artifact_id }}
+          RUNTIME_ARTIFACT_DIGEST: ${{ needs.preflight.outputs.runtime_artifact_digest }}
+          EXPECTED_ANDROID_ARTIFACT_SET_SHA256: ${{ needs.preflight.outputs.android_artifact_set_sha256 }}
         run: |
           set -euo pipefail
           api_root="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
@@ -553,40 +1124,179 @@ jobs:
             "Android Cross Compile|android-cross-compile.yml|$ANDROID_RUN_ID"
           do
             IFS='|' read -r expected_name workflow_file run_id <<<"$contract"
-            [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
             api_get "$api_root/actions/runs/$run_id" >"$RUNNER_TEMP/final-run-$run_id.json"
             jq -e \
-              --arg name "$expected_name" --arg path ".github/workflows/$workflow_file" \
-              --arg repository "$GITHUB_REPOSITORY" --arg sha "$EXPECTED_COMMIT" \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
               --argjson run_id "$run_id" '
                 .id == $run_id
-                and .name == $name and .path == $path
-                and .event == "push" and .head_branch == "main" and .head_sha == $sha
-                and .status == "completed" and .conclusion == "success" and .run_attempt == 1
-                and .repository.full_name == $repository and .head_repository.full_name == $repository
+                and .name == $name
+                and .path == $path
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $sha
+                and .status == "completed"
+                and .conclusion == "success"
+                and .run_attempt == 1
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
               ' "$RUNNER_TEMP/final-run-$run_id.json" >/dev/null
             api_get "$api_root/actions/workflows/$workflow_file/runs?branch=main&event=push&head_sha=$EXPECTED_COMMIT&per_page=100" \
-              >"$RUNNER_TEMP/final-$workflow_file-runs.json"
-            jq -e --argjson run_id "$run_id" '
-              (.workflow_runs | length) >= 1 and .workflow_runs[0].id == $run_id
-              and .workflow_runs[0].run_attempt == 1
-              and .workflow_runs[0].status == "completed"
-              and .workflow_runs[0].conclusion == "success"
-            ' "$RUNNER_TEMP/final-$workflow_file-runs.json" >/dev/null
+              >"$RUNNER_TEMP/final-runs-$run_id.json"
+            jq -L scripts -e \
+              --arg name "$expected_name" \
+              --arg path ".github/workflows/$workflow_file" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg sha "$EXPECTED_COMMIT" \
+              --argjson run_id "$run_id" '
+                include "latest_workflow_run";
+                complete_workflow_run_page
+                |
+                [
+                  .[]
+                  | select(
+                      .name == $name
+                      and .path == $path
+                      and .event == "push"
+                      and .head_branch == "main"
+                      and .head_sha == $sha
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                    )
+                ]
+                | latest_workflow_run as $latest
+                | $latest != null
+                and $latest.id == $run_id
+                and $latest.status == "completed"
+                and $latest.conclusion == "success"
+                and $latest.run_attempt == 1
+              ' "$RUNNER_TEMP/final-runs-$run_id.json" >/dev/null
           done
-          api_get "$api_root/actions/runs/$ANDROID_RUN_ID/artifacts?per_page=100" >"$RUNNER_TEMP/final-artifacts.json"
-          jq -e '
-            .total_count == 8
-            and ([.artifacts[].id] | unique | length) == 8
-            and all(.artifacts[];
-              (.expired == false) and (.size_in_bytes >= 1)
-              and (.digest | test("^sha256:[0-9a-f]{64}$"))
-            )
-          ' "$RUNNER_TEMP/final-artifacts.json" >/dev/null
-          final_artifact_ids="$(jq -r '[.artifacts | sort_by(.name)[] | (.id | tostring)] | join(",")' "$RUNNER_TEMP/final-artifacts.json")"
-          test "$final_artifact_ids" = "$EXPECTED_ARTIFACT_IDS"
-          main_sha="$(api_get "$api_root/git/ref/heads/main" | jq -r .object.sha)"
-          test "$main_sha" = "$EXPECTED_COMMIT"
+
+          expected_title="Qualify Android run $ANDROID_RUN_ID at $EXPECTED_COMMIT"
+          api_get "$api_root/actions/runs/$QUALIFICATION_RUN_ID" \
+            >"$RUNNER_TEMP/final-qualification-run.json"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "$expected_title" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson run_id "$QUALIFICATION_RUN_ID" '
+              .id == $run_id
+              and .name == "Automated Release Qualification"
+              and .display_title == $title
+              and .path == ".github/workflows/automated-release-qualification.yml"
+              and .event == "workflow_run"
+              and .head_branch == "main"
+              and .head_sha == $commit
+              and .status == "completed"
+              and .conclusion == "success"
+              and .run_attempt == 1
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' "$RUNNER_TEMP/final-qualification-run.json" >/dev/null
+          api_get "$api_root/actions/workflows/automated-release-qualification.yml/runs?branch=main&event=workflow_run&head_sha=$EXPECTED_COMMIT&per_page=100" \
+            >"$RUNNER_TEMP/final-qualification-runs.json"
+          jq -L scripts -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "$expected_title" \
+            --arg commit "$EXPECTED_COMMIT" \
+            --argjson run_id "$QUALIFICATION_RUN_ID" '
+              include "latest_workflow_run";
+              complete_workflow_run_page
+              |
+              [
+                .[]
+                | select(
+                    .display_title == $title
+                    and .name == "Automated Release Qualification"
+                    and .path == ".github/workflows/automated-release-qualification.yml"
+                    and .event == "workflow_run"
+                    and .head_branch == "main"
+                    and .head_sha == $commit
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  )
+              ]
+              | latest_workflow_run as $latest
+              | $latest != null
+              and $latest.id == $run_id
+              and $latest.status == "completed"
+              and $latest.conclusion == "success"
+              and $latest.run_attempt == 1
+            ' "$RUNNER_TEMP/final-qualification-runs.json" >/dev/null
+
+          api_get "$api_root/actions/runs/$ANDROID_RUN_ID/artifacts?per_page=100" \
+            >"$RUNNER_TEMP/final-android-artifacts.json"
+          expected_android_names='[
+            "termux-mcp-native-qualification-components",
+            "termux-mcp-qualified-runtime-snapshot",
+            "termux-mcp-server-aarch64-linux-android-android-battery-status",
+            "termux-mcp-server-aarch64-linux-android-android-volume-control",
+            "termux-mcp-server-aarch64-linux-android-android-volume-status",
+            "termux-mcp-server-aarch64-linux-android-command-execution",
+            "termux-mcp-server-aarch64-linux-android-default",
+            "termux-mcp-server-aarch64-linux-android-full-suite",
+            "termux-mcp-server-aarch64-linux-android-mcp-runtime"
+          ]'
+          jq -e \
+            --argjson expected "$expected_android_names" \
+            --argjson runtime_artifact_id "$RUNTIME_ARTIFACT_ID" \
+            --arg runtime_artifact_digest "$RUNTIME_ARTIFACT_DIGEST" \
+            --argjson run_id "$ANDROID_RUN_ID" '
+              .total_count == 9
+              and (.artifacts | length) == 9
+              and ([.artifacts[].name] | sort) == ($expected | sort)
+              and ([.artifacts[].id] | unique | length) == 9
+              and all(.artifacts[];
+                (.id | type == "number" and floor == . and . >= 1)
+                and .expired == false
+                and (.size_in_bytes | type == "number" and floor == . and . >= 1)
+                and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
+                and .workflow_run.id == $run_id
+              )
+              and (
+                .artifacts[]
+                | select(.name == "termux-mcp-qualified-runtime-snapshot")
+                | .id == $runtime_artifact_id
+                  and .digest == $runtime_artifact_digest
+                  and .expired == false
+              )
+            ' "$RUNNER_TEMP/final-android-artifacts.json" >/dev/null
+          final_android_artifact_set_sha256="$(
+            jq -cS '
+              [
+                .artifacts
+                | sort_by(.name)[]
+                | {
+                    id,
+                    name,
+                    digest,
+                    expired:.expired,
+                    sizeInBytes:.size_in_bytes,
+                    workflowRunId:.workflow_run.id
+                  }
+              ]
+            ' "$RUNNER_TEMP/final-android-artifacts.json" |
+              sha256sum | awk '{print $1}'
+          )"
+          test "$final_android_artifact_set_sha256" = "$EXPECTED_ANDROID_ARTIFACT_SET_SHA256"
+          api_get "$api_root/actions/runs/$QUALIFICATION_RUN_ID/artifacts?per_page=100" \
+            >"$RUNNER_TEMP/final-qualification-artifacts.json"
+          jq -e \
+            --arg digest "$QUALIFICATION_ARTIFACT_DIGEST" \
+            --argjson artifact_id "$QUALIFICATION_ARTIFACT_ID" \
+            --argjson run_id "$QUALIFICATION_RUN_ID" '
+              .total_count == 1
+              and (.artifacts | length) == 1
+              and .artifacts[0].id == $artifact_id
+              and .artifacts[0].name == "termux-mcp-native-qualification-evidence"
+              and .artifacts[0].digest == $digest
+              and .artifacts[0].expired == false
+              and .artifacts[0].workflow_run.id == $run_id
+            ' "$RUNNER_TEMP/final-qualification-artifacts.json" >/dev/null
+          test "$(api_get "$api_root/git/ref/heads/main" | jq -r .object.sha)" = "$EXPECTED_COMMIT"
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           test -f "$STAGED_TAR"
           test "$(sha256sum "$STAGED_TAR" | awk '{print $1}')" = "$STAGED_TAR_SHA256"
@@ -607,6 +1317,7 @@ jobs:
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           ANDROID_RUN_ID: ${{ inputs.android_run_id }}
+          QUALIFICATION_RUN_ID: ${{ needs.preflight.outputs.qualification_run_id }}
           STAGED_ARTIFACT_ID: ${{ steps.staged.outputs.artifact-id }}
           STAGED_ARTIFACT_DIGEST: ${{ steps.staged.outputs.artifact-digest }}
           STAGED_ARTIFACT_URL: ${{ steps.staged.outputs.artifact-url }}
@@ -621,6 +1332,7 @@ jobs:
             printf -- '- Release eligible: `false`\n'
             printf -- '- Source commit: `%s`\n' "$EXPECTED_COMMIT"
             printf -- '- Android run: `%s`\n' "$ANDROID_RUN_ID"
+            printf -- '- Automated qualification run: `%s`\n' "$QUALIFICATION_RUN_ID"
             printf -- '- Tar SHA-256: `%s`\n' "$STAGED_TAR_SHA256"
             printf -- '- Actions artifact ID: `%s`\n' "$STAGED_ARTIFACT_ID"
             printf -- '- Actions server digest: `%s`\n' "$STAGED_ARTIFACT_DIGEST"
