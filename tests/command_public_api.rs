@@ -115,8 +115,9 @@ fn checked_group_termination(label: &str, process_group: &ProcessGroupGuard) -> 
 fn read_published_pid(path: &Path) -> u32 {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Ok(value) = fs::read_to_string(path)
-            && let Ok(pid) = value.trim().parse()
+        if let Some(pid) = fs::read_to_string(path)
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
         {
             return pid;
         }
