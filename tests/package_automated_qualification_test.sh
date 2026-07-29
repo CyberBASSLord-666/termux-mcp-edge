@@ -72,6 +72,23 @@ sha() {
   sha256sum -- "$1" | awk '{print $1}'
 }
 
+help_output="$(bash "$SCRIPT" --help)"
+grep -Fq -- \
+  '--policy /absolute/path/release-qualification-policy-v1.json' \
+  <<<"$help_output" \
+  || fail_test "help does not show absolute policy path"
+grep -Fq -- \
+  '--runtime-archive /absolute/path/termux-qualified-runtime-image-v1.tar.gz' \
+  <<<"$help_output" \
+  || fail_test "help does not show absolute runtime archive path"
+grep -Fq -- \
+  'All file and directory arguments, including --output, must be normalized' \
+  <<<"$help_output" \
+  || fail_test "help does not explain the absolute-path contract"
+if grep -Fq -- '--policy release-qualification-policy-v1.json' <<<"$help_output"; then
+  fail_test "help still advertises a rejected relative policy path"
+fi
+
 printf '%s\n' '#!/usr/bin/env bash' \
   'printf "%s\n" "ELF 64-bit LSB pie executable, ARM aarch64, Android, interpreter /system/bin/linker64"' \
   >"$MOCK_BIN/file"

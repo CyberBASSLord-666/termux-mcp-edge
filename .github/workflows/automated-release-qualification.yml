@@ -320,7 +320,7 @@ jobs:
             test ! -L "$component_dir/$component"
           done
 
-          runtime_dir="upstream/termux-mcp-qualified-runtime-snapshot"
+          runtime_dir="$GITHUB_WORKSPACE/upstream/termux-mcp-qualified-runtime-snapshot"
           expected_runtime_names="$(
             printf '%s\n' \
               termux-qualified-runtime-image-v1.tar.gz \

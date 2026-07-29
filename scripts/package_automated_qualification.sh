@@ -8,30 +8,37 @@ set +x
 usage() {
   cat <<'EOF'
 Usage: package_automated_qualification.sh \
-  --policy release-qualification-policy-v1.json \
-  --scenario-set automated-native-deployment-scenarios-v1.json \
-  --aggregate-evidence termux-native-aggregate-evidence-v4.json \
-  --deployment-evidence automated-native-deployment-v1.json \
-  --classifier-evidence termux-observation-requirement-v3.json \
-  --battery-evidence termux-battery-emulated-evidence.json \
-  --volume-evidence termux-volume-emulated-evidence.json \
-  --volume-control-evidence termux-volume-control-emulated-evidence.json \
-  --command-evidence termux-command-emulated-evidence.json \
-  --runtime-archive termux-qualified-runtime-image-v1.tar.gz \
-  --runtime-package-lock termux-runtime-package-lock-v1.json \
-  --runtime-snapshot termux-runtime-snapshot-v1.json \
-  --runtime-replay termux-runtime-snapshot-replay-v1.json \
-  --default-dir DIR --mcp-runtime-dir DIR --battery-dir DIR \
-  --volume-dir DIR --volume-control-dir DIR --command-dir DIR \
-  --full-suite-dir DIR \
+  --policy /absolute/path/release-qualification-policy-v1.json \
+  --scenario-set /absolute/path/automated-native-deployment-scenarios-v1.json \
+  --aggregate-evidence /absolute/path/termux-native-aggregate-evidence-v4.json \
+  --deployment-evidence /absolute/path/automated-native-deployment-v1.json \
+  --classifier-evidence /absolute/path/termux-observation-requirement-v3.json \
+  --battery-evidence /absolute/path/termux-battery-emulated-evidence.json \
+  --volume-evidence /absolute/path/termux-volume-emulated-evidence.json \
+  --volume-control-evidence /absolute/path/termux-volume-control-emulated-evidence.json \
+  --command-evidence /absolute/path/termux-command-emulated-evidence.json \
+  --runtime-archive /absolute/path/termux-qualified-runtime-image-v1.tar.gz \
+  --runtime-package-lock /absolute/path/termux-runtime-package-lock-v1.json \
+  --runtime-snapshot /absolute/path/termux-runtime-snapshot-v1.json \
+  --runtime-replay /absolute/path/termux-runtime-snapshot-replay-v1.json \
+  --default-dir /absolute/path/default \
+  --mcp-runtime-dir /absolute/path/mcp-runtime \
+  --battery-dir /absolute/path/android-battery-status \
+  --volume-dir /absolute/path/android-volume-status \
+  --volume-control-dir /absolute/path/android-volume-control \
+  --command-dir /absolute/path/command-execution \
+  --full-suite-dir /absolute/path/full-suite \
   --qualification-run-id ID \
-  --output /private/parent/automated-qualification-v1.json
+  --output /absolute/private/parent/automated-qualification-v1.json
 
 Validates one exact first-attempt main candidate and atomically writes the
 single closed automated-qualification-v1.json envelope. The envelope grants
 only official_termux_native_automated_v1 qualification and explicitly records
 that no physical device, Android framework, sustained physical soak, or
 physical certification was observed.
+
+All file and directory arguments, including --output, must be normalized
+absolute paths.
 EOF
 }
 

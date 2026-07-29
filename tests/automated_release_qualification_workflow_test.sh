@@ -309,6 +309,7 @@ for marker in (
     ".repository.full_name == $repository",
     ".head_repository.full_name == $repository",
     ".run_attempt == 1",
+    'runtime_dir="$GITHUB_WORKSPACE/upstream/termux-mcp-qualified-runtime-snapshot"',
     "bash scripts/package_automated_qualification.sh",
     '--policy "$GITHUB_WORKSPACE/docs/release-qualification-policy-v1.json"',
     '--scenario-set "$GITHUB_WORKSPACE/docs/automated-native-deployment-scenarios-v1.json"',
@@ -338,6 +339,13 @@ for marker in (
 ):
     if marker not in assemble:
         raise SystemExit(f"canonical qualification packaging contract missing: {marker}")
+
+if assemble.count(
+    'runtime_dir="$GITHUB_WORKSPACE/upstream/termux-mcp-qualified-runtime-snapshot"'
+) != 1:
+    raise SystemExit("qualified runtime directory must have one absolute assignment")
+if 'runtime_dir="upstream/termux-mcp-qualified-runtime-snapshot"' in assemble:
+    raise SystemExit("qualified runtime directory may not be relative")
 
 permission_markers = (
     'expected_binary_artifact_names="$(',
