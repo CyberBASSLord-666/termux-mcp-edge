@@ -60,6 +60,7 @@ case "${1:-} ${2:-}" in
     [[ -f "$state" ]]
     [[ "${MOCK_RUNTIME_UID_GID:?}" == "1000:1000" ]]
     [[ "$*" == *'test "$(id -u):$(id -g)" = "1000:1000"'* ]]
+    [[ "$*" == *'package_lock_path=/data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json'* ]]
     printf '__TERMUX_MCP_PACKAGES__\n'
     printf '%b' "$MOCK_RUNTIME_PACKAGES"
     printf '__TERMUX_MCP_PACKAGE_INPUTS__\n'
@@ -1399,6 +1400,15 @@ MOCK_RUNTIME_REPOSITORY_INDEXES="$original_repository_indexes"
 export MOCK_RUNTIME_REPOSITORY_INDEXES
 
 original_runtime_lock="$MOCK_RUNTIME_PACKAGE_LOCK"
+MOCK_RUNTIME_PACKAGE_LOCK="${MOCK_RUNTIME_PACKAGE_LOCK/termux-runtime-package-lock-v1.json/runtime-package-lock-v1.json}"
+export MOCK_RUNTIME_PACKAGE_LOCK
+expect_failure runtime_package_lock_basename_drift "$TMP/fixture"
+grep -Fq 'ERROR: runtime_probe_invalid' \
+  "$TMP/runtime_package_lock_basename_drift.log" \
+  || fail runtime_package_lock_basename_drift_failed_for_wrong_reason
+MOCK_RUNTIME_PACKAGE_LOCK="$original_runtime_lock"
+export MOCK_RUNTIME_PACKAGE_LOCK
+
 MOCK_RUNTIME_PACKAGE_LOCK="${MOCK_RUNTIME_PACKAGE_LOCK/termux-runtime-package-lock-v1.json\\t/termux-runtime-package-lock-v1.json\\t0}"
 export MOCK_RUNTIME_PACKAGE_LOCK
 expect_failure runtime_package_lock_drift "$TMP/fixture"

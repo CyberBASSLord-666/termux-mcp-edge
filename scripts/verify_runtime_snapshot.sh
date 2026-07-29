@@ -1543,7 +1543,7 @@ test -f /system/bin/linker64
 test ! -L /system/bin/linker64
 package_input_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-packages
 repository_index_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes
-package_lock_path=/data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json
+package_lock_path=/data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json
 for provenance_root in "$package_input_root" "$repository_index_root"; do
   test -d "$provenance_root"
   test ! -L "$provenance_root"

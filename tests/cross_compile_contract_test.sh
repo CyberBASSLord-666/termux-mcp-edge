@@ -7,6 +7,7 @@ SCRIPT="$ROOT/scripts/cross_compile.sh"
 CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
 ANDROID_WORKFLOW="$ROOT/.github/workflows/android-cross-compile.yml"
 SECURITY_WORKFLOW="$ROOT/.github/workflows/security.yml"
+RUNTIME_VERIFIER="$ROOT/scripts/verify_runtime_snapshot.sh"
 QUALIFICATION_POLICY="$ROOT/docs/release-qualification-policy-v1.json"
 QUALIFICATION_POLICY_SCHEMA="$ROOT/docs/release-qualification-policy-schema-v1.json"
 TMP="$(mktemp -d)"
@@ -137,6 +138,13 @@ do
   [[ "$(grep -Fc -- "- \"$runtime_input\"" "$ANDROID_WORKFLOW")" == 1 ]] \
     || fail "runtime snapshot Android trigger missing or duplicated: $runtime_input"
 done
+canonical_runtime_lock_path='/data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json'
+assert_contains \
+  "COPY --chown=0:0 termux-runtime-package-lock-v1.json $canonical_runtime_lock_path" \
+  "$ANDROID_WORKFLOW"
+assert_contains "lock_path=$canonical_runtime_lock_path" "$ANDROID_WORKFLOW"
+assert_contains "package_lock_path=$canonical_runtime_lock_path" "$RUNTIME_VERIFIER"
+assert_contains 'LOCK_NAME = "termux-runtime-package-lock-v1.json"' "$RUNTIME_VERIFIER"
 python3 - \
   "$ANDROID_WORKFLOW" \
   "$QUALIFICATION_POLICY" \
@@ -184,12 +192,12 @@ def validate_runtime_dockerfile(value):
     required = (
         "COPY --chown=0:0 package-inputs/debs/",
         "COPY --chown=0:0 package-inputs/indexes/",
-        "COPY --chown=0:0 termux-runtime-package-lock-v1.json",
+        "COPY --chown=0:0 termux-runtime-package-lock-v1.json /data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json",
         "RUN set -eu;",
         "export LC_ALL=C DEBIAN_FRONTEND=noninteractive",
         "package_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
         "index_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
-        "lock_path=/data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json",
+        "lock_path=/data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json",
         'deb_markers="$(find "$package_root" -mindepth 1 -maxdepth 1 -type f -name \'*.deb\' -exec printf x \\;)"',
         'deb_count="${#deb_markers}"',
         'test "$deb_count" -ge 1',
@@ -364,6 +372,10 @@ mutations = {
         'test "$actual" = "$expected";',
         "true;",
         1,
+    ),
+    "renamed package lock": dockerfile.replace(
+        "/share/termux-mcp/termux-runtime-package-lock-v1.json",
+        "/share/termux-mcp/runtime-package-lock-v1.json",
     ),
 }
 for name, mutation in mutations.items():

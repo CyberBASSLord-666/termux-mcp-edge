@@ -635,13 +635,13 @@ jobs:
           FROM termux/termux-docker:aarch64@sha256:926e5c08aebc6df89f1cb3d9558c3b56b6246e59305fcd707bdf68f2584493b3
           COPY --chown=0:0 package-inputs/debs/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages/
           COPY --chown=0:0 package-inputs/indexes/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes/
-          COPY --chown=0:0 termux-runtime-package-lock-v1.json /data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json
+          COPY --chown=0:0 termux-runtime-package-lock-v1.json /data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json
           USER 1000:1000
           RUN set -eu; \
               export LC_ALL=C DEBIAN_FRONTEND=noninteractive; \
               package_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-packages; \
               index_root=/data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes; \
-              lock_path=/data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json; \
+              lock_path=/data/data/com.termux/files/usr/share/termux-mcp/termux-runtime-package-lock-v1.json; \
               deb_markers="$(find "$package_root" -mindepth 1 -maxdepth 1 -type f -name '*.deb' -exec printf x \;)"; \
               deb_count="${#deb_markers}"; \
               test "$deb_count" -ge 1; \
