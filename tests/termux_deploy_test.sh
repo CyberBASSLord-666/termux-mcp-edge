@@ -58,7 +58,8 @@ configure_environment() {
   export TERMUX_MCP_SERVICE_ROOT="$PREFIX/var/service"
   export TERMUX_MCP_SERVICE_SHELL="$PREFIX/bin/sh"
   export TERMUX_MCP_TEST_MODE=1 TERMUX_MCP_TEST_PROBE_SEQUENCE=success TERMUX_MCP_TEST_STOP_SEQUENCE=success TERMUX_MCP_TEST_START_SEQUENCE=success
-  unset TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT TERMUX_MCP_DRY_RUN
+  unset TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT TERMUX_MCP_DRY_RUN \
+    TERMUX_MCP_HEALTH_URL TERMUX_MCP_READY_URL TERMUX_MCP_TEST_PROBE_VERSION_SEQUENCE
   mkdir -p "$HOME" "$PREFIX"; make_shell "$PREFIX"; make_config "$TERMUX_MCP_CONFIG_ROOT"
 }
 
@@ -72,6 +73,8 @@ SERVICE_DIR="$TERMUX_MCP_SERVICE_ROOT/mcp_runtime"
 
 bash "$SCRIPT" install --artifact "$ARTIFACT_100" --version 1.0.0 --sha256 "$SHA_100"
 [[ -x "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0/termux-mcp-server" ]]
+assert_eq "$(cat "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0/VERSION")" "1.0.0"
+assert_eq "$(stat -c '%a' "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0/VERSION")" "600"
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
 [[ -x "$SERVICE_DIR/run" && ! -e "$SERVICE_DIR/down" ]]
 [[ "$(stat -c '%a' "$SERVICE_DIR")" == 700 && "$(stat -c '%a' "$SERVICE_DIR/run")" == 700 ]]
@@ -125,6 +128,21 @@ assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_R
 assert_eq "$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')" "$running_run_sha"
 [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0" && ! -e "$SERVICE_DIR/down" ]]
 
+if TERMUX_MCP_TEST_PROBE_SEQUENCE=success,success \
+  TERMUX_MCP_TEST_PROBE_VERSION_SEQUENCE=1.1.0,current \
+  bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120" >/dev/null 2>&1; then
+  fail_test "stale readiness version unexpectedly qualified the candidate"
+fi
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.1.0"
+assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")" "$TERMUX_MCP_DEPLOY_ROOT/releases/1.0.0"
+[[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0" && ! -e "$SERVICE_DIR/down" ]]
+
+TERMUX_MCP_HEALTH_URL=http://127.0.0.1:8001/health \
+  assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120"
+TERMUX_MCP_READY_URL=http://127.0.0.1:8001/ready \
+  assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_120" --version 1.2.0 --sha256 "$SHA_120"
+[[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0" ]]
+
 touch "$SERVICE_DIR/down"; chmod 600 "$SERVICE_DIR/down"
 stopped_run_sha="$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')"
 if TERMUX_MCP_TEST_PROBE_SEQUENCE=failure bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200" >/dev/null 2>&1; then fail_test "unhealthy stopped-service upgrade unexpectedly succeeded"; fi
@@ -156,7 +174,13 @@ current_before="$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")"
 TERMUX_MCP_TEST_STOP_SEQUENCE=failure assert_fails bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200" --dry-run
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$current_before"
 [[ -z "$(find "$TERMUX_MCP_DEPLOY_ROOT" -maxdepth 1 -name '.service-snapshot-*' -print -quit)" ]]
-bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200" --dry-run >/dev/null
+sed -i 's/^MCP__SERVER__PORT=8000$/MCP__SERVER__PORT=49152/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/:8000/:49152/g' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+dry_run_output="$(bash "$SCRIPT" upgrade --artifact "$ARTIFACT_200" --version 2.0.0 --sha256 "$SHA_200" --dry-run)"
+grep -Fq 'http://127.0.0.1:49152/health' <<<"$dry_run_output" || fail_test "custom listener port did not drive the default health probe"
+grep -Fq 'http://127.0.0.1:49152/ready' <<<"$dry_run_output" || fail_test "custom listener port did not drive the default readiness probe"
+sed -i 's/^MCP__SERVER__PORT=49152$/MCP__SERVER__PORT=8000/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/:49152/:8000/g' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 assert_eq "$(readlink "$TERMUX_MCP_DEPLOY_ROOT/current")" "$current_before"
 [[ ! -e "$TERMUX_MCP_DEPLOY_ROOT/releases/2.0.0" ]]
 
@@ -180,6 +204,14 @@ assert_eq "$(sha256sum "$SERVICE_DIR/run" | awk '{print $1}')" "$service_before_
 
 status="$(bash "$SCRIPT" status)"
 [[ "$status" == *"current=$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0"* && "$status" != *test-static-token* ]]
+
+current_version_file="$TERMUX_MCP_DEPLOY_ROOT/releases/1.2.0/VERSION"
+printf '1.2.0\n\n' >"$current_version_file"
+assert_fails bash "$SCRIPT" status
+printf '1.2.0\n' >"$current_version_file"
+chmod 644 "$current_version_file"
+assert_fails bash "$SCRIPT" status
+chmod 600 "$current_version_file"
 
 previous_target="$(readlink "$TERMUX_MCP_DEPLOY_ROOT/previous")"
 rm -f "$TERMUX_MCP_DEPLOY_ROOT/previous"; ln -s /tmp "$TERMUX_MCP_DEPLOY_ROOT/previous"

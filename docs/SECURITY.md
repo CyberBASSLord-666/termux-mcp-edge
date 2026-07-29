@@ -226,6 +226,7 @@ The stage, draft, and public assets contain only release-intended bytes and sani
 - Prefer a VPN-bound endpoint or named tunnel over raw port exposure.
 - Treat tunnel login, creation, and DNS routing as explicit operator mutations. Use `scripts/setup_named_tunnel.sh --dry-run` first; never enable DNS overwrite to bypass a route conflict.
 - Keep exact Host and Origin allowlists minimal.
+- Keep listener ports, explicit transport allowlists, and deployment probe URLs aligned. Duplicate Host/Origin headers are rejected, and deployment readiness must report the exact expected release version.
 - Keep the mobile-conscious request-limit defaults unless measured workload requires a reviewed increase.
 - Keep filesystem safe roots limited to dedicated project directories.
 - Protect `$HOME/.config/termux-mcp-edge/runtime.env` with mode `0600` and avoid printing the token during validation.

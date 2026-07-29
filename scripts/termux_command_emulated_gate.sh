@@ -538,7 +538,7 @@ RUST_LOG=termux_mcp_server=info \
   timeout -k 2 5 "$RENAMED_ARTIFACT" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 wrong_name_reachable=false
-for attempt in $(seq 1 100); do
+for _ in $(seq 1 100); do
   if curl_local --silent --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     wrong_name_reachable=true
     break

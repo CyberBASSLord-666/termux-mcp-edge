@@ -242,6 +242,11 @@ The transport accepts exactly one bounded ASCII grant header only on an active-s
 
 The listener defaults to `MCP__SERVER__PORT=8000` and accepts only ports `1–65535`. Port `0`, malformed numbers, and present non-Unicode security/network configuration values fail before the listener starts. Only absent variables use defaults.
 
+Absent Host and Origin allowlists are generated for the validated listener
+port. Explicit allowlists remain exact. Requests with duplicate or non-text
+Host/Origin headers are denied with stable non-reflective errors after bearer
+authentication.
+
 | Setting | Default | Valid range |
 |---|---:|---:|
 | `MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS` | `4` | `1–64` |
@@ -341,7 +346,7 @@ scripts/termux_deploy.sh status
 
 The deployment manager validates `current` and `previous` before reporting them. It rejects links that escape the project releases directory or point to incomplete releases.
 
-For a failed candidate, the manager restores the exact prior link state, removes the candidate, restarts the prior active release, and probes it. For a failed explicit rollback, it restores and re-probes the original active release. Operations are serialized with a project lock and interruption cleanup.
+For a failed candidate, the manager restores the exact prior link state, removes the candidate, restarts the prior active release, and probes its recorded version. For a failed explicit rollback, it restores and re-probes the recorded version of the original active release. Default probe URLs follow the validated runtime port, explicit probe URLs must use that port, readiness must report the expected version, and the port must become unoccupied after canonical-service shutdown before another release starts. Operations are serialized with a project lock and interruption cleanup.
 
 Do not manually repoint release links outside the project releases directory. Preserve persistent configuration during ordinary recovery.
 

@@ -208,6 +208,11 @@ export MCP__TRANSPORT__ALLOWED_HOSTS='localhost:8000,127.0.0.1:8000'
 export MCP__TRANSPORT__ALLOWED_ORIGINS='http://localhost:8000,http://127.0.0.1:8000'
 ```
 
+When these allowlist variables are absent, their loopback defaults use the
+validated `MCP__SERVER__PORT`. Explicit values remain exact and are never
+rewritten. Each request must contain at most one valid `Host` and at most one
+valid `Origin`; duplicates are rejected without reflecting their values.
+
 `MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only for reviewed non-browser clients that cannot send an `Origin` header.
 
 `MCP__TRANSPORT__SSE_ENABLED=true` is an operator opt-in for finite response delivery and bounded resumption. Eligible response payloads—including tool output—remain in process memory until stream eviction, session deletion, idle expiry, or restart. It does not enable server-initiated broadcast, long-lived queues, or cross-stream delivery. `/ready` and `runtime_status` report the active posture and fixed limits.
@@ -345,7 +350,8 @@ Use [`docs/TERMUX_DEPLOYMENT.md`](docs/TERMUX_DEPLOYMENT.md) as the canonical in
 - serializes mutations with a project lock;
 - creates only the fixed `mcp_runtime` runit service;
 - activates releases atomically;
-- restores prior release links, restarts the prior active runtime, and re-probes it when candidate or rollback validation fails.
+- derives default probes from the validated listener port, requires exact-version readiness, and refuses to start while that port remains occupied after service shutdown;
+- restores prior release links, restarts the prior active runtime, and re-probes its exact version when candidate or rollback validation fails.
 
 When a separately named optional physical certification is requested, run the no-clone exact-commit AArch64 device gate in [`docs/DEVICE_PRODUCTION_GATE.md`](docs/DEVICE_PRODUCTION_GATE.md). Device harness v11 builds the pinned source natively in Termux, uses the locked `full-suite` candidate for deployment, proves the 17-disabled/21-enabled aggregate truth table, and validates real isolated runit transitions, authenticated MCP lifecycle and tool boundaries, independent runtime and request gates, failed upgrade/rollback recovery, explicit rollback, uninstall, artifact identity, and cleanup. This device path is not an ordinary automated-release prerequisite and cannot substitute for or broaden `official_termux_native_automated_v1`.
 

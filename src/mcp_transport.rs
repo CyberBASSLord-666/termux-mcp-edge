@@ -87,7 +87,7 @@ use crate::{
         MAX_TRASH_FILE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH,
         MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
-    transport_security::TransportSecurityPolicy,
+    transport_security::{TransportSecurityError, TransportSecurityPolicy},
     trash_file_grant::{
         TrashFileGrantAuthority, TrashFileGrantError, TRASH_FILE_GRANT_TTL_SECONDS,
     },
@@ -1930,10 +1930,15 @@ async fn handle_mcp_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let host = header_value(&headers, header::HOST);
-    let origin = header_value(&headers, header::ORIGIN);
+    let host = single_header_value(&headers, header::HOST.as_str())
+        .map_err(|()| TransportSecurityError::InvalidHostHeader);
+    let origin = single_header_value(&headers, header::ORIGIN.as_str())
+        .map_err(|()| TransportSecurityError::InvalidOriginHeader);
+    let transport_security = host.and_then(|host| {
+        origin.and_then(|origin| state.security_policy.validate_request(host, origin))
+    });
 
-    let mut response = if let Err(error) = state.security_policy.validate_request(host, origin) {
+    let mut response = if let Err(error) = transport_security {
         (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -7386,10 +7391,6 @@ fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
         })),
     )
         .into_response()
-}
-
-fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
 }
 
 #[rustfmt::skip]

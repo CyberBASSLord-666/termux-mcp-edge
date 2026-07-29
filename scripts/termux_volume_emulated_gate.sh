@@ -395,8 +395,8 @@ cancel_mcp_request() {
 }
 
 read_fixture_pid() {
-  local path="$1" reason="$2" attempt value=''
-  for attempt in $(seq 1 200); do
+  local path="$1" reason="$2" _ value=''
+  for _ in $(seq 1 200); do
     if [[ -s "$path" ]]; then
       value="$(cat "$path")"
       [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "${reason}_invalid"
@@ -409,8 +409,8 @@ read_fixture_pid() {
 }
 
 assert_process_gone() {
-  local pid="$1" reason="$2" attempt
-  for attempt in $(seq 1 200); do
+  local pid="$1" reason="$2" _
+  for _ in $(seq 1 200); do
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       return 0
     fi

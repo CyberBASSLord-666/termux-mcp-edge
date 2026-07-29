@@ -1,5 +1,11 @@
 # Changelog
 
+## Next release
+
+- Made absent Host and Origin allowlists follow the configured listener port while preserving operator-supplied exact allowlists, and reject duplicate or non-text Host/Origin headers with stable non-reflective transport errors after authentication.
+- Bound install, upgrade, rollback, and recovery readiness checks to the exact expected release version. Default probe URLs now follow the validated runtime port, explicit probe URLs must use that port, and a stopped canonical service must release the listener before another version starts.
+- Added checksum-verified Actionlint 1.7.12 and ShellCheck 0.11.0 gates, warning-clean shell sources, a hash-pinned PyYAML 6.0.3 test dependency, and OS-assigned release-validator test ports.
+
 ## v0.6.0
 
 ### Changes after initial release-candidate preparation

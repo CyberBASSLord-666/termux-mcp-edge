@@ -156,14 +156,15 @@ STAGE_SIZE="$(stat -c '%s' -- "$ASSETS_DIR/$STAGE_NAME")"
 make_publication_case() {
   local name="$1" case_root
   case_root="$ROOT/input-cases/$name"
-  mkdir -m 700 -p -- "$case_root"
+  install -d -m 700 -- "$case_root"
   cp -a -- "$ASSETS_DIR" "$case_root/assets"
   cp -p -- "$RECEIPT" "$case_root/release-publication-receipt-v1.json"
   printf '%s\n' "$case_root"
 }
 
 extract_case_stage() {
-  local case_root="$1" payload="$case_root/stage-payload"
+  local case_root="$1"
+  local payload="$case_root/stage-payload"
   local stage="$case_root/assets/$STAGE_NAME"
   rm -rf -- "$payload"
   mkdir -m 700 -- "$payload"
@@ -171,7 +172,8 @@ extract_case_stage() {
 }
 
 repack_case_stage() {
-  local case_root="$1" payload="$case_root/stage-payload"
+  local case_root="$1"
+  local payload="$case_root/stage-payload"
   local stage="$case_root/assets/$STAGE_NAME"
   rm -- "$stage"
   tar --format=gnu --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
@@ -180,7 +182,8 @@ repack_case_stage() {
 }
 
 refresh_case_stage_receipt() {
-  local case_root="$1" receipt="$case_root/release-publication-receipt-v1.json"
+  local case_root="$1"
+  local receipt="$case_root/release-publication-receipt-v1.json"
   local stage="$case_root/assets/$STAGE_NAME" digest bytes
   digest="$(sha256sum "$stage" | awk '{print $1}')"
   bytes="$(stat -c '%s' "$stage")"
@@ -197,7 +200,7 @@ refresh_case_stage_receipt() {
 
 MOCK_ROOT="$ROOT/mock"
 FAKE_BIN="$ROOT/fake-bin"
-mkdir -m 700 -p -- "$MOCK_ROOT" "$FAKE_BIN"
+install -d -m 700 -- "$MOCK_ROOT" "$FAKE_BIN"
 
 cat >"$FAKE_BIN/file" <<'EOF'
 #!/usr/bin/env bash
@@ -1119,13 +1122,12 @@ expect_failure attach record_post_move_replacement identity_record_publish_repla
 reset_mock
 
 cross_filesystem_root=""
-for candidate in /dev/shm; do
-  [[ -d "$candidate" && -w "$candidate" ]] || continue
-  [[ "$(stat -c '%d' -- "$candidate")" != "$(stat -c '%d' -- "$ROOT")" ]] || continue
+candidate=/dev/shm
+if [[ -d "$candidate" && -w "$candidate" ]] \
+  && [[ "$(stat -c '%d' -- "$candidate")" != "$(stat -c '%d' -- "$ROOT")" ]]; then
   cross_filesystem_root="$(mktemp -d "$candidate/termux-mcp-publisher-test.XXXXXXXX")"
   chmod 700 "$cross_filesystem_root"
-  break
-done
+fi
 if [[ -n "$cross_filesystem_root" ]]; then
   cross_filesystem_record="$cross_filesystem_root/release-attachment-record-v1.json"
   env "${COMMON_ENV[@]}" MOCK_FAULT="" \

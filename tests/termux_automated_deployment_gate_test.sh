@@ -23,7 +23,7 @@ pid_identity_running() {
 }
 
 cleanup_test() {
-  local status=$? pid_file role pid proc_id start attempt
+  local status=$? pid_file role pid proc_id start _
   trap - EXIT INT TERM
   for pid_file in "${SUPERVISOR_PID_FILES[@]}"; do
     [[ -f "$pid_file" ]] || continue
@@ -33,7 +33,7 @@ cleanup_test() {
         && kill -TERM "$pid" >/dev/null 2>&1 || true
     done <"$pid_file"
   done
-  for attempt in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     local found=0
     for pid_file in "${SUPERVISOR_PID_FILES[@]}"; do
       [[ -f "$pid_file" ]] || continue

@@ -278,8 +278,8 @@ curl_local() {
 }
 
 wait_for_runit() {
-  local expected="$1" attempt output=""
-  for attempt in $(seq 1 40); do
+  local expected="$1" _ output=""
+  for _ in $(seq 1 40); do
     output="$(sv status "$SERVICE_DIR" 2>&1 || true)"
     case "$expected" in
       run) [[ "$output" == run:* ]] && { log "PASS runit_status=$output"; return 0; } ;;
@@ -291,8 +291,8 @@ wait_for_runit() {
 }
 
 wait_for_http() {
-  local attempt health="" ready=""
-  for attempt in $(seq 1 40); do
+  local _ health="" ready=""
+  for _ in $(seq 1 40); do
     health="$(curl_local -fsS --max-time 2 "$TERMUX_MCP_HEALTH_URL" 2>/dev/null || true)"
     ready="$(curl_local -fsS --max-time 2 "$TERMUX_MCP_READY_URL" 2>/dev/null || true)"
     if [[ "$health" == ok ]] && jq -e '.status == "ready"' <<<"$ready" >/dev/null 2>&1; then
@@ -521,7 +521,7 @@ inspect_write_file_recovery() {
 
 protocol_smoke() {
   local label="$1"
-  local body headers status payload target outside oversized copy_source copy_target copy_mismatch_target copy_bytes directory_target hash_digest binary_read_target binary_read_expected
+  local body headers status payload target outside copy_source copy_target copy_mismatch_target copy_bytes directory_target hash_digest binary_read_target binary_read_expected
   local copy_stale_source copy_stale_target copy_oversized copy_retry_target copy_grant
   local trash_target trash_mismatch_target trash_stale_target trash_oversized trash_exact_target trash_bytes
   local trash_quarantine trash_artifact trash_exact_artifact trash_identity trash_digest trash_grant
@@ -1285,7 +1285,7 @@ full_suite_disabled_smoke() {
   local body="$LOG_DIR/full-suite-disabled-response.json"
   local headers="$LOG_DIR/full-suite-disabled-initialize.headers"
   local server_log="$LOG_DIR/full-suite-disabled-server.log"
-  local status payload attempt
+  local status payload _
 
   env -i \
     "HOME=$HOME" \
@@ -1308,7 +1308,7 @@ full_suite_disabled_smoke() {
     MCP__FILE__WRITE_MUTATION_ENABLED=false \
     "$FULL_SUITE_ARTIFACT" >"$server_log" 2>&1 &
   DIRECT_SERVER_PID=$!
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     kill -0 "$DIRECT_SERVER_PID" >/dev/null 2>&1 || fail "volume-control disabled runtime exited before readiness"
     if [[ "$(curl_local -fsS --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)" == ok ]]; then
       break
@@ -1376,7 +1376,7 @@ full_suite_disabled_smoke() {
   MCP_SESSION_ID=""
 
   kill "$DIRECT_SERVER_PID" >/dev/null 2>&1 || fail "volume-control disabled runtime could not be stopped"
-  for attempt in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     kill -0 "$DIRECT_SERVER_PID" >/dev/null 2>&1 || break
     sleep 0.1
   done

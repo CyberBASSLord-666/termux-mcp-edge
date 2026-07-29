@@ -277,8 +277,8 @@ supervision_processes_running() {
 }
 
 wait_for_supervision_exit() {
-  local attempt
-  for attempt in $(seq 1 50); do
+  local _
+  for _ in $(seq 1 50); do
     collect_isolated_processes
     if ! supervision_processes_running; then
       if [[ -n "$RUNSVDIR_PID" ]]; then
@@ -537,7 +537,6 @@ PY
 
 ARTIFACT="$ARTIFACT_SNAPSHOT_DIR/termux-mcp-server"
 MANIFEST="$ARTIFACT_SNAPSHOT_DIR/artifact-manifest.json"
-CHECKSUMS="$ARTIFACT_SNAPSHOT_DIR/SHA256SUMS"
 SCENARIO_SET="$SNAPSHOT_DIR/$SCENARIO_FILE_NAME"
 reject_duplicate_json_keys "$MANIFEST" || fail artifact_manifest_duplicate_key
 reject_duplicate_json_keys "$SCENARIO_SET" || fail scenario_set_duplicate_key
@@ -798,8 +797,8 @@ real_runtime_ready() {
 }
 
 wait_runtime_ready() {
-  local attempt
-  for attempt in $(seq 1 50); do
+  local _
+  for _ in $(seq 1 50); do
     if real_runtime_ready; then
       capture_current_service_pid
       return 0
@@ -810,9 +809,9 @@ wait_runtime_ready() {
 }
 
 wait_service_registered() {
-  local attempt
+  local _
   is_true "$FIXTURE_MODE" && return 0
-  for attempt in $(seq 1 100); do
+  for _ in $(seq 1 100); do
     [[ -p "$SERVICE_DIR/supervise/ok" ]] && return 0
     sleep 0.05
   done

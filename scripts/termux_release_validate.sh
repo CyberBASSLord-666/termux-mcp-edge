@@ -469,8 +469,8 @@ stop_server() {
   [[ -n "$SERVER_PID" ]] || return 0
   if kill -0 "$SERVER_PID" >/dev/null 2>&1; then
     kill "$SERVER_PID" >/dev/null 2>&1 || true
-    local attempt
-    for attempt in $(seq 1 40); do
+    local _
+    for _ in $(seq 1 40); do
       kill -0 "$SERVER_PID" >/dev/null 2>&1 || break
       sleep 0.1
     done
@@ -1046,8 +1046,8 @@ start_server() {
     "${environment[@]}" \
     "$artifact" >"$log_file" 2>&1 &
   SERVER_PID=$!
-  local attempt
-  for attempt in $(seq 1 80); do
+  local _
+  for _ in $(seq 1 80); do
     kill -0 "$SERVER_PID" >/dev/null 2>&1 || fail "${posture}_runtime_exited"
     if [[ "$(curl_local -fsS --max-time 2 "http://$BIND_HOST:$PORT/health" 2>/dev/null || true)" == ok ]]; then
       return 0

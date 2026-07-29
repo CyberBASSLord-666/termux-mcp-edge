@@ -59,6 +59,8 @@ Current controls:
 
 - exact normalized Host allowlists;
 - exact HTTP/HTTPS Origin allowlists;
+- absent loopback allowlist defaults derived from the validated listener port, while explicit values remain exact;
+- rejection of duplicate or non-text Host and Origin headers with stable non-reflective errors;
 - rejection of malformed authorities, wildcard/userinfo/path/query/fragment forms, whitespace/control characters, malformed IP literals, and invalid ports;
 - missing Origin is denied unless an operator explicitly enables the reviewed non-browser compatibility switch.
 

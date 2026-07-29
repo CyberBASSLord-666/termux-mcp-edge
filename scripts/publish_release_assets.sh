@@ -323,7 +323,8 @@ plain_download() {
 }
 
 authenticated_asset_download() {
-  local asset_id="$1" output="$2" headers="$WORK_ROOT/asset-$asset_id.headers"
+  local asset_id="$1" output="$2"
+  local headers="$WORK_ROOT/asset-$asset_id.headers"
   local body="$WORK_ROOT/asset-$asset_id.first-body" location
   local -a locations
   readonly_request "$GH_TOKEN" application/octet-stream \

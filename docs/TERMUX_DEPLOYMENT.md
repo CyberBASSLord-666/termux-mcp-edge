@@ -22,11 +22,11 @@ Install, upgrade, rollback, and uninstall are serialized by a project deployment
 
 ```bash
 pkg update
-pkg install bash coreutils curl file procps termux-services
+pkg install bash coreutils curl file jq procps termux-services
 chmod 700 scripts/termux_deploy.sh
 ```
 
-The deployment manager requires the standard Termux implementations of `realpath`, `stat`, `sha256sum`, `timeout`, `file`, `uname`, `install`, and `readlink`.
+The deployment manager requires the standard Termux implementations of `realpath`, `stat`, `sha256sum`, `timeout`, `file`, `uname`, `install`, `readlink`, and `jq`.
 
 After installing `termux-services` for the first time, close all Termux sessions and open a new one so its `runsvdir` supervisor starts. Confirm it before installation or upgrade:
 
@@ -159,7 +159,7 @@ scripts/termux_deploy.sh install \
   --sha256 "$ARTIFACT_SHA256"
 ```
 
-Initial install requires no active release. The manager validates all inputs, acquires the lock, stages the release, writes the fixed project service, atomically activates `current`, starts the service, and verifies `/health` and `/ready`.
+Initial install requires no active release. The manager validates all inputs, acquires the lock, stages the release, writes the fixed project service, confirms that the configured listener port is unoccupied, atomically activates `current`, starts the service, and verifies `/health` plus an exact candidate-version `/ready` response.
 
 If readiness fails, the failed candidate and active link are removed while persistent configuration is preserved.
 
@@ -174,7 +174,7 @@ scripts/termux_deploy.sh upgrade \
   --sha256 "$NEW_SHA256"
 ```
 
-Upgrade requires an active release. The exact prior `current` and `previous` link state is captured before activation. If the candidate fails readiness, the prior state is restored, the failed release is removed, and the prior active runtime is restarted and probed. The upgrade still exits non-zero after successful recovery.
+Upgrade requires an active release. The exact prior `current` and `previous` link state and their private `VERSION` metadata are captured before activation. After confirmed canonical-service shutdown, the configured listener port must become unoccupied before another version starts. If the candidate fails exact-version readiness, the prior state is restored, the failed release is removed, and the prior active runtime is restarted and probed for its recorded version. The upgrade still exits non-zero after successful recovery.
 
 ## Rollback
 
@@ -182,7 +182,7 @@ Upgrade requires an active release. The exact prior `current` and `previous` lin
 scripts/termux_deploy.sh rollback
 ```
 
-Rollback accepts only complete release targets below the project releases root. If the selected rollback target fails readiness, the original exact link state is restored and the original active runtime is restarted and probed. The command exits non-zero when rollback validation fails.
+Rollback accepts only complete release targets with valid private `VERSION` metadata below the project releases root. The configured listener port must become unoccupied after shutdown. If the selected rollback target fails exact-version readiness, the original exact link state is restored and the original active runtime is restarted and probed for its recorded version. The command exits non-zero when rollback validation fails.
 
 ## Status
 
@@ -194,6 +194,13 @@ curl -fsS http://127.0.0.1:8000/ready
 ```
 
 Status reports only the deployment root, validated current and previous targets, and the fixed service name. Invalid or escaping release links produce a non-zero result. Configuration and token values are never printed.
+
+Unless explicitly overridden, `TERMUX_MCP_HEALTH_URL` and
+`TERMUX_MCP_READY_URL` are derived from the validated `MCP__SERVER__HOST` and
+`MCP__SERVER__PORT` in `runtime.env`. Explicit probe URLs must be loopback HTTP
+URLs using that same port. Readiness accepts only a JSON object whose `status`
+is `ready` and whose `version` exactly matches the release being installed,
+rolled back, or recovered; a stale process cannot qualify another release.
 
 ## Dry run
 

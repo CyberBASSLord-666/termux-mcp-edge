@@ -53,16 +53,18 @@ assert_publication_cleanup_contract() {
     set +e
     # shellcheck source=/dev/null
     source "$cleanup_source"
-    SERVER_PID=''
-    BACKGROUND_CURL_PID=''
-    BATTERY_PROGRAM_CREATED=false
-    BATTERY_PROGRAM=''
-    VOLUME_PROGRAM_CREATED=false
-    VOLUME_PROGRAM=''
-    PUBLISH_NEXT="$staged"
-    REPORT_NEXT="$staged"
-    OUTPUT_REPORT="$output"
-    WORK_ROOT=''
+    # The sourced cleanup function consumes these globals.
+    # shellcheck disable=SC2034
+    SERVER_PID='' \
+      BACKGROUND_CURL_PID='' \
+      BATTERY_PROGRAM_CREATED=false \
+      BATTERY_PROGRAM='' \
+      VOLUME_PROGRAM_CREATED=false \
+      VOLUME_PROGRAM='' \
+      PUBLISH_NEXT="$staged" \
+      REPORT_NEXT="$staged" \
+      OUTPUT_REPORT="$output" \
+      WORK_ROOT=''
     false
     cleanup
   ); then
