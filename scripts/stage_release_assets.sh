@@ -827,6 +827,7 @@ jq -e \
       singleImageArchive:true,
       loadedImageIdVerified:true,
       platformVerified:true,
+      runtimeUserVerified:true,
       rootfsLayersVerified:true,
       packageLockVerified:true,
       packageInputBytesVerified:true,

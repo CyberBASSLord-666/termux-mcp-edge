@@ -434,6 +434,7 @@
             "singleImageArchive",
             "loadedImageIdVerified",
             "platformVerified",
+            "runtimeUserVerified",
             "rootfsLayersVerified",
             "packageLockVerified",
             "packageInputBytesVerified",
@@ -454,6 +455,9 @@
               "const": true
             },
             "platformVerified": {
+              "const": true
+            },
+            "runtimeUserVerified": {
               "const": true
             },
             "rootfsLayersVerified": {

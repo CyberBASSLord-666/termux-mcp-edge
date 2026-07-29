@@ -58,8 +58,9 @@ version:
    digest, and byte size.
 9. A retained content-addressed runtime archive, exact package lock, snapshot,
    and offline replay record. The replay verifies the archive digest, one-image
-   layout, loaded image ID, platform, rootfs layers, package inputs and indexes,
-   installed-package inventory, required commands, and Android linker with
+   layout, loaded image ID, platform, the exact non-root runtime user
+   `1000:1000`, rootfs layers, package inputs and indexes, installed-package
+   inventory, required commands, and Android linker with
    `runtimeNetworkAccess:false`.
 
 The aggregate, specialized, classifier, and deployment reports are components;
@@ -82,10 +83,13 @@ The official base image is pinned by registry manifest digest. The workflow
 also records the local Docker config/image ID materialized from that manifest,
 builds a derived image containing `file`, `jq`, `python` (including `python3`),
 and `termux-services`, requires its local image ID to differ from the base image
-ID, and executes it by that exact ID. The final image build has no network
-access. Its content-addressed archive and package records are retained inside
-the release staging tar and replayed offline before qualification. They are not
-separate public Release assets, and every applicable record states
+ID, declares and observes UID/GID `1000:1000` for both the offline package build
+and runtime execution, and executes the image by its exact ID. This is a
+container-user requirement, not an Android UID, physical-device, or host
+isolation claim. The final image build has no network access. Its
+content-addressed archive and package records are retained inside the release
+staging tar and replayed offline before qualification. They are not separate
+public Release assets, and every applicable record states
 `rebuildReproducibilityClaim:false`: the retained archive proves exactly what
 ran, not that a future rebuild from rolling mirrors will reproduce the same
 bytes.

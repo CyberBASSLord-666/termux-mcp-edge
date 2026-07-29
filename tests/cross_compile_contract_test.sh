@@ -166,6 +166,22 @@ for marker in (
 ):
     if marker not in dockerfile:
         raise SystemExit(f"offline qualified runtime Dockerfile missing: {marker}")
+copy_positions = [
+    dockerfile.index("COPY --chown=0:0 package-inputs/debs/"),
+    dockerfile.index("COPY --chown=0:0 package-inputs/indexes/"),
+    dockerfile.index("COPY --chown=0:0 termux-runtime-package-lock-v1.json"),
+]
+user_directives = [
+    line.strip()
+    for line in dockerfile.splitlines()
+    if line.strip().startswith("USER ")
+]
+if user_directives != ["USER 1000:1000"]:
+    raise SystemExit("qualified runtime must declare exact non-root user once")
+user_position = dockerfile.index("USER 1000:1000")
+run_position = dockerfile.index("RUN DEBIAN_FRONTEND=noninteractive apt-get install")
+if not max(copy_positions) < user_position < run_position:
+    raise SystemExit("qualified runtime user must follow provenance COPYs and precede apt")
 for forbidden in (
     "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages",
     "rm -rf /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes",
@@ -197,11 +213,18 @@ for marker in (
         raise SystemExit(f"runtime package freeze contract missing: {marker}")
 if policy["environmentRequirements"]["runtimePackages"] != expected:
     raise SystemExit("qualification policy runtime package list changed")
+if policy["environmentRequirements"].get("runtimeUser") != "1000:1000":
+    raise SystemExit("qualification policy runtime user changed")
 schema_packages = schema["properties"]["environmentRequirements"][
     "properties"
 ]["runtimePackages"]["const"]
 if schema_packages != expected:
     raise SystemExit("qualification policy schema runtime package list changed")
+schema_user = schema["properties"]["environmentRequirements"][
+    "properties"
+]["runtimeUser"]["const"]
+if schema_user != "1000:1000":
+    raise SystemExit("qualification policy schema runtime user changed")
 PY
 python3 - "$ANDROID_WORKFLOW" <<'PY'
 import sys
@@ -242,6 +265,12 @@ steps = workflow["jobs"]["termux-emulated"]["steps"]
 names = [step.get("name") for step in steps]
 runtime_step = steps[names.index("Run exact artifacts in official Termux environment")]
 runtime_script = runtime_step["run"]
+for marker in (
+    """test "$(docker image inspect "$runtime_image_id" --format '{{.Config.User}}')" = "1000:1000" """.strip(),
+    r'test \"\$(id -u):\$(id -g)\" = \"1000:1000\"',
+):
+    if runtime_script.count(marker) != 1:
+        raise SystemExit(f"qualified runtime user check changed: {marker}")
 if "$PREFIX/var/cache/apt/archives" in runtime_script:
     raise SystemExit("runtime package freeze still assumes the image's APT cache path")
 for marker, count in (
@@ -371,6 +400,8 @@ freeze_script = steps[runtime_start]["run"]
 for marker in (
     'docker save "$runtime_tag" | gzip -n -9',
     "--network none",
+    'test "$(id -u):$(id -g)" = "1000:1000"',
+    'image["Config"].get("User") != "1000:1000"',
     '"rebuildReproducibilityClaim": False',
     'test "$(find "$snapshot" -mindepth 1 -maxdepth 1 -type f | wc -l)" = 3',
 ):

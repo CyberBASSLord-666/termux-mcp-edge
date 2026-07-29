@@ -1140,6 +1140,7 @@ expected_runtime_verification = {
     "singleImageArchive": True,
     "loadedImageIdVerified": True,
     "platformVerified": True,
+    "runtimeUserVerified": True,
     "rootfsLayersVerified": True,
     "packageLockVerified": True,
     "packageInputBytesVerified": True,

@@ -75,7 +75,8 @@ import tempfile
 CLASS = "official_termux_native_automated_v1"
 REPOSITORY = "CyberBASSLord-666/termux-mcp-edge"
 BASE_IMAGE = "termux/termux-docker:aarch64"
-POLICY_SHA256 = "920a3334c5409e13d7cea062e1dfee5575f79b040faa2bcbf95765708045e823"
+RUNTIME_USER = "1000:1000"
+POLICY_SHA256 = "22ae15bb36fcb6c76c9341f4546dc38397e69f885f8da4a357b90d61c567c5ed"
 SCENARIO_SHA256 = "dd31d4f89f9f25dba1a1bb1c492fd796f5a2619b215e2d57f3b0e60f9f24b3bb"
 RUNTIME_ARCHIVE_NAME = "termux-qualified-runtime-image-v1.tar.gz"
 RUNTIME_LOCK_NAME = "termux-runtime-package-lock-v1.json"
@@ -158,6 +159,7 @@ RUNTIME_VERIFICATION = {
     "singleImageArchive": True,
     "loadedImageIdVerified": True,
     "platformVerified": True,
+    "runtimeUserVerified": True,
     "rootfsLayersVerified": True,
     "packageLockVerified": True,
     "packageInputBytesVerified": True,
@@ -439,6 +441,7 @@ def validate_policy(policy, raw):
         "derivedRuntimeImageDigestRequired": True,
         "runtimeImageMustDifferFromRootfsImageId": True,
         "runtimeImageExecutionByDigest": True,
+        "runtimeUser": RUNTIME_USER,
         "runtimePackages": ["file", "jq", "python", "termux-services"],
         "userlandPrefix": "/data/data/com.termux/files/usr",
         "androidAbi": "android-bionic",

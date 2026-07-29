@@ -47,8 +47,8 @@ case "${1:-} ${2:-}" in
     reference="${3:-}"
     [[ "$reference" == "$MOCK_RUNTIME_ID" || "$reference" == "$MOCK_RUNTIME_TAG" ]] \
       || exit 1
-    printf '[{"Id":"%s","Os":"linux","Architecture":"arm64","RepoTags":["%s"],"RootFS":{"Type":"layers","Layers":["%s"]}}]\n' \
-      "$MOCK_RUNTIME_ID" "$MOCK_RUNTIME_TAG" "$MOCK_RUNTIME_LAYER"
+    printf '[{"Id":"%s","Os":"linux","Architecture":"arm64","Config":{"User":"%s"},"RepoTags":["%s"],"RootFS":{"Type":"layers","Layers":["%s"]}}]\n' \
+      "$MOCK_RUNTIME_ID" "$MOCK_RUNTIME_USER" "$MOCK_RUNTIME_TAG" "$MOCK_RUNTIME_LAYER"
     ;;
   "load --input")
     [[ -f "${3:-}" ]]
@@ -57,6 +57,8 @@ case "${1:-} ${2:-}" in
     ;;
   "run --rm")
     [[ -f "$state" ]]
+    [[ "${MOCK_RUNTIME_UID_GID:?}" == "1000:1000" ]]
+    [[ "$*" == *'test "$(id -u):$(id -g)" = "1000:1000"'* ]]
     printf '__TERMUX_MCP_PACKAGES__\n'
     printf '%b' "$MOCK_RUNTIME_PACKAGES"
     printf '__TERMUX_MCP_PACKAGE_INPUTS__\n'
@@ -99,6 +101,7 @@ layer = "sha256:" + hashlib.sha256(layer_raw).hexdigest()
 config = json.dumps(
     {
         "architecture": "arm64",
+        "config": {"User": "1000:1000"},
         "os": "linux",
         "rootfs": {"type": "layers", "diff_ids": [layer]},
     },
@@ -276,6 +279,8 @@ deployment = {
             f"MOCK_RUNTIME_ID={runtime_id}",
             f"MOCK_RUNTIME_TAG={runtime_tag}",
             f"MOCK_RUNTIME_LAYER={layer}",
+            "MOCK_RUNTIME_USER=1000:1000",
+            "MOCK_RUNTIME_UID_GID=1000:1000",
             "MOCK_LINKER_SHA=" + "f" * 64,
             "MOCK_LINKER_BYTES=123",
             "MOCK_RUNTIME_PACKAGES="
@@ -469,6 +474,7 @@ jq -e \
       singleImageArchive:true,
       loadedImageIdVerified:true,
       platformVerified:true,
+      runtimeUserVerified:true,
       rootfsLayersVerified:true,
       packageLockVerified:true,
       packageInputBytesVerified:true,
@@ -498,6 +504,7 @@ jq -e \
     .status == "pass"
     and .runtimeImageId == $runtime
     and .verification.singleImageArchive == true
+    and .verification.runtimeUserVerified == true
     and .verification.rootfsLayersVerified == true
     and .verification.runtimeNetworkAccess == false
   ' "$TMP/oci-success/termux-runtime-snapshot-replay-v1.json" >/dev/null \
@@ -518,6 +525,8 @@ expect_failure() {
   fi
   [[ ! -e "$TMP/$name-output/termux-runtime-snapshot-replay-v1.json" ]] \
     || fail "$name published a replay report"
+  [[ ! -e "$MOCK_DOCKER_STATE" ]] \
+    || fail "$name left a loaded image behind"
 }
 
 mutate_archive_fixture() {
@@ -539,6 +548,7 @@ archive_path = pathlib.Path(sys.argv[1])
 snapshot_path = pathlib.Path(sys.argv[2])
 operation = sys.argv[3]
 entries = []
+runtime_id = None
 with tarfile.open(archive_path, mode="r:gz") as archive:
     for member in archive.getmembers():
         if member.isfile():
@@ -578,6 +588,65 @@ elif operation == "classic-layer-substitution":
     manifest_value = json.loads(entries[file_index("manifest.json")][1])
     layer = file_index(manifest_value[0]["Layers"][0])
     entries[layer][1] += b" "
+elif operation == "classic-root-user":
+    manifest_index = file_index("manifest.json")
+    manifest_value = json.loads(entries[manifest_index][1])
+    config_index = file_index(manifest_value[0]["Config"])
+    config_value = json.loads(entries[config_index][1])
+    config_value["config"]["User"] = "0:0"
+    config_raw = json.dumps(
+        config_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    runtime_id = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+    config_name = f"{runtime_id.removeprefix('sha256:')}.json"
+    entries[config_index][0] = config_name
+    entries[config_index][1] = config_raw
+    manifest_value[0]["Config"] = config_name
+    entries[manifest_index][1] = json.dumps(
+        manifest_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+elif operation == "oci-root-user":
+    index_index = file_index("index.json")
+    index_value = json.loads(entries[index_index][1])
+    old_manifest_digest = index_value["manifests"][0]["digest"]
+    manifest_index = file_index(
+        f"blobs/sha256/{old_manifest_digest.removeprefix('sha256:')}"
+    )
+    manifest_value = json.loads(entries[manifest_index][1])
+    old_config_digest = manifest_value["config"]["digest"]
+    config_index = file_index(
+        f"blobs/sha256/{old_config_digest.removeprefix('sha256:')}"
+    )
+    config_value = json.loads(entries[config_index][1])
+    config_value["config"]["User"] = "0:0"
+    config_raw = json.dumps(
+        config_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    runtime_id = "sha256:" + hashlib.sha256(config_raw).hexdigest()
+    config_name = f"blobs/sha256/{runtime_id.removeprefix('sha256:')}"
+    entries[config_index][0] = config_name
+    entries[config_index][1] = config_raw
+    manifest_value["config"]["digest"] = runtime_id
+    manifest_value["config"]["size"] = len(config_raw)
+    manifest_raw = json.dumps(
+        manifest_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    manifest_digest = "sha256:" + hashlib.sha256(manifest_raw).hexdigest()
+    entries[manifest_index][0] = (
+        f"blobs/sha256/{manifest_digest.removeprefix('sha256:')}"
+    )
+    entries[manifest_index][1] = manifest_raw
+    index_value["manifests"][0]["digest"] = manifest_digest
+    index_value["manifests"][0]["size"] = len(manifest_raw)
+    entries[index_index][1] = json.dumps(
+        index_value, sort_keys=True, separators=(",", ":")
+    ).encode()
+    legacy_index = file_index("manifest.json")
+    legacy_value = json.loads(entries[legacy_index][1])
+    legacy_value[0]["Config"] = config_name
+    entries[legacy_index][1] = json.dumps(
+        legacy_value, sort_keys=True, separators=(",", ":")
+    ).encode()
 else:
     raise SystemExit(f"unknown fixture archive mutation: {operation}")
 
@@ -599,10 +668,24 @@ archive_raw = archive_path.read_bytes()
 snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
 snapshot["archive"]["sha256"] = hashlib.sha256(archive_raw).hexdigest()
 snapshot["archive"]["bytes"] = len(archive_raw)
+if runtime_id is not None:
+    snapshot["runtimeImageId"] = runtime_id
 snapshot_path.write_text(
     json.dumps(snapshot, sort_keys=True, separators=(",", ":")) + "\n",
     encoding="utf-8",
 )
+if runtime_id is not None:
+    for file_name in (
+        "termux-native-aggregate-evidence-v4.json",
+        "automated-native-deployment-v1.json",
+    ):
+        path = archive_path.parent / file_name
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["environment"]["runtimeImageDigest"] = runtime_id
+        path.write_text(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
 PY
   chmod 600 \
     "$destination/termux-qualified-runtime-image-v1.tar.gz" \
@@ -616,6 +699,12 @@ expect_failure archive_substitution "$TMP/archive-substitution"
 mutate_archive_fixture \
   "$TMP/fixture" "$TMP/classic-layer-substitution" classic-layer-substitution
 expect_failure classic_layer_substitution "$TMP/classic-layer-substitution"
+
+mutate_archive_fixture \
+  "$TMP/fixture" "$TMP/classic-root-user" classic-root-user
+expect_failure classic_root_user "$TMP/classic-root-user"
+grep -Fq 'ERROR: archive_config_invalid' "$TMP/classic_root_user.log" \
+  || fail classic_root_user_failed_for_wrong_reason
 
 mutate_archive_fixture \
   "$TMP/fixture" "$TMP/unreferenced-member" unreferenced
@@ -632,6 +721,12 @@ expect_failure oci_platform "$TMP/oci-platform"
 mutate_archive_fixture \
   "$TMP/oci-fixture" "$TMP/oci-manifest-substitution" oci-manifest-substitution
 expect_failure oci_manifest_substitution "$TMP/oci-manifest-substitution"
+
+mutate_archive_fixture \
+  "$TMP/oci-fixture" "$TMP/oci-root-user" oci-root-user
+expect_failure oci_root_user "$TMP/oci-root-user"
+grep -Fq 'ERROR: archive_config_invalid' "$TMP/oci_root_user.log" \
+  || fail oci_root_user_failed_for_wrong_reason
 
 cp -a "$TMP/fixture" "$TMP/duplicate-key"
 python3 - "$TMP/duplicate-key/termux-runtime-package-lock-v1.json" <<'PY'
@@ -678,6 +773,26 @@ export MOCK_RUNTIME_PACKAGE_LOCK
 expect_failure runtime_package_lock_drift "$TMP/fixture"
 MOCK_RUNTIME_PACKAGE_LOCK="$original_runtime_lock"
 export MOCK_RUNTIME_PACKAGE_LOCK
+
+original_runtime_user="$MOCK_RUNTIME_USER"
+MOCK_RUNTIME_USER=0:0
+export MOCK_RUNTIME_USER
+expect_failure runtime_user_inspect_drift "$TMP/fixture"
+grep -Fq 'ERROR: runtime_image_inspect_invalid' \
+  "$TMP/runtime_user_inspect_drift.log" \
+  || fail runtime_user_inspect_drift_failed_for_wrong_reason
+MOCK_RUNTIME_USER="$original_runtime_user"
+export MOCK_RUNTIME_USER
+
+original_uid_gid="$MOCK_RUNTIME_UID_GID"
+MOCK_RUNTIME_UID_GID=1000:0
+export MOCK_RUNTIME_UID_GID
+expect_failure runtime_user_effective_drift "$TMP/fixture"
+grep -Fq 'ERROR: runtime_probe_failed' \
+  "$TMP/runtime_user_effective_drift.log" \
+  || fail runtime_user_effective_drift_failed_for_wrong_reason
+MOCK_RUNTIME_UID_GID="$original_uid_gid"
+export MOCK_RUNTIME_UID_GID
 
 original_linker="$MOCK_LINKER_SHA"
 MOCK_LINKER_SHA="$(printf '0%.0s' {1..64})"

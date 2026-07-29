@@ -29,7 +29,7 @@ ROOTFS_DIGEST=sha256:ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 ROOTFS_IMAGE_ID=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 RUNTIME_IMAGE_DIGEST=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 LINKER_SHA=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-POLICY_SHA=920a3334c5409e13d7cea062e1dfee5575f79b040faa2bcbf95765708045e823
+POLICY_SHA=22ae15bb36fcb6c76c9341f4546dc38397e69f885f8da4a357b90d61c567c5ed
 SCENARIO_SHA=dd31d4f89f9f25dba1a1bb1c492fd796f5a2619b215e2d57f3b0e60f9f24b3bb
 
 postures=(
@@ -517,6 +517,7 @@ jq -n \
     verification:{
       archiveDigestVerified:true,singleImageArchive:true,
       loadedImageIdVerified:true,platformVerified:true,
+      runtimeUserVerified:true,
       rootfsLayersVerified:true,packageLockVerified:true,
       packageInputBytesVerified:true,repositoryIndexBytesVerified:true,
       installedPackageInventoryVerified:true,

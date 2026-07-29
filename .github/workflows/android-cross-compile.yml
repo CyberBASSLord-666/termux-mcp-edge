@@ -631,6 +631,7 @@ jobs:
           COPY --chown=0:0 package-inputs/debs/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-packages/
           COPY --chown=0:0 package-inputs/indexes/ /data/data/com.termux/files/usr/share/termux-mcp/runtime-repository-indexes/
           COPY --chown=0:0 termux-runtime-package-lock-v1.json /data/data/com.termux/files/usr/share/termux-mcp/runtime-package-lock-v1.json
+          USER 1000:1000
           RUN DEBIAN_FRONTEND=noninteractive apt-get install \
                 --no-download \
                 --no-install-recommends \
@@ -652,6 +653,7 @@ jobs:
           [[ "$runtime_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
           test "$runtime_image_id" != "$rootfs_image_id"
           test "$(docker image inspect "$runtime_image_id" --format '{{.Id}}')" = "$runtime_image_id"
+          test "$(docker image inspect "$runtime_image_id" --format '{{.Config.User}}')" = "1000:1000"
           printf 'TERMUX_ROOTFS_IMAGE_ID=%s\n' "$rootfs_image_id" >>"$GITHUB_ENV"
           printf 'TERMUX_RUNTIME_IMAGE_DIGEST=%s\n' "$runtime_image_id" >>"$GITHUB_ENV"
           printf 'TERMUX_RUNTIME_CONTEXT=%s\n' "$runtime_context" >>"$GITHUB_ENV"
@@ -662,6 +664,7 @@ jobs:
             "$runtime_image_id" \
             bash -c "
               set -euo pipefail
+              test \"\$(id -u):\$(id -g)\" = \"1000:1000\"
               export TERMUX_MCP_EMULATED_ENVIRONMENT=official-termux-docker-native-arm64
               export TERMUX_MCP_AUTOMATED_DEPLOYMENT_ENVIRONMENT=official-termux-docker-native-arm64
               export TERMUX_MCP_TERMUX_IMAGE_DIGEST='$TERMUX_IMAGE_DIGEST'
@@ -1150,6 +1153,7 @@ jobs:
             "$TERMUX_RUNTIME_IMAGE_DIGEST" \
             bash -c '
               set -euo pipefail
+              test "$(id -u):$(id -g)" = "1000:1000"
               for required in file jq python python3 sv runsv runsvdir; do
                 command -v "$required" >/dev/null
               done
@@ -1201,6 +1205,8 @@ jobs:
               image.get("Id") != runtime_id
               or image.get("Os") != "linux"
               or image.get("Architecture") != "arm64"
+              or not isinstance(image.get("Config"), dict)
+              or image["Config"].get("User") != "1000:1000"
               or image.get("RootFS", {}).get("Type") != "layers"
               or not isinstance(layers, list)
               or not layers

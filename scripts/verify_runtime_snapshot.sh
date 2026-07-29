@@ -69,6 +69,7 @@ LOCK_NAME = "termux-runtime-package-lock-v1.json"
 SNAPSHOT_NAME = "termux-runtime-snapshot-v1.json"
 OUTPUT_NAME = "termux-runtime-snapshot-replay-v1.json"
 BASE_IMAGE = "termux/termux-docker:aarch64"
+RUNTIME_USER = "1000:1000"
 REQUESTED_PACKAGES = ["file", "jq", "python", "termux-services"]
 CLAIM_BOUNDARY = {
     "physicalDeviceObserved": False,
@@ -558,6 +559,8 @@ def parse_archive(
             not isinstance(config, dict)
             or config.get("architecture") != "arm64"
             or config.get("os") != "linux"
+            or not isinstance(config.get("config"), dict)
+            or config["config"].get("User") != RUNTIME_USER
             or not isinstance(config.get("rootfs"), dict)
             or config["rootfs"].get("type") != "layers"
             or config["rootfs"].get("diff_ids") != expected_layers
@@ -1231,6 +1234,8 @@ def main(argv: list[str]) -> None:
             image.get("Id") != runtime_id
             or image.get("Os") != "linux"
             or image.get("Architecture") != "arm64"
+            or not isinstance(image.get("Config"), dict)
+            or image["Config"].get("User") != RUNTIME_USER
             or not isinstance(image.get("RootFS"), dict)
             or image["RootFS"].get("Type") != "layers"
             or image["RootFS"].get("Layers") != snapshot["rootfsLayers"]
@@ -1240,6 +1245,7 @@ def main(argv: list[str]) -> None:
 
         probe_script = r'''
 set -euo pipefail
+test "$(id -u):$(id -g)" = "1000:1000"
 for required in file jq python python3 sv runsv runsvdir; do
   command -v "$required" >/dev/null
 done
@@ -1400,6 +1406,7 @@ printf '%s\t%s\n' \
             "singleImageArchive": True,
             "loadedImageIdVerified": True,
             "platformVerified": True,
+            "runtimeUserVerified": True,
             "rootfsLayersVerified": True,
             "packageLockVerified": True,
             "packageInputBytesVerified": True,

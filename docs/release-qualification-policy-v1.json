@@ -31,6 +31,7 @@
     "derivedRuntimeImageDigestRequired": true,
     "runtimeImageMustDifferFromRootfsImageId": true,
     "runtimeImageExecutionByDigest": true,
+    "runtimeUser": "1000:1000",
     "runtimePackages": [
       "file",
       "jq",

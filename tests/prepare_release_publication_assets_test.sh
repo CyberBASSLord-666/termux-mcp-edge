@@ -559,6 +559,7 @@ jq -n \
     verification:{
       archiveDigestVerified:true,singleImageArchive:true,
       loadedImageIdVerified:true,platformVerified:true,
+      runtimeUserVerified:true,
       rootfsLayersVerified:true,packageLockVerified:true,
       packageInputBytesVerified:true,repositoryIndexBytesVerified:true,
       installedPackageInventoryVerified:true,
