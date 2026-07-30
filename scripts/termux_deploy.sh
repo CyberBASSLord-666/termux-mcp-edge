@@ -304,6 +304,7 @@ validate_runtime_config() {
       MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY) is_boolean "$value" || fail "localhost-only authentication setting must be boolean"; is_true "$value" && allow_local=1 ;;
       MCP__SERVER__HOST) server_host="$value" ;;
       MCP__SERVER__PORT) server_port="$value" ;;
+      MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED) is_boolean "$value" || fail "stateless MCP 2026-07-28 setting must be boolean" ;;
       MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED) is_boolean "$value" || fail "create_directory mutation setting must be boolean"; is_true "$value" && create_directory_mutation_enabled=1 ;;
       MCP__FILE__COPY_FILE_MUTATION_ENABLED) is_boolean "$value" || fail "copy_file mutation setting must be boolean"; is_true "$value" && copy_file_mutation_enabled=1 ;;
       MCP__FILE__TRASH_FILE_MUTATION_ENABLED) is_boolean "$value" || fail "trash_file mutation setting must be boolean"; is_true "$value" && trash_file_mutation_enabled=1 ;;

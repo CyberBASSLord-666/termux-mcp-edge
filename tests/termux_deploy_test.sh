@@ -29,6 +29,7 @@ MCP__SERVER__HOST=127.0.0.1
 MCP__SERVER__PORT=8000
 MCP__TRANSPORT__ALLOWED_HOSTS=localhost:8000,127.0.0.1:8000
 MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
+MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false
 MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=true
 MCP__FILE__COPY_FILE_MUTATION_ENABLED=true
 MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true
@@ -230,6 +231,7 @@ sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=non-ascii-é/' "$
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=test-static-token/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 runtime_config_size="$(stat -c '%s' "$TERMUX_MCP_CONFIG_ROOT/runtime.env")"; printf '\0' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run; truncate -s "$runtime_config_size" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
+sed -i 's/^MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false$/MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=invalid$/MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=true$/MCP__FILE__COPY_FILE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__COPY_FILE_MUTATION_ENABLED=invalid$/MCP__FILE__COPY_FILE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__TRASH_FILE_MUTATION_ENABLED=invalid$/MCP__FILE__TRASH_FILE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 sed -i 's/^MCP__FILE__WRITE_MUTATION_ENABLED=true$/MCP__FILE__WRITE_MUTATION_ENABLED=invalid/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback; sed -i 's/^MCP__FILE__WRITE_MUTATION_ENABLED=invalid$/MCP__FILE__WRITE_MUTATION_ENABLED=true/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"

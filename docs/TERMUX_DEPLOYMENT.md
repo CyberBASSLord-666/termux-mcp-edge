@@ -51,6 +51,7 @@ MCP__SERVER__PORT=8000
 MCP__TRANSPORT__ALLOWED_HOSTS=localhost:8000,127.0.0.1:8000
 MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
 MCP__TRANSPORT__SSE_ENABLED=false
+MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false
 MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4
 MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=30
 MCP__TRANSPORT__MAX_BODY_BYTES=2097152
@@ -65,6 +66,8 @@ chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
 ```
 
 The file must be a regular non-symlink file, owner-readable, and inaccessible to group and other users. Blank lines and comments are allowed. Entries use literal `NAME=value` syntax and are limited to `MCP__*`, `RUST_LOG`, and `RUST_BACKTRACE`.
+
+Keep `MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false` for the established `2025-11-25` session protocol. Setting it to `true` and restarting adds a first-stage stateless `2026-07-28` POST path without disabling or changing legacy clients. The modern path is JSON-only and limited to discovery, listing, read-only calls, and mutation previews; modern GET/DELETE, capability-grant headers, and explicit `dry_run:false` are rejected. Live mutation remains legacy-session v1 only. This modern posture has not yet received native Android or release qualification, so do not treat enabling it as qualified production-release evidence.
 
 An artifact built with `--features android-battery-status` may opt into its read-only battery tool by adding this literal entry after the official Termux:API prerequisites are installed:
 

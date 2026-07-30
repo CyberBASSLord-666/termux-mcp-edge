@@ -1,6 +1,6 @@
 # MCP Transport Threat Model
 
-This document defines the security boundary for the stable MCP 2025-11-25 Streamable HTTP transport compiled by the optional `mcp-runtime` feature and its deliberately staged tool authority.
+This document defines the security boundary for the default stable MCP `2025-11-25` Streamable HTTP transport, the separately gated first-stage MCP `2026-07-28` stateless subset compiled by the optional `mcp-runtime` feature, and their deliberately staged tool authority.
 
 ## Current Runtime Boundary
 
@@ -14,10 +14,13 @@ The `mcp-runtime` build additionally exposes authenticated `POST`, `GET`, and `D
 - strict single-message JSON-RPC request, notification, and response classification;
 - stable protocol negotiation, per-session initialization gating, and exact subsequent-request protocol headers;
 - at most 64 cryptographically random UUID sessions with a 30-minute idle expiry and explicit DELETE termination;
+- a default-disabled stateless `2026-07-28` POST path with exact per-request metadata and mirrored method/name routing headers;
 - the 17-tool baseline allowlist, including reversible recovery-retained `trash_file`, bounded content-free path discovery, and code-point-safe UTF-8 range pagination, plus only those battery, volume-status, exact-grant volume-control, and fixed-command tools whose independent gates are active, as documented in README and the authorization policy;
 - safe-root, payload, dry-run, request-capability, and audit-counter controls for the current filesystem surface.
 
 POST requires JSON content and explicit client support for JSON and SSE responses. Accepted notifications and client responses return HTTP 202 without a body. The default transport returns JSON and the specification-permitted HTTP 405 for GET. `MCP__TRANSPORT__SSE_ENABLED=true` permits finite two-event SSE request responses and cursor-bearing GET resumption. Each response stream receives an unguessable UUID-derived identity, an empty priming event, and one terminal JSON-RPC event. Replay is held inside the originating session only, never broadcast, and bounded to 8 streams, 2 events per stream, 128 KiB per event, 256 KiB per session, and a 64-byte `Last-Event-ID`. Every HTTP 200 response is preflighted under the aggregate collector ceiling, and canonical serialized JSON-RPC request IDs are capped at 1 MiB before dispatch or session allocation. Oldest streams are evicted deterministically; oversized eligible responses remain JSON. DELETE and idle expiry remove both lifecycle and replay state.
+
+`MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false` preserves that legacy contract exactly. When explicitly enabled, modern traffic remains authenticated and resource/Host/Origin bounded, but is stateless, POST-only, and JSON-only. Every request requires exact protocol-version and client-capability fields in `params._meta`, plus matching `MCP-Protocol-Version` and `Mcp-Method` headers; `tools/call` also requires `Mcp-Name` matching `params.name`. The accepted method set is `server/discover`, `tools/list`, and `tools/call` limited to read-only tools or previews. Modern GET and DELETE return 405, no session or replay state is created, every capability-grant header is rejected, and every explicit `dry_run:false` is rejected before dispatch.
 
 ## Assets to Protect
 
@@ -86,6 +89,7 @@ Current controls:
 - SSE is default-disabled; when enabled, only server-issued canonical cursors are accepted, exact event lookup occurs after authentication and session validation, replay never crosses the originating stream, oversized request IDs are rejected before initialization can orphan capacity, and unknown, evicted, or cross-session cursors share one non-reflective 404 contract;
 - each finite SSE stream contains only its primer and terminal response, so concurrent streams cannot broadcast or consume another stream's events; syntactically valid client responses remain HTTP 202 and create no replay state;
 - cancellation notifications are accepted without a JSON-RPC response. Each live filesystem mutation moves into a cancellation-independent blocking transaction only after its worker wins commit ownership. A dropped or timed-out request cannot abandon an owned transaction; grant consumption, trash retention, and write replacement remain authoritative even when the HTTP waiter disappears. There is no separate long-lived operation registry to cancel across HTTP requests.
+- modern `2026-07-28` requests do not allocate, accept, or terminate sessions; their exact protocol/client metadata and routing headers are revalidated independently on every POST, and their GET/DELETE surface is closed with 405.
 
 ### Resource exhaustion
 
@@ -144,6 +148,7 @@ Current controls:
 - a single internal registry assigns stable globally unique family codes—directory `1`, write `2`, volume `3`, copy `4`, and trash `5`. Callers cannot select a code, and exhaustive all-pairs tests with one key/principal/session prove every live grant is privately rejected by every other family without consuming the source grant;
 - route authentication is outermost. Authenticated `Content-Length`, concurrency, timeout, streaming body extraction, Host/Origin, HTTP method, media/header shape, JSON-RPC envelope, session/lifecycle, `tools/call`, exact grant-aware tool name, closed argument schema, runtime gate, complete-response preflight, safe-root/target classification, and grant binding are checked in that order before the first state change;
 - only one bounded ASCII `MCP-Capability-Grant` header is accepted. It is rejected on initialization, GET, DELETE, ping, discovery, notifications, client responses, and unrelated tools; an active-session `tools/call` still authorizes nothing unless its exact capability authority validates it;
+- every modern `2026-07-28` request categorically rejects `MCP-Capability-Grant` before dispatch, and modern preflight rejects explicit `dry_run:false` before provider, filesystem, worker, or grant access. Live grants and mutation remain legacy-session v1 only;
 - malformed, unknown-key/version, invalid-signature, expired, future, excessive-lifetime, mismatched, replayed, clock-rollback, full-state, and poisoned-state cases fail closed with non-sensitive stable reasons;
 - a bounded process-global registry gives every equivalent same-family/key-id/key/principal authority one shared replay set, last-observed clock, and capacity; validation plus replay insertion is atomic, so independently constructed routers and concurrent callers in this process reach at most one mutation attempt, while other families, keys, and principals remain isolated and poisoned or exhausted state fails closed;
 - live directory, file-copy, file-trash, and file-write requests share one fixed service-owned, fail-fast, non-queueing mutation-worker permit. Exhaustion returns private HTTP 503 / JSON-RPC `-32007` before preparation, grant consumption, or mutation. The permit lives through descriptor preparation and the complete blocking commit even after the HTTP timeout releases its request-concurrency permit;
@@ -201,7 +206,7 @@ Current controls:
 
 Required controls:
 
-- keep the adopted stable MCP revision explicit and treat any later revision or SSE expansion as a focused compatibility change;
+- keep both adopted MCP revisions and their non-overlapping authority explicit; treat any expansion of the modern method, mutation, session, or SSE surface as a focused compatibility change;
 - require Security and dependency-alert review for graph changes;
 - remove unused dependency features instead of retaining hypothetical surface.
 

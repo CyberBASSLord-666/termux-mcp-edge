@@ -8,6 +8,8 @@ The optional `mcp-runtime` feature wires a stable MCP 2025-11-25 Streamable HTTP
 
 The transport negotiates protocol version `2025-11-25`, issues bounded cryptographically random sessions, requires `notifications/initialized` before normal operations, enforces media and protocol headers, accepts one JSON-RPC request, notification, or response per POST, and supports explicit session termination. JSON responses remain the default. An independent default-disabled runtime option adds finite SSE request responses and exact originating-stream replay without creating an unbounded connection or queue subsystem.
 
+A separate first-stage MCP `2026-07-28` posture is compiled with `mcp-runtime` but remains disabled unless `MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=true`. It is stateless, POST-only, JSON-only, and deliberately limited to discovery, listing, read-only tool calls, and mutation-tool previews. It does not alter or disable the legacy `2025-11-25` session path, and it never accepts capability grants or live mutation requests.
+
 ## Choose a build
 
 | Goal | Build command | Result |
@@ -169,6 +171,8 @@ Filesystem publication and quarantine locks coordinate this process and cooperat
 
 ## MCP transport contract
 
+### Legacy `2025-11-25` session protocol (default)
+
 Every POST must use `Content-Type: application/json` and explicitly accept both response media types:
 
 ```http
@@ -183,6 +187,14 @@ MCP-Session-Id: <value returned by initialize>
 ```
 
 Send `notifications/initialized` before discovery or invocation. Accepted notifications and client responses return HTTP 202 with no body. With the default `MCP__TRANSPORT__SSE_ENABLED=false`, POST responses remain JSON and valid GET returns HTTP 405. Setting it to `true` allows bounded JSON-RPC responses up to 128 KiB to use a finite two-event SSE stream: an empty priming event with a one-second reconnect hint followed by the terminal JSON-RPC response. Larger responses stay JSON rather than entering replay memory. If a POST stream disconnects after an event, reconnect with GET plus its exact `Last-Event-ID`; the server replays only later events from that session and originating stream. Missing cursors still receive 405, malformed cursors receive 400, and unavailable, evicted, or cross-session cursors receive the same non-reflective 404. DELETE terminates the session and its replay state with HTTP 204; expired, terminated, or unknown session IDs return HTTP 404. Session IDs and cursors scope lifecycle state but never replace bearer authentication.
+
+### Stateless `2026-07-28` subset (explicit opt-in)
+
+Set `MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=true` only for a reviewed modern client. Every modern POST must use `Content-Type: application/json`, list both `application/json` and `text/event-stream` in `Accept`, send `MCP-Protocol-Version: 2026-07-28`, and mirror the JSON-RPC body in `Mcp-Method`; `tools/call` must also mirror `params.name` in `Mcp-Name`. Request `params._meta` must contain `io.modelcontextprotocol/protocolVersion` with the exact value `2026-07-28` and an object-valued `io.modelcontextprotocol/clientCapabilities`. `io.modelcontextprotocol/clientInfo` is optional and is not authentication.
+
+The first stage accepts only `server/discover`, `tools/list`, and `tools/call` for tools that are read-only in the active posture or mutation tools invoked with omitted or explicit `dry_run:true`. Modern discovery advertises mutation schemas with `dry_run` fixed to `true`. Any `MCP-Capability-Grant` header and every explicit `dry_run:false` modern call are rejected before provider, filesystem, worker, or grant processing. Live `create_directory`, `copy_file`, `trash_file`, `write_file`, and `set_android_volume` remain available only through the initialized legacy session and their existing v1 grants.
+
+Modern results are JSON and carry complete-result/server metadata; no session is minted or required. HTTP GET and DELETE return 405 for the modern posture, and `MCP__TRANSPORT__SSE_ENABLED` does not enable modern SSE or replay. Enabling the modern gate leaves all legacy initialization, session, SSE, grant, and mutation behavior unchanged.
 
 Local unauthenticated development requires both:
 
@@ -216,6 +228,8 @@ valid `Origin`; duplicates are rejected without reflecting their values.
 `MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=true` is only for reviewed non-browser clients that cannot send an `Origin` header.
 
 `MCP__TRANSPORT__SSE_ENABLED=true` is an operator opt-in for finite response delivery and bounded resumption. Eligible response payloads—including tool output—remain in process memory until stream eviction, session deletion, idle expiry, or restart. It does not enable server-initiated broadcast, long-lived queues, or cross-stream delivery. `/ready` and `runtime_status` report the active posture and fixed limits.
+
+`MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false` is the default. Enabling it adds only the stateless read/preview subset above; it does not migrate clients, enable live mutation, or change the default legacy contract. This first-stage posture has not yet received native Android or release qualification.
 
 ## MCP request resource limits
 

@@ -9,6 +9,7 @@ Termux MCP Edge runs as a small Rust/Axum service on Android through Termux. The
 - Rust single binary.
 - `GET /health` and `GET /ready` operational endpoints.
 - Optional authenticated stable MCP 2025-11-25 `POST`, `GET`, and `DELETE /mcp` handling; GET returns 405 by default, with finite cursor replay available only through explicit SSE opt-in.
+- Separately default-disabled MCP 2026-07-28 stateless `POST /mcp` handling for discovery, listing, reads, and previews only; modern GET and DELETE return 405.
 - Authentication before concurrency, timeout, body-size, Host, Origin, parsing, discovery, and dispatch.
 - Four concurrent authenticated MCP requests by default.
 - Thirty-second request timeout by default.
@@ -150,6 +151,30 @@ Do not enable shell tracing, echo token variables, or include credential-bearing
 
 Each process holds at most 64 sessions and expires them after 30 idle minutes. Missing required post-initialize protocol/session headers return HTTP 400; expired, terminated, malformed, or unknown sessions return HTTP 404; capacity exhaustion returns HTTP 503. A client should DELETE a finished session and initialize a new session after HTTP 404 or a server restart. Session IDs do not replace the bearer token. SSE is disabled by default. If enabled, only finite request-response streams enter replay state, bounded to 8 streams and 256 KiB per session; terminate unused sessions promptly so their replay budget is released immediately.
 
+The validation sequence above exercises the unchanged default `2025-11-25` session path.
+
+### Optional stateless `2026-07-28` validation
+
+Leave `MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false` unless a reviewed modern client needs the first-stage read/preview subset. After setting it to `true` in the private `runtime.env` and restarting the service, this example performs stateless discovery without embedding or printing a secret:
+
+```bash
+MCP_TEST_TOKEN="$(sed -n 's/^MCP__AUTH__STATIC_TOKEN=//p' "$HOME/.config/termux-mcp-edge/runtime.env")"
+curl -sS \
+  -H "Authorization: Bearer ${MCP_TEST_TOKEN}" \
+  -H 'Host: localhost:8000' \
+  -H 'Origin: http://localhost:8000' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  --data '{"jsonrpc":"2.0","id":"discover-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"termux-operations-check","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}' \
+  http://127.0.0.1:8000/mcp \
+  | jq -e '.result.supportedVersions | index("2026-07-28") != null'
+unset MCP_TEST_TOKEN
+```
+
+Every modern request needs the same required `params._meta` protocol version and client-capabilities object plus an exact `Mcp-Method` header. A modern `tools/call` also needs `Mcp-Name` exactly matching `params.name`. The server returns JSON only and accepts only `server/discover`, `tools/list`, and read-only or preview-only `tools/call`; modern GET and DELETE return 405. Do not send `MCP-Capability-Grant` or `dry_run:false`: both are rejected before dispatch. All live mutation and v1 grant issuance/consumption remain on the initialized legacy `2025-11-25` path. This first-stage posture is not yet native Android or release qualified.
+
 ## Enabling and issuing one `copy_file` mutation
 
 Leave live copying disabled unless it is operationally required. Its private `runtime.env` posture is independent from directory creation, file writing, and Android volume control:
@@ -253,6 +278,7 @@ authentication.
 | `MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS` | `30` | `1–300` |
 | `MCP__TRANSPORT__MAX_BODY_BYTES` | `2097152` | `1024–8388608` |
 | `MCP__TRANSPORT__SSE_ENABLED` | `false` | `true` or `false` |
+| `MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED` | `false` | `true` or `false` |
 
 Values outside these ranges fail startup. Increasing concurrency and body size together increases possible peak memory use; evaluate them together on the target device.
 
