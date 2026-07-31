@@ -32,11 +32,14 @@ assert_contains() {
 assert_contains 'cargo metadata --locked --all-features --format-version 1 --no-deps' "$CI_WORKFLOW"
 assert_contains 'cargo clippy --locked --workspace --all-targets -- -D warnings' "$CI_WORKFLOW"
 assert_contains 'cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings' "$CI_WORKFLOW"
+assert_contains 'cargo clippy --locked --workspace --all-targets --features android-rish -- -D warnings' "$CI_WORKFLOW"
 assert_contains 'cargo clippy --locked --workspace --all-targets --all-features -- -D warnings' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --features mcp-runtime' "$CI_WORKFLOW"
+assert_contains 'cargo test --locked --workspace --all-targets --features android-rish rish' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --features full-suite' "$CI_WORKFLOW"
 assert_contains 'cargo test --locked --workspace --all-targets --all-features' "$CI_WORKFLOW"
+assert_contains 'cargo build --locked --release --features android-rish' "$CI_WORKFLOW"
 [[ "$(grep -Fc 'git diff --exit-code -- Cargo.toml Cargo.lock' "$CI_WORKFLOW")" -eq 4 ]] \
   || fail ci_dependency_input_brackets_changed
 
@@ -87,6 +90,7 @@ for owner, environment in (
 expected = {
     "Tests (default posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets",
     "Tests (MCP runtime posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime",
+    "Tests (development-only rish posture)": "timeout --verbose --signal=TERM --kill-after=30s 2m cargo test --locked --workspace --all-targets --features android-rish rish",
     "Tests (full-suite posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite",
     "Tests (all features)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --all-features",
 }
@@ -112,8 +116,8 @@ all_runs = "\n".join(
     str(step.get("run", ""))
     for step in job["steps"]
 )
-if len(re.findall(r"\bcargo\s+test\b", all_runs)) != 4:
-    raise SystemExit("CI must invoke exactly four locked Cargo test postures")
+if len(re.findall(r"\bcargo\s+test\b", all_runs)) != 5:
+    raise SystemExit("CI must invoke exactly five locked Cargo test postures")
 PY
 
 assert_contains 'cargo metadata --locked --format-version 1 --no-deps' "$ANDROID_WORKFLOW"

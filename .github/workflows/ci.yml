@@ -181,6 +181,9 @@ jobs:
       - name: Clippy (MCP runtime posture)
         run: cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
 
+      - name: Clippy (development-only rish posture)
+        run: cargo clippy --locked --workspace --all-targets --features android-rish -- -D warnings
+
       - name: Clippy (full-suite posture)
         run: cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 
@@ -193,6 +196,9 @@ jobs:
       - name: Tests (MCP runtime posture)
         run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime
 
+      - name: Tests (development-only rish posture)
+        run: timeout --verbose --signal=TERM --kill-after=30s 2m cargo test --locked --workspace --all-targets --features android-rish rish
+
       - name: Tests (full-suite posture)
         run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite
 
@@ -201,6 +207,9 @@ jobs:
 
       - name: Release build (full-suite posture)
         run: cargo build --locked --release --features full-suite
+
+      - name: Release build (development-only rish posture)
+        run: cargo build --locked --release --features android-rish
 
       - name: Install pinned shell-test Python
         # actions/setup-python@v7 resolved 2026-07-29

@@ -6,8 +6,12 @@
 //! cancellation-safe cleanup to an independently owned supervisor. This module
 //! never invokes a shell and never reads caller or ambient environment values.
 
-use std::{ffi::OsString, io::ErrorKind, path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    ffi::OsString, fs::File, io::ErrorKind, path::PathBuf, process::Stdio, sync::Arc,
+    time::Duration,
+};
 
+use rustix::io::{fcntl_getfd, fcntl_setfd, FdFlags};
 use rustix::process::{kill_process_group, Pid, Signal};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -53,10 +57,12 @@ pub(crate) enum BoundedProcessConfigError {
 pub(crate) struct BoundedProcess {
     program: PathBuf,
     arguments: Vec<OsString>,
+    environment: Vec<(OsString, OsString)>,
     working_directory: PathBuf,
     timeout: Duration,
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
+    inherited_descriptor: Option<Arc<File>>,
     #[cfg(test)]
     forced_cleanup_delay: Duration,
 }
@@ -68,7 +74,29 @@ pub(crate) struct BoundedProcessOutput {
     pub(crate) duration: Duration,
 }
 
+pub(crate) struct BoundedChildContext {
+    environment: Vec<(OsString, OsString)>,
+    inherited_descriptor: Option<Arc<File>>,
+}
+
+impl BoundedChildContext {
+    #[cfg(feature = "android-rish")]
+    pub(crate) fn with_inherited_descriptor(
+        environment: Vec<(OsString, OsString)>,
+        inherited_descriptor: Arc<File>,
+    ) -> Self {
+        Self {
+            environment,
+            inherited_descriptor: Some(inherited_descriptor),
+        }
+    }
+}
+
 impl BoundedProcess {
+    #[allow(
+        dead_code,
+        reason = "the isolated android-rish posture uses only the fixed-environment constructor"
+    )]
     pub(crate) fn new(
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -77,6 +105,84 @@ impl BoundedProcess {
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
     ) -> Result<Self, BoundedProcessConfigError> {
+        Self::new_with_fixed_environment(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            max_stdout_bytes,
+            max_stderr_bytes,
+            Vec::new(),
+        )
+    }
+
+    /// Construct a bounded process with one project-owned, fixed environment.
+    ///
+    /// This remains crate-private: request data must never select environment
+    /// names or values. The child still starts from `env_clear`, so ambient
+    /// Termux values cannot cross the process boundary.
+    pub(crate) fn new_with_fixed_environment(
+        program: PathBuf,
+        arguments: Vec<OsString>,
+        working_directory: PathBuf,
+        timeout: Duration,
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+        environment: Vec<(OsString, OsString)>,
+    ) -> Result<Self, BoundedProcessConfigError> {
+        Self::new_inner(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            max_stdout_bytes,
+            max_stderr_bytes,
+            BoundedChildContext {
+                environment,
+                inherited_descriptor: None,
+            },
+        )
+    }
+
+    /// Construct one fixed child that alone inherits a caller-pinned descriptor.
+    ///
+    /// The parent descriptor must remain `CLOEXEC`. The pre-exec hook removes
+    /// that flag only in this forked child, so unrelated provider processes
+    /// cannot inherit the asset during concurrent execution.
+    #[cfg(feature = "android-rish")]
+    pub(crate) fn new_with_child_context(
+        program: PathBuf,
+        arguments: Vec<OsString>,
+        working_directory: PathBuf,
+        timeout: Duration,
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+        context: BoundedChildContext,
+    ) -> Result<Self, BoundedProcessConfigError> {
+        Self::new_inner(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            max_stdout_bytes,
+            max_stderr_bytes,
+            context,
+        )
+    }
+
+    fn new_inner(
+        program: PathBuf,
+        arguments: Vec<OsString>,
+        working_directory: PathBuf,
+        timeout: Duration,
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+        context: BoundedChildContext,
+    ) -> Result<Self, BoundedProcessConfigError> {
+        let BoundedChildContext {
+            environment,
+            inherited_descriptor,
+        } = context;
         if timeout < MIN_PROVIDER_TIMEOUT {
             return Err(BoundedProcessConfigError::TimeoutTooShort);
         }
@@ -89,14 +195,15 @@ impl BoundedProcess {
         if max_stderr_bytes > MAX_BOUNDED_PROCESS_STDERR_BYTES {
             return Err(BoundedProcessConfigError::StderrLimitTooLarge);
         }
-
         Ok(Self {
             program,
             arguments,
+            environment,
             working_directory,
             timeout,
             max_stdout_bytes,
             max_stderr_bytes,
+            inherited_descriptor,
             #[cfg(test)]
             forced_cleanup_delay: Duration::ZERO,
         })
@@ -115,12 +222,26 @@ impl BoundedProcess {
         command
             .args(&self.arguments)
             .env_clear()
+            .envs(self.environment.iter().cloned())
             .current_dir(&self.working_directory)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
+        if let Some(descriptor) = self.inherited_descriptor.clone() {
+            // SAFETY: the hook performs only async-signal-safe `fcntl`
+            // operations on an already-open descriptor and does not allocate,
+            // lock, or access request-controlled data.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut flags =
+                        fcntl_getfd(descriptor.as_ref()).map_err(std::io::Error::from)?;
+                    flags.remove(FdFlags::CLOEXEC);
+                    fcntl_setfd(descriptor.as_ref(), flags).map_err(std::io::Error::from)
+                });
+            }
+        }
 
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == ErrorKind::NotFound {

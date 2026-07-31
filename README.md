@@ -17,10 +17,11 @@ A separate first-stage MCP `2026-07-28` posture is compiled with `mcp-runtime` b
 | Health and readiness only | `cargo build --release --locked` | No MCP route or tools. |
 | Standard MCP server | `cargo build --release --locked --features mcp-runtime` | Authenticated MCP transport with the 17 baseline tools. |
 | One optional Android or diagnostic tool | `cargo build --release --locked --features <feature>` | Baseline tools plus the selected tool after its separate runtime flag is enabled. |
+| Development-only Shizuku/rish identity probe | `cargo build --release --locked --features android-rish` | Adds only the default-disabled `android_rish_status` UID-2000 probe. It is not release-qualified and exposes no Android action or shell. |
 | Governed full suite | `cargo build --release --locked --features full-suite` | Exactly 17 tools with all optional runtime flags off; exactly 21 after all four are enabled. This is the named aggregate Android release posture. |
 | Raw compatibility build | `cargo build --release --locked --all-features` | Development and compatibility coverage only. It is not the public aggregate artifact and must not substitute for `full-suite`. |
 
-The optional feature names are `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; each includes `mcp-runtime`. The explicit `full-suite` feature composes all four without acting as a master authorization switch. Compiling any feature does not enable its runtime flag. Battery, volume-status, volume-control, and command discovery remain independently gated, and every live filesystem or volume mutation additionally requires its own default-disabled runtime gate plus a fresh, exact-operation, single-use request grant.
+The four governed optional feature names are `android-battery-status`, `android-volume-status`, `android-volume-control`, and `command-execution`; each includes `mcp-runtime`. The explicit `full-suite` feature composes those four without acting as a master authorization switch. The additional `android-rish` feature is isolated, development-only, excluded from `full-suite` and the current Android release inventory, and checked in dedicated host plus raw all-feature lanes. Compiling any feature does not enable its runtime flag. Battery, volume-status, volume-control, command, and rish-status discovery remain independently gated, and every existing live filesystem or volume mutation additionally requires its own default-disabled runtime gate plus a fresh, exact-operation, single-use request grant.
 
 See the [capability catalog](docs/CAPABILITIES.md) for every baseline and optional tool, build/runtime/request-authorization boundaries, and the precise meaning of a local full-feature build.
 
@@ -67,7 +68,7 @@ Continue with [authenticated MCP validation](docs/OPERATIONS.md#authenticated-mc
 
 ### Release status in plain language
 
-The workflow builds and automatically validates seven Android postures, including the named full suite. It emits exactly nine 30-day artifacts: seven posture bundles, one seven-report component artifact, and one three-file retained-runtime snapshot artifact. A separate first-attempt read-only post-run qualifier revalidates the exact Android, CI, Security, artifact, package-lock, runtime-archive, and offline-replay identities before assembling one twelve-member `official_termux_native_automated_v1` qualification artifact. Protected staging keeps the four runtime members only inside its deterministic provenance tar. Staging cannot tag or publish. The separate publisher accepts only that exact stage plus a pre-existing protected annotated tag and pre-created empty draft; it still attaches exactly sixteen assets, keeps the receipt private, verifies every draft byte on a fresh read-only runner, waits for a disjoint final protected approval, then requires `immutable: true` and a public re-download proof. Workflow bundles, stages, tags, and drafts are not installation sources. See [Automated native-Termux release qualification](docs/AUTOMATED_RELEASE_QUALIFICATION.md) and [Public release staging and publication](docs/PUBLIC_RELEASE.md).
+The workflow builds and automatically validates seven Android postures, including the named full suite. The development-only `android-rish` feature is intentionally not one of them because the container cannot exercise a real Shizuku Binder lifecycle. The workflow emits exactly nine 30-day artifacts: seven posture bundles, one seven-report component artifact, and one three-file retained-runtime snapshot artifact. A separate first-attempt read-only post-run qualifier revalidates the exact Android, CI, Security, artifact, package-lock, runtime-archive, and offline-replay identities before assembling one twelve-member `official_termux_native_automated_v1` qualification artifact. Protected staging keeps the four runtime members only inside its deterministic provenance tar. Staging cannot tag or publish. The separate publisher accepts only that exact stage plus a pre-existing protected annotated tag and pre-created empty draft; it still attaches exactly sixteen assets, keeps the receipt private, verifies every draft byte on a fresh read-only runner, waits for a disjoint final protected approval, then requires `immutable: true` and a public re-download proof. Workflow bundles, stages, tags, and drafts are not installation sources. See [Automated native-Termux release qualification](docs/AUTOMATED_RELEASE_QUALIFICATION.md) and [Public release staging and publication](docs/PUBLIC_RELEASE.md).
 
 Automated release qualification proves the exact artifacts under the digest-pinned official Termux userland on native ARM64, including deterministic Android-provider simulation and isolated deployment recovery. It does not certify physical-device, OEM, battery-aging, thermal-soak, radio, Doze, or Android-framework behavior. The derived container builds, runs, and replays as non-root UID/GID `1000:1000`, as required by Termux; this is a container-user check, not an Android UID or host-isolation claim. It records `physicalDeviceObserved:false`, `androidFrameworkObserved:false`, `sustainedPhysicalSoak:false`, `physicalCertification:"not_run"`, and `rebuildReproducibilityClaim:false`; the retained runtime does not claim future rebuild reproducibility.
 
@@ -77,7 +78,7 @@ Automated release qualification proves the exact artifacts under the digest-pinn
 - **Source package version:** `0.7.0` (active development; unpublished). `Cargo.toml` is authoritative for source builds, and CI requires the root lockfile entry and current changelog section to match it. Release authority still comes only from an immutable GitHub Release whose exact-main public proof passed; version metadata or a tag alone is insufficient.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 by default, while the explicit SSE posture accepts only cursor-bearing replay GETs.
-- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in.
+- **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in. A development-only `android-rish` build may expose only `android_rish_status`.
 - **Filesystem surface:** deterministic bounded directory listing, content-free literal basename discovery, single-object metadata, streaming SHA-256 hashing, canonical base64 whole-file and range reads, UTF-8 reads, literal text search, one-directory creation, bounded binary file copy, reversible single-file trashing, and file writes. Mutations are descriptor-relative, crash-durable, dry-run by default, independently default-disabled, and each requires its own 60-second request-scoped single-use grant. A trash grant binds the authenticated principal, active session, anchored root and normalized path, exact single-link target identity/size/high-resolution ctime, SHA-256 of the exact bytes, and fixed recovery-retained posture. Live trashing moves the exact inode with atomic no-replace into a separate MCP-hidden mode-`0700` quarantine capped at 32 artifacts and 32 MiB per parent; no MCP purge or restore exists. Copy and write grants retain their separate source/destination/content/disposition contracts. Live copy, trash, and writes cap content at 1 MiB. Results expose no private path, content, digest, grant, or recovery name. Path discovery examines at most 8,192 entries through no-follow directory descriptors and returns at most 512 literal basename matches under a 262,144-byte response ceiling. Whole-file binary read accepts one no-follow regular file up to 1 MiB. Binary range read accepts a 256 KiB slice from one no-follow regular file up to 64 MiB. Both return canonical padded RFC 4648 base64 without path or host metadata. Hashing accepts one no-follow regular file up to 16 MiB and returns only its lowercase SHA-256 digest and byte count. Metadata, hashing, path discovery, and text search remain content-private under fixed response and traversal ceilings.
 - **Authentication:** startup fails closed unless a non-empty static token is configured or explicit localhost-only development mode is enabled.
 - **Transport ordering:** the single public `McpRouterBuilder` enforces authentication before MCP resource limits, body extraction, exact Host/Origin validation, lifecycle work, discovery, grants, and dispatch.
@@ -88,7 +89,7 @@ Automated release qualification proves the exact artifacts under the digest-pinn
 - **Deployment:** versioned Termux releases with atomic activation, health/readiness validation, and rollback.
 - **Named tunnels:** explicit, non-overwriting Cloudflare Tunnel setup with strict hostname validation and hermetic failure-path tests.
 
-Android controls other than the separately compiled, request-authorized exact-stream volume tool remain unavailable, as do shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, and network mutation. The optional battery and volume-status tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the server-owned, already-running executable image and does not authorize a shell or caller-selected command surface.
+Android controls other than the separately compiled, request-authorized exact-stream volume tool remain unavailable, as do shell fallback, arbitrary command execution, global process inspection, arbitrary service control, package management, and network mutation. The development-only rish foundation can attest only that one fixed backend probe ran as Android shell UID `2000`; it exposes no action, command input, raw output, or mutation and is not production-qualified. The optional battery and volume-status tools are bounded read-only telemetry. The optional command posture runs only three fixed diagnostics of the server-owned, already-running executable image and does not authorize a shell or caller-selected command surface.
 
 ## Security and authentication
 
@@ -286,6 +287,21 @@ The gate additionally requires static-token authentication plus the paired capab
 
 See [`docs/ANDROID_VOLUME_CONTROL.md`](docs/ANDROID_VOLUME_CONTROL.md) for configuration, issuance, invocation, recovery, stable outcomes, audit privacy, and release evidence.
 
+## Development-only Shizuku/rish identity foundation
+
+The isolated rish posture requires a separate build, static bearer authentication, a private operator-pinned DEX, and an explicit runtime gate:
+
+```bash
+cargo build --release --locked --features android-rish
+export MCP__ANDROID__RISH_ENABLED=true
+export MCP__ANDROID__RISH_DEX_PATH=/absolute/private/path/rish_shizuku.dex
+export MCP__ANDROID__RISH_DEX_SHA256=<64-lowercase-hex-sha256>
+```
+
+With all gates satisfied, `android_rish_status` accepts no arguments and runs only the fixed server-owned rish identity probe. The backend invokes `/system/bin/app_process64` with the pinned DEX descriptor, fixed loader class, fixed Termux application identity, cleared environment, null stdin, fixed five-second and output bounds, and the fixed command `exec /system/bin/id -u`. Success requires exact stdout `2000\n` and empty stderr. The DEX is canonicalized, owner/directory/mode/link/size/digest attested at startup, retained by descriptor, and revalidated before each call.
+
+This posture verifies only the non-root Android shell identity. It explicitly reports root rejected, arbitrary shell false, and mutation readiness false. It is excluded from `full-suite`, Android release artifacts, and production claims until an exact physical AArch64 Android/Termux device passes the real Shizuku permission, Binder lifecycle, revocation, restart, tamper, timeout, cleanup, and privacy matrix. See the complete [Shizuku/rish control-plane contract](docs/SHIZUKU_RISH_CONTROL_PLANE.md).
+
 ## Optional fixed-profile command diagnostics
 
 Fixed server diagnostics require a separate build and runtime opt-in:
@@ -308,13 +324,16 @@ cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo clippy --locked --workspace --all-targets --features mcp-runtime -- -D warnings
+cargo clippy --locked --workspace --all-targets --features android-rish -- -D warnings
 cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-targets
 cargo test --locked --workspace --all-targets --features mcp-runtime
+cargo test --locked --workspace --all-targets --features android-rish rish
 cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 cargo build --locked --release --features full-suite
+cargo build --locked --release --features android-rish
 bash tests/package_android_artifact_test.sh
 bash tests/termux_deploy_test.sh
 bash tests/termux_device_smoke_test.sh
@@ -345,6 +364,7 @@ cargo build --release --locked --features android-battery-status
 cargo build --release --locked --features android-volume-status
 cargo build --release --locked --features android-volume-control
 cargo build --release --locked --features command-execution
+cargo build --release --locked --features android-rish
 cargo build --release --locked --features full-suite
 ```
 
@@ -403,6 +423,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Android battery status tool](docs/ANDROID_BATTERY_STATUS.md)
 - [Android volume status tool](docs/ANDROID_VOLUME_STATUS.md)
 - [Request-authorized Android volume control](docs/ANDROID_VOLUME_CONTROL.md)
+- [Shizuku/rish device-control plane](docs/SHIZUKU_RISH_CONTROL_PLANE.md)
 - [Fixed-profile command diagnostics](docs/command-execution-gate.md)
 - [Command profile validation runbook](docs/command-profile-validation.md)
 - [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)

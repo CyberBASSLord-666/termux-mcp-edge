@@ -28,6 +28,7 @@ pub mod auth;
     feature = "android-battery-status",
     feature = "android-volume-status",
     feature = "android-volume-control",
+    feature = "android-rish",
     feature = "command-execution"
 ))]
 mod bounded_process;
@@ -53,6 +54,8 @@ pub mod platform_info;
 #[cfg(feature = "mcp-runtime")]
 mod request_grant_capability;
 pub mod request_limits;
+#[cfg(feature = "android-rish")]
+mod rish_backend;
 pub mod service_status;
 pub mod tools;
 pub mod transport_security;
@@ -74,6 +77,8 @@ use std::{
 use crate::auth::McpConnectionInfo;
 #[cfg(feature = "mcp-runtime")]
 use crate::health::McpRequestLimitReadiness;
+#[cfg(feature = "android-rish")]
+use crate::rish_backend::RishBackendClient;
 #[cfg(feature = "android-volume-control")]
 use crate::{
     android_volume_control::AndroidVolumeStreamName,
@@ -181,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
         max_body_bytes = config.transport.max_body_bytes,
         sse_enabled = config.transport.sse_enabled,
         stateless_2026_07_28_enabled = config.transport.stateless_2026_07_28_enabled,
+        android_rish_enabled = config.android.rish.enabled,
         "MCP request limits configured"
     );
 
@@ -230,6 +236,28 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "android-volume-control")]
     let android_volume_control_authority = configured_android_volume_control_authority(&config)?;
 
+    #[cfg(feature = "android-rish")]
+    let rish_backend_client = if config.android.rish.enabled {
+        let dex_path = config
+            .android
+            .rish
+            .dex_path()
+            .expect("validated enabled rish configuration owns a DEX path")
+            .to_path_buf();
+        let dex_sha256 = config
+            .android
+            .rish
+            .dex_sha256()
+            .expect("validated enabled rish configuration owns a DEX digest");
+        Some(
+            RishBackendClient::try_new(dex_path, dex_sha256).map_err(|_| {
+                anyhow::anyhow!("the Android rish backend could not be initialized")
+            })?,
+        )
+    } else {
+        None
+    };
+
     #[cfg(feature = "mcp-runtime")]
     let readiness_limits = Some(McpRequestLimitReadiness {
         max_concurrent_requests: config.transport.max_concurrent_requests,
@@ -271,6 +299,10 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "android-volume-control")]
         if let Some(authority) = android_volume_control_authority {
             builder = builder.try_with_android_volume_control_authority(authority)?;
+        }
+        #[cfg(feature = "android-rish")]
+        if let Some(client) = rish_backend_client {
+            builder = builder.try_with_rish_backend(client)?;
         }
         let mcp_app = builder.build()?;
         app.merge(mcp_app)

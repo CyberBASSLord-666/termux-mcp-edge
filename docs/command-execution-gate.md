@@ -17,7 +17,7 @@ Both operator gates are required:
 1. Build the separate posture with `--features command-execution`.
 2. Set `MCP__COMMAND__ENABLED=true` at runtime.
 
-A `full-suite` build satisfies the command compile-time inclusion step, but it does not satisfy the independent runtime step. With `MCP__COMMAND__ENABLED` absent or false, `run_command_profile` remains hidden even when every optional feature is compiled. No request grant or other provider flag can enable it.
+A `full-suite` build satisfies the command compile-time inclusion step, but it does not satisfy the independent runtime step. With `MCP__COMMAND__ENABLED` absent or false, `run_command_profile` remains hidden even when all four governed optional release features are compiled. No request grant or other provider flag can enable it.
 
 The feature includes `mcp-runtime`. The default build rejects `MCP__COMMAND__ENABLED=true` during startup. A command-capable build with the runtime flag absent or false hides `run_command_profile` from discovery and denies direct calls with `command_runtime_disabled` without spawning a process. With both opt-ins, executable and cwd-descriptor initialization must succeed while the common router builder is still fallible; otherwise startup returns `McpRouterBuildError::CommandClientUnavailable` before the bound listener can serve any request. Dependency embeddings and selected workspace consumers remain unable to enable the lane.
 
