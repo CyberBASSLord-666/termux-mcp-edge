@@ -115,7 +115,7 @@ MCP__ANDROID__RISH_DEX_PATH=/data/data/com.termux/files/home/.local/share/termux
 MCP__ANDROID__RISH_DEX_SHA256=<recorded-64-lowercase-hex-digest>
 ```
 
-Restart the service and invoke only `android_rish_status`. A successful response proves exactly one live rish command returned Android shell UID `2000`; it does not authorize a shell or Android action. Shizuku normally becomes unavailable after reboot until the operator restarts its adb-mode service. The MCP server remains available, but the probe fails closed with a stable reason until Shizuku recovers. This feature is excluded from current release qualification and must not be enabled as a production-control claim until the physical-device matrix in [`SHIZUKU_RISH_CONTROL_PLANE.md`](SHIZUKU_RISH_CONTROL_PLANE.md) passes.
+Restart the service and invoke only `android_rish_status`. A successful response proves exactly one live rish command returned Android shell UID `2000`; it does not authorize a shell or Android action. For each call, the server revalidates the private source DEX, executes only a sealed anonymous snapshot of its exact digest-matched bytes, and retains the sole probe permit until any cancellation cleanup and child reaping finishes. Shizuku normally becomes unavailable after reboot until the operator restarts its adb-mode service. The MCP server remains available, but the probe fails closed with a stable reason until Shizuku recovers. This feature is excluded from current release qualification and must not be enabled as a production-control claim until the physical-device matrix in [`SHIZUKU_RISH_CONTROL_PLANE.md`](SHIZUKU_RISH_CONTROL_PLANE.md) passes.
 
 An artifact built with `--features command-execution` may opt into fixed read-only server diagnostics:
 

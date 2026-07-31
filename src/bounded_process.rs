@@ -210,6 +210,31 @@ impl BoundedProcess {
     }
 
     pub(crate) async fn run(&self) -> Result<BoundedProcessOutput, BoundedProcessError> {
+        self.run_inner(None).await
+    }
+
+    /// Run while retaining an authority guard through cancellation-independent
+    /// process-group cleanup and direct-child reaping.
+    ///
+    /// The rish lane uses this for its sole non-queueing semaphore permit. If
+    /// the request future is dropped, the existing cancellation channel still
+    /// terminates the child immediately, while the supervisor keeps the guard
+    /// until that cleanup is authoritatively complete.
+    #[cfg(feature = "android-rish")]
+    pub(crate) async fn run_with_completion_guard<G>(
+        &self,
+        completion_guard: G,
+    ) -> Result<BoundedProcessOutput, BoundedProcessError>
+    where
+        G: Send + 'static,
+    {
+        self.run_inner(Some(Box::new(completion_guard))).await
+    }
+
+    async fn run_inner(
+        &self,
+        completion_guard: Option<Box<dyn Send>>,
+    ) -> Result<BoundedProcessOutput, BoundedProcessError> {
         let started_at = Instant::now();
         let final_deadline = started_at + self.timeout;
         // Construction rejects timeouts whose quarter-budget would round below
@@ -287,6 +312,7 @@ impl BoundedProcess {
                 forced_cleanup_delay: self.forced_cleanup_delay,
             },
             cancellation_receiver,
+            completion_guard,
         ));
         let result = supervisor
             .await
@@ -396,6 +422,7 @@ async fn supervise_process(
     process: SpawnedProcess,
     bounds: SupervisorBounds,
     mut cancellation: oneshot::Receiver<()>,
+    completion_guard: Option<Box<dyn Send>>,
 ) -> Result<BoundedProcessOutput, BoundedProcessError> {
     #[cfg(test)]
     let _active_supervisor = ActiveSupervisorGuard::new();
@@ -488,7 +515,7 @@ async fn supervise_process(
         return Err(BoundedProcessError::WaitFailed);
     }
 
-    match terminal {
+    let result = match terminal {
         SupervisorTerminal::Complete { stdout, stderr } => Ok(BoundedProcessOutput {
             stdout,
             stderr,
@@ -496,7 +523,9 @@ async fn supervise_process(
         }),
         SupervisorTerminal::Failure(error) => Err(error),
         SupervisorTerminal::Cancelled => Err(BoundedProcessError::WaitFailed),
-    }
+    };
+    drop(completion_guard);
+    result
 }
 
 async fn terminate_process_group_and_reap(
@@ -577,6 +606,12 @@ async fn read_bounded(
 #[cfg(test)]
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    #[cfg(feature = "android-rish")]
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
     use rustix::process::test_kill_process;
     use tempfile::TempDir;
@@ -873,5 +908,37 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(active_supervisor_count(), 1);
         wait_for_supervisor_count(0).await;
+    }
+
+    #[cfg(feature = "android-rish")]
+    #[tokio::test]
+    async fn rish_completion_guard_survives_waiter_drop_until_cleanup_finishes() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let _test_guard = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let (_directory, process) = executable_process("/bin/sleep 30", Duration::from_secs(1));
+        let process = process.with_forced_cleanup_delay(Duration::from_millis(500));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let completion_guard = DropFlag(Arc::clone(&dropped));
+        let task = tokio::spawn(async move {
+            process
+                .run_with_completion_guard(completion_guard)
+                .await
+        });
+        wait_for_supervisor_count(1).await;
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(active_supervisor_count(), 1);
+        assert!(!dropped.load(Ordering::SeqCst));
+        wait_for_supervisor_count(0).await;
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

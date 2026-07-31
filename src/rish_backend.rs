@@ -3,9 +3,11 @@
 //! This module deliberately does not expose a general shell. Production uses
 //! one fixed Android runtime, one pinned and digest-bound loader DEX, one fixed
 //! loader class, and one fixed command which can only prove that the remote
-//! principal is Android's non-root `shell` UID. The DEX descriptor remains
-//! open for the client's lifetime and is passed through `/proc/self/fd` so a
-//! pathname replacement cannot change the code loaded by `app_process64`.
+//! principal is Android's non-root `shell` UID. The configured DEX descriptor
+//! remains pinned for the client's lifetime. Each probe copies its revalidated
+//! bytes into a sealed anonymous file and passes only that immutable snapshot
+//! through `/proc/self/fd`, so neither pathname replacement nor a same-UID
+//! in-place rewrite can change the code loaded by `app_process64`.
 
 use std::{
     ffi::OsString,
@@ -22,13 +24,15 @@ use std::{
 };
 
 use rustix::{
-    fs::{open, Mode, OFlags},
+    fs::{
+        fcntl_add_seals, fcntl_get_seals, memfd_create, open, MemfdFlags, Mode, OFlags, SealFlags,
+    },
     io::{fcntl_getfd, FdFlags},
     process::getuid,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::bounded_process::{
     BoundedChildContext, BoundedProcess, BoundedProcessConfigError, BoundedProcessError,
@@ -92,6 +96,7 @@ pub(crate) enum RishBackendError {
     DexDigestMismatch,
     DexDescriptorInvalid,
     DexIdentityChanged,
+    DexSnapshotFailed,
     ConcurrencyLimitExceeded,
     ProgramUnavailable,
     SpawnFailed,
@@ -114,6 +119,7 @@ impl RishBackendError {
             Self::DexDigestMismatch => "rish_dex_digest_mismatch",
             Self::DexDescriptorInvalid => "rish_dex_descriptor_invalid",
             Self::DexIdentityChanged => "rish_dex_identity_changed",
+            Self::DexSnapshotFailed => "rish_dex_snapshot_failed",
             Self::ConcurrencyLimitExceeded => "rish_probe_concurrency_limit",
             Self::ProgramUnavailable => "rish_app_process_unavailable",
             Self::SpawnFailed => "rish_probe_spawn_failed",
@@ -203,6 +209,8 @@ pub(crate) struct RishBackendClient {
     expected_sha256: [u8; 32],
     program: PathBuf,
     concurrency: Arc<Semaphore>,
+    #[cfg(test)]
+    validation_delay: Duration,
 }
 
 impl fmt::Debug for RishBackendClient {
@@ -254,11 +262,13 @@ impl RishBackendClient {
             expected_sha256,
             program,
             concurrency: Arc::new(Semaphore::new(RISH_STATUS_CONCURRENCY)),
+            #[cfg(test)]
+            validation_delay: Duration::ZERO,
         })
     }
 
     pub(crate) async fn probe(&self) -> Result<RishBackendStatus, RishBackendError> {
-        let _permit = Arc::clone(&self.concurrency)
+        let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
             .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
 
@@ -267,7 +277,16 @@ impl RishBackendClient {
         let expected_identity = self.dex_identity;
         let expected_parent = self.parent_identity;
         let expected_sha256 = self.expected_sha256;
-        tokio::task::spawn_blocking(move || {
+        let program = self.program.clone();
+        #[cfg(test)]
+        let validation_delay = self.validation_delay;
+
+        // Validation owns the permit even if its request waiter disappears.
+        // On success the permit is transferred into the bounded process's
+        // cancellation-independent cleanup supervisor.
+        let (permit, dex_guard) = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            std::thread::sleep(validation_delay);
             let parent = validate_parent(&dex_path)?;
             if parent != expected_parent {
                 return Err(RishBackendError::DexIdentityChanged);
@@ -278,67 +297,29 @@ impl RishBackendClient {
                 Some(expected_identity),
                 expected_sha256,
             )?;
-            ensure_descriptor_close_on_exec(&dex_file)
+            let snapshot = create_sealed_dex_snapshot(
+                &dex_file,
+                expected_identity.bytes,
+                expected_sha256,
+            )?;
+            // A source race during snapshot construction changes either the
+            // byte digest or the pinned metadata and therefore fails before
+            // the sealed copy can be executed.
+            validate_dex_identity(
+                &dex_path,
+                &dex_file,
+                Some(expected_identity),
+                expected_sha256,
+            )?;
+            Ok::<(OwnedSemaphorePermit, Arc<File>), RishBackendError>((
+                permit,
+                Arc::new(snapshot),
+            ))
         })
         .await
         .map_err(|_| RishBackendError::WorkerFailed)??;
 
-        // Duplicate the pinned descriptor with CLOEXEC still set. The bounded
-        // process clears that flag only in the forked rish child, so unrelated
-        // concurrently spawned providers cannot inherit the DEX.
-        let dex_guard = Arc::new(
-            self.dex_file
-                .try_clone()
-                .map_err(|_| RishBackendError::DexDescriptorInvalid)?,
-        );
-        ensure_descriptor_close_on_exec(&dex_guard)?;
-        let dex_argument = OsString::from(format!(
-            "-Djava.class.path=/proc/self/fd/{}",
-            dex_guard.as_raw_fd()
-        ));
-        let process = BoundedProcess::new_with_child_context(
-            self.program.clone(),
-            vec![
-                dex_argument,
-                OsString::from("/system/bin"),
-                OsString::from("--nice-name=termux-mcp-rish"),
-                OsString::from(RISH_LOADER_CLASS),
-                OsString::from("-c"),
-                OsString::from(RISH_FIXED_COMMAND),
-            ],
-            PathBuf::from("/"),
-            RISH_STATUS_TIMEOUT,
-            RISH_STATUS_STDOUT_BYTES,
-            RISH_STATUS_STDERR_BYTES,
-            BoundedChildContext::with_inherited_descriptor(
-                vec![
-                    (
-                        OsString::from("RISH_APPLICATION_ID"),
-                        OsString::from(RISH_APPLICATION_ID),
-                    ),
-                    (OsString::from("RISH_PRESERVE_ENV"), OsString::from("0")),
-                ],
-                Arc::clone(&dex_guard),
-            ),
-        )
-        .map_err(map_fixed_process_config)?;
-        let output = process.run().await?;
-        drop(dex_guard);
-
-        if output.stdout.as_slice() != EXPECTED_STDOUT || !output.stderr.is_empty() {
-            return Err(RishBackendError::IdentityOutputInvalid);
-        }
-
-        Ok(RishBackendStatus {
-            available: true,
-            backend: "shizuku_rish",
-            principal: "android_shell",
-            uid: ANDROID_SHELL_UID,
-            state: "verified_shell_uid",
-            root_accepted: false,
-            arbitrary_shell: false,
-            mutation_ready: false,
-        })
+        run_fixed_probe(program, dex_guard, permit).await
     }
 
     #[cfg(test)]
@@ -360,7 +341,8 @@ fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
         RishBackendError::DexDigestMismatch => RishBackendConfigError::DexDigestMismatch,
         RishBackendError::DexDescriptorInvalid => RishBackendConfigError::DexDescriptorInvalid,
         RishBackendError::DexIdentityChanged => RishBackendConfigError::DexIdentityChanged,
-        RishBackendError::ConcurrencyLimitExceeded
+        RishBackendError::DexSnapshotFailed
+        | RishBackendError::ConcurrencyLimitExceeded
         | RishBackendError::ProgramUnavailable
         | RishBackendError::SpawnFailed
         | RishBackendError::WaitFailed
@@ -371,6 +353,61 @@ fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
         | RishBackendError::IdentityOutputInvalid
         | RishBackendError::WorkerFailed => RishBackendConfigError::Internal,
     }
+}
+
+async fn run_fixed_probe(
+    program: PathBuf,
+    dex_guard: Arc<File>,
+    permit: OwnedSemaphorePermit,
+) -> Result<RishBackendStatus, RishBackendError> {
+    ensure_descriptor_close_on_exec(&dex_guard)?;
+    let dex_argument = OsString::from(format!(
+        "-Djava.class.path=/proc/self/fd/{}",
+        dex_guard.as_raw_fd()
+    ));
+    let process = BoundedProcess::new_with_child_context(
+        program,
+        vec![
+            dex_argument,
+            OsString::from("/system/bin"),
+            OsString::from("--nice-name=termux-mcp-rish"),
+            OsString::from(RISH_LOADER_CLASS),
+            OsString::from("-c"),
+            OsString::from(RISH_FIXED_COMMAND),
+        ],
+        PathBuf::from("/"),
+        RISH_STATUS_TIMEOUT,
+        RISH_STATUS_STDOUT_BYTES,
+        RISH_STATUS_STDERR_BYTES,
+        BoundedChildContext::with_inherited_descriptor(
+            vec![
+                (
+                    OsString::from("RISH_APPLICATION_ID"),
+                    OsString::from(RISH_APPLICATION_ID),
+                ),
+                (OsString::from("RISH_PRESERVE_ENV"), OsString::from("0")),
+            ],
+            Arc::clone(&dex_guard),
+        ),
+    )
+    .map_err(map_fixed_process_config)?;
+    let output = process.run_with_completion_guard(permit).await?;
+    drop(dex_guard);
+
+    if output.stdout.as_slice() != EXPECTED_STDOUT || !output.stderr.is_empty() {
+        return Err(RishBackendError::IdentityOutputInvalid);
+    }
+
+    Ok(RishBackendStatus {
+        available: true,
+        backend: "shizuku_rish",
+        principal: "android_shell",
+        uid: ANDROID_SHELL_UID,
+        state: "verified_shell_uid",
+        root_accepted: false,
+        arbitrary_shell: false,
+        mutation_ready: false,
+    })
 }
 
 fn map_fixed_process_config(_: BoundedProcessConfigError) -> RishBackendError {
@@ -510,6 +547,100 @@ fn hash_exact_file(file: &File, bytes: u64) -> Result<[u8; 32], RishBackendError
         }
         hasher.update(&buffer[..read]);
         offset += u64::try_from(read).map_err(|_| RishBackendError::DexDescriptorInvalid)?;
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn create_sealed_dex_snapshot(
+    source: &File,
+    bytes: u64,
+    expected_sha256: [u8; 32],
+) -> Result<File, RishBackendError> {
+    let base_flags = MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING;
+    // Newer kernels can require an explicit non-executable memfd posture.
+    // DEX input is data, not a native executable, so prefer NOEXEC_SEAL and
+    // fall back only when an older API-30-compatible kernel rejects the flag.
+    let descriptor = match memfd_create(
+        "termux-mcp-rish-dex",
+        base_flags | MemfdFlags::NOEXEC_SEAL,
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::INVAL) => {
+            memfd_create("termux-mcp-rish-dex", base_flags)
+                .map_err(|_| RishBackendError::DexSnapshotFailed)?
+        }
+        Err(_) => return Err(RishBackendError::DexSnapshotFailed),
+    };
+    let snapshot = File::from(descriptor);
+    ensure_descriptor_close_on_exec(&snapshot)
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+
+    let copied_sha256 = copy_and_hash_exact_file(source, &snapshot, bytes)?;
+    if copied_sha256 != expected_sha256 {
+        return Err(RishBackendError::DexDigestMismatch);
+    }
+    let metadata = snapshot
+        .metadata()
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    if !metadata.file_type().is_file() || metadata.len() != bytes {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+
+    let required_seals =
+        SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
+    fcntl_add_seals(&snapshot, required_seals)
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    let observed_seals =
+        fcntl_get_seals(&snapshot).map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    if !observed_seals.contains(required_seals) {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    if hash_exact_file(&snapshot, bytes)? != expected_sha256 {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    Ok(snapshot)
+}
+
+fn copy_and_hash_exact_file(
+    source: &File,
+    destination: &File,
+    bytes: u64,
+) -> Result<[u8; 32], RishBackendError> {
+    let mut hasher = Sha256::new();
+    let mut offset = 0_u64;
+    let mut buffer = [0_u8; 16 * 1024];
+    while offset < bytes {
+        let remaining = usize::try_from(bytes - offset).unwrap_or(usize::MAX);
+        let requested = remaining.min(buffer.len());
+        let read = source
+            .read_at(&mut buffer[..requested], offset)
+            .map_err(|_| RishBackendError::DexDescriptorInvalid)?;
+        if read == 0 {
+            return Err(RishBackendError::DexIdentityChanged);
+        }
+        hasher.update(&buffer[..read]);
+
+        let mut written = 0_usize;
+        while written < read {
+            let destination_offset = offset
+                .checked_add(
+                    u64::try_from(written)
+                        .map_err(|_| RishBackendError::DexSnapshotFailed)?,
+                )
+                .ok_or(RishBackendError::DexSnapshotFailed)?;
+            let count = destination
+                .write_at(&buffer[written..read], destination_offset)
+                .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+            if count == 0 {
+                return Err(RishBackendError::DexSnapshotFailed);
+            }
+            written = written
+                .checked_add(count)
+                .ok_or(RishBackendError::DexSnapshotFailed)?;
+        }
+        offset = offset
+            .checked_add(u64::try_from(read).map_err(|_| RishBackendError::DexSnapshotFailed)?)
+            .ok_or(RishBackendError::DexSnapshotFailed)?;
     }
     Ok(hasher.finalize().into())
 }
@@ -812,6 +943,57 @@ printf '2000\n'
         );
     }
 
+    #[test]
+    fn sealed_snapshot_rejects_same_uid_writes_and_resizing() {
+        let fixture = Fixture::new(VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        let snapshot = create_sealed_dex_snapshot(
+            client.dex_file.as_ref(),
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        )
+        .unwrap();
+        let required_seals =
+            SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
+        assert!(fcntl_get_seals(&snapshot)
+            .unwrap()
+            .contains(required_seals));
+        assert!(fcntl_getfd(&snapshot).unwrap().contains(FdFlags::CLOEXEC));
+        assert!(snapshot.write_at(b"attacker", 0).is_err());
+        assert!(snapshot.set_len(client.dex_identity.bytes + 1).is_err());
+        assert!(snapshot.set_len(client.dex_identity.bytes - 1).is_err());
+        assert_eq!(
+            hash_exact_file(&snapshot, client.dex_identity.bytes).unwrap(),
+            client.expected_sha256
+        );
+    }
+
+    #[tokio::test]
+    async fn child_executes_sealed_bytes_when_same_uid_source_is_rewritten() {
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let fixture = Fixture::new(
+            r#"#!/bin/sh
+dex="${1#-Djava.class.path=}"
+original="${0%/*}/rish_shizuku.dex"
+/bin/chmod 600 "$original" || exit 51
+printf 'same-uid-attacker-bytes' >"$original" || exit 52
+/bin/chmod 400 "$original" || exit 53
+/bin/chmod 600 "$dex" 2>/dev/null || true
+if { printf 'snapshot-tamper' >"$dex"; } 2>/dev/null; then
+  exit 54
+fi
+[ "$(/bin/cat "$dex")" = "fixed-test-rish-dex" ] || exit 55
+printf '2000\n'
+"#,
+        );
+        let client = fixture.client().unwrap();
+        assert!(client.probe().await.is_ok());
+        assert!(matches!(
+            client.probe().await,
+            Err(RishBackendError::DexIdentityChanged) | Err(RishBackendError::DexDigestMismatch)
+        ));
+    }
+
     #[tokio::test]
     async fn a_second_probe_does_not_queue_behind_the_single_lane() {
         let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
@@ -825,6 +1007,41 @@ printf '2000\n'
             RishBackendError::ConcurrencyLimitExceeded
         );
         assert!(first.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancelled_waiter_cannot_release_the_active_probe_lane() {
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let fixture = Fixture::new(VALID_SCRIPT);
+        let mut client = fixture.client().unwrap();
+        client.validation_delay = Duration::from_millis(500);
+        let active = client.clone();
+        let waiter = tokio::spawn(async move { active.probe().await });
+        for _ in 0..100 {
+            if client.concurrency.available_permits() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(client.concurrency.available_permits(), 0);
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+
+        assert_eq!(
+            client.probe().await.unwrap_err(),
+            RishBackendError::ConcurrencyLimitExceeded
+        );
+        for _ in 0..300 {
+            if client.concurrency.available_permits() == RISH_STATUS_CONCURRENCY {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            client.concurrency.available_permits(),
+            RISH_STATUS_CONCURRENCY
+        );
+        assert!(client.probe().await.is_ok());
     }
 
     #[test]
@@ -858,6 +1075,10 @@ printf '2000\n'
             (
                 RishBackendError::DexIdentityChanged,
                 "rish_dex_identity_changed",
+            ),
+            (
+                RishBackendError::DexSnapshotFailed,
+                "rish_dex_snapshot_failed",
             ),
             (
                 RishBackendError::ConcurrencyLimitExceeded,
