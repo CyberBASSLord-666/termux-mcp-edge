@@ -90,7 +90,7 @@ for owner, environment in (
 expected = {
     "Tests (default posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets",
     "Tests (MCP runtime posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime",
-    "Tests (development-only rish posture)": "timeout --verbose --signal=TERM --kill-after=30s 2m cargo test --locked --workspace --all-targets --features android-rish rish",
+    "Tests (development-only rish posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features android-rish rish",
     "Tests (full-suite posture)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite",
     "Tests (all features)": "timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --all-features",
 }

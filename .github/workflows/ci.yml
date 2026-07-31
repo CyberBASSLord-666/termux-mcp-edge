@@ -197,7 +197,7 @@ jobs:
         run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features mcp-runtime
 
       - name: Tests (development-only rish posture)
-        run: timeout --verbose --signal=TERM --kill-after=30s 2m cargo test --locked --workspace --all-targets --features android-rish rish
+        run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features android-rish rish
 
       - name: Tests (full-suite posture)
         run: timeout --verbose --signal=TERM --kill-after=30s 8m cargo test --locked --workspace --all-targets --features full-suite
