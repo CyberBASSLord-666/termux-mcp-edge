@@ -101,7 +101,7 @@ fi
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' \
     >"$ROOT/fixed-prefix/bin/setsid"
   chmod 700 "$ROOT/fixed-prefix/bin/setsid"
-  PREFIX="$ROOT/fixed-prefix"
+  export PREFIX="$ROOT/fixed-prefix"
   validate_fixed_setsid_program || fail_test fixed_setsid_program_rejected
   mv "$ROOT/fixed-prefix/bin/setsid" "$ROOT/fixed-prefix/bin/setsid.real"
   ln -s "$ROOT/fixed-prefix/bin/setsid.real" "$ROOT/fixed-prefix/bin/setsid"
@@ -175,6 +175,7 @@ fi
   chmod 700 "$ARTIFACT"
   chmod 400 "$RISH_DEX"
   ARTIFACT_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
+  export ARTIFACT_SHA256
   RISH_DEX_SHA256="$(sha256sum "$RISH_DEX" | awk '{print $1}')"
   EXPECTED_COMMIT="$COMMIT"
   EXPECTED_VERSION=0.7.0
@@ -195,9 +196,9 @@ fi
   TERMUX_SIGNER_SHA256="$SHA_A"
   SHIZUKU_VERSION=13.5.4
   SHIZUKU_SIGNER_SHA256="$SHA_B"
-  ADB_SHELL_UID=2000
-  STARTED_AT=2026-07-31T12:00:00Z
-  COMPLETED_AT=2026-07-31T12:10:00Z
+  export ADB_SHELL_UID=2000
+  export STARTED_AT=2026-07-31T12:00:00Z
+  export COMPLETED_AT=2026-07-31T12:10:00Z
 
   write_raw_report
   write_evidence
@@ -289,28 +290,29 @@ fi
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   mkdir -m 700 "$ROOT/reconcile"
-  WORK_ROOT="$ROOT/reconcile"
-  EXPECTED_COMMIT="$COMMIT"
-  EXPECTED_VERSION=0.7.0
-  POLICY_SHA256="$SHA_A"
-  CARGO_LOCK_SHA256="$SHA_B"
-  WORKFLOW_DEFINITION_SHA256="$SHA_C"
-  WORKFLOW_RUN_ID=1001
-  WORKFLOW_RUN_ATTEMPT=1
-  CI_RUN_ID=1002
-  SECURITY_RUN_ID=1003
-  ANDROID_RUN_ID=1004
-  CONTROLLER_CHALLENGE_SHA256="$SHA_A"
-  API_LEVEL=35
-  SECURITY_PATCH=2026-07-01
-  DEVICE_PROFILE_COMMITMENT="$SHA_B"
-  BUILD_FINGERPRINT_SHA256="$SHA_C"
-  TERMUX_VERSION=0.118.3
-  TERMUX_SIGNER_SHA256="$SHA_A"
-  SHIZUKU_VERSION=13.5.4
-  SHIZUKU_SIGNER_SHA256="$SHA_B"
+  export WORK_ROOT="$ROOT/reconcile"
+  export EXPECTED_COMMIT="$COMMIT"
+  export EXPECTED_VERSION=0.7.0
+  export POLICY_SHA256="$SHA_A"
+  export CARGO_LOCK_SHA256="$SHA_B"
+  export WORKFLOW_DEFINITION_SHA256="$SHA_C"
+  export WORKFLOW_RUN_ID=1001
+  export WORKFLOW_RUN_ATTEMPT=1
+  export CI_RUN_ID=1002
+  export SECURITY_RUN_ID=1003
+  export ANDROID_RUN_ID=1004
+  export CONTROLLER_CHALLENGE_SHA256="$SHA_A"
+  export API_LEVEL=35
+  export SECURITY_PATCH=2026-07-01
+  export DEVICE_PROFILE_COMMITMENT="$SHA_B"
+  export BUILD_FINGERPRINT_SHA256="$SHA_C"
+  export TERMUX_VERSION=0.118.3
+  export TERMUX_SIGNER_SHA256="$SHA_A"
+  export SHIZUKU_VERSION=13.5.4
+  export SHIZUKU_SIGNER_SHA256="$SHA_B"
   RISH_DEX_SHA256="$(sha256sum "$ROOT/evidence/rish.dex" | awk '{print $1}')"
   RISH_DEX_BYTES="$(stat -c '%s' "$ROOT/evidence/rish.dex")"
+  export RISH_DEX_SHA256 RISH_DEX_BYTES
   artifact_sha="$(sha256sum "$ROOT/evidence/termux-mcp-server" | awk '{print $1}')"
   artifact_bytes="$(stat -c '%s' "$ROOT/evidence/termux-mcp-server")"
   validate_intermediate_evidence \

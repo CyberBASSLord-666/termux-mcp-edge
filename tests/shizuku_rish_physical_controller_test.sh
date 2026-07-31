@@ -123,7 +123,7 @@ write_config \
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   CONFIG_ROOT="$VALID_CONFIG"
-  DEVICE_SLOT=slot-a
+  export DEVICE_SLOT="slot-a"
   read_device_config
   [[ "$ADB_SERIAL" == physical-serial-01 ]] \
     || fail_test adb_serial_not_loaded
@@ -322,7 +322,7 @@ chmod 700 "$ROOT/fake-bin/ssh"
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   PATH="$ROOT/fake-bin:$REAL_PATH"
-  WORK_ROOT="$ROOT/probes"
+  export WORK_ROOT="$ROOT/probes"
   ADB_SERIAL=physical-serial-01
   [[ "$(package_version com.termux)" == 0.118.3 ]] \
     || fail_test package_version_probe_invalid
@@ -439,7 +439,7 @@ if (
   source "$CONTROLLER"
   PATH="$ROOT/fake-bin:$REAL_PATH"
   ADB_SERIAL=physical-serial-01
-  SSH_DEVICE_PORT=8022
+  export SSH_DEVICE_PORT=8022
   FAKE_ADB_LOG="$ADB_LOG"
   FAKE_FORWARD_FAIL=1
   export FAKE_ADB_LOG FAKE_FORWARD_FAIL
@@ -456,8 +456,8 @@ if (
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   PATH="$ROOT/fake-bin:$REAL_PATH"
-  REMOTE_ROOT="/data/data/com.termux/files/home/.termux-mcp-rish-controller-aaaaaaaaaaaa-1001"
-  SSH_TARGET=termux@127.0.0.1
+  export REMOTE_ROOT="/data/data/com.termux/files/home/.termux-mcp-rish-controller-aaaaaaaaaaaa-1001"
+  export SSH_TARGET=termux@127.0.0.1
   FAKE_SSH_LOG="$SSH_LOG"
   export FAKE_SSH_LOG
   trap cleanup EXIT
@@ -474,7 +474,7 @@ mkdir -m 700 "$AUTO_QUARANTINE_ROOT"
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   CONFIG_ROOT="$AUTO_QUARANTINE_ROOT"
-  DEVICE_SLOT=slot-auto
+  export DEVICE_SLOT="slot-auto"
   CANDIDATE_EXECUTED=1
   cleanup
 )
@@ -493,8 +493,8 @@ if (
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   PATH="$SYNC_FAILURE_BIN:$REAL_PATH"
-  CONFIG_ROOT="$SYNC_FAILURE_ROOT"
-  DEVICE_SLOT=slot-sync-failure
+  export CONFIG_ROOT="$SYNC_FAILURE_ROOT"
+  export DEVICE_SLOT="slot-sync-failure"
   quarantine_slot
 ) >"$ROOT/sync-failure.stdout" 2>"$ROOT/sync-failure.stderr"; then
   fail_test quarantine_sync_failure_unexpectedly_accepted
@@ -525,10 +525,10 @@ jq -n '
 (
   # shellcheck source=/dev/null
   source "$CONTROLLER"
-  OFFLINE_POSTURE_PRE_OBSERVED=1
-  OFFLINE_POSTURE_POST_OBSERVED=1
-  CANDIDATE_EXECUTED=1
-  SLOT_QUARANTINED=1
+  export OFFLINE_POSTURE_PRE_OBSERVED=1
+  export OFFLINE_POSTURE_POST_OBSERVED=1
+  export CANDIDATE_EXECUTED=1
+  export SLOT_QUARANTINED=1
   promote_bounded_test_fixture_cleanup "$INTERMEDIATE" "$FINAL"
 )
 jq -e '
@@ -579,9 +579,9 @@ RAW_SHA="$(sha256sum "$RAW" | awk '{print $1}')"
   # shellcheck source=/dev/null
   source "$CONTROLLER"
   PRIVATE_EVIDENCE_ROOT="$ROOT/private-evidence"
-  EXPECTED_COMMIT="$COMMIT"
-  WORKFLOW_RUN_ID=1001
-  WORKFLOW_RUN_ATTEMPT=1
+  export EXPECTED_COMMIT="$COMMIT"
+  export WORKFLOW_RUN_ID=1001
+  export WORKFLOW_RUN_ATTEMPT=1
   retain_private_raw_report "$RAW" "$RAW_SHA"
 )
 RETAINED="$ROOT/private-evidence/$COMMIT-1001-1-device-raw.txt"

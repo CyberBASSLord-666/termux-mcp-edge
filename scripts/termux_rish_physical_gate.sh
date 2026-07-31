@@ -10,7 +10,6 @@ readonly REPOSITORY="CyberBASSLord-666/termux-mcp-edge"
 readonly QUALIFICATION_CLASS="physical_shizuku_rish_identity_development_v1"
 readonly QUALIFICATION_SCOPE="s2_5_uid_probe_only"
 readonly ARTIFACT_NAME="termux-mcp-server-aarch64-linux-android-android-rish-development"
-readonly ARTIFACT_POSTURE="android-rish-development"
 readonly BASELINE_TOOLS='["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
 readonly ENABLED_TOOLS='["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","android_rish_status"]'
 
@@ -193,10 +192,10 @@ server_process_group_is_isolated() {
 }
 
 terminate_process_group_bounded() {
-  local pid="${1:-}" group="${2:-}" attempt
+  local pid="${1:-}" group="${2:-}"
   [[ "$pid" =~ ^[1-9][0-9]*$ && "$group" == "$pid" ]] || return 1
   kill -TERM -- "-$group" >/dev/null 2>&1 || true
-  for attempt in $(seq 1 50); do
+  for _ in $(seq 1 50); do
     if ! process_group_alive "$group"; then
       wait "$pid" >/dev/null 2>&1 || true
       return 0
@@ -204,7 +203,7 @@ terminate_process_group_bounded() {
     sleep 0.1
   done
   kill -KILL -- "-$group" >/dev/null 2>&1 || true
-  for attempt in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     if ! process_group_alive "$group"; then
       wait "$pid" >/dev/null 2>&1 || true
       return 0
@@ -220,8 +219,7 @@ stop_server() {
     SERVER_PID=""
     SERVER_PGID=""
   fi
-  local attempt
-  for attempt in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     if port_is_free "$PORT"; then
       return 0
     fi
@@ -307,8 +305,8 @@ curl_local() {
 }
 
 wait_for_ready() {
-  local attempt health ready
-  for attempt in $(seq 1 50); do
+  local health ready
+  for _ in $(seq 1 50); do
     kill -0 "$SERVER_PID" >/dev/null 2>&1 || return 1
     health="$(curl_local -fsS --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)"
     ready="$(curl_local -fsS --max-time 2 "http://127.0.0.1:$PORT/ready" 2>/dev/null || true)"
@@ -367,9 +365,9 @@ launch_server() {
 }
 
 expect_startup_rejection() {
-  local dex_path="$1" dex_sha="$2" attempt
+  local dex_path="$1" dex_sha="$2"
   launch_server true "$dex_path" "$dex_sha"
-  for attempt in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
       wait "$SERVER_PID" >/dev/null 2>&1 || true
       if process_group_alive "$SERVER_PGID"; then

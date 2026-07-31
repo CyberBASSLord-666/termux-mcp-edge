@@ -7,7 +7,6 @@ set +x
 
 readonly REPOSITORY="CyberBASSLord-666/termux-mcp-edge"
 readonly ARTIFACT_NAME="termux-mcp-server-aarch64-linux-android-android-rish-development"
-readonly ARTIFACT_POSTURE="android-rish-development"
 readonly TERMUX_PACKAGE="com.termux"
 readonly SHIZUKU_PACKAGE="moe.shizuku.privileged.api"
 
