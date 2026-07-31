@@ -93,7 +93,7 @@ grep -Fiq 'exactly 21' docs/CAPABILITIES.md \
   || fail capability_catalog_full_suite_enabled_count_missing
 grep -Fq 'termux-mcp-server-aarch64-linux-android-full-suite' docs/ANDROID_ARTIFACTS.md \
   || fail android_full_suite_workflow_artifact_missing
-grep -Fq 'termux-mcp-server-v0.6.0-aarch64-linux-android-full-suite' docs/ANDROID_ARTIFACTS.md \
+grep -Fq 'termux-mcp-server-v0.7.0-aarch64-linux-android-full-suite' docs/ANDROID_ARTIFACTS.md \
   || fail android_full_suite_durable_asset_missing
 grep -Fq 'official_termux_native_automated_v1' docs/RELEASE_GOVERNANCE.md \
   || fail release_governance_automated_qualification_missing
@@ -151,10 +151,16 @@ do
   grep -Fq "$qualification_boundary" "$document" \
     || fail "automated_qualification_boundary_missing_${document//\//_}"
 done
-grep -Fq 'At initial preparation, no `v0.6.0` tag or GitHub Release existed' docs/V0.6.0_RELEASE_CANDIDATE.md \
+grep -Fq 'The candidate was formally cancelled on 2026-07-31' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_cancellation_missing
+grep -Fq 'No `v0.6.0` tag or' docs/V0.6.0_RELEASE_CANDIDATE.md \
   || fail release_candidate_historical_no_tag_boundary_missing
-grep -Fq 'Current release authority comes only from the immutable public Release' docs/V0.6.0_RELEASE_CANDIDATE.md \
-  || fail release_candidate_immutable_authority_missing
+grep -Fq 'GitHub Release ever existed' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_historical_no_tag_boundary_missing
+grep -Fq 'They cannot be' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_noninheritance_missing
+grep -Fq 'inherited by v0.7.0' docs/V0.6.0_RELEASE_CANDIDATE.md \
+  || fail release_candidate_noninheritance_missing
 grep -Fq 'publicationState: "staged_not_released"' docs/PUBLIC_RELEASE.md \
   || fail public_release_staged_not_released_boundary_missing
 grep -Fq 'RELEASE_QUALIFICATION_PROTECTED=required-reviewer-main-only-v1' docs/PUBLIC_RELEASE.md \
@@ -214,7 +220,7 @@ grep -Fq 'contain exactly sixteen assets' docs/PUBLIC_RELEASE.md \
   || fail publication_sixteen_asset_allowlist_missing
 grep -Fq 'the seven matching `<binary-name>.sha256` sidecars' docs/PUBLIC_RELEASE.md \
   || fail publication_seven_sidecars_missing
-grep -Fq 'the unchanged raw `termux-mcp-server-v0.6.0-release-stage-<sha12>.tar`' docs/PUBLIC_RELEASE.md \
+grep -Fq 'the unchanged raw `termux-mcp-server-v0.7.0-release-stage-<sha12>.tar`' docs/PUBLIC_RELEASE.md \
   || fail publication_raw_stage_asset_missing
 grep -Fq 'receipt is verification state, not a seventeenth Release asset' docs/PUBLIC_RELEASE.md \
   || fail publication_receipt_asset_exclusion_missing
@@ -228,7 +234,7 @@ grep -Fq 'downloads that exact current-run verification artifact by server-assig
   || fail publication_same_run_verification_record_gate_missing
 grep -Fq 'The Release body is bound before upload and contains only deterministic facts already available at that boundary' docs/PUBLIC_RELEASE.md \
   || fail publication_body_timing_boundary_missing
-grep -Fq '## Operator worksheet (v0.6.0)' docs/PUBLIC_RELEASE.md \
+grep -Fq '## Operator worksheet (v0.7.0)' docs/PUBLIC_RELEASE.md \
   || fail publication_operator_worksheet_missing
 for worksheet_field in \
   'expected_commit=<40-character current main SHA>' \
@@ -555,11 +561,36 @@ grep -Fq 'Directory creation returns its normalized safe-rooted path' SECURITY.m
   || fail root_security_create_result_scope_missing
 grep -Fq '### `trash_file` request grant' docs/capability-gates.md \
   || fail trash_capability_gate_missing
-grep -Fxq '## v0.6.0' CHANGELOG.md \
-  || fail changelog_version_heading_missing
-if grep -Eq '^## (Unreleased|.*v0\.6\.0.*(Release Candidate|Unreleased))' CHANGELOG.md; then
-  fail changelog_release_state_ambiguous
-fi
+python3 - <<'PY'
+import pathlib
+import re
+import tomllib
+
+manifest = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+lock = tomllib.loads(pathlib.Path("Cargo.lock").read_text(encoding="utf-8"))
+version = manifest["package"]["version"]
+if re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+    raise SystemExit("root package version is not release semver")
+
+root = [
+    package
+    for package in lock["package"]
+    if package["name"] == manifest["package"]["name"]
+    and package.get("source") is None
+]
+if len(root) != 1 or root[0]["version"] != version:
+    raise SystemExit("Cargo.lock root package version disagrees with Cargo.toml")
+
+changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+heading = f"## v{version}"
+if len(re.findall(rf"(?m)^{re.escape(heading)}$", changelog)) != 1:
+    raise SystemExit(f"CHANGELOG must contain exactly one {heading!r} heading")
+first = re.search(r"(?m)^## .+$", changelog)
+if first is None or first.group(0) != heading:
+    raise SystemExit(f"current changelog section must be {heading!r}")
+if "## v0.6.0" not in changelog or "Cancelled on 2026-07-31" not in changelog:
+    raise SystemExit("cancelled v0.6.0 history is missing")
+PY
 
 if grep -Eiq -- '--private|create a new private repository' docs/GITHUB_IMPORT.md; then
   fail canonical_repository_visibility_stale

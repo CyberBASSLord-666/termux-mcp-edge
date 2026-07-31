@@ -98,7 +98,7 @@ A successful response contains one bounded copy of each stream:
 {
   "profile": "server_version",
   "exitCode": 0,
-  "stdout": "termux-mcp-server 0.6.0\n",
+  "stdout": "termux-mcp-server 0.7.0\n",
   "stderr": "",
   "stdoutBytes": 24,
   "stderrBytes": 0,

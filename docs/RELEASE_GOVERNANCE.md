@@ -12,9 +12,13 @@ The repository uses one active implementation lane at a time. Release preparatio
 
 ## Version and tag contract
 
-The package version in `Cargo.toml`, the current release entry in `CHANGELOG.md`, the Git tag, and the GitHub Release title must agree.
+The package version in `Cargo.toml`, the root package entry in `Cargo.lock`, and
+the first versioned entry in `CHANGELOG.md` must agree throughout development.
+At publication, the Git tag and GitHub Release title must match that same
+version. An unpublished development version has no authoritative tag or
+Release.
 
-Release tags use `vMAJOR.MINOR.PATCH`, for example `v0.6.0`.
+Release tags use `vMAJOR.MINOR.PATCH`, for example `v0.7.0`.
 
 A release tag must:
 
@@ -64,7 +68,7 @@ A release must publish clearly named artifacts for each supported Android postur
 - `termux-mcp-server-vMAJOR.MINOR.PATCH-aarch64-linux-android-command-execution`
 - `termux-mcp-server-vMAJOR.MINOR.PATCH-aarch64-linux-android-full-suite`
 
-The durable v0.6.0 Release has a closed sixteen-asset inventory: these seven binaries, seven matching `<binary-name>.sha256` files, one combined `SHA256SUMS`, and the unchanged raw deterministic staging tar. The tar contains the closed staging manifest, workflow manifests, LICENSE, and sanitized evidence; those members are not uploaded as separate assets. No extra, duplicate, missing, `starter`, renamed, zero-byte, or unexpected-state asset is permitted.
+Every durable Release has a closed sixteen-asset inventory: these seven binaries, seven matching `<binary-name>.sha256` files, one combined `SHA256SUMS`, and the unchanged raw deterministic staging tar. The tar contains the closed staging manifest, workflow manifests, LICENSE, and sanitized evidence; those members are not uploaded as separate assets. No extra, duplicate, missing, `starter`, renamed, zero-byte, or unexpected-state asset is permitted.
 
 Artifacts must not contain bearer tokens, environment files, safe-root paths from a maintainer machine, private keys, tunnel credentials, logs, or other deployment-specific state.
 
@@ -199,8 +203,24 @@ The following are hard blockers until reconciled:
 - installation or rollback steps reference obsolete service paths;
 - a release candidate contains undocumented behavior changes.
 
-## v0.6.0 release authority
+## Current development authority
 
-The v0.6.0 release-preparation lane reconciles the source package, lockfile, changelog, deployment examples, artifact names, candidate record, staging boundary, and protected publication state machine without itself creating a tag or GitHub Release. The historical `v0.1.0-baseline` tag and the validated exact-main v0.5.1 candidate are not retroactively declared production releases. Consequently, v0.6.0 has no authoritative previous public release: clean installation and uninstall are supported, while public rollback becomes available only after a later complete release is installed over v0.6.0.
+The source package is now the unpublished v0.7.0 development baseline. Neither
+the historical `v0.1.0-baseline` tag nor any expiring workflow artifact is a
+public installation source. A future v0.7.0 candidate must independently
+complete fresh first-attempt CI, Security, all seven Android postures, native
+ARM64 official-Termux validation, the closed automated qualification, protected
+staging, both disjoint publication approvals, independent draft verification,
+and immutable public sixteen-asset proof against one exact current `main` SHA.
+No evidence qualified for an older source SHA or version may be inherited.
 
-The pre-metadata v0.5.1 exact-main evidence is historical and is not the authority for the full-suite v0.6.0 candidate. Authorization of a `v0.6.0` GitHub Release requires the final merged v0.6.0 `main` SHA to independently complete first-attempt CI, Security, all seven Android postures, aggregate schema/gate-v4 native ARM64 official-Termux evidence, classifier v3, isolated deployment/recovery, the closed automated qualification, protected staging, the two disjoint publication approvals, independent draft verification, and immutable public sixteen-asset proof. See [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md) and [`AUTOMATED_RELEASE_QUALIFICATION.md`](AUTOMATED_RELEASE_QUALIFICATION.md).
+## Cancelled v0.6.0 candidate
+
+The v0.6.0 candidate was cancelled on 2026-07-31 before staging, tag creation,
+draft creation, or publication. Its exact-SHA runs and retained qualification
+artifact remain historical audit evidence only and never became an installation
+source. They cannot authorize v0.7.0 or any future v0.6.0 Release. See the
+[`cancelled v0.6.0 candidate record`](V0.6.0_RELEASE_CANDIDATE.md) for the
+preserved evidence boundary and
+[`AUTOMATED_RELEASE_QUALIFICATION.md`](AUTOMATED_RELEASE_QUALIFICATION.md) for
+the qualification mechanism that future candidates must execute afresh.
