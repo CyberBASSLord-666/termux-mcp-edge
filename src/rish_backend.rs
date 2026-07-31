@@ -297,11 +297,8 @@ impl RishBackendClient {
                 Some(expected_identity),
                 expected_sha256,
             )?;
-            let snapshot = create_sealed_dex_snapshot(
-                &dex_file,
-                expected_identity.bytes,
-                expected_sha256,
-            )?;
+            let snapshot =
+                create_sealed_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
             // A source race during snapshot construction changes either the
             // byte digest or the pinned metadata and therefore fails before
             // the sealed copy can be executed.
@@ -311,10 +308,7 @@ impl RishBackendClient {
                 Some(expected_identity),
                 expected_sha256,
             )?;
-            Ok::<(OwnedSemaphorePermit, Arc<File>), RishBackendError>((
-                permit,
-                Arc::new(snapshot),
-            ))
+            Ok::<(OwnedSemaphorePermit, Arc<File>), RishBackendError>((permit, Arc::new(snapshot)))
         })
         .await
         .map_err(|_| RishBackendError::WorkerFailed)??;
@@ -560,20 +554,15 @@ fn create_sealed_dex_snapshot(
     // Newer kernels can require an explicit non-executable memfd posture.
     // DEX input is data, not a native executable, so prefer NOEXEC_SEAL and
     // fall back only when an older API-30-compatible kernel rejects the flag.
-    let descriptor = match memfd_create(
-        "termux-mcp-rish-dex",
-        base_flags | MemfdFlags::NOEXEC_SEAL,
-    ) {
+    let descriptor = match memfd_create("termux-mcp-rish-dex", base_flags | MemfdFlags::NOEXEC_SEAL)
+    {
         Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::INVAL) => {
-            memfd_create("termux-mcp-rish-dex", base_flags)
-                .map_err(|_| RishBackendError::DexSnapshotFailed)?
-        }
+        Err(rustix::io::Errno::INVAL) => memfd_create("termux-mcp-rish-dex", base_flags)
+            .map_err(|_| RishBackendError::DexSnapshotFailed)?,
         Err(_) => return Err(RishBackendError::DexSnapshotFailed),
     };
     let snapshot = File::from(descriptor);
-    ensure_descriptor_close_on_exec(&snapshot)
-        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    ensure_descriptor_close_on_exec(&snapshot).map_err(|_| RishBackendError::DexSnapshotFailed)?;
 
     let copied_sha256 = copy_and_hash_exact_file(source, &snapshot, bytes)?;
     if copied_sha256 != expected_sha256 {
@@ -586,10 +575,8 @@ fn create_sealed_dex_snapshot(
         return Err(RishBackendError::DexSnapshotFailed);
     }
 
-    let required_seals =
-        SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
-    fcntl_add_seals(&snapshot, required_seals)
-        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    let required_seals = SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
+    fcntl_add_seals(&snapshot, required_seals).map_err(|_| RishBackendError::DexSnapshotFailed)?;
     let observed_seals =
         fcntl_get_seals(&snapshot).map_err(|_| RishBackendError::DexSnapshotFailed)?;
     if !observed_seals.contains(required_seals) {
@@ -624,8 +611,7 @@ fn copy_and_hash_exact_file(
         while written < read {
             let destination_offset = offset
                 .checked_add(
-                    u64::try_from(written)
-                        .map_err(|_| RishBackendError::DexSnapshotFailed)?,
+                    u64::try_from(written).map_err(|_| RishBackendError::DexSnapshotFailed)?,
                 )
                 .ok_or(RishBackendError::DexSnapshotFailed)?;
             let count = destination
@@ -955,9 +941,7 @@ printf '2000\n'
         .unwrap();
         let required_seals =
             SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
-        assert!(fcntl_get_seals(&snapshot)
-            .unwrap()
-            .contains(required_seals));
+        assert!(fcntl_get_seals(&snapshot).unwrap().contains(required_seals));
         assert!(fcntl_getfd(&snapshot).unwrap().contains(FdFlags::CLOEXEC));
         assert!(snapshot.write_at(b"attacker", 0).is_err());
         assert!(snapshot.set_len(client.dex_identity.bytes + 1).is_err());

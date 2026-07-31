@@ -926,11 +926,8 @@ mod tests {
         let process = process.with_forced_cleanup_delay(Duration::from_millis(500));
         let dropped = Arc::new(AtomicBool::new(false));
         let completion_guard = DropFlag(Arc::clone(&dropped));
-        let task = tokio::spawn(async move {
-            process
-                .run_with_completion_guard(completion_guard)
-                .await
-        });
+        let task =
+            tokio::spawn(async move { process.run_with_completion_guard(completion_guard).await });
         wait_for_supervisor_count(1).await;
 
         task.abort();
