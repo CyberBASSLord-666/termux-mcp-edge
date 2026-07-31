@@ -341,8 +341,8 @@ start_server() {
   RUST_LOG=termux_mcp_server=info \
     "$ARTIFACT" >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
-  local attempt
-  for attempt in $(seq 1 100); do
+  local _
+  for _ in $(seq 1 100); do
     kill -0 "$SERVER_PID" >/dev/null 2>&1 || fail server_exited
     if [[ "$(curl_local --silent --max-time 2 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)" == ok ]]; then
       return 0

@@ -92,7 +92,7 @@ chmod 700 "$ROOT/fake-bin/file"
 
 BASE="$ROOT/base"
 PAYLOAD="$BASE/payload"
-mkdir -m 700 -p -- "$PAYLOAD/evidence" "$BASE/work" "$BASE/stage"
+install -d -m 700 -- "$PAYLOAD/evidence" "$BASE/work" "$BASE/stage"
 ARTIFACT_RECORDS="$BASE/work/artifacts.jsonl"
 : >"$ARTIFACT_RECORDS"
 : >"$PAYLOAD/SHA256SUMS"
@@ -581,7 +581,7 @@ jq -n \
 chmod 600 "$RUNTIME_REPLAY"
 
 chmod 600 "$PAYLOAD/evidence"/*.json
-mkdir -m 700 -p "$BASE/bundles"
+install -d -m 700 "$BASE/bundles"
 for index in "${!postures[@]}"; do
   bundle="$BASE/bundles/${postures[$index]}"
   mkdir -m 700 "$bundle"
@@ -618,7 +618,7 @@ PATH="$ROOT/fake-bin:$REAL_PATH" bash "$PACKAGER" \
 
 make_stage_tar() {
   local payload="$1" output="$2"
-  mkdir -m 700 -p -- "$(dirname "$output")"
+  install -d -m 700 -- "$(dirname "$output")"
   tar --format=gnu --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
     --mode='u+rwX,go+rX,go-w' -C "$payload" -cf "$output" .
   chmod 600 "$output"
@@ -680,7 +680,7 @@ run_prepare() {
 make_case() {
   local name="$1" case_root
   case_root="$ROOT/cases/$name"
-  mkdir -m 700 -p "$case_root"
+  install -d -m 700 "$case_root"
   cp -a "$PAYLOAD" "$case_root/payload"
   printf '%s\n' "$case_root"
 }
@@ -806,7 +806,7 @@ done
 # fixture: feed the same governed inputs through the canonical staging script,
 # then consume its unchanged output with this publication verifier.
 integration_root="$ROOT/canonical-integration"
-mkdir -m 700 -p "$integration_root/bundles" "$integration_root/emulated" \
+install -d -m 700 "$integration_root/bundles" "$integration_root/emulated" \
   "$integration_root/stage" "$integration_root/publication"
 for index in "${!postures[@]}"; do
   bundle="$integration_root/bundles/${postures[$index]}"

@@ -9,8 +9,10 @@ DEPLOY_ROOT="${TERMUX_MCP_DEPLOY_ROOT:-${HOME}/.local/share/termux-mcp-edge}"
 CONFIG_ROOT="${TERMUX_MCP_CONFIG_ROOT:-${HOME}/.config/termux-mcp-edge}"
 SERVICE_ROOT="${TERMUX_MCP_SERVICE_ROOT:-${TERMUX_PREFIX}/var/service}"
 SERVICE_SHELL="${TERMUX_MCP_SERVICE_SHELL:-${TERMUX_PREFIX}/bin/sh}"
-HEALTH_URL="${TERMUX_MCP_HEALTH_URL:-http://127.0.0.1:8000/health}"
-READY_URL="${TERMUX_MCP_READY_URL:-http://127.0.0.1:8000/ready}"
+HEALTH_URL_CONFIGURED="${TERMUX_MCP_HEALTH_URL+x}"
+READY_URL_CONFIGURED="${TERMUX_MCP_READY_URL+x}"
+HEALTH_URL="${TERMUX_MCP_HEALTH_URL:-}"
+READY_URL="${TERMUX_MCP_READY_URL:-}"
 PROBE_ATTEMPTS="${TERMUX_MCP_PROBE_ATTEMPTS:-15}"
 PROBE_DELAY_SECONDS="${TERMUX_MCP_PROBE_DELAY_SECONDS:-1}"
 STOP_ATTEMPTS="${TERMUX_MCP_STOP_ATTEMPTS:-15}"
@@ -21,11 +23,13 @@ ARTIFACT_MAX_BYTES="${TERMUX_MCP_ARTIFACT_MAX_BYTES:-134217728}"
 ALLOW_UNVERIFIED_ARTIFACT="${TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT:-0}"
 TEST_MODE="${TERMUX_MCP_TEST_MODE:-0}"
 TEST_PROBE_SEQUENCE="${TERMUX_MCP_TEST_PROBE_SEQUENCE:-success}"
+TEST_PROBE_VERSION_SEQUENCE="${TERMUX_MCP_TEST_PROBE_VERSION_SEQUENCE:-current}"
 TEST_STOP_SEQUENCE="${TERMUX_MCP_TEST_STOP_SEQUENCE:-success}"
 TEST_START_SEQUENCE="${TERMUX_MCP_TEST_START_SEQUENCE:-success}"
-TEST_PROBE_INDEX=0
-TEST_STOP_INDEX=0
-TEST_START_INDEX=0
+TEST_PROBE_VERSION_INDEX=0
+# next_sequence_result updates these counters by name.
+# shellcheck disable=SC2034
+TEST_PROBE_INDEX=0 TEST_STOP_INDEX=0 TEST_START_INDEX=0
 DRY_RUN="${TERMUX_MCP_DRY_RUN:-0}"
 
 RELEASES_ROOT=""
@@ -41,12 +45,16 @@ TRANSACTION_ACTIVE=0
 RECOVERING=0
 CURRENT_BEFORE=""
 PREVIOUS_BEFORE=""
+CURRENT_VERSION_BEFORE=""
+PREVIOUS_VERSION_BEFORE=""
 CURRENT_BEFORE_PRESENT=0
 PREVIOUS_BEFORE_PRESENT=0
 SERVICE_DIR_BEFORE_PRESENT=0
 SERVICE_RUN_BEFORE_PRESENT=0
 SERVICE_DOWN_BEFORE_PRESENT=0
 SERVICE_DIR_MODE_BEFORE="700"
+RUNTIME_SERVER_PORT=""
+RUNTIME_PROBE_HOST=""
 
 usage() {
   cat <<'EOF'
@@ -73,6 +81,8 @@ Environment overrides:
   TERMUX_MCP_TEST_STOP_SEQUENCE
   TERMUX_MCP_TEST_START_SEQUENCE
                                 Test-only comma-separated success/failure values.
+  TERMUX_MCP_TEST_PROBE_VERSION_SEQUENCE
+                                Test-only comma-separated versions or "current".
   TERMUX_MCP_DRY_RUN=1         Print mutations without applying them.
 EOF
 }
@@ -195,6 +205,41 @@ validate_loopback_url() {
   authority="${url#http://}"; authority="${authority%%/*}"; port="${authority##*:}"
   validate_integer_range "$name port" "$port" 1 65535
 }
+loopback_url_port() {
+  local authority="${1#http://}"
+  authority="${authority%%/*}"
+  printf '%s\n' "${authority##*:}"
+}
+loopback_url_host() {
+  local authority="${1#http://}" host
+  authority="${authority%%/*}"
+  host="${authority%:*}"
+  host="${host#\[}"
+  host="${host%\]}"
+  printf '%s\n' "$host"
+}
+configure_probe_urls() {
+  local server_host="$1" server_port="$2" default_authority health_port ready_port
+  case "$server_host" in
+    ::|::1) default_authority="[::1]" ;;
+    localhost) default_authority="localhost" ;;
+    *) default_authority="127.0.0.1" ;;
+  esac
+  if [[ -z "$HEALTH_URL_CONFIGURED" ]]; then
+    HEALTH_URL="http://$default_authority:$server_port/health"
+  fi
+  if [[ -z "$READY_URL_CONFIGURED" ]]; then
+    READY_URL="http://$default_authority:$server_port/ready"
+  fi
+  validate_loopback_url TERMUX_MCP_HEALTH_URL "$HEALTH_URL"
+  validate_loopback_url TERMUX_MCP_READY_URL "$READY_URL"
+  health_port="$(loopback_url_port "$HEALTH_URL")"
+  ready_port="$(loopback_url_port "$READY_URL")"
+  [[ "$health_port" == "$server_port" ]] || fail "TERMUX_MCP_HEALTH_URL port must match MCP__SERVER__PORT"
+  [[ "$ready_port" == "$server_port" ]] || fail "TERMUX_MCP_READY_URL port must match MCP__SERVER__PORT"
+  RUNTIME_SERVER_PORT="$server_port"
+  RUNTIME_PROBE_HOST="$(loopback_url_host "$HEALTH_URL")"
+}
 validate_version() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "invalid version"; }
 validate_sha256() { [[ "$1" =~ ^[A-Fa-f0-9]{64}$ ]] || fail "sha256 must contain exactly 64 hexadecimal characters"; }
 validate_common_settings() {
@@ -203,6 +248,7 @@ validate_common_settings() {
   validate_environment_roots
 }
 validate_deployment_settings() {
+  require_command jq
   is_boolean "$ALLOW_UNVERIFIED_ARTIFACT" || fail "TERMUX_MCP_ALLOW_UNVERIFIED_ARTIFACT must be boolean"
   validate_integer_range TERMUX_MCP_PROBE_ATTEMPTS "$PROBE_ATTEMPTS" 1 120
   validate_integer_range TERMUX_MCP_PROBE_DELAY_SECONDS "$PROBE_DELAY_SECONDS" 0 60
@@ -211,8 +257,12 @@ validate_deployment_settings() {
   validate_integer_range TERMUX_MCP_START_ATTEMPTS "$START_ATTEMPTS" 1 120
   validate_integer_range TERMUX_MCP_START_DELAY_SECONDS "$START_DELAY_SECONDS" 0 60
   validate_integer_range TERMUX_MCP_ARTIFACT_MAX_BYTES "$ARTIFACT_MAX_BYTES" 1 536870912
-  validate_loopback_url TERMUX_MCP_HEALTH_URL "$HEALTH_URL"
-  validate_loopback_url TERMUX_MCP_READY_URL "$READY_URL"
+  if [[ -n "$HEALTH_URL_CONFIGURED" ]]; then
+    validate_loopback_url TERMUX_MCP_HEALTH_URL "$HEALTH_URL"
+  fi
+  if [[ -n "$READY_URL_CONFIGURED" ]]; then
+    validate_loopback_url TERMUX_MCP_READY_URL "$READY_URL"
+  fi
   [[ -x "$SERVICE_SHELL" ]] || fail "service shell is not executable"
 }
 ensure_layout() {
@@ -234,13 +284,13 @@ acquire_lock() {
 validate_runtime_config() {
   local config_file="$CONFIG_ROOT/runtime.env"
   [[ -f "$config_file" && ! -L "$config_file" ]] || fail "runtime configuration must be a regular non-symlink file"
-  local mode permissions line key value discarded token_present=0 allow_local=0 server_host="127.0.0.1" server_port="8000"
+  local mode permissions line key value _discarded token_present=0 allow_local=0 server_host="127.0.0.1" server_port="8000"
   local create_directory_mutation_enabled=0 copy_file_mutation_enabled=0 trash_file_mutation_enabled=0 write_file_mutation_enabled=0 android_volume_control_enabled=0
   local capability_key_id_present=0 capability_key_present=0
   local -A seen_keys=()
   mode="$(stat -c '%a' "$config_file")"; permissions=$((8#$mode))
   (((permissions & 077) == 0 && (permissions & 0400) != 0)) || fail "runtime configuration must be owner-readable and inaccessible to group/other"
-  if IFS= read -r -d '' discarded <"$config_file"; then fail "runtime configuration contains a NUL byte"; fi
+  if IFS= read -r -d '' _discarded <"$config_file"; then fail "runtime configuration contains a NUL byte"; fi
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" != *$'\r'* ]] || fail "runtime configuration contains carriage returns"
     case "$line" in ''|'#'*) continue ;; *=*) ;; *) fail "runtime configuration lines must use KEY=value syntax" ;; esac
@@ -254,6 +304,7 @@ validate_runtime_config() {
       MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY) is_boolean "$value" || fail "localhost-only authentication setting must be boolean"; is_true "$value" && allow_local=1 ;;
       MCP__SERVER__HOST) server_host="$value" ;;
       MCP__SERVER__PORT) server_port="$value" ;;
+      MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED) is_boolean "$value" || fail "stateless MCP 2026-07-28 setting must be boolean" ;;
       MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED) is_boolean "$value" || fail "create_directory mutation setting must be boolean"; is_true "$value" && create_directory_mutation_enabled=1 ;;
       MCP__FILE__COPY_FILE_MUTATION_ENABLED) is_boolean "$value" || fail "copy_file mutation setting must be boolean"; is_true "$value" && copy_file_mutation_enabled=1 ;;
       MCP__FILE__TRASH_FILE_MUTATION_ENABLED) is_boolean "$value" || fail "trash_file mutation setting must be boolean"; is_true "$value" && trash_file_mutation_enabled=1 ;;
@@ -264,6 +315,7 @@ validate_runtime_config() {
     esac
   done <"$config_file"
   validate_integer_range MCP__SERVER__PORT "$server_port" 1 65535
+  configure_probe_urls "$server_host" "$server_port"
   ((capability_key_id_present == capability_key_present)) || fail "capability key configuration must define both key identifier and HMAC key"
   if ((create_directory_mutation_enabled == 1)); then
     ((token_present == 1)) || fail "create_directory mutation requires static-token authentication"
@@ -488,35 +540,100 @@ start_service() {
 }
 
 next_test_probe_result() { next_sequence_result "$TEST_PROBE_SEQUENCE" TEST_PROBE_INDEX; }
+next_test_probe_version_matches() {
+  local expected_version="$1" index result current_release current_version
+  local -a results=()
+  IFS=',' read -r -a results <<<"$TEST_PROBE_VERSION_SEQUENCE"
+  ((${#results[@]} > 0)) || return 1
+  index="$TEST_PROBE_VERSION_INDEX"
+  ((index < ${#results[@]})) || index=$((${#results[@]} - 1))
+  result="${results[$index]}"
+  TEST_PROBE_VERSION_INDEX=$((TEST_PROBE_VERSION_INDEX + 1))
+  case "$result" in
+    current)
+      current_release="$(release_target_from_link "$DEPLOY_ROOT/current")" || return 1
+      current_version="$(release_version_from_dir "$current_release")" || return 1
+      [[ "$current_version" == "$expected_version" ]]
+      ;;
+    *) [[ "$result" == "$expected_version" ]] ;;
+  esac
+}
 probe_url() {
-  local url="$1" kind="$2" attempt body
+  local url="$1" kind="$2" expected_version="${3:-}" attempt body
   require_command curl
   for ((attempt=1; attempt<=PROBE_ATTEMPTS; attempt++)); do
     body="$(curl -fsS --proto '=http' --noproxy '*' --max-time 3 "$url" 2>/dev/null || true)"
-    case "$kind" in health) [[ "$body" == ok ]] && return 0 ;; ready) [[ "$body" == *'"status":"ready"'* || "$body" == *'"status": "ready"'* ]] && return 0 ;; esac
+    case "$kind" in
+      health) [[ "$body" == ok ]] && return 0 ;;
+      ready)
+        require_command jq
+        jq -e --arg expected_version "$expected_version" \
+          'type == "object" and .status == "ready" and .version == $expected_version' \
+          <<<"$body" >/dev/null 2>&1 && return 0
+        ;;
+    esac
     sleep "$PROBE_DELAY_SECONDS"
   done
   return 1
 }
 probe_runtime() {
-  if is_true "$TEST_MODE"; then
-    next_test_probe_result
-  elif is_true "$DRY_RUN"; then
-    log "would probe candidate health and readiness"
+  local expected_version="$1"
+  validate_version "$expected_version"
+  if is_true "$DRY_RUN"; then
+    log "would probe $HEALTH_URL and $READY_URL for exact readiness version $expected_version"
     return 0
+  elif is_true "$TEST_MODE"; then
+    next_test_probe_result && next_test_probe_version_matches "$expected_version"
   else
-    probe_url "$HEALTH_URL" health && probe_url "$READY_URL" ready
+    probe_url "$HEALTH_URL" health && probe_url "$READY_URL" ready "$expected_version"
   fi
+}
+probe_port_is_open() {
+  timeout 1 bash -c 'exec 9<>"/dev/tcp/$1/$2"' bash \
+    "$RUNTIME_PROBE_HOST" "$RUNTIME_SERVER_PORT" >/dev/null 2>&1
+}
+wait_for_probe_port_quiescent() {
+  local attempt
+  if is_true "$TEST_MODE" || is_true "$DRY_RUN"; then
+    return 0
+  fi
+  require_command bash
+  require_command timeout
+  for ((attempt=1; attempt<=STOP_ATTEMPTS; attempt++)); do
+    if ! probe_port_is_open; then
+      return 0
+    fi
+    sleep "$STOP_DELAY_SECONDS"
+  done
+  soft_error "configured runtime listener port remained occupied after canonical service shutdown"
+  return 1
+}
+release_version_from_dir() {
+  local LC_ALL=C release_dir="$1" version_file="$1/VERSION" version size mode
+  [[ -d "$release_dir" && ! -L "$release_dir" ]] || return 1
+  [[ -f "$version_file" && ! -L "$version_file" ]] || return 1
+  IFS= read -r version <"$version_file" || return 1
+  [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || return 1
+  size="$(stat -c '%s' "$version_file")" || return 1
+  mode="$(stat -c '%a' "$version_file")" || return 1
+  ((size == ${#version} + 1)) || return 1
+  [[ "$mode" == 600 ]] || return 1
+  printf '%s\n' "$version"
 }
 release_target_from_link() {
   local link="$1" raw candidate canonical
   [[ -L "$link" ]] || return 1; raw="$(readlink "$link")"; if [[ "$raw" == /* ]]; then candidate="$raw"; else candidate="$(dirname "$link")/$raw"; fi
   canonical="$(canonicalize_path "$candidate")"; is_descendant "$canonical" "$RELEASES_ROOT" || return 1
-  [[ -d "$canonical" && -x "$canonical/$PROGRAM" ]] || return 1; printf '%s\n' "$canonical"
+  [[ -d "$canonical" && -x "$canonical/$PROGRAM" ]] || return 1
+  release_version_from_dir "$canonical" >/dev/null || return 1
+  printf '%s\n' "$canonical"
 }
 validate_release_dir() {
   local release_dir; release_dir="$(canonicalize_path "$1")"; is_descendant "$release_dir" "$RELEASES_ROOT" || fail "release target escapes the releases root"
-  if ! is_true "$DRY_RUN" || [[ -e "$release_dir" ]]; then [[ -d "$release_dir" && -x "$release_dir/$PROGRAM" ]] || fail "release target is incomplete"; fi
+  if ! is_true "$DRY_RUN" || [[ -e "$release_dir" ]]; then
+    [[ -d "$release_dir" && -x "$release_dir/$PROGRAM" ]] || fail "release target is incomplete"
+    release_version_from_dir "$release_dir" >/dev/null || fail "release version metadata is invalid"
+  fi
   printf '%s\n' "$release_dir"
 }
 atomic_link() {
@@ -533,9 +650,18 @@ atomic_link() {
 }
 remove_link() { run rm -f -- "$1"; }
 capture_link_state() {
-  CURRENT_BEFORE=""; PREVIOUS_BEFORE=""; CURRENT_BEFORE_PRESENT=0; PREVIOUS_BEFORE_PRESENT=0
-  if [[ -L "$DEPLOY_ROOT/current" ]]; then CURRENT_BEFORE="$(release_target_from_link "$DEPLOY_ROOT/current")" || fail "current release link is invalid"; CURRENT_BEFORE_PRESENT=1; fi
-  if [[ -L "$DEPLOY_ROOT/previous" ]]; then PREVIOUS_BEFORE="$(release_target_from_link "$DEPLOY_ROOT/previous")" || fail "previous release link is invalid"; PREVIOUS_BEFORE_PRESENT=1; fi
+  CURRENT_BEFORE=""; PREVIOUS_BEFORE=""; CURRENT_VERSION_BEFORE=""; PREVIOUS_VERSION_BEFORE=""
+  CURRENT_BEFORE_PRESENT=0; PREVIOUS_BEFORE_PRESENT=0
+  if [[ -L "$DEPLOY_ROOT/current" ]]; then
+    CURRENT_BEFORE="$(release_target_from_link "$DEPLOY_ROOT/current")" || fail "current release link is invalid"
+    CURRENT_VERSION_BEFORE="$(release_version_from_dir "$CURRENT_BEFORE")" || fail "current release version metadata is invalid"
+    CURRENT_BEFORE_PRESENT=1
+  fi
+  if [[ -L "$DEPLOY_ROOT/previous" ]]; then
+    PREVIOUS_BEFORE="$(release_target_from_link "$DEPLOY_ROOT/previous")" || fail "previous release link is invalid"
+    PREVIOUS_VERSION_BEFORE="$(release_version_from_dir "$PREVIOUS_BEFORE")" || fail "previous release version metadata is invalid"
+    PREVIOUS_BEFORE_PRESENT=1
+  fi
 }
 restore_link_state() {
   if ((CURRENT_BEFORE_PRESENT == 1)); then
@@ -559,13 +685,14 @@ recover_failed_deployment() {
   local failed_release="$1"
   RECOVERING=1
   stop_service_confirmed || return 1
+  wait_for_probe_port_quiescent || return 1
   restore_link_state || return 1
   restore_service_state || return 1
   run rm -rf -- "$failed_release" || return 1
   CANDIDATE_RELEASE=""
   if prior_runtime_was_running; then
     start_service || return 1
-    probe_runtime || return 1
+    probe_runtime "$CURRENT_VERSION_BEFORE" || return 1
   fi
   TRANSACTION_ACTIVE=0
   RECOVERING=0
@@ -594,8 +721,17 @@ deploy() {
     TRANSACTION_ACTIVE=0
     fail "deployment aborted because canonical service shutdown was not confirmed"
   fi
+  if ! wait_for_probe_port_quiescent; then
+    run rm -rf -- "$release_dir"
+    CANDIDATE_RELEASE=""
+    TRANSACTION_ACTIVE=0
+    if prior_runtime_was_running && ! start_service; then
+      log "the prior runtime could not be restarted after the occupied-port failure"
+    fi
+    fail "deployment aborted because the configured runtime listener port remained occupied"
+  fi
   prepare_service_stopped; activate_release "$release_dir"; start_service
-  if ! probe_runtime; then
+  if ! probe_runtime "$version"; then
     log "$mode readiness validation failed; restoring the exact previous state"
     if recover_failed_deployment "$release_dir"; then fail "candidate failed readiness and was removed after recovery"; fi
     fail "candidate failed readiness and the prior release could not be recovered"
@@ -610,16 +746,24 @@ rollback() {
   ((CURRENT_BEFORE_PRESENT == 1)) || fail "no active release is available"; ((PREVIOUS_BEFORE_PRESENT == 1)) || fail "no previous release is available"
   TRANSACTION_ACTIVE=1
   stop_service_confirmed || fail "rollback aborted because canonical service shutdown was not confirmed"
+  if ! wait_for_probe_port_quiescent; then
+    if prior_runtime_was_running && ! start_service; then
+      log "the original runtime could not be restarted after the occupied-port failure"
+    fi
+    TRANSACTION_ACTIVE=0
+    fail "rollback aborted because the configured runtime listener port remained occupied"
+  fi
   prepare_service_stopped
   atomic_link "$PREVIOUS_BEFORE" "$DEPLOY_ROOT/current"; atomic_link "$CURRENT_BEFORE" "$DEPLOY_ROOT/previous"; start_service
-  if ! probe_runtime; then
+  if ! probe_runtime "$PREVIOUS_VERSION_BEFORE"; then
     log "rollback target failed readiness; restoring the original release state"
     RECOVERING=1
     stop_service_confirmed || fail "rollback target failed readiness and shutdown could not be confirmed; current state was preserved"
+    wait_for_probe_port_quiescent || fail "rollback target failed readiness and the configured runtime listener port remained occupied"
     restore_link_state; restore_service_state
     if prior_runtime_was_running; then
       start_service
-      if probe_runtime; then TRANSACTION_ACTIVE=0; fail "rollback target failed readiness and the original release was restored"; fi
+      if probe_runtime "$CURRENT_VERSION_BEFORE"; then TRANSACTION_ACTIVE=0; fail "rollback target failed readiness and the original release was restored"; fi
       fail "rollback target and original release both failed readiness"
     fi
     TRANSACTION_ACTIVE=0

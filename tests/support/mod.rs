@@ -110,6 +110,29 @@ pub(super) fn sse_test_router(file_tools: FileSystemTools) -> Router {
     .expect("SSE test router must build")
 }
 
+pub(super) fn stateless_test_router(file_tools: FileSystemTools) -> Router {
+    test_router_builder(
+        &file_tools,
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
+        default_request_limits(),
+    )
+    .with_stateless_2026_enabled(true)
+    .build()
+    .expect("stateless MCP test router must build")
+}
+
+pub(super) fn stateless_sse_test_router(file_tools: FileSystemTools) -> Router {
+    test_router_builder(
+        &file_tools,
+        McpAuthPolicy::static_bearer(TEST_STATIC_PRINCIPAL).unwrap(),
+        default_request_limits(),
+    )
+    .with_sse_enabled(true)
+    .with_stateless_2026_enabled(true)
+    .build()
+    .expect("stateless MCP plus legacy SSE test router must build")
+}
+
 pub(super) fn create_directory_authorized_test_router(
     file_tools: FileSystemTools,
 ) -> (Router, CreateDirectoryGrantAuthority) {

@@ -20,6 +20,17 @@ HISTORICAL_SCHEMA="$REPO_ROOT/docs/release-evidence-schema-v1.json"
 REAL_PATH="$PATH"
 REAL_TIMEOUT="$(command -v timeout)"
 REAL_SHA256SUM="$(command -v sha256sum)"
+TEST_PORT="$(
+  python3 - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+[[ "$TEST_PORT" =~ ^[0-9]+$ && "$TEST_PORT" -ge 1024 && "$TEST_PORT" -le 65535 ]] \
+  || { printf 'FAIL: invalid OS-assigned test port\n' >&2; exit 1; }
 
 fail_test() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -231,7 +242,7 @@ BASELINE_SHA256=$BASELINE_SHA
 AUTH_TOKEN_FILE=$TOKEN_FILE
 SAFE_ROOT=$SAFE_ROOT
 BIND_HOST=127.0.0.1
-PORT=18765
+PORT=$TEST_PORT
 DEPLOY_SCRIPT=$REPO_ROOT/scripts/termux_deploy.sh
 CI_RUN_ID=1001
 SECURITY_RUN_ID=1002
@@ -851,10 +862,10 @@ for volume_fault in preview_mutates denial_mutates; do
 done
 unset volume_fault volume_state restore_log fault_report expected_failure
 
-python3 -m http.server 18765 --bind 127.0.0.1 >"$ROOT/listener.log" 2>&1 &
+python3 -m http.server "$TEST_PORT" --bind 127.0.0.1 >"$ROOT/listener.log" 2>&1 &
 LISTENER_PID=$!
 for _attempt in $(seq 1 40); do
-  (exec 9<>/dev/tcp/127.0.0.1/18765) >/dev/null 2>&1 && break
+  (exec 9<>"/dev/tcp/127.0.0.1/$TEST_PORT") >/dev/null 2>&1 && break
   sleep 0.05
 done
 kill -0 "$LISTENER_PID" >/dev/null 2>&1 || fail_test "port-collision fixture did not start"

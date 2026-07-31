@@ -5,7 +5,9 @@ use std::net::{IpAddr, Ipv6Addr};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportSecurityError {
     MissingHost,
+    InvalidHostHeader,
     HostNotAllowed { received: String },
+    InvalidOriginHeader,
     OriginNotAllowed { received: String },
     OriginRequired,
     InvalidOrigin { received: String },
@@ -15,7 +17,9 @@ impl TransportSecurityError {
     pub fn reason_code(&self) -> &'static str {
         match self {
             Self::MissingHost => "missing_host",
+            Self::InvalidHostHeader => "invalid_host_header",
             Self::HostNotAllowed { .. } => "host_not_allowed",
+            Self::InvalidOriginHeader => "invalid_origin_header",
             Self::OriginNotAllowed { .. } => "origin_not_allowed",
             Self::OriginRequired => "origin_required",
             Self::InvalidOrigin { .. } => "invalid_origin",
@@ -493,10 +497,18 @@ mod tests {
         let cases = [
             (TransportSecurityError::MissingHost, "missing_host"),
             (
+                TransportSecurityError::InvalidHostHeader,
+                "invalid_host_header",
+            ),
+            (
                 TransportSecurityError::HostNotAllowed {
                     received: "attacker.example:8000".to_string(),
                 },
                 "host_not_allowed",
+            ),
+            (
+                TransportSecurityError::InvalidOriginHeader,
+                "invalid_origin_header",
             ),
             (
                 TransportSecurityError::OriginNotAllowed {

@@ -180,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         request_timeout_seconds = config.transport.request_timeout_seconds,
         max_body_bytes = config.transport.max_body_bytes,
         sse_enabled = config.transport.sse_enabled,
+        stateless_2026_07_28_enabled = config.transport.stateless_2026_07_28_enabled,
         "MCP request limits configured"
     );
 
@@ -251,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
     let app = {
         let mut builder = mcp_router_builder
             .with_sse_enabled(config.transport.sse_enabled)
+            .with_stateless_2026_enabled(config.transport.stateless_2026_07_28_enabled)
             .with_android_battery_status_enabled(config.android.battery_status_enabled)
             .with_android_volume_status_enabled(config.android.volume_status_enabled)
             .with_command_execution_enabled(config.command.enabled);

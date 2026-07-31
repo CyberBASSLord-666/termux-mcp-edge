@@ -6,7 +6,13 @@ Termux MCP Edge separates capability into three independent layers:
 2. **Runtime enablement** determines whether an optional tool is discoverable and callable.
 3. **Request authorization** is required for each live mutation. A runtime flag never replaces an operation-bound, single-use grant.
 
-All MCP tools also require an initialized, protected MCP transport. Normal deployments use static-token authentication; the only exception is the explicitly enabled, socket-verified localhost development posture. Filesystem tools remain confined to configured safe roots, and every mutation defaults to preview.
+All MCP tools also require a protected MCP transport. The default legacy `2025-11-25` path requires an initialized session. The separately gated `2026-07-28` path is stateless but accepts only discovery, listing, read-only calls, and previews. Normal deployments use static-token authentication; the only exception is the explicitly enabled, socket-verified localhost development posture. Filesystem tools remain confined to configured safe roots, and every mutation defaults to preview.
+
+## Protocol-era authority boundary
+
+`MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED` defaults to `false`; leaving it absent or false preserves the complete legacy session contract. When true, modern callers must send the required per-request `params._meta` protocol version and client-capabilities object, mirror the method in `Mcp-Method`, and mirror `params.name` in `Mcp-Name` for `tools/call`. The first-stage modern surface consists only of `server/discover`, `tools/list`, and read-only or preview-only `tools/call`.
+
+Modern mutation schemas fix `dry_run` to `true`. Every `MCP-Capability-Grant` header and explicit `dry_run:false` is rejected before dispatch. The existing grant issuers, replay state, and all live `create_directory`, `copy_file`, `trash_file`, `write_file`, and `set_android_volume` authority remain legacy-session v1 only. Enabling stateless compatibility does not convert or broaden any grant.
 
 ## Build choices
 
@@ -36,7 +42,7 @@ The release contract validates seven Android artifacts: six least-privilege post
 
 ## Baseline MCP tools
 
-Every tool in this table is compiled by `mcp-runtime` and appears in protected discovery after the MCP session is initialized. Runtime mutation flags change authorization posture; they do not add or remove these 17 tool names.
+Every tool in this table is compiled by `mcp-runtime` and appears in protected discovery after the legacy MCP session is initialized or through the explicitly gated modern `tools/list` subset. Runtime mutation flags change authorization posture; they do not add or remove these 17 tool names.
 
 | Tool | Class | Purpose | Runtime and request authority |
 |---|---|---|---|
@@ -95,6 +101,8 @@ MCP__CAPABILITY__HMAC_KEY_HEX=replace-with-64-lowercase-hex-characters
 ```
 
 A feature being compiled, a runtime gate being enabled, an authenticated session, and `dry_run:false` are all insufficient without the matching fresh grant. Grants normally expire after 60 seconds, are single-use within the supported one-process authority boundary, and are never MCP tool arguments.
+
+These grants authorize only the initialized legacy `2025-11-25` session path. The stateless `2026-07-28` subset rejects the grant header itself and every live-mutation request, regardless of which compile/runtime gates are enabled.
 
 For issuance and recovery details, use the dedicated contracts for [directory creation](CREATE_DIRECTORY_CAPABILITY_GRANTS.md), [file copy](COPY_FILE_CAPABILITY_GRANTS.md), [file trashing](TRASH_FILE_CAPABILITY_GRANTS.md), [file writes](WRITE_FILE_CAPABILITY_GRANTS.md), and [Android volume control](ANDROID_VOLUME_CONTROL.md).
 

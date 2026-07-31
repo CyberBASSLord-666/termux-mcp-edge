@@ -87,7 +87,7 @@ use crate::{
         MAX_TRASH_FILE_RESPONSE_BYTES, MAX_WRITE_FILE_RESPONSE_BYTES, MIN_FIND_DEPTH,
         MIN_SEARCH_DEPTH, MIN_TEXT_RANGE_BYTES,
     },
-    transport_security::TransportSecurityPolicy,
+    transport_security::{TransportSecurityError, TransportSecurityPolicy},
     trash_file_grant::{
         TrashFileGrantAuthority, TrashFileGrantError, TRASH_FILE_GRANT_TTL_SECONDS,
     },
@@ -107,7 +107,10 @@ use crate::{
 };
 
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+pub const MCP_STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 pub const MCP_PROTOCOL_VERSION_HEADER: &str = "mcp-protocol-version";
+pub const MCP_METHOD_HEADER: &str = "mcp-method";
+pub const MCP_NAME_HEADER: &str = "mcp-name";
 pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 pub const MCP_LAST_EVENT_ID_HEADER: &str = "last-event-id";
 pub const MCP_POST_ACCEPT: &str = "application/json, text/event-stream";
@@ -120,6 +123,14 @@ pub const MAX_CONCURRENT_FILESYSTEM_MUTATION_WORKERS: usize = 1;
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_EVENT_STREAM: &str = "text/event-stream";
+const STATELESS_PROTOCOL_VERSION_META: &str = "io.modelcontextprotocol/protocolVersion";
+const STATELESS_CLIENT_CAPABILITIES_META: &str = "io.modelcontextprotocol/clientCapabilities";
+const STATELESS_CLIENT_INFO_META: &str = "io.modelcontextprotocol/clientInfo";
+const STATELESS_SERVER_INFO_META: &str = "io.modelcontextprotocol/serverInfo";
+const MAX_MCP_ROUTING_METHOD_BYTES: usize = 128;
+const MAX_MCP_ROUTING_NAME_BYTES: usize = 128;
+const MAX_MCP_ROUTING_HEADER_BYTES: usize = 512;
+const MAX_STATELESS_RESPONSE_METADATA_BYTES: usize = 2_048;
 #[cfg(feature = "android-volume-control")]
 const ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED: u64 = ANDROID_VOLUME_GRANT_TTL_SECONDS;
 #[cfg(not(feature = "android-volume-control"))]
@@ -328,6 +339,7 @@ const FILESYSTEM_WRITE_FAILED: &str = "filesystem_write_failed";
 const FILESYSTEM_MUTATION_WORKER_CAPACITY_EXCEEDED: &str =
     "filesystem_mutation_worker_capacity_exceeded";
 const FILESYSTEM_MUTATION_REQUEST_CANCELLED: &str = "filesystem_mutation_request_cancelled";
+const STATELESS_MUTATION_NOT_AVAILABLE: &str = "stateless_transport_preview_only";
 
 const COMMAND_EXECUTION_ERROR: &str = "command_profile_execution_failed";
 
@@ -1131,11 +1143,17 @@ fn run_write_file_mutation_worker_inner(
 #[derive(Debug, Clone, Copy, Default)]
 struct McpTransportOptions {
     sse_enabled: bool,
+    stateless_2026_07_28_enabled: bool,
 }
 
 impl McpTransportOptions {
     const fn with_sse_enabled(mut self, enabled: bool) -> Self {
         self.sse_enabled = enabled;
+        self
+    }
+
+    const fn with_stateless_2026_07_28_enabled(mut self, enabled: bool) -> Self {
+        self.stateless_2026_07_28_enabled = enabled;
         self
     }
 }
@@ -1215,6 +1233,10 @@ impl std::fmt::Debug for McpRouterBuilder {
             .field("filesystem", &self.file_tools)
             .field("sse_enabled", &self.options.sse_enabled)
             .field(
+                "stateless_2026_07_28_enabled",
+                &self.options.stateless_2026_07_28_enabled,
+            )
+            .field(
                 "android_battery_status_enabled",
                 &self.android_battery_status_enabled,
             )
@@ -1286,6 +1308,14 @@ impl McpRouterBuilder {
 
     pub const fn with_sse_enabled(mut self, enabled: bool) -> Self {
         self.options = self.options.with_sse_enabled(enabled);
+        self
+    }
+
+    /// Opt into the stateless MCP 2026-07-28 read-and-preview-only transport.
+    ///
+    /// The legacy 2025-11-25 session transport remains available unchanged.
+    pub const fn with_stateless_2026_enabled(mut self, enabled: bool) -> Self {
+        self.options = self.options.with_stateless_2026_07_28_enabled(enabled);
         self
     }
 
@@ -1434,6 +1464,7 @@ struct McpTransportState {
     sessions: McpSessionStore,
     mutation_worker_capacity: FilesystemMutationWorkerCapacity,
     sse_enabled: bool,
+    stateless_2026_07_28_enabled: bool,
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
@@ -1520,6 +1551,7 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             mutation_worker_capacity: FilesystemMutationWorkerCapacity::default(),
             sse_enabled: false,
+            stateless_2026_07_28_enabled: false,
             android_battery_status_enabled,
             android_volume_status_enabled,
             android_volume_control_enabled: false,
@@ -1565,6 +1597,7 @@ impl McpTransportState {
 
     fn with_options(mut self, options: McpTransportOptions) -> Self {
         self.sse_enabled = options.sse_enabled;
+        self.stateless_2026_07_28_enabled = options.stateless_2026_07_28_enabled;
         self
     }
 
@@ -1602,6 +1635,7 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             mutation_worker_capacity: FilesystemMutationWorkerCapacity::default(),
             sse_enabled: false,
+            stateless_2026_07_28_enabled: false,
             android_battery_status_enabled,
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
@@ -1636,6 +1670,7 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             mutation_worker_capacity: FilesystemMutationWorkerCapacity::default(),
             sse_enabled: false,
+            stateless_2026_07_28_enabled: false,
             android_battery_status_enabled: false,
             android_volume_status_enabled,
             android_volume_control_enabled: false,
@@ -1670,6 +1705,7 @@ impl McpTransportState {
             sessions: McpSessionStore::new(),
             mutation_worker_capacity: FilesystemMutationWorkerCapacity::default(),
             sse_enabled: false,
+            stateless_2026_07_28_enabled: false,
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
@@ -1930,10 +1966,15 @@ async fn handle_mcp_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let host = header_value(&headers, header::HOST);
-    let origin = header_value(&headers, header::ORIGIN);
+    let host = single_header_value(&headers, header::HOST.as_str())
+        .map_err(|()| TransportSecurityError::InvalidHostHeader);
+    let origin = single_header_value(&headers, header::ORIGIN.as_str())
+        .map_err(|()| TransportSecurityError::InvalidOriginHeader);
+    let transport_security = host.and_then(|host| {
+        origin.and_then(|origin| state.security_policy.validate_request(host, origin))
+    });
 
-    let mut response = if let Err(error) = state.security_policy.validate_request(host, origin) {
+    let mut response = if let Err(error) = transport_security {
         (
             StatusCode::FORBIDDEN,
             Json(json!({
@@ -1942,6 +1983,8 @@ async fn handle_mcp_request(
             })),
         )
             .into_response()
+    } else if method != Method::POST && declares_exact_stateless_protocol_header(&headers) {
+        stateless_method_not_allowed()
     } else if method != Method::POST && headers.contains_key(REQUEST_GRANT_HEADER) {
         capability_context_not_allowed(None)
     } else {
@@ -1959,6 +2002,60 @@ async fn handle_mcp_request(
 }
 
 async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: Bytes) -> Response {
+    if declares_stateless_request(state, headers, &body) {
+        handle_stateless_mcp_post(state, headers, body).await
+    } else {
+        handle_legacy_mcp_post(state, headers, body).await
+    }
+}
+
+fn declares_exact_stateless_protocol_header(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(MCP_PROTOCOL_VERSION_HEADER)
+        .iter()
+        .any(|value| value.as_bytes() == MCP_STATELESS_PROTOCOL_VERSION.as_bytes())
+}
+
+fn declares_stateless_request(state: &McpTransportState, headers: &HeaderMap, body: &[u8]) -> bool {
+    if declares_exact_stateless_protocol_header(headers)
+        || headers.contains_key(MCP_METHOD_HEADER)
+        || headers.contains_key(MCP_NAME_HEADER)
+    {
+        return true;
+    }
+
+    state.stateless_2026_07_28_enabled
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .is_some_and(|body| {
+                body.pointer("/params/_meta")
+                    .and_then(Value::as_object)
+                    .and_then(|meta| meta.get(STATELESS_PROTOCOL_VERSION_META))
+                    .and_then(Value::as_str)
+                    .is_some_and(|version| version == MCP_STATELESS_PROTOCOL_VERSION)
+            })
+}
+
+#[derive(Clone, Copy)]
+enum ToolInvocationContext<'a> {
+    LegacySession(&'a str),
+    StatelessReadPreview,
+}
+
+impl<'a> ToolInvocationContext<'a> {
+    fn legacy_session(self) -> Option<&'a str> {
+        match self {
+            Self::LegacySession(session_id) => Some(session_id),
+            Self::StatelessReadPreview => None,
+        }
+    }
+}
+
+async fn handle_legacy_mcp_post(
+    state: &McpTransportState,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response {
     if !has_json_content_type(headers) {
         return transport_error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -2080,7 +2177,7 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
                         Some(id),
                         params,
                         state,
-                        &session_id,
+                        ToolInvocationContext::LegacySession(&session_id),
                         capability_grant.as_deref(),
                     )
                     .await
@@ -2117,6 +2214,664 @@ async fn handle_mcp_post(state: &McpTransportState, headers: &HeaderMap, body: B
             StatusCode::ACCEPTED.into_response()
         }
     }
+}
+
+async fn handle_stateless_mcp_post(
+    state: &McpTransportState,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !has_json_content_type(headers) {
+        return transport_error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_content_type",
+            "Stateless MCP POST requests require Content-Type application/json.",
+        );
+    }
+    if !accepts_media_type(headers, APPLICATION_JSON)
+        || !accepts_media_type(headers, TEXT_EVENT_STREAM)
+    {
+        return transport_error(
+            StatusCode::NOT_ACCEPTABLE,
+            "unsupported_accept",
+            "Stateless MCP POST requests must accept application/json and text/event-stream.",
+        );
+    }
+
+    let message = match parse_incoming_message(&body) {
+        Ok(message) => message,
+        Err(JsonRpcEnvelopeError::ParseError { detail }) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": Value::Null,
+                    "error": {
+                        "code": -32700,
+                        "message": "Parse error",
+                        "data": detail,
+                    },
+                })),
+            )
+                .into_response();
+        }
+        Err(JsonRpcEnvelopeError::InvalidRequest { id, reason }) => {
+            if id.as_ref().is_some_and(|id| !json_rpc_id_fits(id)) {
+                return json_rpc_id_too_large();
+            }
+            return invalid_request(id, reason);
+        }
+    };
+
+    let IncomingJsonRpcMessage::Request { id, method, params } = message else {
+        return invalid_request(None, "Stateless MCP accepts JSON-RPC requests only.");
+    };
+    if !json_rpc_id_fits(&id) {
+        return json_rpc_id_too_large();
+    }
+    let response_id = Some(id.clone());
+
+    let Some(mut params) = params.and_then(|params| params.as_object().cloned()) else {
+        return invalid_params(
+            response_id,
+            "Stateless MCP params must be an object containing required request metadata.",
+        );
+    };
+    let Some(meta) = params
+        .remove("_meta")
+        .and_then(|meta| meta.as_object().cloned())
+    else {
+        return invalid_params(
+            response_id,
+            "Stateless MCP params._meta must contain required request metadata.",
+        );
+    };
+    let Some(body_protocol_version) = meta
+        .get(STATELESS_PROTOCOL_VERSION_META)
+        .and_then(Value::as_str)
+        .filter(|value| valid_stateless_protocol_version(value))
+    else {
+        return invalid_params(
+            response_id,
+            "Stateless MCP request metadata must contain one bounded protocol version.",
+        );
+    };
+    if !meta
+        .get(STATELESS_CLIENT_CAPABILITIES_META)
+        .and_then(Value::as_object)
+        .is_some_and(valid_client_capabilities)
+    {
+        return invalid_params(
+            response_id,
+            "Stateless MCP request metadata must contain valid client capabilities.",
+        );
+    }
+    if meta
+        .get(STATELESS_CLIENT_INFO_META)
+        .is_some_and(|value| !value.as_object().is_some_and(valid_client_implementation))
+    {
+        return invalid_params(
+            response_id,
+            "Stateless MCP client information does not match the required schema.",
+        );
+    }
+    if meta
+        .get("progressToken")
+        .is_some_and(|value| !valid_progress_token(value))
+    {
+        return invalid_params(
+            response_id,
+            "Stateless MCP progressToken must be a string or number.",
+        );
+    }
+    if meta
+        .get("io.modelcontextprotocol/logLevel")
+        .is_some_and(|value| !valid_logging_level(value))
+    {
+        return invalid_params(
+            response_id,
+            "Stateless MCP log level is not supported by the request metadata schema.",
+        );
+    }
+
+    let header_protocol_version =
+        match bounded_visible_header(headers, MCP_PROTOCOL_VERSION_HEADER, 32) {
+            Ok(value) => value,
+            Err(()) => {
+                return stateless_header_mismatch(
+                    response_id,
+                    "MCP-Protocol-Version must contain exactly one bounded value.",
+                );
+            }
+        };
+    if header_protocol_version != body_protocol_version {
+        return stateless_header_mismatch(
+            response_id,
+            "MCP-Protocol-Version must exactly match request metadata.",
+        );
+    }
+    if body_protocol_version != MCP_STATELESS_PROTOCOL_VERSION
+        || !state.stateless_2026_07_28_enabled
+    {
+        return stateless_protocol_not_supported(response_id, body_protocol_version, state);
+    }
+    let header_method =
+        match bounded_visible_header(headers, MCP_METHOD_HEADER, MAX_MCP_ROUTING_METHOD_BYTES) {
+            Ok(value) => value,
+            Err(()) => {
+                return stateless_header_mismatch(
+                    response_id,
+                    "MCP-Method must contain exactly one bounded visible ASCII value.",
+                );
+            }
+        };
+    if header_method != method {
+        return stateless_header_mismatch(
+            response_id,
+            "MCP-Method must exactly match the JSON-RPC method.",
+        );
+    }
+
+    let name_source_field = match method.as_str() {
+        "tools/call" | "prompts/get" => Some("name"),
+        "resources/read" => Some("uri"),
+        _ => None,
+    };
+    let routed_name = if let Some(source_field) = name_source_field {
+        let Some(body_name) = params
+            .get(source_field)
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty() && name.len() <= MAX_MCP_ROUTING_NAME_BYTES)
+        else {
+            return stateless_header_mismatch(
+                response_id,
+                "The named MCP method requires one bounded name or URI in params.",
+            );
+        };
+        let header_name = match stateless_name_header(headers) {
+            Ok(value) => value,
+            Err(()) => {
+                return stateless_header_mismatch(
+                    response_id,
+                    "MCP-Name must contain one bounded canonical name or URI.",
+                );
+            }
+        };
+        if header_name != body_name {
+            return stateless_header_mismatch(
+                response_id,
+                "MCP-Name must exactly match the named request parameter.",
+            );
+        }
+        Some(body_name.to_owned())
+    } else {
+        if headers.contains_key(MCP_NAME_HEADER) {
+            return stateless_header_mismatch(
+                response_id,
+                "MCP-Name is valid only for tools/call, resources/read, or prompts/get.",
+            );
+        }
+        None
+    };
+
+    if headers.contains_key(REQUEST_GRANT_HEADER) {
+        return invalid_params(
+            response_id,
+            "Stateless MCP does not accept request-scoped capability grants.",
+        );
+    }
+
+    let params = Value::Object(params);
+    match method.as_str() {
+        "server/discover" => {
+            if !params.as_object().is_some_and(|params| params.is_empty()) {
+                return invalid_params(
+                    response_id,
+                    "server/discover does not accept method parameters beyond _meta.",
+                );
+            }
+            stateless_server_discover_response(response_id, state)
+        }
+        "tools/list" => {
+            if !params.as_object().is_some_and(|params| params.is_empty()) {
+                return invalid_params(
+                    response_id,
+                    "tools/list does not accept method parameters beyond _meta.",
+                );
+            }
+            let response = tools_list_response(response_id.clone(), state);
+            stateless_complete_response(response_id, response, "tools/list", None, state).await
+        }
+        "tools/call" => {
+            let tool_name = routed_name.expect("tools/call routing validated a tool name");
+            if !available_tools(
+                state.android_battery_status_enabled,
+                state.android_volume_status_enabled,
+                state.android_volume_control_enabled,
+                state.command_execution_enabled,
+            )
+            .contains(&tool_name.as_str())
+            {
+                return invalid_params(
+                    response_id,
+                    "The requested tool is unavailable in the current runtime posture.",
+                );
+            }
+            if stateless_live_mutation_requested(&params, &tool_name) {
+                return invalid_params(
+                    response_id,
+                    "Stateless MCP currently permits mutation tools only with omitted dry_run or explicit dry_run=true.",
+                );
+            }
+            let response = handle_tool_call(
+                response_id.clone(),
+                Some(params),
+                state,
+                ToolInvocationContext::StatelessReadPreview,
+                None,
+            )
+            .await;
+            stateless_complete_response(
+                response_id,
+                response,
+                "tools/call",
+                Some(&tool_name),
+                state,
+            )
+            .await
+        }
+        _ => stateless_method_not_found(response_id),
+    }
+}
+
+fn valid_stateless_protocol_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+fn valid_progress_token(value: &Value) -> bool {
+    value.is_string() || value.is_number()
+}
+
+fn valid_logging_level(value: &Value) -> bool {
+    matches!(
+        value.as_str(),
+        Some(
+            "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
+        )
+    )
+}
+
+fn bounded_visible_header<'a>(
+    headers: &'a HeaderMap,
+    name: &str,
+    max_bytes: usize,
+) -> Result<&'a str, ()> {
+    match single_header_value(headers, name) {
+        Ok(Some(value))
+            if !value.is_empty()
+                && value.len() <= max_bytes
+                && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) =>
+        {
+            Ok(value)
+        }
+        Ok(None) | Ok(Some(_)) | Err(()) => Err(()),
+    }
+}
+
+fn stateless_name_header(headers: &HeaderMap) -> Result<String, ()> {
+    let raw = match single_header_value(headers, MCP_NAME_HEADER) {
+        Ok(Some(value)) if !value.is_empty() && value.len() <= MAX_MCP_ROUTING_HEADER_BYTES => {
+            value
+        }
+        Ok(None) | Ok(Some(_)) | Err(()) => return Err(()),
+    };
+
+    if let Some(encoded) = raw
+        .strip_prefix("=?base64?")
+        .and_then(|value| value.strip_suffix("?="))
+    {
+        let decoded = decode_canonical_padded_base64(encoded)?;
+        if decoded.is_empty() || decoded.len() > MAX_MCP_ROUTING_NAME_BYTES {
+            return Err(());
+        }
+        return String::from_utf8(decoded).map_err(|_| ());
+    }
+
+    if raw.len() > MAX_MCP_ROUTING_NAME_BYTES || !is_plain_ascii_routing_value(raw) {
+        return Err(());
+    }
+    Ok(raw.to_owned())
+}
+
+fn is_plain_ascii_routing_value(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes
+            .first()
+            .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+        || bytes
+            .last()
+            .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
+    {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|byte| *byte == b'\t' || (0x20..=0x7e).contains(byte))
+}
+
+fn decode_canonical_padded_base64(encoded: &str) -> Result<Vec<u8>, ()> {
+    let bytes = encoded.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(());
+    }
+
+    let mut decoded = Vec::with_capacity((bytes.len() / 4) * 3);
+    let chunk_count = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let last = index + 1 == chunk_count;
+        let padding = match (chunk[2], chunk[3]) {
+            (b'=', b'=') => 2,
+            (_, b'=') => 1,
+            (b'=', _) => return Err(()),
+            _ => 0,
+        };
+        if padding != 0 && !last {
+            return Err(());
+        }
+
+        let first = decode_base64_sextet(chunk[0]).ok_or(())?;
+        let second = decode_base64_sextet(chunk[1]).ok_or(())?;
+        let third = if padding == 2 {
+            0
+        } else {
+            decode_base64_sextet(chunk[2]).ok_or(())?
+        };
+        let fourth = if padding == 0 {
+            decode_base64_sextet(chunk[3]).ok_or(())?
+        } else {
+            0
+        };
+
+        if (padding == 2 && second & 0x0f != 0) || (padding == 1 && third & 0x03 != 0) {
+            return Err(());
+        }
+
+        decoded.push((first << 2) | (second >> 4));
+        if padding < 2 {
+            decoded.push((second << 4) | (third >> 2));
+        }
+        if padding == 0 {
+            decoded.push((third << 6) | fourth);
+        }
+        if decoded.len() > MAX_MCP_ROUTING_NAME_BYTES {
+            return Err(());
+        }
+    }
+    Ok(decoded)
+}
+
+fn decode_base64_sextet(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn stateless_live_mutation_requested(params: &Value, tool_name: &str) -> bool {
+    is_mutation_tool(tool_name)
+        && params
+            .get("arguments")
+            .and_then(Value::as_object)
+            .and_then(|arguments| arguments.get("dry_run"))
+            == Some(&Value::Bool(false))
+}
+
+fn is_mutation_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        CREATE_DIRECTORY_TOOL
+            | COPY_FILE_TOOL
+            | TRASH_FILE_TOOL
+            | WRITE_FILE_TOOL
+            | SET_ANDROID_VOLUME_TOOL
+    )
+}
+
+fn stateless_server_discover_response(id: Option<Value>, state: &McpTransportState) -> Response {
+    let supported_versions = supported_protocol_versions(state);
+    bounded_json_rpc_ok(
+        id.clone(),
+        json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "supportedVersions": supported_versions,
+                "capabilities": {
+                    "tools": {
+                        "listChanged": false,
+                    },
+                },
+                "resultType": "complete",
+                "ttlMs": 0,
+                "cacheScope": "private",
+                "_meta": {
+                    (STATELESS_SERVER_INFO_META): {
+                        "name": "termux-mcp-edge",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                },
+            },
+        }),
+        "Stateless discovery response exceeds the bounded transport response byte limit.",
+    )
+}
+
+fn supported_protocol_versions(state: &McpTransportState) -> Vec<&'static str> {
+    if state.stateless_2026_07_28_enabled {
+        vec![MCP_STATELESS_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION]
+    } else {
+        vec![MCP_PROTOCOL_VERSION]
+    }
+}
+
+async fn stateless_complete_response(
+    id: Option<Value>,
+    response: Response,
+    method: &str,
+    tool_name: Option<&str>,
+    state: &McpTransportState,
+) -> Response {
+    if response.status() != StatusCode::OK
+        || !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value.split(';').next().is_some_and(|media_type| {
+                    media_type.trim().eq_ignore_ascii_case(APPLICATION_JSON)
+                })
+            })
+    {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let body = match to_bytes(body, MAX_MCP_COLLECTED_JSON_RESPONSE_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            return internal_error(
+                id,
+                "The stateless result could not be bounded for metadata decoration.",
+            );
+        }
+    };
+    let Ok(mut body) = serde_json::from_slice::<Value>(&body) else {
+        return internal_error(id, "The stateless result was not valid JSON.");
+    };
+    let Some(result) = body.get_mut("result").and_then(Value::as_object_mut) else {
+        return internal_error(id, "The stateless result envelope was incomplete.");
+    };
+
+    result.insert("resultType".to_owned(), json!("complete"));
+    let result_meta = result
+        .entry("_meta".to_owned())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(result_meta) = result_meta.as_object_mut() else {
+        return internal_error(id, "The stateless result metadata was not an object.");
+    };
+    result_meta.insert(
+        STATELESS_SERVER_INFO_META.to_owned(),
+        json!({
+            "name": "termux-mcp-edge",
+            "version": env!("CARGO_PKG_VERSION"),
+        }),
+    );
+
+    if method == "tools/list" {
+        result.insert("ttlMs".to_owned(), json!(0));
+        result.insert("cacheScope".to_owned(), json!("private"));
+        constrain_stateless_mutation_schemas(result);
+    }
+    if method == "tools/call" && tool_name == Some(RUNTIME_STATUS_TOOL) {
+        append_stateless_runtime_status(result, state);
+    }
+
+    let Ok(serialized) = serde_json::to_vec(&body) else {
+        return internal_error(id, "The stateless result could not be serialized.");
+    };
+    if serialized.len()
+        > MAX_MCP_COLLECTED_JSON_RESPONSE_BYTES + MAX_STATELESS_RESPONSE_METADATA_BYTES
+    {
+        return bounded_payload_too_large(
+            id,
+            "Stateless result metadata exceeds the bounded transport response byte limit.",
+            MAX_MCP_COLLECTED_JSON_RESPONSE_BYTES + MAX_STATELESS_RESPONSE_METADATA_BYTES,
+        );
+    }
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(serialized))
+}
+
+fn constrain_stateless_mutation_schemas(result: &mut serde_json::Map<String, Value>) {
+    let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for tool in tools {
+        let Some(tool_name) = tool.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if !is_mutation_tool(tool_name) {
+            continue;
+        }
+        tool["description"] = json!(
+            "Validate and preview this operation without mutation. Stateless MCP 2026-07-28 does not accept grants or live mutations."
+        );
+        if let Some(dry_run) = tool.pointer_mut("/inputSchema/properties/dry_run") {
+            dry_run["const"] = json!(true);
+            dry_run["description"] = json!(
+                "Omit this field or set it to true. Live mutation is unavailable on the stateless transport."
+            );
+        }
+    }
+}
+
+fn append_stateless_runtime_status(
+    result: &mut serde_json::Map<String, Value>,
+    state: &McpTransportState,
+) {
+    let Some(status) = result
+        .get_mut("structuredContent")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    status.insert(
+        "supportedProtocolVersions".to_owned(),
+        json!(supported_protocol_versions(state)),
+    );
+    status.insert(
+        "statelessProtocol20260728Enabled".to_owned(),
+        json!(state.stateless_2026_07_28_enabled),
+    );
+    status.insert(
+        "currentRequestProtocol".to_owned(),
+        json!(MCP_STATELESS_PROTOCOL_VERSION),
+    );
+    status.insert("currentRequestSessionManagement".to_owned(), json!("none"));
+    status.insert(
+        "currentRequestMutationMode".to_owned(),
+        json!("read_and_preview_only"),
+    );
+}
+
+fn stateless_header_mismatch(id: Option<Value>, data: &'static str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32020,
+                "message": "Header mismatch",
+                "data": data,
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn stateless_protocol_not_supported(
+    id: Option<Value>,
+    requested: &str,
+    state: &McpTransportState,
+) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32022,
+                "message": "Protocol version not supported",
+                "data": {
+                    "requested": requested,
+                    "supported": supported_protocol_versions(state),
+                },
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn stateless_method_not_found(id: Option<Value>) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "error": {
+                "code": -32601,
+                "message": "Method not found",
+                "data": "Only server/discover, tools/list, and tools/call are available.",
+            },
+        })),
+    )
+        .into_response()
+}
+
+fn stateless_method_not_allowed() -> Response {
+    let mut response = StatusCode::METHOD_NOT_ALLOWED.into_response();
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static("POST"));
+    response
 }
 
 async fn maybe_sse_response(
@@ -3350,7 +4105,7 @@ async fn handle_tool_call(
     id: Option<Value>,
     params: Option<Value>,
     state: &McpTransportState,
-    session_id: &str,
+    invocation: ToolInvocationContext<'_>,
     capability_grant: Option<&str>,
 ) -> Response {
     let params = match params {
@@ -3415,7 +4170,7 @@ async fn handle_tool_call(
                 id,
                 call.arguments.into_value(),
                 state,
-                session_id,
+                invocation,
                 capability_grant,
             )
             .await
@@ -3432,7 +4187,7 @@ async fn handle_tool_call(
                 id,
                 call.arguments.into_value(),
                 state,
-                session_id,
+                invocation,
                 capability_grant,
             )
             .await
@@ -3442,7 +4197,7 @@ async fn handle_tool_call(
                 id,
                 call.arguments.into_value(),
                 state,
-                session_id,
+                invocation,
                 capability_grant,
             )
             .await
@@ -3452,7 +4207,7 @@ async fn handle_tool_call(
                 id,
                 call.arguments.into_value(),
                 state,
-                session_id,
+                invocation,
                 capability_grant,
             )
             .await
@@ -3543,7 +4298,7 @@ async fn handle_tool_call(
                 id,
                 call.arguments.into_value(),
                 state,
-                session_id,
+                invocation,
                 capability_grant,
             )
             .await
@@ -3752,7 +4507,7 @@ async fn handle_set_android_volume_call(
     id: Option<Value>,
     arguments: Option<Value>,
     state: &McpTransportState,
-    session_id: &str,
+    invocation: ToolInvocationContext<'_>,
     capability_grant: Option<&str>,
 ) -> Response {
     let args = match arguments
@@ -3778,10 +4533,23 @@ async fn handle_set_android_volume_call(
     } else {
         AuditMode::Mutating
     };
+    let legacy_session_id = invocation.legacy_session();
+    if !dry_run && legacy_session_id.is_none() {
+        record_volume_control_decision(
+            &state.audit_counters,
+            mode,
+            AuditDecision::Denied,
+            STATELESS_MUTATION_NOT_AVAILABLE,
+        );
+        return invalid_params(
+            id,
+            "Stateless MCP does not permit live Android volume mutations.",
+        );
+    }
 
     #[cfg(not(feature = "android-volume-control"))]
     {
-        let _ = (args.stream, args.level, session_id, capability_grant);
+        let _ = (args.stream, args.level, legacy_session_id, capability_grant);
         record_volume_control_decision(
             &state.audit_counters,
             mode,
@@ -3849,6 +4617,8 @@ async fn handle_set_android_volume_call(
                 Err(error) => volume_control_error_response(id, state, mode, error),
             };
         }
+        let session_id =
+            legacy_session_id.expect("live Android volume mutation requires a legacy session");
 
         let prepared = match state
             .android_volume_control_client
@@ -5371,7 +6141,7 @@ async fn handle_create_directory_call(
     id: Option<Value>,
     arguments: Option<Value>,
     state: &McpTransportState,
-    session_id: &str,
+    invocation: ToolInvocationContext<'_>,
     capability_grant: Option<&str>,
 ) -> Response {
     let file_tools = &state.file_tools;
@@ -5406,6 +6176,20 @@ async fn handle_create_directory_call(
 
     let dry_run = args.dry_run.unwrap_or(true);
     let mode = filesystem_write_mode(dry_run);
+    let legacy_session_id = invocation.legacy_session();
+    if !dry_run && legacy_session_id.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            CREATE_DIRECTORY_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            STATELESS_MUTATION_NOT_AVAILABLE,
+        );
+        return invalid_params(
+            id,
+            "Stateless MCP does not permit live filesystem mutations.",
+        );
+    }
     if !dry_run && state.create_directory_authority.is_none() {
         record_filesystem_denied(
             audit_counters,
@@ -5469,6 +6253,8 @@ async fn handle_create_directory_call(
     let operation = if dry_run {
         file_tools.create_directory(args.path, Some(true)).await
     } else {
+        let session_id = legacy_session_id
+            .expect("live directory mutation requires a legacy session");
         let worker_permit = match state.mutation_worker_capacity.try_acquire() {
             Some(permit) => permit,
             None => {
@@ -5623,7 +6409,7 @@ async fn handle_copy_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
     state: &McpTransportState,
-    session_id: &str,
+    invocation: ToolInvocationContext<'_>,
     capability_grant: Option<&str>,
 ) -> Response {
     let file_tools = &state.file_tools;
@@ -5667,6 +6453,20 @@ async fn handle_copy_file_call(
 
     let dry_run = args.dry_run.unwrap_or(true);
     let mode = filesystem_write_mode(dry_run);
+    let legacy_session_id = invocation.legacy_session();
+    if !dry_run && legacy_session_id.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            COPY_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            STATELESS_MUTATION_NOT_AVAILABLE,
+        );
+        return invalid_params(
+            id,
+            "Stateless MCP does not permit live filesystem mutations.",
+        );
+    }
     // A grant header is valid only for the explicit live-copy posture. Reject
     // preview smuggling before any path validation or filesystem access.
     if capability_grant.is_some() && args.dry_run != Some(false) {
@@ -5757,6 +6557,8 @@ async fn handle_copy_file_call(
             .copy_file(args.source_path, args.destination_path, Some(true))
             .await
     } else {
+        let session_id =
+            legacy_session_id.expect("live file copy requires a legacy session");
         let worker_permit = match state.mutation_worker_capacity.try_acquire() {
             Some(permit) => permit,
             None => {
@@ -5935,7 +6737,7 @@ async fn handle_trash_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
     state: &McpTransportState,
-    session_id: &str,
+    invocation: ToolInvocationContext<'_>,
     capability_grant: Option<&str>,
 ) -> Response {
     let file_tools = &state.file_tools;
@@ -5976,6 +6778,20 @@ async fn handle_trash_file_call(
 
     let dry_run = args.dry_run.unwrap_or(true);
     let mode = filesystem_write_mode(dry_run);
+    let legacy_session_id = invocation.legacy_session();
+    if !dry_run && legacy_session_id.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            TRASH_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            STATELESS_MUTATION_NOT_AVAILABLE,
+        );
+        return invalid_params(
+            id,
+            "Stateless MCP does not permit live filesystem mutations.",
+        );
+    }
     // A request grant has meaning only for an explicit live trash request.
     // Reject preview smuggling before path resolution or filesystem access.
     if capability_grant.is_some() && args.dry_run != Some(false) {
@@ -6058,6 +6874,8 @@ async fn handle_trash_file_call(
     let operation = if dry_run {
         file_tools.trash_file(args.path, Some(true)).await
     } else {
+        let session_id =
+            legacy_session_id.expect("live file trash requires a legacy session");
         let worker_permit = match state.mutation_worker_capacity.try_acquire() {
             Some(permit) => permit,
             None => {
@@ -6734,7 +7552,7 @@ async fn handle_write_file_call(
     id: Option<Value>,
     arguments: Option<Value>,
     state: &McpTransportState,
-    session_id: &str,
+    invocation: ToolInvocationContext<'_>,
     capability_grant: Option<&str>,
 ) -> Response {
     let file_tools = &state.file_tools;
@@ -6771,6 +7589,20 @@ async fn handle_write_file_call(
     let bytes = args.content.len();
     let dry_run = matches!(policy.resolve_mode(args.dry_run), WriteMode::DryRun);
     let mode = filesystem_write_mode(dry_run);
+    let legacy_session_id = invocation.legacy_session();
+    if !dry_run && legacy_session_id.is_none() {
+        record_filesystem_denied(
+            audit_counters,
+            WRITE_FILE_TOOL,
+            FILESYSTEM_WRITE_GATE,
+            mode,
+            STATELESS_MUTATION_NOT_AVAILABLE,
+        );
+        return invalid_params(
+            id,
+            "Stateless MCP does not permit live filesystem mutations.",
+        );
+    }
     if !dry_run && state.write_file_authority.is_none() {
         record_filesystem_denied(
             audit_counters,
@@ -6834,6 +7666,8 @@ async fn handle_write_file_call(
             .write_file(args.path, args.content, Some(true))
             .await
     } else {
+        let session_id =
+            legacy_session_id.expect("live file write requires a legacy session");
         let worker_permit = match state.mutation_worker_capacity.try_acquire() {
             Some(permit) => permit,
             None => {
@@ -7388,10 +8222,6 @@ fn method_not_available(id: Option<Value>, message: &'static str) -> Response {
         .into_response()
 }
 
-fn header_value(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
-    headers.get(name).and_then(|value| value.to_str().ok())
-}
-
 #[rustfmt::skip]
 fn record_read_only_allowed(
     counters: &SharedAuditCounters,
@@ -7737,7 +8567,7 @@ mod tests {
             Some(json!("smuggled")),
             Some(json!({"path": target, "dry_run": true})),
             &enabled,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -7748,7 +8578,7 @@ mod tests {
             Some(json!("preview")),
             Some(json!({"path": target})),
             &enabled,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             None,
         )
         .await;
@@ -7762,7 +8592,7 @@ mod tests {
             Some(json!("live")),
             Some(json!({"path": target, "dry_run": false})),
             &enabled,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -7983,7 +8813,7 @@ mod tests {
             Some(json!("disabled")),
             Some(inaccessible.clone()),
             &disabled,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some("not-a-real-grant"),
         )
         .await;
@@ -8002,7 +8832,7 @@ mod tests {
             Some(json!("missing")),
             Some(inaccessible),
             &enabled,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             None,
         )
         .await;
@@ -8040,7 +8870,7 @@ mod tests {
                 "dry_run": true,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -8054,7 +8884,7 @@ mod tests {
                 "destination_path": destination,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             None,
         )
         .await;
@@ -8073,7 +8903,7 @@ mod tests {
                 "dry_run": false,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -8112,7 +8942,7 @@ mod tests {
             Some(json!("x".repeat(MAX_COPY_FILE_RESPONSE_BYTES))),
             Some(arguments.clone()),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -8124,7 +8954,7 @@ mod tests {
             Some(json!("capacity")),
             Some(arguments.clone()),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -8136,7 +8966,7 @@ mod tests {
             Some(json!("allowed")),
             Some(arguments),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -8190,7 +9020,7 @@ mod tests {
                     "dry_run": false,
                 })),
                 &request_state,
-                &request_session,
+                ToolInvocationContext::LegacySession(&request_session),
                 Some(&request_grant),
             )
             .await
@@ -9122,7 +9952,7 @@ mod tests {
                 "dry_run": false,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -9155,7 +9985,7 @@ mod tests {
                 "dry_run": false,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -9215,7 +10045,7 @@ mod tests {
                 "dry_run": false,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -9250,7 +10080,7 @@ mod tests {
                 "dry_run": false,
             })),
             &state,
-            &session_id,
+            ToolInvocationContext::LegacySession(&session_id),
             Some(&grant),
         )
         .await;
@@ -9311,7 +10141,7 @@ mod tests {
                     "dry_run": false,
                 })),
                 &state_for_request,
-                &session_for_request,
+                ToolInvocationContext::LegacySession(&session_for_request),
                 Some(&grant_for_request),
             )
             .await
@@ -9404,7 +10234,7 @@ mod tests {
                     "dry_run": false,
                 })),
                 &state_for_request,
-                &session_for_request,
+                ToolInvocationContext::LegacySession(&session_for_request),
                 Some(&grant_for_request),
             )
             .await
@@ -9818,7 +10648,7 @@ printf '%s\n' "$2" >"$level"
             Some(json!("preview")),
             Some(json!({"stream":"music", "level":9})),
             &state,
-            session,
+            ToolInvocationContext::LegacySession(session),
             Some(&grant),
         )
         .await;
@@ -9835,7 +10665,7 @@ printf '%s\n' "$2" >"$level"
             Some(json!("mutation")),
             Some(json!({"stream":"music", "level":9, "dry_run":false})),
             &state,
-            session,
+            ToolInvocationContext::LegacySession(session),
             Some(&grant),
         )
         .await;
@@ -9854,7 +10684,7 @@ printf '%s\n' "$2" >"$level"
             Some(json!("replay")),
             Some(json!({"stream":"music", "level":9, "dry_run":false})),
             &state,
-            session,
+            ToolInvocationContext::LegacySession(session),
             Some(&grant),
         )
         .await;
@@ -10046,7 +10876,7 @@ printf '%s\n' "$2" >"$level"
                 Some(json!("detached-volume")),
                 Some(json!({"stream":"music", "level":9, "dry_run":false})),
                 &request_state,
-                session,
+                ToolInvocationContext::LegacySession(session),
                 Some(&request_grant),
             )
             .await
@@ -10137,7 +10967,9 @@ printf '%s\n' "$2" >"$level"
             Some(json!("disabled")),
             Some(json!({"stream":"music", "level":9, "dry_run":false})),
             &state,
-            "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+            ToolInvocationContext::LegacySession(
+                "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+            ),
             None,
         )
         .await;
@@ -10169,7 +11001,9 @@ printf '%s\n' "$2" >"$level"
                 Some(json!("invalid")),
                 Some(arguments),
                 &active,
-                "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+                ToolInvocationContext::LegacySession(
+                    "0194f9f9-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+                ),
                 None,
             )
             .await;

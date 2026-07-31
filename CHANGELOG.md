@@ -1,5 +1,12 @@
 # Changelog
 
+## Next release
+
+- Added a default-disabled first-stage MCP `2026-07-28` stateless compatibility posture behind `MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED`. The existing session-bound `2025-11-25` contract remains the default and is unchanged. Modern requests are POST-only and JSON-only, require per-request protocol metadata plus mirrored routing headers, and are limited to `server/discover`, `tools/list`, and read-only or preview-only `tools/call`. Modern capability-grant headers and explicit `dry_run:false` are rejected before dispatch; live mutations remain legacy-session v1 only. This posture has not yet received native Android or release qualification.
+- Made absent Host and Origin allowlists follow the configured listener port while preserving operator-supplied exact allowlists, and reject duplicate or non-text Host/Origin headers with stable non-reflective transport errors after authentication.
+- Bound install, upgrade, rollback, and recovery readiness checks to the exact expected release version. Default probe URLs now follow the validated runtime port, explicit probe URLs must use that port, and a stopped canonical service must release the listener before another version starts.
+- Added checksum-verified Actionlint 1.7.12 and ShellCheck 0.11.0 gates, warning-clean shell sources, a hash-pinned PyYAML 6.0.3 test dependency, and OS-assigned release-validator test ports.
+
 ## v0.6.0
 
 ### Changes after initial release-candidate preparation

@@ -136,6 +136,8 @@ pub struct TransportConfig {
     pub allow_missing_origin: bool,
     /// Explicit default-disabled opt-in for finite SSE response delivery and replay.
     pub sse_enabled: bool,
+    /// Explicit default-disabled opt-in for stateless MCP 2026-07-28 handling.
+    pub stateless_2026_07_28_enabled: bool,
     /// Maximum number of authenticated MCP requests executing concurrently.
     pub max_concurrent_requests: usize,
     /// Maximum total duration for one authenticated MCP request.
@@ -224,11 +226,24 @@ impl AppConfig {
     fn load_with(
         read_variable: impl Fn(&str) -> Result<String, env::VarError>,
     ) -> anyhow::Result<Self> {
+        let server = ServerConfig {
+            host: env_string(&read_variable, "MCP__SERVER__HOST", "127.0.0.1")?,
+            port: env_port(&read_variable, "MCP__SERVER__PORT", 8000)?,
+        };
+        let listener_port = server.port.to_string();
+        let default_allowed_hosts = [
+            format!("localhost:{listener_port}"),
+            format!("127.0.0.1:{listener_port}"),
+            format!("[::1]:{listener_port}"),
+        ];
+        let default_allowed_origins = [
+            format!("http://localhost:{listener_port}"),
+            format!("http://127.0.0.1:{listener_port}"),
+            format!("http://[::1]:{listener_port}"),
+        ];
+
         let config = Self {
-            server: ServerConfig {
-                host: env_string(&read_variable, "MCP__SERVER__HOST", "127.0.0.1")?,
-                port: env_port(&read_variable, "MCP__SERVER__PORT", 8000)?,
-            },
+            server,
             auth: AuthConfig {
                 static_token: optional_env_string(&read_variable, "MCP__AUTH__STATIC_TOKEN")?,
                 allow_unauthenticated_localhost_only: env_bool(
@@ -289,19 +304,15 @@ impl AppConfig {
                 )?,
             },
             transport: TransportConfig {
-                allowed_hosts: env_exact_string_list(
+                allowed_hosts: env_exact_string_list_owned(
                     &read_variable,
                     "MCP__TRANSPORT__ALLOWED_HOSTS",
-                    &["localhost:8000", "127.0.0.1:8000", "[::1]:8000"],
+                    &default_allowed_hosts,
                 )?,
-                allowed_origins: env_exact_string_list(
+                allowed_origins: env_exact_string_list_owned(
                     &read_variable,
                     "MCP__TRANSPORT__ALLOWED_ORIGINS",
-                    &[
-                        "http://localhost:8000",
-                        "http://127.0.0.1:8000",
-                        "http://[::1]:8000",
-                    ],
+                    &default_allowed_origins,
                 )?,
                 allow_missing_origin: env_bool(
                     &read_variable,
@@ -309,6 +320,11 @@ impl AppConfig {
                     false,
                 )?,
                 sse_enabled: env_bool(&read_variable, "MCP__TRANSPORT__SSE_ENABLED", false)?,
+                stateless_2026_07_28_enabled: env_bool(
+                    &read_variable,
+                    "MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED",
+                    false,
+                )?,
                 max_concurrent_requests: env_usize(
                     &read_variable,
                     "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
@@ -458,6 +474,17 @@ fn env_exact_string_list(
     match read_env(read_variable, name)? {
         Some(value) => split_exact_env_list(name, &value),
         None => Ok(defaults.iter().copied().map(str::to_owned).collect()),
+    }
+}
+
+fn env_exact_string_list_owned(
+    read_variable: &impl Fn(&str) -> Result<String, env::VarError>,
+    name: &str,
+    defaults: &[String],
+) -> anyhow::Result<Vec<String>> {
+    match read_env(read_variable, name)? {
+        Some(value) => split_exact_env_list(name, &value),
+        None => Ok(defaults.to_vec()),
     }
 }
 
@@ -818,6 +845,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:8000".to_owned()],
             allow_missing_origin: false,
             sse_enabled: false,
+            stateless_2026_07_28_enabled: false,
             max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
@@ -961,6 +989,7 @@ mod tests {
         assert!(!config.file.copy_file_mutation_enabled);
         assert!(!config.file.trash_file_mutation_enabled);
         assert!(!config.transport.sse_enabled);
+        assert!(!config.transport.stateless_2026_07_28_enabled);
         assert_eq!(
             config.file.safe_roots,
             vec![PathBuf::from(DEFAULT_FILE_SAFE_ROOT)]
@@ -977,6 +1006,30 @@ mod tests {
             load_from_os_values([("MCP__TRANSPORT__SSE_ENABLED", OsString::from("sometimes"))])
                 .expect_err("invalid SSE transport booleans must fail closed");
         assert!(error.to_string().contains("MCP__TRANSPORT__SSE_ENABLED"));
+    }
+
+    #[test]
+    fn stateless_2026_transport_requires_explicit_boolean_opt_in() {
+        let default = load_from_os_values([]).unwrap();
+        assert!(!default.transport.stateless_2026_07_28_enabled);
+
+        let enabled = load_from_os_values([(
+            "MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED",
+            OsString::from("true"),
+        )])
+        .unwrap();
+        assert!(enabled.transport.stateless_2026_07_28_enabled);
+        let debug = format!("{:?}", enabled.transport);
+        assert!(debug.contains("stateless_2026_07_28_enabled: true"));
+
+        let error = load_from_os_values([(
+            "MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED",
+            OsString::from("sometimes"),
+        )])
+        .expect_err("invalid stateless transport booleans must fail closed");
+        assert!(error
+            .to_string()
+            .contains("MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED"));
     }
 
     #[test]
@@ -1597,6 +1650,7 @@ mod tests {
             "MCP__TRANSPORT__ALLOWED_ORIGINS",
             "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN",
             "MCP__TRANSPORT__SSE_ENABLED",
+            "MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED",
             "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS",
             "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS",
             "MCP__TRANSPORT__MAX_BODY_BYTES",
@@ -1634,6 +1688,47 @@ mod tests {
         let config = load_from_os_values([("MCP__SERVER__PORT", OsString::from(" 65535 "))])
             .expect("highest stable TCP port should be accepted");
         assert_eq!(config.server.port, 65535);
+    }
+
+    #[test]
+    fn default_transport_allowlists_follow_the_configured_listener_port() {
+        let config = load_from_os_values([("MCP__SERVER__PORT", OsString::from("49152"))])
+            .expect("custom listener port should produce matching transport defaults");
+
+        assert_eq!(
+            config.transport.allowed_hosts,
+            ["localhost:49152", "127.0.0.1:49152", "[::1]:49152"]
+        );
+        assert_eq!(
+            config.transport.allowed_origins,
+            [
+                "http://localhost:49152",
+                "http://127.0.0.1:49152",
+                "http://[::1]:49152"
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_transport_allowlists_are_not_rewritten_for_the_listener_port() {
+        let config = load_from_os_values([
+            ("MCP__SERVER__PORT", OsString::from("49152")),
+            (
+                "MCP__TRANSPORT__ALLOWED_HOSTS",
+                OsString::from("mcp.example.test:443"),
+            ),
+            (
+                "MCP__TRANSPORT__ALLOWED_ORIGINS",
+                OsString::from("https://mcp.example.test:443"),
+            ),
+        ])
+        .expect("explicit exact transport allowlists should remain authoritative");
+
+        assert_eq!(config.transport.allowed_hosts, ["mcp.example.test:443"]);
+        assert_eq!(
+            config.transport.allowed_origins,
+            ["https://mcp.example.test:443"]
+        );
     }
 
     #[test]
