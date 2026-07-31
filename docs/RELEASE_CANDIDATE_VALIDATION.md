@@ -49,7 +49,7 @@ chmod 600 "$TOKEN_FILE"
 
 cat >"$CONFIG" <<EOF
 EXPECTED_COMMIT=<full-40-character-main-commit>
-EXPECTED_VERSION=0.6.0
+EXPECTED_VERSION=0.7.0
 DEFAULT_ARTIFACT=$HOME/artifacts/default/termux-mcp-server
 DEFAULT_SHA256=<64-lowercase-hex>
 DEFAULT_MANIFEST=$HOME/artifacts/default/artifact-manifest.json

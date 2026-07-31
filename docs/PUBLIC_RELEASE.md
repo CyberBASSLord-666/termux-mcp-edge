@@ -95,9 +95,9 @@ Preflight performs the complete verification without producing a retained artifa
 
 ## Staged payload
 
-For v0.6.0 the tar is named `termux-mcp-server-v0.6.0-release-stage-<sha12>.tar`. It contains:
+For v0.7.0 the tar is named `termux-mcp-server-v0.7.0-release-stage-<sha12>.tar`. It contains:
 
-- seven byte-identical binaries under the final `termux-mcp-server-v0.6.0-aarch64-linux-android-<posture>` names;
+- seven byte-identical binaries under the final `termux-mcp-server-v0.7.0-aarch64-linux-android-<posture>` names;
 - one checksum sidecar per binary and a combined `SHA256SUMS`;
 - the unchanged workflow manifests under unambiguous names;
 - the automated qualification plus its aggregate, specialized, classifier, and deployment evidence;
@@ -109,18 +109,18 @@ The staging manifest binds the exact source plus CI, Security, Android, and qual
 
 ## Fixed public asset set
 
-The v0.6.0 draft must begin empty and, after the protected attachment job, contain exactly sixteen assets:
+The v0.7.0 draft must begin empty and, after the protected attachment job, contain exactly sixteen assets:
 
 1. the seven versioned Android binaries listed in [Android validation artifacts](ANDROID_ARTIFACTS.md);
 2. the seven matching `<binary-name>.sha256` sidecars;
 3. `SHA256SUMS`; and
-4. the unchanged raw `termux-mcp-server-v0.6.0-release-stage-<sha12>.tar` downloaded from the exact staging Actions artifact.
+4. the unchanged raw `termux-mcp-server-v0.7.0-release-stage-<sha12>.tar` downloaded from the exact staging Actions artifact.
 
 The first fifteen files are byte-for-byte members extracted from that tar. The sixteenth is the tar itself, byte-for-byte unchanged. The closed `release-staging-manifest-v2.json`, workflow manifests, LICENSE, sanitized evidence, and all four retained-runtime members remain only inside the raw tar and are not separate GitHub Release assets. A different count, filename, byte length, digest, upload state, or duplicate name fails the draft.
 
 `scripts/prepare_release_publication_assets.sh` validates this projection in a private bundle and exposes the complete `assets/` directory plus `release-publication-receipt-v1.json` with one atomic no-replace directory rename. Bundle-directory existence is the completion marker: an incomplete run exposes neither sibling, and a competing bundle is never replaced or deleted. The receipt is verification state, not a seventeenth Release asset; it remains private and must not be uploaded.
 
-GitHub automatically offers tag-derived source ZIP and tar archives. Those generated downloads are not members of the sixteen-asset contract, are not Android binaries, and are not covered by the publisher's asset digest or `verify-asset` proof. The v0.6.0 contract also makes no separate SBOM or third-party-notice asset claim. Adding any new durable asset requires a separately reviewed staging and publication contract change; it must not be appended during a live release.
+GitHub automatically offers tag-derived source ZIP and tar archives. Those generated downloads are not members of the sixteen-asset contract, are not Android binaries, and are not covered by the publisher's asset digest or `verify-asset` proof. The v0.7.0 contract also makes no separate SBOM or third-party-notice asset claim. Adding any new durable asset requires a separately reviewed staging and publication contract change; it must not be appended during a live release.
 
 ## Publication dispatch
 
@@ -128,14 +128,14 @@ Dispatch `Publish Immutable Release` from [`.github/workflows/publish-release.ym
 
 Preflight is read-only. It requires the dispatch workflow/ref/SHA and current `main` to identify the same commit; validates the version-derived protected annotated tag and supplied tag-object SHA; resolves the exact successful first-attempt staging run from the supplied artifact ID; requires the one named unexpired staging artifact by both ID and server digest; downloads that raw tar by ID with digest mismatch as an error; and validates the complete staging tar, manifest, provenance, evidence lineage, member allowlist, and fixed sixteen-asset projection. It also requires the supplied Release ID to be the one `draft: true`, `prerelease: false`, exact-tag draft with the exact version title, blank body, and zero assets. An existing published Release, another draft for the tag, a lightweight/moved tag, or any pre-existing asset is a hard failure.
 
-## Operator worksheet (v0.6.0)
+## Operator worksheet (v0.7.0)
 
 Use this worksheet for one unchanged candidate. Record values only from GitHub or the exact checked-out commit; never guess an ID or digest, and never paste a credential into a workflow input.
 
 | Checkpoint | Exact value to record |
 | --- | --- |
 | Candidate | `expected_commit=<40-character current main SHA>` |
-| Candidate | `version=0.6.0` |
+| Candidate | `version=0.7.0` |
 | Candidate | `android_run_id=<successful first-attempt Android push run ID>` |
 | Stage result | `staging_run_id=<successful first-attempt staging run ID>` |
 | Stage result | `staged_artifact_id=<ID from the successful staging summary>` |
@@ -157,7 +157,7 @@ Follow these steps in order:
 
    RELEASE_REPO=CyberBASSLord-666/termux-mcp-edge
    RELEASE_REMOTE_URL="https://github.com/$RELEASE_REPO.git"
-   RELEASE_VERSION=0.6.0
+   RELEASE_VERSION=0.7.0
    RELEASE_COMMIT=PASTE_40_CHARACTER_EXPECTED_COMMIT_HERE
    RELEASE_TAG="v$RELEASE_VERSION"
 
@@ -191,14 +191,14 @@ Follow these steps in order:
    ```
 
    Copy the final command's 40-character result as `expected_tag_object_sha`. A pre-existing tag, a lightweight tag, a different target, or any need for `--force` is a stop condition.
-4. Open **Releases → Draft a new release**, choose the existing `v0.6.0` tag, set the title to exactly `v0.6.0`, leave the body completely blank, leave prerelease disabled, attach nothing, and save as a draft. There must be exactly one draft for the tag and it must have zero assets.
+4. Open **Releases → Draft a new release**, choose the existing `v0.7.0` tag, set the title to exactly `v0.7.0`, leave the body completely blank, leave prerelease disabled, attach nothing, and save as a draft. There must be exactly one draft for the tag and it must have zero assets.
 5. Capture the numeric draft ID with an authenticated GitHub CLI plus `jq`, or obtain the same ID from an independently authenticated paginated Releases API read:
 
    ```bash
    set -euo pipefail
 
    RELEASE_REPO=CyberBASSLord-666/termux-mcp-edge
-   RELEASE_VERSION=0.6.0
+   RELEASE_VERSION=0.7.0
 
    DRAFT_RELEASE_ID="$(
      gh api --paginate --slurp "repos/$RELEASE_REPO/releases?per_page=100" |

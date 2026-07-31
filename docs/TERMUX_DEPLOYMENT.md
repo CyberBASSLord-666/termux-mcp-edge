@@ -158,7 +158,7 @@ SHA-256 verification is required by default. An advanced operator may explicitly
 ```bash
 scripts/termux_deploy.sh install \
   --artifact "$ARTIFACT" \
-  --version 0.6.0 \
+  --version 0.7.0 \
   --sha256 "$ARTIFACT_SHA256"
 ```
 
@@ -173,7 +173,7 @@ NEW_ARTIFACT="/path/to/termux-mcp-server"
 NEW_SHA256="$(sha256sum "$NEW_ARTIFACT" | awk '{print $1}')"
 scripts/termux_deploy.sh upgrade \
   --artifact "$NEW_ARTIFACT" \
-  --version 0.6.0 \
+  --version 0.7.0 \
   --sha256 "$NEW_SHA256"
 ```
 
@@ -210,7 +210,7 @@ rolled back, or recovered; a stale process cannot qualify another release.
 ```bash
 scripts/termux_deploy.sh upgrade \
   --artifact "$NEW_ARTIFACT" \
-  --version 0.6.0 \
+  --version 0.7.0 \
   --sha256 "$NEW_SHA256" \
   --dry-run
 ```
@@ -274,4 +274,10 @@ For a public production installation, accept binaries only from the exact publis
 9. Exercise rollback and restoration behavior.
 10. Preserve the prior known-good release until sustained device validation is complete under realistic battery, thermal, and process-restriction conditions.
 
-For the first governed public release, v0.6.0 has no authoritative prior public release to roll back to. The exact-main v0.5.1 candidate recorded in [`V0.6.0_RELEASE_CANDIDATE.md`](V0.6.0_RELEASE_CANDIDATE.md) is internal upgrade/recovery validation evidence, not a published installation source. A clean v0.6.0 installation can be uninstalled, but it cannot use `rollback` until a second complete release has been installed through this manager.
+The current v0.7.0 source is an unpublished development baseline and has no
+authoritative prior public release to roll back to. The v0.6.0 candidate was
+cancelled before publication; its preserved
+[`candidate record`](V0.6.0_RELEASE_CANDIDATE.md) is historical validation
+evidence, not an installation or rollback source. A future clean v0.7.0
+installation can be uninstalled, but it cannot use `rollback` until another
+complete release has been installed through this manager.

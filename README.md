@@ -51,7 +51,7 @@ ARTIFACT_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
 chmod 700 scripts/termux_deploy.sh
 scripts/termux_deploy.sh install \
   --artifact "$ARTIFACT" \
-  --version 0.6.0 \
+  --version 0.7.0 \
   --sha256 "$ARTIFACT_SHA256"
 ```
 
@@ -74,7 +74,7 @@ Automated release qualification proves the exact artifacts under the digest-pinn
 ## Current runtime scope
 
 - **Runtime:** Rust single binary using Axum.
-- **Source package version:** `0.6.0`. Release authority comes only from an immutable GitHub Release whose exact-main public proof passed; version metadata or a tag alone is insufficient.
+- **Source package version:** `0.7.0` (active development; unpublished). `Cargo.toml` is authoritative for source builds, and CI requires the root lockfile entry and current changelog section to match it. Release authority still comes only from an immutable GitHub Release whose exact-main public proof passed; version metadata or a tag alone is insufficient.
 - **Operational endpoints:** `GET /health` and `GET /ready`.
 - **Optional MCP endpoint:** authenticated Streamable HTTP `POST`, `GET`, and `DELETE /mcp` handling when built with `--features mcp-runtime`; GET returns 405 by default, while the explicit SSE posture accepts only cursor-bearing replay GETs.
 - **Staged MCP discovery:** `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`; independent battery, volume-status, fixed-command, and request-authorized volume-control builds may additionally expose their narrowly bounded tool after explicit runtime opt-in.
@@ -408,7 +408,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)
 - [Downloaded release-candidate validation](docs/RELEASE_CANDIDATE_VALIDATION.md)
 - [Native ARM64 Termux emulated release gate](docs/EMULATED_RELEASE_GATE.md)
-- [v0.6.0 release-candidate record](docs/V0.6.0_RELEASE_CANDIDATE.md)
+- [Cancelled v0.6.0 release-candidate record](docs/V0.6.0_RELEASE_CANDIDATE.md)
 - [Public release staging, protected publication, and immutable proof](docs/PUBLIC_RELEASE.md)
 - [Termux deployment and recovery](docs/TERMUX_DEPLOYMENT.md)
 - [Operator validation checklist](docs/operator-validation.md)

@@ -14,15 +14,15 @@ The workflow builds seven governed feature postures. The first six preserve leas
 
 Artifact names are part of the release evidence. Do not rename an artifact to a generic Android name or substitute one posture for another. In particular, a raw Cargo `--all-features` build is a development compatibility lane, not the governed `full-suite` bundle.
 
-The workflow names above identify expiring validation bundles. Durable v0.6.0 GitHub Release assets, if publication is separately approved after final exact-main validation, must use:
+The workflow names above identify expiring validation bundles. Durable v0.7.0 GitHub Release assets, if publication is separately approved after final exact-main validation, must use:
 
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-default`;
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-mcp-runtime`;
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-android-battery-status` for a release that includes the optional battery posture.
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-android-volume-status` for a release that includes the optional volume posture.
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-android-volume-control` for a release that includes request-authorized volume control.
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-command-execution` for a release that includes the optional fixed-command posture.
-- `termux-mcp-server-v0.6.0-aarch64-linux-android-full-suite` for the governed aggregate posture.
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-default`;
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-mcp-runtime`;
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-android-battery-status` for a release that includes the optional battery posture.
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-android-volume-status` for a release that includes the optional volume posture.
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-android-volume-control` for a release that includes request-authorized volume control.
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-command-execution` for a release that includes the optional fixed-command posture.
+- `termux-mcp-server-v0.7.0-aarch64-linux-android-full-suite` for the governed aggregate posture.
 
 Each durable binary must be accompanied by its matching `.sha256` sidecar. The closed public inventory is exactly the seven binaries, seven sidecars, combined `SHA256SUMS`, and unchanged raw deterministic staging tar. The tar retains all seven workflow manifests, the release-staging manifest, LICENSE, sanitized component evidence, and the retained runtime archive/package lock/snapshot/offline replay under `evidence/runtime/`. Those members are not separate Release assets, and GitHub's generated source archives are not governed Android assets. A workflow bundle must not be presented as the durable release asset merely because its internal executable has the expected digest.
 
