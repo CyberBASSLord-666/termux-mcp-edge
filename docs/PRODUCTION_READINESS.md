@@ -101,6 +101,15 @@ were individually installed:
 
 Run exact downloaded artifacts through the native ARM64 official-Termux gate in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). The resulting `official_termux_native_automated_v1` envelope is the ordinary release qualification. Run [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) only when separate physical certification is requested; historical physical observation and inheritance records do not substitute for, or broaden, the automated class.
 
+The independent manual
+[`Android Rish Physical Identity`](SHIZUKU_RISH_PHYSICAL_WORKFLOW.md)
+workflow is narrower still: it can establish only the development S2.5
+Shizuku/rish UID-2000 identity probe for an exact open same-repository PR
+head. Its closed evidence always records `releaseEligible:false` and
+`productionControlQualified:false`; it is not an eighth governed Android
+release artifact, physical production certification, S3 attestation, or
+authority for any device mutation.
+
 Release validator v11 and the native official-Termux gates must execute deterministic authorization contracts for all four filesystem mutation families against the exact workflow artifact. They must also prove the full-suite 17-disabled/21-enabled truth table while keeping every optional provider flag and request-grant family independent. Reversible trash evidence must prove default-disabled discovery and denial, exact grant issuance, target identity/content binding, authorized recovery retention, mismatch denial, preflight preservation, private response/audit evidence, separate quarantine isolation/capacity, and service cleanup through deployment upgrade/rollback/uninstall. Device harness v11 is required only when separate physical certification is requested; it is not an input to ordinary automated release qualification.
 
 Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through the exact native workflow. The final exact-main commit needs passing aggregate [`emulated-release-evidence-schema-v4.json`](emulated-release-evidence-schema-v4.json), four specialized provider reports, classifier v3, the committed isolated deployment/recovery gate, and a closed [`release-automated-qualification-schema-v1.json`](release-automated-qualification-schema-v1.json) envelope. The Android run must expose exactly nine 30-day artifacts; the qualifier must expose one exact twelve-member artifact. The envelope binds all seven workflow manifests and binaries, immutable policy/scenario digests, the content-addressed runtime archive, package lock, snapshot, and no-network replay. It explicitly records `physicalDeviceObserved:false`, `androidFrameworkObserved:false`, `sustainedPhysicalSoak:false`, `physicalCertification:"not_run"`, and `rebuildReproducibilityClaim:false`.

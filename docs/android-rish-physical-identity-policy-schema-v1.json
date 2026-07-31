@@ -1,0 +1,459 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/android-rish-physical-identity-policy-schema-v1.json",
+  "title": "Termux MCP Edge physical Shizuku/rish identity policy v1",
+  "description": "Closed policy for development-only physical validation of the S2.5 Shizuku/rish UID probe. It cannot qualify a release or production device control.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "policyVersion",
+    "gateVersion",
+    "qualificationClass",
+    "scope",
+    "releaseEligible",
+    "productionControlQualified",
+    "evidenceFileName",
+    "maximumEvidenceBytes",
+    "maximumRawReportBytes",
+    "maximumObservationSeconds",
+    "workflow",
+    "artifact",
+    "environment",
+    "backend",
+    "validation",
+    "claimBoundary",
+    "cleanup",
+    "privacy"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "policyVersion": {
+      "const": "1"
+    },
+    "gateVersion": {
+      "const": "1"
+    },
+    "qualificationClass": {
+      "const": "physical_shizuku_rish_identity_development_v1"
+    },
+    "scope": {
+      "const": "s2_5_uid_probe_only"
+    },
+    "releaseEligible": {
+      "const": false
+    },
+    "productionControlQualified": {
+      "const": false
+    },
+    "evidenceFileName": {
+      "const": "android-rish-physical-identity-evidence-v1.json"
+    },
+    "maximumEvidenceBytes": {
+      "const": 65536
+    },
+    "maximumRawReportBytes": {
+      "const": 16777216
+    },
+    "maximumObservationSeconds": {
+      "const": 1800
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflow"
+    },
+    "artifact": {
+      "$ref": "#/$defs/artifact"
+    },
+    "environment": {
+      "$ref": "#/$defs/environment"
+    },
+    "backend": {
+      "$ref": "#/$defs/backend"
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    },
+    "claimBoundary": {
+      "$ref": "#/$defs/claimBoundary"
+    },
+    "cleanup": {
+      "$ref": "#/$defs/cleanup"
+    },
+    "privacy": {
+      "$ref": "#/$defs/privacy"
+    }
+  },
+  "$defs": {
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "runAttempt",
+        "event",
+        "protectedEnvironment",
+        "definitionAndCompanionRunsRequired"
+      ],
+      "properties": {
+        "name": {
+          "const": "Android Rish Physical Identity"
+        },
+        "runAttempt": {
+          "const": 1
+        },
+        "event": {
+          "const": "workflow_dispatch"
+        },
+        "protectedEnvironment": {
+          "const": "android-rish-physical-development"
+        },
+        "definitionAndCompanionRunsRequired": {
+          "const": true
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactName",
+        "posture",
+        "features",
+        "target",
+        "maximumBytes"
+      ],
+      "properties": {
+        "artifactName": {
+          "const": "termux-mcp-server-aarch64-linux-android-android-rish-development"
+        },
+        "posture": {
+          "const": "android-rish-development"
+        },
+        "features": {
+          "const": [
+            "android-rish"
+          ]
+        },
+        "target": {
+          "const": "aarch64-linux-android"
+        },
+        "maximumBytes": {
+          "const": 67108864
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physicalDeviceObserved",
+        "androidFrameworkObserved",
+        "architecture",
+        "minimumApiLevel",
+        "maximumApiLevel",
+        "adbShellUid",
+        "shizukuStartMode",
+        "termuxPackageName",
+        "versionAndSignerCommitmentsRequired",
+        "buildFingerprintCommitmentRequired"
+      ],
+      "properties": {
+        "physicalDeviceObserved": {
+          "const": true
+        },
+        "androidFrameworkObserved": {
+          "const": true
+        },
+        "architecture": {
+          "const": "aarch64"
+        },
+        "minimumApiLevel": {
+          "const": 30
+        },
+        "maximumApiLevel": {
+          "const": 36
+        },
+        "adbShellUid": {
+          "const": 2000
+        },
+        "shizukuStartMode": {
+          "const": "adb"
+        },
+        "termuxPackageName": {
+          "const": "com.termux"
+        },
+        "versionAndSignerCommitmentsRequired": {
+          "const": true
+        },
+        "buildFingerprintCommitmentRequired": {
+          "const": true
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "principal",
+        "uid",
+        "state",
+        "rootAccepted",
+        "arbitraryShell",
+        "mutationReady",
+        "timeoutSeconds",
+        "stdoutBytes",
+        "stderrBytes",
+        "minimumDexBytes",
+        "maximumDexBytes",
+        "dexMode",
+        "dexParentMode",
+        "dexLinkCount",
+        "dexOwnerMatchesTermuxUid",
+        "dexCanonicalPrivatePath"
+      ],
+      "properties": {
+        "name": {
+          "const": "shizuku_rish"
+        },
+        "principal": {
+          "const": "android_shell"
+        },
+        "uid": {
+          "const": 2000
+        },
+        "state": {
+          "const": "verified_shell_uid"
+        },
+        "rootAccepted": {
+          "const": false
+        },
+        "arbitraryShell": {
+          "const": false
+        },
+        "mutationReady": {
+          "const": false
+        },
+        "timeoutSeconds": {
+          "const": 5
+        },
+        "stdoutBytes": {
+          "const": 1024
+        },
+        "stderrBytes": {
+          "const": 4096
+        },
+        "minimumDexBytes": {
+          "const": 1
+        },
+        "maximumDexBytes": {
+          "const": 16777216
+        },
+        "dexMode": {
+          "const": "0400"
+        },
+        "dexParentMode": {
+          "const": "0700"
+        },
+        "dexLinkCount": {
+          "const": 1
+        },
+        "dexOwnerMatchesTermuxUid": {
+          "const": true
+        },
+        "dexCanonicalPrivatePath": {
+          "const": true
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disabledToolCount",
+        "enabledToolCount",
+        "exactToolOrder",
+        "emptyArgumentsSchema",
+        "extraArgumentsRejected",
+        "unknownShellRejected",
+        "allMutationGatesDisabled",
+        "controllerOfflinePosturePreCandidate",
+        "trustedDirectRishProbePreCandidate",
+        "trustedDirectRishProbePostCandidate",
+        "controllerOfflinePosturePostCandidate",
+        "dexTamperRejected",
+        "dexModeRejected",
+        "dexSymlinkRejected",
+        "scenarioIds"
+      ],
+      "properties": {
+        "disabledToolCount": {
+          "const": 17
+        },
+        "enabledToolCount": {
+          "const": 18
+        },
+        "exactToolOrder": {
+          "const": true
+        },
+        "emptyArgumentsSchema": {
+          "const": true
+        },
+        "extraArgumentsRejected": {
+          "const": true
+        },
+        "unknownShellRejected": {
+          "const": true
+        },
+        "allMutationGatesDisabled": {
+          "const": true
+        },
+        "controllerOfflinePosturePreCandidate": {
+          "const": true
+        },
+        "trustedDirectRishProbePreCandidate": {
+          "const": true
+        },
+        "trustedDirectRishProbePostCandidate": {
+          "const": true
+        },
+        "controllerOfflinePosturePostCandidate": {
+          "const": true
+        },
+        "dexTamperRejected": {
+          "const": true
+        },
+        "dexModeRejected": {
+          "const": true
+        },
+        "dexSymlinkRejected": {
+          "const": true
+        },
+        "scenarioIds": {
+          "const": [
+            "controller_offline_posture_pre_candidate",
+            "trusted_direct_rish_probe_pre_candidate",
+            "runtime_disabled_tool_absent",
+            "candidate_mcp_status_uid_2000",
+            "extra_arguments_rejected",
+            "unknown_shell_rejected",
+            "dex_tamper_rejected",
+            "dex_mode_rejected",
+            "dex_symlink_rejected",
+            "all_mutation_gates_disabled",
+            "trusted_direct_rish_probe_post_candidate",
+            "controller_offline_posture_post_candidate",
+            "bounded_test_fixture_cleanup",
+            "device_slot_quarantined_after_candidate"
+          ]
+        }
+      }
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "s3Attestation",
+        "typedReads",
+        "grantV2",
+        "deviceMutation",
+        "productionControl",
+        "sameUidPersistenceExcluded",
+        "continuousNetworkIsolation",
+        "adversarialNetworkIsolation"
+      ],
+      "properties": {
+        "s3Attestation": {
+          "const": false
+        },
+        "typedReads": {
+          "const": false
+        },
+        "grantV2": {
+          "const": false
+        },
+        "deviceMutation": {
+          "const": false
+        },
+        "productionControl": {
+          "const": false
+        },
+        "sameUidPersistenceExcluded": {
+          "const": false
+        },
+        "continuousNetworkIsolation": {
+          "const": false
+        },
+        "adversarialNetworkIsolation": {
+          "const": false
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateProcessGroupStopped",
+        "portReleased",
+        "deviceFixtureStateRemoved",
+        "controllerTransportRemoved",
+        "deviceSlotQuarantinedAfterCandidate"
+      ],
+      "properties": {
+        "candidateProcessGroupStopped": {
+          "const": true
+        },
+        "portReleased": {
+          "const": true
+        },
+        "deviceFixtureStateRemoved": {
+          "const": true
+        },
+        "controllerTransportRemoved": {
+          "const": true
+        },
+        "deviceSlotQuarantinedAfterCandidate": {
+          "const": true
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rawCommandOutputPublic",
+        "rawPrivateReportPublic",
+        "deviceIdentifiersPublic",
+        "devicePathsPublic",
+        "secretsPublic",
+        "packageInventoryPublic",
+        "settingsValuesPublic"
+      ],
+      "properties": {
+        "rawCommandOutputPublic": {
+          "const": false
+        },
+        "rawPrivateReportPublic": {
+          "const": false
+        },
+        "deviceIdentifiersPublic": {
+          "const": false
+        },
+        "devicePathsPublic": {
+          "const": false
+        },
+        "secretsPublic": {
+          "const": false
+        },
+        "packageInventoryPublic": {
+          "const": false
+        },
+        "settingsValuesPublic": {
+          "const": false
+        }
+      }
+    }
+  }
+}

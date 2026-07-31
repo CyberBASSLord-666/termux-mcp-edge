@@ -16,14 +16,18 @@ on:
       - "benches/**"
       - "examples/**"
       - "scripts/**"
+      - "scripts/resolve_shizuku_rish_candidate.sh"
       - "*.md"
       - "docs/**/*.md"
+      - "docs/SHIZUKU_RISH_PHYSICAL_WORKFLOW.md"
       - "docs/release-evidence-schema-v*.json"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
       - "docs/android-volume-emulated-evidence-schema-v*.json"
       - "docs/android-volume-control-emulated-evidence-schema-v*.json"
       - "docs/command-emulated-evidence-schema-v*.json"
+      - "docs/android-rish-development-artifact-schema-v*.json"
+      - "docs/android-rish-physical-identity-*.json"
       - "docs/release-observation-requirement-schema-v*.json"
       - "docs/release-observation-inheritance-schema-v*.json"
       - "docs/release-physical-qualification-schema-v*.json"
@@ -226,6 +230,12 @@ jobs:
       - name: Shell contract tests
         run: |
           bash tests/package_android_artifact_test.sh
+          bash tests/package_shizuku_rish_test_artifact_test.sh
+          bash tests/resolve_shizuku_rish_candidate_test.sh
+          bash tests/rish_physical_identity_evidence_test.sh
+          bash tests/shizuku_rish_physical_controller_test.sh
+          bash tests/shizuku_rish_physical_workflow_test.sh
+          bash tests/termux_rish_physical_gate_test.sh
           bash tests/termux_deploy_test.sh
           bash tests/termux_device_smoke_test.sh
           bash tests/termux_emulated_gate_test.sh

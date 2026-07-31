@@ -316,6 +316,12 @@ cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 cargo build --locked --release --features full-suite
 bash tests/package_android_artifact_test.sh
+bash tests/package_shizuku_rish_test_artifact_test.sh
+bash tests/resolve_shizuku_rish_candidate_test.sh
+bash tests/rish_physical_identity_evidence_test.sh
+bash tests/shizuku_rish_physical_controller_test.sh
+bash tests/shizuku_rish_physical_workflow_test.sh
+bash tests/termux_rish_physical_gate_test.sh
 bash tests/termux_deploy_test.sh
 bash tests/termux_device_smoke_test.sh
 bash tests/termux_emulated_gate_test.sh
@@ -403,6 +409,7 @@ Use [`docs/operator-validation.md`](docs/operator-validation.md) for authenticat
 - [Android battery status tool](docs/ANDROID_BATTERY_STATUS.md)
 - [Android volume status tool](docs/ANDROID_VOLUME_STATUS.md)
 - [Request-authorized Android volume control](docs/ANDROID_VOLUME_CONTROL.md)
+- [Protected Shizuku/rish physical identity development workflow](docs/SHIZUKU_RISH_PHYSICAL_WORKFLOW.md)
 - [Fixed-profile command diagnostics](docs/command-execution-gate.md)
 - [Command profile validation runbook](docs/command-profile-validation.md)
 - [Exact-commit Termux device production gate](docs/DEVICE_PRODUCTION_GATE.md)

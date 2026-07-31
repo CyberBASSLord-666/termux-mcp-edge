@@ -399,6 +399,22 @@ grep -Fq 'bash tests/runtime_snapshot_replay_test.sh' CONTRIBUTING.md \
   || fail contributing_runtime_snapshot_replay_gate_missing
 grep -Fq 'bash tests/automated_release_qualification_workflow_test.sh' CONTRIBUTING.md \
   || fail contributing_automated_qualification_workflow_gate_missing
+for physical_test in \
+  package_shizuku_rish_test_artifact_test.sh \
+  resolve_shizuku_rish_candidate_test.sh \
+  rish_physical_identity_evidence_test.sh \
+  shizuku_rish_physical_controller_test.sh \
+  shizuku_rish_physical_workflow_test.sh \
+  termux_rish_physical_gate_test.sh
+do
+  command="bash tests/$physical_test"
+  grep -Fq "$command" README.md \
+    || fail "readme_physical_gate_missing_${physical_test//[^A-Za-z0-9]/_}"
+  grep -Fq "$command" CONTRIBUTING.md \
+    || fail "contributing_physical_gate_missing_${physical_test//[^A-Za-z0-9]/_}"
+  grep -Fq "$command" .github/workflows/ci.yml \
+    || fail "ci_physical_gate_missing_${physical_test//[^A-Za-z0-9]/_}"
+done
 grep -Fq 'only when requesting the separate optional physical-certification tier' docs/VALIDATION.md \
   || fail validation_optional_physical_certification_boundary_missing
 grep -Fq 'separate completed-run qualifier and protected staging review' docs/ANDROID_ARTIFACTS.md \

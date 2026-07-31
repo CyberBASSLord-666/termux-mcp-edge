@@ -413,6 +413,19 @@ BUILD_FEATURES=command-execution \
 
 The `Android Cross Compile` workflow validates all seven governed postures on relevant pull requests, exact-main pushes, and deliberate manual dispatches. A version tag never rebuilds a candidate. Protected staging accepts only a first-attempt successful exact-main push run and preserves its bytes. Require default, `mcp-runtime`, `android-battery-status`, `android-volume-status`, `android-volume-control`, `command-execution`, and `full-suite` before treating a candidate run as complete. Verify commit, digest, Android AArch64 ELF identity, size, embedded version, and native-Termux evidence as described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md). Aggregate schema/gate-v4 evidence must bind the full-suite digest and manifest to the exact 17/18/21 truth table and claim boundary. Classifier v3, isolated deployment/recovery, and the closed automated envelope complete the release qualification. [`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) defines the 30-day evidence window and exact-byte staging gate.
 
+The independent, manual
+[`Android Rish Physical Identity`](SHIZUKU_RISH_PHYSICAL_WORKFLOW.md)
+workflow validates only the development S2.5 Shizuku/rish UID-2000 identity
+probe for an exact same-repository pull-request head. It builds the candidate
+only on a hosted runner, executes only default-branch controller and gate code
+on the protected physical runner, and repeats closed evidence validation on
+hosted runners before and after a separate protected final review. Its
+evidence always records `releaseEligible:false`,
+`productionControlQualified:false`,
+`qualificationClass:"physical_shizuku_rish_identity_development_v1"`, and
+`scope:"s2_5_uid_probe_only"`. It does not add an eighth release posture or
+alter any release artifact, staging, or publication inventory.
+
 Publication validation starts from the raw staged tar, never a rebuild. Require a protected annotated tag and pre-created empty draft; exact staging run/artifact ID and server digest; protected attachment of exactly seven binaries, seven `.sha256` sidecars, `SHA256SUMS`, and that unchanged raw tar; fresh read-only re-download and byte verification of all sixteen assets; disjoint final approval; complete post-approval revalidation; `immutable:true`; and a public re-download proof. A workflow bundle, stage, tag, or draft is never a validation substitute or installation source.
 
 ## MCP Runtime Gate
