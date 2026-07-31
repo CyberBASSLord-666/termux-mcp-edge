@@ -209,6 +209,12 @@ impl BoundedProcess {
         })
     }
 
+    #[cfg(any(
+        feature = "android-battery-status",
+        feature = "android-volume-status",
+        feature = "command-execution",
+        test
+    ))]
     pub(crate) async fn run(&self) -> Result<BoundedProcessOutput, BoundedProcessError> {
         self.run_inner(None).await
     }
