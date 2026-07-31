@@ -33,7 +33,7 @@
     "minimumApiLevel": 30,
     "maximumApiLevel": 36,
     "adbShellUid": 2000,
-    "shizukuStartMode": "adb",
+    "requiredShizukuStartMode": "adb",
     "termuxPackageName": "com.termux",
     "versionAndSignerCommitmentsRequired": true,
     "buildFingerprintCommitmentRequired": true

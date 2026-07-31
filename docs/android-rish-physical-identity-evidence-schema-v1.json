@@ -218,7 +218,7 @@
         "deviceProfileCommitment",
         "buildFingerprintSha256",
         "adbShellUid",
-        "shizukuStartMode",
+        "shizukuStartModeObserved",
         "termuxVersion",
         "termuxSignerSha256",
         "shizukuVersion",
@@ -252,8 +252,8 @@
         "adbShellUid": {
           "const": 2000
         },
-        "shizukuStartMode": {
-          "const": "adb"
+        "shizukuStartModeObserved": {
+          "const": false
         },
         "termuxVersion": {
           "$ref": "#/$defs/version"

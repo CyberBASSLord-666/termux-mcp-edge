@@ -679,7 +679,7 @@ validate_intermediate_evidence() {
       shizukuVersion:$shizuku_version,
       shizukuSignerSha256:$shizuku_signer,
       adbShellUid:2000,
-      shizukuStartMode:"adb"
+      shizukuStartModeObserved:false
     }
     and .backend == {
       name:"shizuku_rish",

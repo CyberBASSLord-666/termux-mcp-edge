@@ -682,7 +682,7 @@ write_evidence() {
         shizukuVersion: $shizuku_version,
         shizukuSignerSha256: $shizuku_signer_sha,
         adbShellUid: $adb_shell_uid,
-        shizukuStartMode: "adb"
+        shizukuStartModeObserved: false
       },
       backend: {
         name: "shizuku_rish",

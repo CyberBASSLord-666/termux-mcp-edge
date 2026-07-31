@@ -66,25 +66,35 @@ merging that head, moving `main`, or changing any governed release inventory.
 ## Trust boundaries
 
 The workflow accepts exactly two caller inputs: a 40-character candidate
-commit and its open pull-request number. It has four ordered boundaries:
+commit and its open pull-request number. It has six ordered jobs across these
+boundaries:
 
-1. **Hosted preflight and build.** A GitHub-hosted runner resolves the open
+1. **Hosted trusted preflight.** A GitHub-hosted runner resolves the open
    non-draft same-repository PR head, verifies its two current trusted
    exact-head approvals, and requeries exact successful, first-attempt CI,
-   Security, and Android Cross Compile runs. It checks out the candidate only
-   on this hosted runner, builds the `android-rish` posture, and emits the
-   closed three-file development bundle.
-2. **Protected physical gate.** A dedicated self-hosted controller checks out
+   Security, and Android Cross Compile runs. This job has the read-only GitHub
+   token and never checks out or executes candidate source.
+2. **Permissionless candidate build.** A separate GitHub-hosted job has empty
+   GitHub permissions, no repository token or persisted checkout credential,
+   and fetches the exact authorized same-repository branch over public HTTPS.
+   It builds the `android-rish` posture and uploads the closed three-file
+   development bundle. Candidate compilation receives none of the GitHub
+   command-file variables used to modify later workflow steps.
+3. **Hosted trusted reconciliation.** A fresh token-bearing hosted job checks
+   out only the trusted workflow commit, requeries the PR and companion runs,
+   and reconciles the candidate artifact ID and digest. It never checks out or
+   executes candidate source.
+4. **Protected physical gate.** A dedicated self-hosted controller checks out
    only the workflow-definition commit from `main`, independently requeries
    the same PR and companion runs, downloads the exact hosted artifact by ID,
    and invokes only the trusted default-branch controller and device-gate
    scripts. The candidate binary is the only candidate-controlled file sent
    to the device; candidate scripts never run on the controller or device.
-3. **Hosted evidence validation.** A fresh hosted runner downloads the
+5. **Hosted evidence validation.** A fresh hosted runner downloads the
    sanitized evidence by artifact ID, requeries the candidate and companion
    runs, validates the closed policy/schema, and reconciles every committed
    identity.
-4. **Protected final review.** A separate protected environment pauses the
+6. **Protected final review.** A separate protected environment pauses the
    final hosted job. After approval, the job repeats all remote and local
    validation and uploads only
    `android-rish-physical-identity-evidence-v1.json`.
@@ -176,10 +186,10 @@ The slot JSON is closed and has exactly these fields:
 | `rishDexPath` | Fixed private canonical Termux-home path |
 | `rishDexSha256` | Lowercase SHA-256 of the pinned DEX |
 | `deviceProfileCommitment` | Lowercase SHA-256 administrator commitment |
-| `termuxVersion` | Pinned official Termux version |
-| `termuxSignerSha256` | Lowercase SHA-256 signer commitment |
-| `shizukuVersion` | Pinned Shizuku version |
-| `shizukuSignerSha256` | Lowercase SHA-256 signer commitment |
+| `termuxVersion` | Operator-pinned observed Termux package version |
+| `termuxSignerSha256` | Operator-pinned observed single-certificate SHA-256 digest |
+| `shizukuVersion` | Operator-pinned observed Shizuku package version |
+| `shizukuSignerSha256` | Operator-pinned observed single-certificate SHA-256 digest |
 
 A shape-only example, containing no usable identifiers or credentials, is:
 
@@ -207,9 +217,10 @@ The configured device must be:
 
 - a non-personal physical AArch64 Android device on API 30 through 36;
 - enrolled only for this development gate;
-- running official Termux and Shizuku installations whose versions and
-  signer commitments match the controller inventory;
-- using Shizuku started through ADB and a private pinned `rish` DEX;
+- running Termux and Shizuku packages whose observed versions and single
+  signer digests match the operator-reviewed controller inventory;
+- using Shizuku that the operator started through ADB and a private pinned
+  `rish` DEX;
 - storing that DEX as one canonical, single-link, Termux-UID-owned mode-`0400`
   regular file below a mode-`0700` private parent;
 - reachable only through the controller's fixed transport;
@@ -221,6 +232,15 @@ The configured device must be:
   before and after the candidate process executes;
 - reprovisioned or reset after every candidate execution, then manually
   inspected before any later use.
+
+The controller measures installed package versions and one signing-certificate
+digest and compares them with its private inventory. It does not compare those
+digests with an embedded publisher allowlist or prove store/source provenance;
+publisher authenticity must be reviewed out of band before enrollment. The
+closed policy records `requiredShizukuStartMode:"adb"`, but the direct rish
+probes prove shell UID `2000`, not the historical Shizuku launch path. Public
+evidence therefore records `shizukuStartModeObserved:false`; the workflow does
+not turn the operator-enforced ADB-start prerequisite into an observed claim.
 
 The controller quarantines the selected slot after every candidate execution,
 including a successful run. Reuse is prohibited until an administrator

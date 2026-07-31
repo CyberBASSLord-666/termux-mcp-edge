@@ -49,6 +49,11 @@ sha256() {
 }
 
 POLICY_SHA="$(sha256 "$POLICY")"
+test "$(jq -er '.environment.requiredShizukuStartMode' "$POLICY")" = "adb" \
+  || fail_test "policy does not retain the ADB-start requirement"
+if jq -e '.environment | has("shizukuStartModeObserved")' "$POLICY" >/dev/null; then
+  fail_test "policy conflates the ADB-start requirement with evidence observability"
+fi
 EVIDENCE="$ROOT/$EVIDENCE_FILE_NAME"
 
 jq -n \
@@ -121,7 +126,7 @@ jq -n \
       deviceProfileCommitment: $device_profile,
       buildFingerprintSha256: $build_fingerprint_sha,
       adbShellUid: 2000,
-      shizukuStartMode: "adb",
+      shizukuStartModeObserved: false,
       termuxVersion: $termux_version,
       termuxSignerSha256: $termux_signer_sha,
       shizukuVersion: $shizuku_version,

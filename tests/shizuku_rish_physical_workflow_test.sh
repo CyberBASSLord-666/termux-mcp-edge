@@ -129,16 +129,18 @@ if document.get("concurrency") != {
 
 jobs = document.get("jobs")
 expected_job_names = [
-    "preflight-build",
+    "preflight-resolve",
+    "candidate-build",
+    "candidate-review",
     "physical-gate",
     "validate-evidence",
     "final-review",
 ]
 if not isinstance(jobs, dict) or list(jobs) != expected_job_names:
-    raise SystemExit("workflow must keep the exact four ordered jobs")
+    raise SystemExit("workflow must keep the exact six ordered jobs")
 
 expected_job_contracts = {
-    "preflight-build": {
+    "preflight-resolve": {
         "runs-on": "ubuntu-24.04",
         "timeout-minutes": 30,
         "permissions": {
@@ -146,6 +148,22 @@ expected_job_contracts = {
             "contents": "read",
             "pull-requests": "read",
         },
+    },
+    "candidate-build": {
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": 30,
+        "permissions": {},
+        "needs": "preflight-resolve",
+    },
+    "candidate-review": {
+        "runs-on": "ubuntu-24.04",
+        "timeout-minutes": 15,
+        "permissions": {
+            "actions": "read",
+            "contents": "read",
+            "pull-requests": "read",
+        },
+        "needs": ["preflight-resolve", "candidate-build"],
     },
     "physical-gate": {
         "runs-on": ["self-hosted", "linux", "x64", "termux-rish-controller"],
@@ -159,7 +177,7 @@ expected_job_contracts = {
             "name": "android-rish-physical-development",
             "deployment": False,
         },
-        "needs": "preflight-build",
+        "needs": "candidate-review",
     },
     "validate-evidence": {
         "runs-on": "ubuntu-24.04",
@@ -169,7 +187,7 @@ expected_job_contracts = {
             "contents": "read",
             "pull-requests": "read",
         },
-        "needs": ["preflight-build", "physical-gate"],
+        "needs": ["candidate-review", "physical-gate"],
     },
     "final-review": {
         "runs-on": "ubuntu-24.04",
@@ -183,7 +201,7 @@ expected_job_contracts = {
             "name": "android-rish-physical-final-review",
             "deployment": False,
         },
-        "needs": ["preflight-build", "physical-gate", "validate-evidence"],
+        "needs": ["candidate-review", "physical-gate", "validate-evidence"],
     },
 }
 for job_name, expected in expected_job_contracts.items():
@@ -193,29 +211,41 @@ for job_name, expected in expected_job_contracts.items():
             raise SystemExit(f"{job_name} {key} contract changed")
     if "continue-on-error" in job or "if" in job:
         raise SystemExit(f"{job_name} may not bypass or ignore fail-closed ordering")
-    if set(job.get("permissions", {})) != {
-        "actions",
-        "contents",
-        "pull-requests",
-    }:
-        raise SystemExit(f"{job_name} gained a permission family")
-    if any(value != "read" for value in job.get("permissions", {}).values()):
-        raise SystemExit(f"{job_name} gained write authority")
+    if job_name == "candidate-build":
+        if job.get("permissions") != {}:
+            raise SystemExit("candidate build must remain permissionless")
+    else:
+        if set(job.get("permissions", {})) != {
+            "actions",
+            "contents",
+            "pull-requests",
+        }:
+            raise SystemExit(f"{job_name} gained a permission family")
+        if any(value != "read" for value in job.get("permissions", {}).values()):
+            raise SystemExit(f"{job_name} gained write authority")
 
 expected_steps = {
-    "preflight-build": [
+    "preflight-resolve": [
         "Validate closed dispatch identity",
         "Checkout trusted workflow definition",
         "Record trusted identities",
         "Resolve exact candidate and companion runs",
         "Requery current workflow invocation",
-        "Checkout exact candidate on hosted runner",
+    ],
+    "candidate-build": [
+        "Validate permissionless candidate boundary",
+        "Checkout trusted build helpers without credentials",
+        "Checkout exact candidate without credentials",
         "Install pinned Rust toolchain",
         "Install Android NDK",
         "Verify and cross-compile exact candidate",
         "Package closed development artifact",
         "Record candidate identity",
         "Upload closed development artifact",
+    ],
+    "candidate-review": [
+        "Checkout trusted reconciliation definition",
+        "Requery exact candidate and companion runs after build",
         "Reconcile uploaded candidate artifact identity",
         "Record protected physical review request",
     ],
@@ -286,11 +316,7 @@ for job_name, job in jobs.items():
             if action.startswith("actions/checkout@"):
                 if with_values.get("persist-credentials") is not False:
                     raise SystemExit("checkout credentials must remain disabled")
-                if with_values.get("ref") == "${{ inputs.expected_commit }}":
-                    candidate_checkout_jobs.append(job_name)
-                    if with_values.get("repository") != "${{ github.repository }}":
-                        raise SystemExit("candidate checkout repository is not fixed")
-                elif with_values.get("ref") != "${{ github.workflow_sha }}":
+                if with_values.get("ref") != "${{ github.workflow_sha }}":
                     raise SystemExit("trusted checkout is not bound to workflow SHA")
             if action.startswith("actions/download-artifact@"):
                 required = {
@@ -338,11 +364,14 @@ for job_name, job in jobs.items():
                 resolver_jobs.append(job_name)
             if "validate_rish_physical_identity_evidence.py" in script:
                 validator_jobs.append(job_name)
+            if step["name"] == "Checkout exact candidate without credentials":
+                candidate_checkout_jobs.append(job_name)
 
-if candidate_checkout_jobs != ["preflight-build"]:
-    raise SystemExit("candidate source may be checked out only on hosted preflight")
+if candidate_checkout_jobs != ["candidate-build"]:
+    raise SystemExit("candidate source may be fetched only by the permissionless build")
 if resolver_jobs != [
-    "preflight-build",
+    "preflight-resolve",
+    "candidate-review",
     "physical-gate",
     "validate-evidence",
     "final-review",
@@ -361,6 +390,61 @@ expected_action_counts = {
 }
 if action_counts != expected_action_counts:
     raise SystemExit(f"action count or pin changed: {action_counts!r}")
+
+candidate_job = jobs["candidate-build"]
+for step in candidate_job["steps"]:
+    if str(step.get("uses", "")).startswith("actions/checkout@"):
+        raise SystemExit("permissionless candidate build may not use token-aware checkout")
+    if {"GH_TOKEN", "GITHUB_TOKEN"} & set(step.get("env", {})):
+        raise SystemExit("permissionless candidate build received a GitHub token")
+    script = step.get("run", "")
+    if "${{ github.token }}" in script or "${{ secrets." in script:
+        raise SystemExit("permissionless candidate build references a secret context")
+
+candidate_text = "\n".join(
+    step.get("run", "")
+    for step in candidate_job["steps"]
+    if isinstance(step, dict)
+)
+for checkout_name in (
+    "Checkout trusted build helpers without credentials",
+    "Checkout exact candidate without credentials",
+):
+    checkout_step = next(
+        step for step in candidate_job["steps"] if step["name"] == checkout_name
+    )
+    checkout_env = checkout_step.get("env", {})
+    if checkout_env.get("GIT_CONFIG_GLOBAL") != "/dev/null":
+        raise SystemExit("permissionless fetch may not load global git credentials")
+    if checkout_env.get("GIT_CONFIG_NOSYSTEM") != "1":
+        raise SystemExit("permissionless fetch may not load system git credentials")
+    if checkout_env.get("GIT_TERMINAL_PROMPT") != "0":
+        raise SystemExit("permissionless fetch may not prompt for credentials")
+for marker in (
+    "https://github.com/CyberBASSLord-666/termux-mcp-edge.git",
+    "refs/heads/$EXPECTED_HEAD_BRANCH",
+    "-c credential.helper=",
+    "-c http.extraheader=",
+    'test -z "${GH_TOKEN:-}"',
+    'test -z "${GITHUB_TOKEN:-}"',
+    "-u GITHUB_ENV",
+    "-u GITHUB_OUTPUT",
+    "-u GITHUB_PATH",
+    "-u GITHUB_STEP_SUMMARY",
+):
+    if marker not in candidate_text:
+        raise SystemExit(f"permissionless candidate boundary marker missing: {marker}")
+if "resolve_shizuku_rish_candidate.sh" in candidate_text:
+    raise SystemExit("candidate build may not resolve PR state or receive its token")
+
+for trusted_job_name in ("preflight-resolve", "candidate-review"):
+    trusted_text = "\n".join(
+        step.get("run", "")
+        for step in jobs[trusted_job_name]["steps"]
+        if isinstance(step, dict)
+    )
+    if "cargo build" in trusted_text or "refs/heads/$EXPECTED_HEAD_BRANCH" in trusted_text:
+        raise SystemExit(f"{trusted_job_name} may not fetch or build candidate source")
 
 for forbidden in (
     "pull_request_target",
@@ -400,11 +484,11 @@ for marker in (
     if marker not in physical_text:
         raise SystemExit(f"physical identity binding marker missing: {marker}")
 
-if workflow_text.count("outputs.artifact-digest") != 8:
+if workflow_text.count("outputs.artifact-digest") != 6:
     raise SystemExit("artifact action digests are not propagated and reconciled")
 if workflow_text.count(".digest == $digest") != 6:
     raise SystemExit("uploaded/downloaded artifact API digests are not reconciled")
-if workflow_text.count("pull-requests: read") != 4:
+if workflow_text.count("pull-requests: read") != 5:
     raise SystemExit("every candidate resolver job requires pull-requests:read")
 
 for marker in (
@@ -461,6 +545,7 @@ jq -e '
   and .artifact.posture == "android-rish-development"
   and .artifact.features == ["android-rish"]
   and .artifact.target == "aarch64-linux-android"
+  and .environment.requiredShizukuStartMode == "adb"
   and .backend.rootAccepted == false
   and .backend.arbitraryShell == false
   and .backend.mutationReady == false
@@ -508,7 +593,8 @@ for marker in \
   'candidateProcessGroupStopped' \
   'sameUidPersistenceExcluded' \
   'continuousNetworkIsolation' \
-  'adversarialNetworkIsolation'
+  'adversarialNetworkIsolation' \
+  'shizukuStartModeObserved'
 do
   grep -Fq -- "$marker" "$CONTROLLER" "$DEVICE_GATE" "$VALIDATOR" "$EVIDENCE_SCHEMA" \
     || fail "final physical identity marker missing: $marker"

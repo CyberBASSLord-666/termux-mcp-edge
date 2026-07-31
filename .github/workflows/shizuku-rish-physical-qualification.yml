@@ -19,8 +19,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  preflight-build:
-    name: Hosted candidate preflight and build
+  preflight-resolve:
+    name: Hosted trusted candidate preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -28,12 +28,11 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      candidate_artifact_id: ${{ steps.candidate-artifact.outputs.artifact-id }}
-      candidate_artifact_digest: ${{ steps.candidate-artifact.outputs.artifact-digest }}
-      candidate_version: ${{ steps.candidate-identity.outputs.version }}
-      candidate_sha256: ${{ steps.candidate-identity.outputs.sha256 }}
-      candidate_bytes: ${{ steps.candidate-identity.outputs.bytes }}
-      cargo_lock_sha256: ${{ steps.candidate-identity.outputs.cargo_lock_sha256 }}
+      expected_commit: ${{ steps.companion-runs.outputs.expected_commit }}
+      head_branch: ${{ steps.companion-runs.outputs.head_branch }}
+      workflow_sha: ${{ steps.trusted-identity.outputs.workflow_sha }}
+      cross_compile_sha256: ${{ steps.trusted-identity.outputs.cross_compile_sha256 }}
+      packager_sha256: ${{ steps.trusted-identity.outputs.packager_sha256 }}
       policy_sha256: ${{ steps.trusted-identity.outputs.policy_sha256 }}
       workflow_definition_sha256: ${{ steps.trusted-identity.outputs.workflow_definition_sha256 }}
       ci_run_id: ${{ steps.companion-runs.outputs.ci_run_id }}
@@ -86,15 +85,28 @@ jobs:
           trusted_root="${GITHUB_WORKSPACE}/trusted"
           definition="$trusted_root/.github/workflows/shizuku-rish-physical-qualification.yml"
           policy="$trusted_root/docs/android-rish-physical-identity-policy-v1.json"
+          cross_compile="$trusted_root/scripts/cross_compile.sh"
+          packager="$trusted_root/scripts/package_shizuku_rish_test_artifact.sh"
           test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
           test -f "$definition"
           test ! -L "$definition"
           test -f "$policy"
           test ! -L "$policy"
+          test -f "$cross_compile"
+          test ! -L "$cross_compile"
+          test -f "$packager"
+          test ! -L "$packager"
           definition_sha="$(sha256sum "$definition" | awk '{print $1}')"
           policy_sha="$(sha256sum "$policy" | awk '{print $1}')"
+          cross_compile_sha="$(sha256sum "$cross_compile" | awk '{print $1}')"
+          packager_sha="$(sha256sum "$packager" | awk '{print $1}')"
           [[ "$definition_sha" =~ ^[0-9a-f]{64}$ ]]
           [[ "$policy_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$cross_compile_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$packager_sha" =~ ^[0-9a-f]{64}$ ]]
+          printf 'workflow_sha=%s\n' "$WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+          printf 'cross_compile_sha256=%s\n' "$cross_compile_sha" >>"$GITHUB_OUTPUT"
+          printf 'packager_sha256=%s\n' "$packager_sha" >>"$GITHUB_OUTPUT"
           printf 'workflow_definition_sha256=%s\n' "$definition_sha" >>"$GITHUB_OUTPUT"
           printf 'policy_sha256=%s\n' "$policy_sha" >>"$GITHUB_OUTPUT"
 
@@ -112,6 +124,10 @@ jobs:
             --commit "$EXPECTED_COMMIT" \
             --pull-request "$PULL_REQUEST_NUMBER" \
             --output "$resolution"
+          printf 'expected_commit=%s\n' "$(jq -er '.commit' "$resolution")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'head_branch=%s\n' "$(jq -er '.headBranch' "$resolution")" \
+            >>"$GITHUB_OUTPUT"
           printf 'ci_run_id=%s\n' "$(jq -er '.ciRunId' "$resolution")" >>"$GITHUB_OUTPUT"
           printf 'security_run_id=%s\n' \
             "$(jq -er '.securityRunId' "$resolution")" >>"$GITHUB_OUTPUT"
@@ -146,14 +162,91 @@ jobs:
             and .repository.full_name == $repository
           ' "$current_run" >/dev/null
 
-      - name: Checkout exact candidate on hosted runner
-        # actions/checkout@v7.0.1 resolved 2026-07-24
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ inputs.expected_commit }}
-          path: candidate
-          persist-credentials: false
+  candidate-build:
+    name: Permissionless exact candidate build
+    needs: preflight-resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions: {}
+    outputs:
+      candidate_artifact_id: ${{ steps.candidate-artifact.outputs.artifact-id }}
+      candidate_artifact_digest: ${{ steps.candidate-artifact.outputs.artifact-digest }}
+      candidate_version: ${{ steps.candidate-identity.outputs.version }}
+      candidate_sha256: ${{ steps.candidate-identity.outputs.sha256 }}
+      candidate_bytes: ${{ steps.candidate-identity.outputs.bytes }}
+      cargo_lock_sha256: ${{ steps.candidate-identity.outputs.cargo_lock_sha256 }}
+    steps:
+      - name: Validate permissionless candidate boundary
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          EXPECTED_HEAD_BRANCH: ${{ needs.preflight-resolve.outputs.head_branch }}
+          INPUT_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_SHA: ${{ needs.preflight-resolve.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = "CyberBASSLord-666/termux-mcp-edge"
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_COMMIT" = "$INPUT_EXPECTED_COMMIT"
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git check-ref-format "refs/heads/$EXPECTED_HEAD_BRANCH"
+          test -z "${GH_TOKEN:-}"
+          test -z "${GITHUB_TOKEN:-}"
+
+      - name: Checkout trusted build helpers without credentials
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_TERMINAL_PROMPT: "0"
+          WORKFLOW_SHA: ${{ needs.preflight-resolve.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="${GITHUB_WORKSPACE}/trusted"
+          test ! -e "$trusted_root"
+          test ! -L "$trusted_root"
+          git init --quiet "$trusted_root"
+          git -C "$trusted_root" \
+            -c credential.helper= \
+            -c http.extraheader= \
+            fetch --quiet --no-tags --depth=1 \
+              https://github.com/CyberBASSLord-666/termux-mcp-edge.git \
+              "$WORKFLOW_SHA"
+          git -C "$trusted_root" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test -z "$(git -C "$trusted_root" remote)"
+          if git -C "$trusted_root" config --local --get-regexp \
+            '^(http\..*\.extraheader|credential\.)'
+          then
+            exit 1
+          fi
+
+      - name: Checkout exact candidate without credentials
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          EXPECTED_HEAD_BRANCH: ${{ needs.preflight-resolve.outputs.head_branch }}
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          candidate_root="${GITHUB_WORKSPACE}/candidate"
+          test ! -e "$candidate_root"
+          test ! -L "$candidate_root"
+          git init --quiet "$candidate_root"
+          git -C "$candidate_root" \
+            -c credential.helper= \
+            -c http.extraheader= \
+            fetch --quiet --no-tags --depth=1 \
+              https://github.com/CyberBASSLord-666/termux-mcp-edge.git \
+              "refs/heads/$EXPECTED_HEAD_BRANCH"
+          git -C "$candidate_root" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$candidate_root" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -z "$(git -C "$candidate_root" remote)"
+          if git -C "$candidate_root" config --local --get-regexp \
+            '^(http\..*\.extraheader|credential\.)'
+          then
+            exit 1
+          fi
 
       - name: Install pinned Rust toolchain
         # dtolnay/rust-toolchain@stable resolved 2026-06-26
@@ -173,7 +266,8 @@ jobs:
       - name: Verify and cross-compile exact candidate
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CROSS_COMPILE_SHA256: ${{ needs.preflight-resolve.outputs.cross_compile_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
         working-directory: candidate
         run: |
           set -euo pipefail
@@ -181,6 +275,8 @@ jobs:
           test "$(rustc --version | awk '{print $2}')" = "1.88.0"
           test "$(cargo --version | awk '{print $2}')" = "1.88.0"
           rustup target list --installed | grep -Fx aarch64-linux-android
+          test "$(sha256sum ../trusted/scripts/cross_compile.sh | awk '{print $1}')" = \
+            "$CROSS_COMPILE_SHA256"
           metadata="$(cargo metadata --locked --format-version 1 --no-deps)"
           jq -e '
             [
@@ -191,17 +287,28 @@ jobs:
             | length == 1 and .[0] == ["mcp-runtime"]
           ' <<<"$metadata" >/dev/null
           git diff --exit-code -- Cargo.toml Cargo.lock
-          BUILD_FEATURES=android-rish \
+          env \
+            -u GH_TOKEN \
+            -u GITHUB_TOKEN \
+            -u GITHUB_ENV \
+            -u GITHUB_OUTPUT \
+            -u GITHUB_PATH \
+            -u GITHUB_STEP_SUMMARY \
+            ANDROID_NDK_HOME="$ANDROID_NDK_HOME" \
+            BUILD_FEATURES=android-rish \
             bash ../trusted/scripts/cross_compile.sh
           git diff --exit-code -- Cargo.toml Cargo.lock
 
       - name: Package closed development artifact
         env:
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          PACKAGER_SHA256: ${{ needs.preflight-resolve.outputs.packager_sha256 }}
         run: |
           set -euo pipefail
           candidate_root="${GITHUB_WORKSPACE}/candidate"
           bundle="${RUNNER_TEMP}/android-rish-development-bundle"
+          test "$(sha256sum trusted/scripts/package_shizuku_rish_test_artifact.sh \
+            | awk '{print $1}')" = "$PACKAGER_SHA256"
           version="$(
             cargo metadata \
               --manifest-path "$candidate_root/Cargo.toml" \
@@ -248,10 +355,61 @@ jobs:
           overwrite: false
           retention-days: 30
 
+  candidate-review:
+    name: Hosted trusted candidate reconciliation
+    needs: [preflight-resolve, candidate-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      expected_commit: ${{ needs.preflight-resolve.outputs.expected_commit }}
+      candidate_artifact_id: ${{ needs.candidate-build.outputs.candidate_artifact_id }}
+      candidate_artifact_digest: ${{ needs.candidate-build.outputs.candidate_artifact_digest }}
+      candidate_version: ${{ needs.candidate-build.outputs.candidate_version }}
+      candidate_sha256: ${{ needs.candidate-build.outputs.candidate_sha256 }}
+      candidate_bytes: ${{ needs.candidate-build.outputs.candidate_bytes }}
+      cargo_lock_sha256: ${{ needs.candidate-build.outputs.cargo_lock_sha256 }}
+      policy_sha256: ${{ needs.preflight-resolve.outputs.policy_sha256 }}
+      workflow_definition_sha256: ${{ needs.preflight-resolve.outputs.workflow_definition_sha256 }}
+      ci_run_id: ${{ needs.preflight-resolve.outputs.ci_run_id }}
+      security_run_id: ${{ needs.preflight-resolve.outputs.security_run_id }}
+      android_run_id: ${{ needs.preflight-resolve.outputs.android_run_id }}
+    steps:
+      - name: Checkout trusted reconciliation definition
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Requery exact candidate and companion runs after build
+        env:
+          ANDROID_RUN_ID: ${{ needs.preflight-resolve.outputs.android_run_id }}
+          CI_RUN_ID: ${{ needs.preflight-resolve.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.preflight-resolve.outputs.security_run_id }}
+        run: |
+          set -euo pipefail
+          resolution="${RUNNER_TEMP}/android-rish-post-build-resolution.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          test "$(jq -er '.ciRunId' "$resolution")" = "$CI_RUN_ID"
+          test "$(jq -er '.securityRunId' "$resolution")" = "$SECURITY_RUN_ID"
+          test "$(jq -er '.androidRunId' "$resolution")" = "$ANDROID_RUN_ID"
+
       - name: Reconcile uploaded candidate artifact identity
         env:
-          ARTIFACT_DIGEST: ${{ steps.candidate-artifact.outputs.artifact-digest }}
-          ARTIFACT_ID: ${{ steps.candidate-artifact.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate-build.outputs.candidate_artifact_digest }}
+          ARTIFACT_ID: ${{ needs.candidate-build.outputs.candidate_artifact_id }}
           GH_TOKEN: ${{ github.token }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
@@ -294,14 +452,14 @@ jobs:
 
       - name: Record protected physical review request
         env:
-          ANDROID_RUN_ID: ${{ steps.companion-runs.outputs.android_run_id }}
-          ARTIFACT_DIGEST: ${{ steps.candidate-artifact.outputs.artifact-digest }}
-          ARTIFACT_ID: ${{ steps.candidate-artifact.outputs.artifact-id }}
-          CANDIDATE_VERSION: ${{ steps.candidate-identity.outputs.version }}
-          CI_RUN_ID: ${{ steps.companion-runs.outputs.ci_run_id }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          ANDROID_RUN_ID: ${{ needs.preflight-resolve.outputs.android_run_id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate-build.outputs.candidate_artifact_digest }}
+          ARTIFACT_ID: ${{ needs.candidate-build.outputs.candidate_artifact_id }}
+          CANDIDATE_VERSION: ${{ needs.candidate-build.outputs.candidate_version }}
+          CI_RUN_ID: ${{ needs.preflight-resolve.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-          SECURITY_RUN_ID: ${{ steps.companion-runs.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.preflight-resolve.outputs.security_run_id }}
         run: |
           set -euo pipefail
           {
@@ -320,7 +478,7 @@ jobs:
 
   physical-gate:
     name: Protected physical device gate
-    needs: preflight-build
+    needs: candidate-review
     runs-on: [self-hosted, linux, x64, termux-rish-controller]
     timeout-minutes: 30
     environment:
@@ -352,7 +510,7 @@ jobs:
           DISPATCH_REF: ${{ github.ref }}
           DEVELOPMENT_GUARD: ${{ vars.ANDROID_RISH_PHYSICAL_DEVELOPMENT_PROTECTED }}
           EVENT_NAME: ${{ github.event_name }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
@@ -377,8 +535,8 @@ jobs:
 
       - name: Verify trusted controller checkout
         env:
-          EXPECTED_DEFINITION_SHA256: ${{ needs.preflight-build.outputs.workflow_definition_sha256 }}
-          EXPECTED_POLICY_SHA256: ${{ needs.preflight-build.outputs.policy_sha256 }}
+          EXPECTED_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+          EXPECTED_POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
@@ -395,14 +553,14 @@ jobs:
 
       - name: Requery exact candidate and companion runs
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.preflight-build.outputs.candidate_artifact_digest }}
-          CANDIDATE_ARTIFACT_ID: ${{ needs.preflight-build.outputs.candidate_artifact_id }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.candidate-review.outputs.candidate_artifact_digest }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
         run: |
           set -euo pipefail
           resolution="${RUNNER_TEMP}/android-rish-physical-resolution.json"
@@ -446,7 +604,7 @@ jobs:
         # actions/download-artifact@v8.0.1 resolved 2026-07-19
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.preflight-build.outputs.candidate_artifact_id }}
+          artifact-ids: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
           path: ${{ runner.temp }}/android-rish-development-bundle
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -455,11 +613,11 @@ jobs:
 
       - name: Validate downloaded candidate identity
         env:
-          CANDIDATE_BYTES: ${{ needs.preflight-build.outputs.candidate_bytes }}
-          CANDIDATE_SHA256: ${{ needs.preflight-build.outputs.candidate_sha256 }}
-          CANDIDATE_VERSION: ${{ needs.preflight-build.outputs.candidate_version }}
-          CARGO_LOCK_SHA256: ${{ needs.preflight-build.outputs.cargo_lock_sha256 }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          CANDIDATE_BYTES: ${{ needs.candidate-review.outputs.candidate_bytes }}
+          CANDIDATE_SHA256: ${{ needs.candidate-review.outputs.candidate_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
         run: |
           set -euo pipefail
           bundle="${RUNNER_TEMP}/android-rish-development-bundle"
@@ -501,15 +659,15 @@ jobs:
       - name: Execute trusted physical identity controller
         id: physical-identity
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
-          CANDIDATE_VERSION: ${{ needs.preflight-build.outputs.candidate_version }}
-          CARGO_LOCK_SHA256: ${{ needs.preflight-build.outputs.cargo_lock_sha256 }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
           DEVICE_SLOT: ${{ vars.ANDROID_RISH_PHYSICAL_DEVICE_SLOT }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          POLICY_SHA256: ${{ needs.preflight-build.outputs.policy_sha256 }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
-          WORKFLOW_DEFINITION_SHA256: ${{ needs.preflight-build.outputs.workflow_definition_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+          WORKFLOW_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
         run: |
           set -euo pipefail
           private_root="$(mktemp -d "${RUNNER_TEMP}/android-rish-physical.XXXXXX")"
@@ -632,13 +790,13 @@ jobs:
 
       - name: Record protected final review request
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
           ARTIFACT_DIGEST: ${{ steps.physical-evidence.outputs.artifact-digest }}
           ARTIFACT_ID: ${{ steps.physical-evidence.outputs.artifact-id }}
           CHALLENGE_SHA256: ${{ steps.physical-identity.outputs.controller_challenge_sha256 }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
         run: |
           set -euo pipefail
           {
@@ -657,7 +815,7 @@ jobs:
 
   validate-evidence:
     name: Hosted physical evidence validation
-    needs: [preflight-build, physical-gate]
+    needs: [candidate-review, physical-gate]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -675,18 +833,18 @@ jobs:
 
       - name: Requery exact candidate and companion runs
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.preflight-build.outputs.candidate_artifact_digest }}
-          CANDIDATE_ARTIFACT_ID: ${{ needs.preflight-build.outputs.candidate_artifact_id }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.candidate-review.outputs.candidate_artifact_digest }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
           EVIDENCE_ARTIFACT_DIGEST: ${{ needs.physical-gate.outputs.evidence_artifact_digest }}
           EVIDENCE_ARTIFACT_ID: ${{ needs.physical-gate.outputs.evidence_artifact_id }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          EXPECTED_DEFINITION_SHA256: ${{ needs.preflight-build.outputs.workflow_definition_sha256 }}
-          EXPECTED_POLICY_SHA256: ${{ needs.preflight-build.outputs.policy_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          EXPECTED_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+          EXPECTED_POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
@@ -760,7 +918,7 @@ jobs:
         # actions/download-artifact@v8.0.1 resolved 2026-07-19
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.preflight-build.outputs.candidate_artifact_id }}
+          artifact-ids: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
           path: ${{ runner.temp }}/android-rish-development-bundle
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -769,28 +927,28 @@ jobs:
 
       - name: Validate closed evidence and artifact binding
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
           API_LEVEL: ${{ needs.physical-gate.outputs.api_level }}
           BUILD_FINGERPRINT_SHA256: ${{ needs.physical-gate.outputs.build_fingerprint_sha256 }}
-          CANDIDATE_BYTES: ${{ needs.preflight-build.outputs.candidate_bytes }}
-          CANDIDATE_SHA256: ${{ needs.preflight-build.outputs.candidate_sha256 }}
-          CANDIDATE_VERSION: ${{ needs.preflight-build.outputs.candidate_version }}
-          CARGO_LOCK_SHA256: ${{ needs.preflight-build.outputs.cargo_lock_sha256 }}
+          CANDIDATE_BYTES: ${{ needs.candidate-review.outputs.candidate_bytes }}
+          CANDIDATE_SHA256: ${{ needs.candidate-review.outputs.candidate_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
           CHALLENGE_SHA256: ${{ needs.physical-gate.outputs.controller_challenge_sha256 }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
           DEVICE_PROFILE_COMMITMENT: ${{ needs.physical-gate.outputs.device_profile_commitment }}
           DEX_BYTES: ${{ needs.physical-gate.outputs.dex_bytes }}
           DEX_SHA256: ${{ needs.physical-gate.outputs.dex_sha256 }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          POLICY_SHA256: ${{ needs.preflight-build.outputs.policy_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
           RAW_REPORT_SHA256: ${{ needs.physical-gate.outputs.raw_report_sha256 }}
           SECURITY_PATCH: ${{ needs.physical-gate.outputs.security_patch }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
           SHIZUKU_SIGNER_SHA256: ${{ needs.physical-gate.outputs.shizuku_signer_sha256 }}
           SHIZUKU_VERSION: ${{ needs.physical-gate.outputs.shizuku_version }}
           TERMUX_SIGNER_SHA256: ${{ needs.physical-gate.outputs.termux_signer_sha256 }}
           TERMUX_VERSION: ${{ needs.physical-gate.outputs.termux_version }}
-          WORKFLOW_DEFINITION_SHA256: ${{ needs.preflight-build.outputs.workflow_definition_sha256 }}
+          WORKFLOW_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
         run: |
           set -euo pipefail
           evidence_root="${RUNNER_TEMP}/android-rish-evidence"
@@ -835,7 +993,7 @@ jobs:
 
   final-review:
     name: Protected final evidence review
-    needs: [preflight-build, physical-gate, validate-evidence]
+    needs: [candidate-review, physical-gate, validate-evidence]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
@@ -871,18 +1029,18 @@ jobs:
 
       - name: Requery exact identities after final approval
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
-          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.preflight-build.outputs.candidate_artifact_digest }}
-          CANDIDATE_ARTIFACT_ID: ${{ needs.preflight-build.outputs.candidate_artifact_id }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.candidate-review.outputs.candidate_artifact_digest }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
           EVIDENCE_ARTIFACT_DIGEST: ${{ needs.physical-gate.outputs.evidence_artifact_digest }}
           EVIDENCE_ARTIFACT_ID: ${{ needs.physical-gate.outputs.evidence_artifact_id }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          EXPECTED_DEFINITION_SHA256: ${{ needs.preflight-build.outputs.workflow_definition_sha256 }}
-          EXPECTED_POLICY_SHA256: ${{ needs.preflight-build.outputs.policy_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          EXPECTED_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+          EXPECTED_POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
@@ -956,7 +1114,7 @@ jobs:
         # actions/download-artifact@v8.0.1 resolved 2026-07-19
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          artifact-ids: ${{ needs.preflight-build.outputs.candidate_artifact_id }}
+          artifact-ids: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
           path: ${{ runner.temp }}/android-rish-final-bundle
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -965,28 +1123,28 @@ jobs:
 
       - name: Repeat closed validation after final approval
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
           API_LEVEL: ${{ needs.physical-gate.outputs.api_level }}
           BUILD_FINGERPRINT_SHA256: ${{ needs.physical-gate.outputs.build_fingerprint_sha256 }}
-          CANDIDATE_BYTES: ${{ needs.preflight-build.outputs.candidate_bytes }}
-          CANDIDATE_SHA256: ${{ needs.preflight-build.outputs.candidate_sha256 }}
-          CANDIDATE_VERSION: ${{ needs.preflight-build.outputs.candidate_version }}
-          CARGO_LOCK_SHA256: ${{ needs.preflight-build.outputs.cargo_lock_sha256 }}
+          CANDIDATE_BYTES: ${{ needs.candidate-review.outputs.candidate_bytes }}
+          CANDIDATE_SHA256: ${{ needs.candidate-review.outputs.candidate_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
           CHALLENGE_SHA256: ${{ needs.physical-gate.outputs.controller_challenge_sha256 }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
           DEVICE_PROFILE_COMMITMENT: ${{ needs.physical-gate.outputs.device_profile_commitment }}
           DEX_BYTES: ${{ needs.physical-gate.outputs.dex_bytes }}
           DEX_SHA256: ${{ needs.physical-gate.outputs.dex_sha256 }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
-          POLICY_SHA256: ${{ needs.preflight-build.outputs.policy_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
           RAW_REPORT_SHA256: ${{ needs.physical-gate.outputs.raw_report_sha256 }}
           SECURITY_PATCH: ${{ needs.physical-gate.outputs.security_patch }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
           SHIZUKU_SIGNER_SHA256: ${{ needs.physical-gate.outputs.shizuku_signer_sha256 }}
           SHIZUKU_VERSION: ${{ needs.physical-gate.outputs.shizuku_version }}
           TERMUX_SIGNER_SHA256: ${{ needs.physical-gate.outputs.termux_signer_sha256 }}
           TERMUX_VERSION: ${{ needs.physical-gate.outputs.termux_version }}
-          WORKFLOW_DEFINITION_SHA256: ${{ needs.preflight-build.outputs.workflow_definition_sha256 }}
+          WORKFLOW_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
         run: |
           set -euo pipefail
           evidence_root="${RUNNER_TEMP}/android-rish-final-evidence"
@@ -1031,12 +1189,12 @@ jobs:
 
       - name: Final candidate state requery before evidence upload
         env:
-          ANDROID_RUN_ID: ${{ needs.preflight-build.outputs.android_run_id }}
-          CI_RUN_ID: ${{ needs.preflight-build.outputs.ci_run_id }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
-          SECURITY_RUN_ID: ${{ needs.preflight-build.outputs.security_run_id }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
         run: |
           set -euo pipefail
           resolution="${RUNNER_TEMP}/android-rish-final-upload-resolution.json"
@@ -1103,7 +1261,7 @@ jobs:
         env:
           EVIDENCE_ARTIFACT_ID: ${{ steps.final-evidence.outputs.artifact-id }}
           EVIDENCE_ARTIFACT_DIGEST: ${{ steps.final-evidence.outputs.artifact-digest }}
-          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
         run: |
           set -euo pipefail
           {

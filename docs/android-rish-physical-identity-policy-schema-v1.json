@@ -154,7 +154,7 @@
         "minimumApiLevel",
         "maximumApiLevel",
         "adbShellUid",
-        "shizukuStartMode",
+        "requiredShizukuStartMode",
         "termuxPackageName",
         "versionAndSignerCommitmentsRequired",
         "buildFingerprintCommitmentRequired"
@@ -178,7 +178,7 @@
         "adbShellUid": {
           "const": 2000
         },
-        "shizukuStartMode": {
+        "requiredShizukuStartMode": {
           "const": "adb"
         },
         "termuxPackageName": {

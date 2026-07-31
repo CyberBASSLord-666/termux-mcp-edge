@@ -63,6 +63,11 @@ grep -Fq "'exec /system/bin/id -u'" "$GATE" \
   || fail_test trusted_direct_command_missing
 grep -Fq 'RISH_APPLICATION_ID=com.termux' "$GATE" \
   || fail_test trusted_direct_application_id_missing
+grep -Fq 'shizukuStartModeObserved: false' "$GATE" \
+  || fail_test unobserved_shizuku_start_mode_boundary_missing
+if grep -Fq 'shizukuStartMode: "adb"' "$GATE"; then
+  fail_test unobserved_shizuku_start_mode_claimed
+fi
 grep -Fq 'trusted_direct_rish_probe pre_candidate' "$GATE" \
   || fail_test pre_candidate_trusted_probe_missing
 grep -Fq 'trusted_direct_rish_probe post_candidate' "$GATE" \
