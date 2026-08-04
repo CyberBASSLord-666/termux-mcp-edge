@@ -13,11 +13,25 @@ assert_fails() { if "$@" >/dev/null 2>&1; then fail_test "command unexpectedly s
 
 make_shell() {
   local prefix="$1"
+  local source_shell=""
   mkdir -p "$prefix/bin"
-  # A shebang interpreter must be a native executable. Copy the host POSIX
+  # A shebang interpreter must be a native executable. Copy a host POSIX
   # shell to model Termux's binary $PREFIX/bin/sh; a script wrapper cannot
-  # itself reliably serve as a Linux shebang interpreter.
-  cp -L -- /bin/sh "$prefix/bin/sh"
+  # itself reliably serve as a Linux shebang interpreter. Prefer the live
+  # Termux PREFIX shell when present. Android may deny reading /bin/sh even
+  # though the path exists as a toybox symlink.
+  if [[ -n "${PREFIX:-}" && -x "${PREFIX}/bin/sh" ]]; then
+    source_shell="${PREFIX}/bin/sh"
+  elif [[ -x /bin/sh ]] && cp -L -- /bin/sh "$prefix/bin/sh" 2>/dev/null; then
+    chmod 700 "$prefix/bin/sh"
+    return 0
+  elif source_shell="$(command -v sh 2>/dev/null)" && [[ -n "$source_shell" && -x "$source_shell" ]]; then
+    :
+  else
+    printf 'make_shell: no usable host POSIX shell found\n' >&2
+    return 1
+  fi
+  cp -L -- "$source_shell" "$prefix/bin/sh"
   chmod 700 "$prefix/bin/sh"
 }
 make_config() {
@@ -228,6 +242,7 @@ sed -i "s/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=$max_bearer_token
 bash "$SCRIPT" rollback --dry-run >/dev/null
 sed -i "s/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=${max_bearer_token}x/" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=non-ascii-é/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
+sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=has space/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=test-static-token/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 runtime_config_size="$(stat -c '%s' "$TERMUX_MCP_CONFIG_ROOT/runtime.env")"; printf '\0' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run; truncate -s "$runtime_config_size" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
