@@ -20,7 +20,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::ffi::OsStrExt,
-        unix::fs::{FileExt, MetadataExt, PermissionsExt},
+        unix::fs::{DirBuilderExt, FileExt, MetadataExt},
     },
     path::{Path, PathBuf},
     sync::Arc,
@@ -657,13 +657,22 @@ fn create_private_tmpfile_snapshot(
 
 fn private_snapshot_directory() -> Result<PathBuf, RishBackendError> {
     let mut snapshot_dir = std::env::temp_dir();
-    snapshot_dir.push(format!("termux-mcp-rish-{}", std::process::id()));
-    match fs::create_dir(&snapshot_dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => return Err(RishBackendError::DexSnapshotFailed),
-    }
-    fs::set_permissions(&snapshot_dir, std::fs::Permissions::from_mode(0o700))
+    // Unique per call so concurrent probes never share a named-fallback
+    // directory or race on mkdir mode verification.
+    snapshot_dir.push(format!(
+        "termux-mcp-rish-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    // Create mode 0700 at mkdir time (not chmod-after) so umask cannot leave a
+    // briefly world-accessible directory under temp_dir().
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(&snapshot_dir)
         .map_err(|_| RishBackendError::DexSnapshotFailed)?;
     let metadata =
         fs::symlink_metadata(&snapshot_dir).map_err(|_| RishBackendError::DexSnapshotFailed)?;
@@ -671,6 +680,7 @@ fn private_snapshot_directory() -> Result<PathBuf, RishBackendError> {
         || metadata.uid() != getuid().as_raw()
         || metadata.mode() & 0o777 != 0o700
     {
+        let _ = fs::remove_dir(&snapshot_dir);
         return Err(RishBackendError::DexSnapshotFailed);
     }
     Ok(snapshot_dir)
@@ -678,7 +688,9 @@ fn private_snapshot_directory() -> Result<PathBuf, RishBackendError> {
 
 fn create_named_private_snapshot_file(snapshot_dir: &Path) -> Result<File, RishBackendError> {
     // Exclusive named fallback when O_TMPFILE is unavailable. The name is
-    // unlinked immediately after open so only the descriptor remains.
+    // unlinked immediately after open so only the descriptor remains. Unlink
+    // failure is fatal: leaving a named 0600 DEX copy on disk changes the
+    // security posture of the fallback.
     let mut name = snapshot_dir.to_path_buf();
     name.push(format!(
         "snap-{}-{}.dex",
@@ -695,7 +707,10 @@ fn create_named_private_snapshot_file(snapshot_dir: &Path) -> Result<File, RishB
     )
     .map(File::from)
     .map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    let _ = fs::remove_file(&name);
+    if fs::remove_file(&name).is_err() {
+        drop(file);
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
     Ok(file)
 }
 
@@ -1095,6 +1110,61 @@ printf '2000\n'
             hash_exact_file(&snapshot, client.dex_identity.bytes).unwrap(),
             client.expected_sha256
         );
+    }
+
+    #[test]
+    fn private_tmpfile_snapshot_is_art_openable_and_digest_matched() {
+        // Explicitly exercises the O_TMPFILE / named fallback path used when
+        // sealed memfd path-reopen is unusable (common on Android kernels).
+        let fixture = Fixture::new(VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        let snapshot = create_private_tmpfile_snapshot(
+            client.dex_file.as_ref(),
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        )
+        .unwrap();
+        assert!(fcntl_getfd(&snapshot).unwrap().contains(FdFlags::CLOEXEC));
+        assert!(snapshot_classpath_path_is_usable(
+            &snapshot,
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        ));
+        assert_eq!(
+            hash_exact_file(&snapshot, client.dex_identity.bytes).unwrap(),
+            client.expected_sha256
+        );
+        // Mode 0400 on the reopen path: same-UID writes through the classpath
+        // path must fail after finalize.
+        let path = format!("/proc/self/fd/{}", snapshot.as_raw_fd());
+        assert!(File::options().write(true).open(&path).is_err());
+    }
+
+    #[test]
+    fn private_snapshot_directory_is_owner_private_at_creation() {
+        let dir = private_snapshot_directory().unwrap();
+        let metadata = fs::symlink_metadata(&dir).unwrap();
+        assert!(metadata.file_type().is_dir());
+        assert_eq!(metadata.uid(), getuid().as_raw());
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn execution_snapshot_prefers_usable_classpath_path() {
+        let fixture = Fixture::new(VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        let snapshot = create_execution_dex_snapshot(
+            client.dex_file.as_ref(),
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        )
+        .unwrap();
+        assert!(snapshot_classpath_path_is_usable(
+            &snapshot,
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        ));
     }
 
     #[tokio::test]
