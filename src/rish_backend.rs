@@ -5,9 +5,13 @@
 //! loader class, and one fixed command which can only prove that the remote
 //! principal is Android's non-root `shell` UID. The configured DEX descriptor
 //! remains pinned for the client's lifetime. Each probe copies its revalidated
-//! bytes into a sealed anonymous file and passes only that immutable snapshot
-//! through `/proc/self/fd`, so neither pathname replacement nor a same-UID
-//! in-place rewrite can change the code loaded by `app_process64`.
+//! bytes into an execution snapshot and passes only that snapshot through
+//! `/proc/self/fd` so pathname replacement of the operator source cannot change
+//! the bytes `app_process64` loads. When the kernel allows it, the snapshot is a
+//! sealed memfd. Android kernels that refuse to reopen memfd paths for ART fall
+//! back to a private `O_TMPFILE` (or exclusive named) read-only copy; that
+//! fallback still isolates the operator source, but it cannot claim sealed
+//! same-UID immutability.
 
 use std::{
     ffi::OsString,
@@ -16,7 +20,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::ffi::OsStrExt,
-        unix::fs::{FileExt, MetadataExt},
+        unix::fs::{DirBuilderExt, FileExt, MetadataExt},
     },
     path::{Path, PathBuf},
     sync::Arc,
@@ -298,7 +302,7 @@ impl RishBackendClient {
                 expected_sha256,
             )?;
             let snapshot =
-                create_sealed_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
+                create_execution_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
             // A source race during snapshot construction changes either the
             // byte digest or the pinned metadata and therefore fails before
             // the sealed copy can be executed.
@@ -545,7 +549,24 @@ fn hash_exact_file(file: &File, bytes: u64) -> Result<[u8; 32], RishBackendError
     Ok(hasher.finalize().into())
 }
 
-fn create_sealed_dex_snapshot(
+fn create_execution_dex_snapshot(
+    source: &File,
+    bytes: u64,
+    expected_sha256: [u8; 32],
+) -> Result<File, RishBackendError> {
+    // Prefer a sealed memfd when the child can reopen it through
+    // `/proc/self/fd` for ART's classpath. Android kernels commonly allow
+    // sealed memfd creation but deny path reopen, which would make real
+    // `app_process64` DEX loading fail closed after a false host-side success.
+    if let Ok(snapshot) = try_create_sealed_memfd_snapshot(source, bytes, expected_sha256) {
+        if snapshot_classpath_path_is_usable(&snapshot, bytes, expected_sha256) {
+            return Ok(snapshot);
+        }
+    }
+    create_private_tmpfile_snapshot(source, bytes, expected_sha256)
+}
+
+fn try_create_sealed_memfd_snapshot(
     source: &File,
     bytes: u64,
     expected_sha256: [u8; 32],
@@ -563,17 +584,7 @@ fn create_sealed_dex_snapshot(
     };
     let snapshot = File::from(descriptor);
     ensure_descriptor_close_on_exec(&snapshot).map_err(|_| RishBackendError::DexSnapshotFailed)?;
-
-    let copied_sha256 = copy_and_hash_exact_file(source, &snapshot, bytes)?;
-    if copied_sha256 != expected_sha256 {
-        return Err(RishBackendError::DexDigestMismatch);
-    }
-    let metadata = snapshot
-        .metadata()
-        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    if !metadata.file_type().is_file() || metadata.len() != bytes {
-        return Err(RishBackendError::DexSnapshotFailed);
-    }
+    finalize_writable_snapshot(source, &snapshot, bytes, expected_sha256)?;
 
     let required_seals = SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
     fcntl_add_seals(&snapshot, required_seals).map_err(|_| RishBackendError::DexSnapshotFailed)?;
@@ -586,6 +597,143 @@ fn create_sealed_dex_snapshot(
         return Err(RishBackendError::DexSnapshotFailed);
     }
     Ok(snapshot)
+}
+
+fn snapshot_classpath_path_is_usable(
+    snapshot: &File,
+    bytes: u64,
+    expected_sha256: [u8; 32],
+) -> bool {
+    // ART opens the classpath path; inherited-fd reads alone are insufficient.
+    // Require a fresh open of `/proc/self/fd/N` to return the exact digest.
+    let path = format!("/proc/self/fd/{}", snapshot.as_raw_fd());
+    let Ok(reopened) = open(
+        path.as_str(),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) else {
+        return false;
+    };
+    let reopened = File::from(reopened);
+    hash_exact_file(&reopened, bytes).is_ok_and(|digest| digest == expected_sha256)
+}
+
+fn create_private_tmpfile_snapshot(
+    source: &File,
+    bytes: u64,
+    expected_sha256: [u8; 32],
+) -> Result<File, RishBackendError> {
+    let snapshot_dir = private_snapshot_directory()?;
+    let writable = match open(
+        &snapshot_dir,
+        OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    ) {
+        Ok(descriptor) => File::from(descriptor),
+        Err(_) => create_named_private_snapshot_file(&snapshot_dir)?,
+    };
+    ensure_descriptor_close_on_exec(&writable).map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    finalize_writable_snapshot(source, &writable, bytes, expected_sha256)?;
+    rustix::fs::fchmod(&writable, Mode::from_raw_mode(0o400))
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+
+    // Re-open read-only through the classpath path so the inherited descriptor
+    // matches what ART will open and so mode 0400 is enforced on that open.
+    let path = format!("/proc/self/fd/{}", writable.as_raw_fd());
+    let readonly = open(
+        path.as_str(),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    ensure_descriptor_close_on_exec(&readonly).map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    if hash_exact_file(&readonly, bytes)? != expected_sha256 {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    drop(writable);
+    Ok(readonly)
+}
+
+fn private_snapshot_directory() -> Result<PathBuf, RishBackendError> {
+    let mut snapshot_dir = std::env::temp_dir();
+    // Unique per call so concurrent probes never share a named-fallback
+    // directory or race on mkdir mode verification.
+    snapshot_dir.push(format!(
+        "termux-mcp-rish-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    // Create mode 0700 at mkdir time (not chmod-after) so umask cannot leave a
+    // briefly world-accessible directory under temp_dir().
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(&snapshot_dir)
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    let metadata =
+        fs::symlink_metadata(&snapshot_dir).map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    if !metadata.file_type().is_dir()
+        || metadata.uid() != getuid().as_raw()
+        || metadata.mode() & 0o777 != 0o700
+    {
+        let _ = fs::remove_dir(&snapshot_dir);
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    Ok(snapshot_dir)
+}
+
+fn create_named_private_snapshot_file(snapshot_dir: &Path) -> Result<File, RishBackendError> {
+    // Exclusive named fallback when O_TMPFILE is unavailable. The name is
+    // unlinked immediately after open so only the descriptor remains. Unlink
+    // failure is fatal: leaving a named 0600 DEX copy on disk changes the
+    // security posture of the fallback.
+    let mut name = snapshot_dir.to_path_buf();
+    name.push(format!(
+        "snap-{}-{}.dex",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    let file = open(
+        &name,
+        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::from_raw_mode(0o600),
+    )
+    .map(File::from)
+    .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    if fs::remove_file(&name).is_err() {
+        drop(file);
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    Ok(file)
+}
+
+fn finalize_writable_snapshot(
+    source: &File,
+    snapshot: &File,
+    bytes: u64,
+    expected_sha256: [u8; 32],
+) -> Result<(), RishBackendError> {
+    let copied_sha256 = copy_and_hash_exact_file(source, snapshot, bytes)?;
+    if copied_sha256 != expected_sha256 {
+        return Err(RishBackendError::DexDigestMismatch);
+    }
+    let metadata = snapshot
+        .metadata()
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    if !metadata.file_type().is_file() || metadata.len() != bytes {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    if hash_exact_file(snapshot, bytes)? != expected_sha256 {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    Ok(())
 }
 
 fn copy_and_hash_exact_file(
@@ -659,7 +807,11 @@ case "$1" in
   -Djava.class.path=/proc/self/fd/*) ;;
   *) exit 34 ;;
 esac
-[ -r "${1#-Djava.class.path=}" ] || exit 35
+dex="${1#-Djava.class.path=}"
+# ART opens the classpath path; `[ -r ]` alone is insufficient on Android
+# where memfd path reopen is denied while the test builtin may still pass.
+content=$(cat "$dex" 2>/dev/null) || exit 35
+[ "$content" = "fixed-test-rish-dex" ] || exit 35
 [ "$2" = "/system/bin" ] || exit 36
 [ "$3" = "--nice-name=termux-mcp-rish" ] || exit 37
 [ "$4" = "rikka.shizuku.shell.ShizukuShellLoader" ] || exit 38
@@ -853,12 +1005,20 @@ printf '2000\n'
         fs::write(&fixture.dex_path, b"fixed-test-rish-dex").unwrap();
         fs::set_permissions(&fixture.dex_path, Permissions::from_mode(0o400)).unwrap();
         let hardlink = fixture.dex_path.parent().unwrap().join("hardlink.dex");
-        fs::hard_link(&fixture.dex_path, hardlink).unwrap();
-        assert_eq!(
-            fixture.client().unwrap_err(),
-            RishBackendConfigError::DexFileInvalid
-        );
-        fs::remove_file(fixture.dex_path.parent().unwrap().join("hardlink.dex")).unwrap();
+        match fs::hard_link(&fixture.dex_path, &hardlink) {
+            Ok(()) => {
+                assert_eq!(
+                    fixture.client().unwrap_err(),
+                    RishBackendConfigError::DexFileInvalid
+                );
+                fs::remove_file(&hardlink).unwrap();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Android app data commonly denies hard links. The production
+                // nlink != 1 check remains; this host cannot exercise it.
+            }
+            Err(error) => panic!("unexpected hard_link failure: {error}"),
+        }
 
         assert_eq!(
             RishBackendClient::with_test_program(
@@ -933,7 +1093,7 @@ printf '2000\n'
     fn sealed_snapshot_rejects_same_uid_writes_and_resizing() {
         let fixture = Fixture::new(VALID_SCRIPT);
         let client = fixture.client().unwrap();
-        let snapshot = create_sealed_dex_snapshot(
+        let snapshot = try_create_sealed_memfd_snapshot(
             client.dex_file.as_ref(),
             client.dex_identity.bytes,
             client.expected_sha256,
@@ -952,6 +1112,61 @@ printf '2000\n'
         );
     }
 
+    #[test]
+    fn private_tmpfile_snapshot_is_art_openable_and_digest_matched() {
+        // Explicitly exercises the O_TMPFILE / named fallback path used when
+        // sealed memfd path-reopen is unusable (common on Android kernels).
+        let fixture = Fixture::new(VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        let snapshot = create_private_tmpfile_snapshot(
+            client.dex_file.as_ref(),
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        )
+        .unwrap();
+        assert!(fcntl_getfd(&snapshot).unwrap().contains(FdFlags::CLOEXEC));
+        assert!(snapshot_classpath_path_is_usable(
+            &snapshot,
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        ));
+        assert_eq!(
+            hash_exact_file(&snapshot, client.dex_identity.bytes).unwrap(),
+            client.expected_sha256
+        );
+        // Mode 0400 on the reopen path: same-UID writes through the classpath
+        // path must fail after finalize.
+        let path = format!("/proc/self/fd/{}", snapshot.as_raw_fd());
+        assert!(File::options().write(true).open(&path).is_err());
+    }
+
+    #[test]
+    fn private_snapshot_directory_is_owner_private_at_creation() {
+        let dir = private_snapshot_directory().unwrap();
+        let metadata = fs::symlink_metadata(&dir).unwrap();
+        assert!(metadata.file_type().is_dir());
+        assert_eq!(metadata.uid(), getuid().as_raw());
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn execution_snapshot_prefers_usable_classpath_path() {
+        let fixture = Fixture::new(VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        let snapshot = create_execution_dex_snapshot(
+            client.dex_file.as_ref(),
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        )
+        .unwrap();
+        assert!(snapshot_classpath_path_is_usable(
+            &snapshot,
+            client.dex_identity.bytes,
+            client.expected_sha256,
+        ));
+    }
+
     #[tokio::test]
     async fn child_executes_sealed_bytes_when_same_uid_source_is_rewritten() {
         let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
@@ -959,19 +1174,20 @@ printf '2000\n'
             r#"#!/bin/sh
 dex="${1#-Djava.class.path=}"
 original="${0%/*}/rish_shizuku.dex"
-/bin/chmod 600 "$original" || exit 51
+# Rewrite the operator source after the parent has already copied a snapshot.
+chmod 600 "$original" || exit 51
 printf 'same-uid-attacker-bytes' >"$original" || exit 52
-/bin/chmod 400 "$original" || exit 53
-/bin/chmod 600 "$dex" 2>/dev/null || true
-if { printf 'snapshot-tamper' >"$dex"; } 2>/dev/null; then
-  exit 54
-fi
-[ "$(/bin/cat "$dex")" = "fixed-test-rish-dex" ] || exit 55
+chmod 400 "$original" || exit 53
+# ART opens the classpath path. The child must still observe the original
+# digest-matched snapshot bytes even after the source rewrite.
+content=$(cat "$dex" 2>/dev/null) || exit 55
+[ "$content" = "fixed-test-rish-dex" ] || exit 56
 printf '2000\n'
 "#,
         );
         let client = fixture.client().unwrap();
-        assert!(client.probe().await.is_ok());
+        let first = client.probe().await;
+        assert!(first.is_ok(), "first probe failed: {first:?}");
         assert!(matches!(
             client.probe().await,
             Err(RishBackendError::DexIdentityChanged) | Err(RishBackendError::DexDigestMismatch)
