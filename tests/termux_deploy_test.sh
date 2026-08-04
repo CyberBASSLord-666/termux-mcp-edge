@@ -242,6 +242,7 @@ sed -i "s/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=$max_bearer_token
 bash "$SCRIPT" rollback --dry-run >/dev/null
 sed -i "s/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=${max_bearer_token}x/" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=non-ascii-é/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
+sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=has space/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run
 sed -i 's/^MCP__AUTH__STATIC_TOKEN=.*$/MCP__AUTH__STATIC_TOKEN=test-static-token/' "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
 runtime_config_size="$(stat -c '%s' "$TERMUX_MCP_CONFIG_ROOT/runtime.env")"; printf '\0' >>"$TERMUX_MCP_CONFIG_ROOT/runtime.env"; assert_fails bash "$SCRIPT" rollback --dry-run; truncate -s "$runtime_config_size" "$TERMUX_MCP_CONFIG_ROOT/runtime.env"
