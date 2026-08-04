@@ -98,8 +98,17 @@ is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 is_valid_bearer_token() {
-  local LC_ALL=C value="$1"
-  [[ -n "$value" && ${#value} -le 4096 && "$value" != *[![:graph:]]* ]]
+  local value="$1" grep_status=0
+  # Require 1..4096 ASCII graphic bytes. Avoid bash locale character classes:
+  # under UTF-8, multi-byte letters can match [[:graph:]] and slip past the
+  # ASCII ceiling the runtime enforces. Use C-locale grep on the raw bytes.
+  # Treat grep exit 2 (error, e.g. missing binary / broken PATH) as invalid so
+  # a pipeline failure cannot invert into acceptance.
+  [[ -n "$value" && ${#value} -le 4096 ]] || return 1
+  command -v grep >/dev/null 2>&1 || return 1
+  printf '%s' "$value" | LC_ALL=C grep -q '[^[:graph:]]' || grep_status=$?
+  # 0 = found non-graphic byte → invalid; 1 = no match → valid; else → invalid
+  ((grep_status == 1))
 }
 run() {
   if is_true "$DRY_RUN"; then
