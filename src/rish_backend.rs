@@ -23,7 +23,10 @@ use std::{
         unix::fs::{DirBuilderExt, FileExt, MetadataExt},
     },
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -52,9 +55,24 @@ pub(crate) const RISH_STATUS_CONCURRENCY: usize = 1;
 const MIN_RISH_DEX_BYTES: u64 = 1;
 const MAX_RISH_DEX_BYTES: u64 = 16 * 1024 * 1024;
 const RISH_LOADER_CLASS: &str = "rikka.shizuku.shell.ShizukuShellLoader";
+/// S2.5 foundation command: prove exact Android shell UID only.
 const RISH_FIXED_COMMAND: &str = "exec /system/bin/id -u";
+/// S3 extended fixed commands. Each is a complete, non-shell argv payload for
+/// the pinned rish loader (`-c <command>`). No caller input is interpolated.
+const RISH_FIXED_COMMAND_GID: &str = "exec /system/bin/id -g";
+const RISH_FIXED_COMMAND_GROUPS: &str = "exec /system/bin/id -G";
+const RISH_FIXED_COMMAND_SELINUX: &str = "exec /system/bin/id -Z";
+const RISH_FIXED_COMMAND_SDK: &str = "exec /system/bin/getprop ro.build.version.sdk";
+const RISH_FIXED_COMMAND_FINGERPRINT: &str = "exec /system/bin/getprop ro.build.fingerprint";
+const RISH_FIXED_COMMAND_BOOT_ID: &str = "exec /system/bin/cat /proc/sys/kernel/random/boot_id";
 const ANDROID_SHELL_UID: u32 = 2000;
 const EXPECTED_STDOUT: &[u8] = b"2000\n";
+const MIN_SUPPORTED_SDK: u32 = 30;
+const MAX_SUPPORTED_SDK: u32 = 36;
+const MAX_SUPPLEMENTARY_GROUPS: usize = 64;
+const MAX_SELINUX_CONTEXT_BYTES: usize = 128;
+const MAX_FINGERPRINT_BYTES: usize = 256;
+const EXPECTED_SHELL_SELINUX_PREFIX: &[u8] = b"u:r:shell:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RishBackendConfigError {
@@ -110,6 +128,7 @@ pub(crate) enum RishBackendError {
     StderrLimitExceeded,
     ProgramFailed,
     IdentityOutputInvalid,
+    AttestationOutputInvalid,
     WorkerFailed,
 }
 
@@ -133,6 +152,7 @@ impl RishBackendError {
             Self::StderrLimitExceeded => "rish_probe_stderr_limit_exceeded",
             Self::ProgramFailed => "rish_probe_failed",
             Self::IdentityOutputInvalid => "rish_probe_identity_invalid",
+            Self::AttestationOutputInvalid => "rish_attestation_output_invalid",
             Self::WorkerFailed => "rish_probe_worker_failed",
         }
     }
@@ -171,6 +191,21 @@ pub(crate) struct RishBackendStatus {
     pub(crate) root_accepted: bool,
     pub(crate) arbitrary_shell: bool,
     pub(crate) mutation_ready: bool,
+}
+
+/// Private S3 attestation material. Never serialized to MCP responses, logs, or
+/// runtime_status. A new epoch is minted only after a complete successful
+/// multi-probe attestation; any later failure rotates the epoch away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateBackendEpoch {
+    generation: u64,
+    dex_sha256: [u8; 32],
+    build_fingerprint_sha256: [u8; 32],
+    boot_id_sha256: [u8; 32],
+    selinux_context_sha256: [u8; 32],
+    sdk: u32,
+    gid: u32,
+    groups: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +248,10 @@ pub(crate) struct RishBackendClient {
     expected_sha256: [u8; 32],
     program: PathBuf,
     concurrency: Arc<Semaphore>,
+    /// Monotonic private epoch generation counter. Public surfaces never see it.
+    epoch_generation: Arc<AtomicU64>,
+    /// Current S3 private epoch, if a complete attestation has succeeded.
+    private_epoch: Arc<Mutex<Option<PrivateBackendEpoch>>>,
     #[cfg(test)]
     validation_delay: Duration,
 }
@@ -226,6 +265,7 @@ impl fmt::Debug for RishBackendClient {
             .field("expected_sha256", &"<redacted>")
             .field("program", &RISH_APP_PROCESS_PROGRAM)
             .field("concurrency_limit", &RISH_STATUS_CONCURRENCY)
+            .field("private_epoch", &"<redacted>")
             .finish()
     }
 }
@@ -266,11 +306,18 @@ impl RishBackendClient {
             expected_sha256,
             program,
             concurrency: Arc::new(Semaphore::new(RISH_STATUS_CONCURRENCY)),
+            epoch_generation: Arc::new(AtomicU64::new(0)),
+            private_epoch: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             validation_delay: Duration::ZERO,
         })
     }
 
+    /// S2.5 foundation probe: exact Android shell UID `2000` only.
+    ///
+    /// This remains the public `android_rish_status` contract until physical
+    /// S2.5 qualification completes. It intentionally does **not** mint an S3
+    /// backend epoch or claim `attested_read_only`.
     pub(crate) async fn probe(&self) -> Result<RishBackendStatus, RishBackendError> {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
@@ -320,6 +367,124 @@ impl RishBackendClient {
         run_fixed_probe(program, dex_guard, permit).await
     }
 
+    /// S3 private read-only attestation.
+    ///
+    /// Runs the fixed multi-command identity suite under one concurrency lane,
+    /// mints a private backend epoch on full success, and returns a public
+    /// status with `state = attested_read_only`. Sensitive fields (epoch,
+    /// fingerprints, boot id, SELinux context, group inventory, digests) never
+    /// leave this module. Public MCP wiring remains S2.5-only until physical
+    /// S2.5 evidence is accepted; this method is the next control-plane gate.
+    pub(crate) async fn attest_read_only(&self) -> Result<RishBackendStatus, RishBackendError> {
+        let permit = Arc::clone(&self.concurrency)
+            .try_acquire_owned()
+            .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
+
+        let dex_path = Arc::clone(&self.dex_path);
+        let dex_file = Arc::clone(&self.dex_file);
+        let expected_identity = self.dex_identity;
+        let expected_parent = self.parent_identity;
+        let expected_sha256 = self.expected_sha256;
+        let program = self.program.clone();
+        #[cfg(test)]
+        let validation_delay = self.validation_delay;
+
+        let prepare = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            std::thread::sleep(validation_delay);
+            let parent = validate_parent(&dex_path)?;
+            if parent != expected_parent {
+                return Err(RishBackendError::DexIdentityChanged);
+            }
+            validate_dex_identity(
+                &dex_path,
+                &dex_file,
+                Some(expected_identity),
+                expected_sha256,
+            )?;
+            let snapshot =
+                create_execution_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
+            validate_dex_identity(
+                &dex_path,
+                &dex_file,
+                Some(expected_identity),
+                expected_sha256,
+            )?;
+            Ok::<Arc<File>, RishBackendError>(Arc::new(snapshot))
+        })
+        .await
+        .map_err(|_| RishBackendError::WorkerFailed)?;
+
+        let dex_guard = match prepare {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.invalidate_private_epoch();
+                return Err(error);
+            }
+        };
+
+        let attestation = match run_s3_attestation_suite(program, Arc::clone(&dex_guard)).await {
+            Ok(attestation) => attestation,
+            Err(error) => {
+                drop(dex_guard);
+                drop(permit);
+                self.invalidate_private_epoch();
+                return Err(error);
+            }
+        };
+        drop(dex_guard);
+        drop(permit);
+
+        let generation = self.epoch_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let epoch = PrivateBackendEpoch {
+            generation,
+            dex_sha256: expected_sha256,
+            build_fingerprint_sha256: attestation.build_fingerprint_sha256,
+            boot_id_sha256: attestation.boot_id_sha256,
+            selinux_context_sha256: attestation.selinux_context_sha256,
+            sdk: attestation.sdk,
+            gid: attestation.gid,
+            groups: attestation.groups,
+        };
+        {
+            let mut slot = self
+                .private_epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(epoch);
+        }
+
+        Ok(RishBackendStatus {
+            available: true,
+            backend: "shizuku_rish",
+            principal: "android_shell",
+            uid: ANDROID_SHELL_UID,
+            state: "attested_read_only",
+            root_accepted: false,
+            arbitrary_shell: false,
+            mutation_ready: false,
+        })
+    }
+
+    pub(crate) fn has_live_s3_epoch(&self) -> bool {
+        self.private_epoch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    fn invalidate_private_epoch(&self) {
+        let mut slot = self
+            .private_epoch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.take().is_some() {
+            // Bump generation so any future grant/epoch binding cannot reuse
+            // the previous private identity after a fail-closed transition.
+            self.epoch_generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn with_test_program(
         dex_path: PathBuf,
@@ -328,6 +493,16 @@ impl RishBackendClient {
     ) -> Result<Self, RishBackendConfigError> {
         Self::new_inner(dex_path, expected_sha256, program)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct S3AttestationMaterial {
+    gid: u32,
+    groups: Vec<u32>,
+    sdk: u32,
+    build_fingerprint_sha256: [u8; 32],
+    boot_id_sha256: [u8; 32],
+    selinux_context_sha256: [u8; 32],
 }
 
 fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
@@ -349,6 +524,7 @@ fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
         | RishBackendError::StderrLimitExceeded
         | RishBackendError::ProgramFailed
         | RishBackendError::IdentityOutputInvalid
+        | RishBackendError::AttestationOutputInvalid
         | RishBackendError::WorkerFailed => RishBackendConfigError::Internal,
     }
 }
@@ -406,6 +582,197 @@ async fn run_fixed_probe(
         arbitrary_shell: false,
         mutation_ready: false,
     })
+}
+
+async fn run_s3_attestation_suite(
+    program: PathBuf,
+    dex_guard: Arc<File>,
+) -> Result<S3AttestationMaterial, RishBackendError> {
+    // Order is intentional: prove shell UID before any broader identity claim.
+    let uid_stdout = run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND).await?;
+    if uid_stdout.as_slice() != EXPECTED_STDOUT {
+        return Err(RishBackendError::IdentityOutputInvalid);
+    }
+
+    let gid = parse_exact_u32_line(
+        &run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_GID).await?,
+    )?;
+    if gid != ANDROID_SHELL_UID {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+
+    let groups = parse_group_list_line(
+        &run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_GROUPS).await?,
+    )?;
+    if !groups.contains(&ANDROID_SHELL_UID) {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+
+    let selinux_raw =
+        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_SELINUX).await?;
+    let selinux = parse_shell_selinux_context(&selinux_raw)?;
+    let selinux_context_sha256 = Sha256::digest(selinux).into();
+
+    let sdk = parse_exact_u32_line(
+        &run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_SDK).await?,
+    )?;
+    if !(MIN_SUPPORTED_SDK..=MAX_SUPPORTED_SDK).contains(&sdk) {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+
+    let fingerprint_raw =
+        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_FINGERPRINT).await?;
+    let fingerprint = parse_build_fingerprint(&fingerprint_raw)?;
+    let build_fingerprint_sha256 = Sha256::digest(fingerprint).into();
+
+    let boot_raw =
+        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_BOOT_ID).await?;
+    let boot_id = parse_boot_id(&boot_raw)?;
+    let boot_id_sha256 = Sha256::digest(boot_id).into();
+
+    Ok(S3AttestationMaterial {
+        gid,
+        groups,
+        sdk,
+        build_fingerprint_sha256,
+        boot_id_sha256,
+        selinux_context_sha256,
+    })
+}
+
+async fn run_fixed_command_output(
+    program: &Path,
+    dex_guard: &Arc<File>,
+    fixed_command: &'static str,
+) -> Result<Vec<u8>, RishBackendError> {
+    ensure_descriptor_close_on_exec(dex_guard)?;
+    let dex_argument = OsString::from(format!(
+        "-Djava.class.path=/proc/self/fd/{}",
+        dex_guard.as_raw_fd()
+    ));
+    let process = BoundedProcess::new_with_child_context(
+        program.to_path_buf(),
+        vec![
+            dex_argument,
+            OsString::from("/system/bin"),
+            OsString::from("--nice-name=termux-mcp-rish"),
+            OsString::from(RISH_LOADER_CLASS),
+            OsString::from("-c"),
+            OsString::from(fixed_command),
+        ],
+        PathBuf::from("/"),
+        RISH_STATUS_TIMEOUT,
+        RISH_STATUS_STDOUT_BYTES,
+        RISH_STATUS_STDERR_BYTES,
+        BoundedChildContext::with_inherited_descriptor(
+            vec![
+                (
+                    OsString::from("RISH_APPLICATION_ID"),
+                    OsString::from(RISH_APPLICATION_ID),
+                ),
+                (OsString::from("RISH_PRESERVE_ENV"), OsString::from("0")),
+            ],
+            Arc::clone(dex_guard),
+        ),
+    )
+    .map_err(map_fixed_process_config)?;
+    let output = process.run().await?;
+    if !output.stderr.is_empty() {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    Ok(output.stdout)
+}
+
+fn parse_exact_u32_line(stdout: &[u8]) -> Result<u32, RishBackendError> {
+    let Some(line) = stdout.strip_suffix(b"\n") else {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    };
+    if line.is_empty() || !line.iter().all(u8::is_ascii_digit) || line.len() > 10 {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    let text = std::str::from_utf8(line).map_err(|_| RishBackendError::AttestationOutputInvalid)?;
+    text.parse::<u32>()
+        .map_err(|_| RishBackendError::AttestationOutputInvalid)
+}
+
+fn parse_group_list_line(stdout: &[u8]) -> Result<Vec<u32>, RishBackendError> {
+    let Some(line) = stdout.strip_suffix(b"\n") else {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    };
+    if line.is_empty() {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    let mut groups = Vec::new();
+    for part in line.split(|byte| *byte == b' ') {
+        if part.is_empty() || !part.iter().all(u8::is_ascii_digit) || part.len() > 10 {
+            return Err(RishBackendError::AttestationOutputInvalid);
+        }
+        let text =
+            std::str::from_utf8(part).map_err(|_| RishBackendError::AttestationOutputInvalid)?;
+        let group = text
+            .parse::<u32>()
+            .map_err(|_| RishBackendError::AttestationOutputInvalid)?;
+        groups.push(group);
+        if groups.len() > MAX_SUPPLEMENTARY_GROUPS {
+            return Err(RishBackendError::AttestationOutputInvalid);
+        }
+    }
+    Ok(groups)
+}
+
+fn parse_shell_selinux_context(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
+    let Some(line) = stdout.strip_suffix(b"\n") else {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    };
+    if line.is_empty()
+        || line.len() > MAX_SELINUX_CONTEXT_BYTES
+        || !line.starts_with(EXPECTED_SHELL_SELINUX_PREFIX)
+    {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    // Allow only a tight charset so raw policy strings never become free text.
+    if !line
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b','))
+    {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    Ok(line)
+}
+
+fn parse_build_fingerprint(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
+    let Some(line) = stdout.strip_suffix(b"\n") else {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    };
+    if line.is_empty()
+        || line.len() > MAX_FINGERPRINT_BYTES
+        || !line
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() && *byte != b'\\')
+    {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    Ok(line)
+}
+
+fn parse_boot_id(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
+    let Some(line) = stdout.strip_suffix(b"\n") else {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    };
+    // Canonical Linux boot_id: 8-4-4-4-12 lowercase hex with hyphens.
+    if line.len() != 36 {
+        return Err(RishBackendError::AttestationOutputInvalid);
+    }
+    for (index, byte) in line.iter().enumerate() {
+        let ok = match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
+        };
+        if !ok {
+            return Err(RishBackendError::AttestationOutputInvalid);
+        }
+    }
+    Ok(line)
 }
 
 fn map_fixed_process_config(_: BoundedProcessConfigError) -> RishBackendError {
@@ -816,9 +1183,42 @@ content=$(cat "$dex" 2>/dev/null) || exit 35
 [ "$3" = "--nice-name=termux-mcp-rish" ] || exit 37
 [ "$4" = "rikka.shizuku.shell.ShizukuShellLoader" ] || exit 38
 [ "$5" = "-c" ] || exit 39
-[ "$6" = "exec /system/bin/id -u" ] || exit 40
 [ -z "$HOME" ] || exit 41
+# S2.5 fixtures accept only the UID probe. S3 fixtures dispatch on $6.
+[ "$6" = "exec /system/bin/id -u" ] || exit 40
 printf '2000\n'
+"#;
+
+    const S3_VALID_SCRIPT: &str = r#"#!/bin/sh
+[ "$RISH_APPLICATION_ID" = "com.termux" ] || exit 31
+[ "$RISH_PRESERVE_ENV" = "0" ] || exit 32
+[ "$#" -eq 6 ] || exit 33
+case "$1" in
+  -Djava.class.path=/proc/self/fd/*) ;;
+  *) exit 34 ;;
+esac
+dex="${1#-Djava.class.path=}"
+content=$(cat "$dex" 2>/dev/null) || exit 35
+[ "$content" = "fixed-test-rish-dex" ] || exit 35
+[ "$2" = "/system/bin" ] || exit 36
+[ "$3" = "--nice-name=termux-mcp-rish" ] || exit 37
+[ "$4" = "rikka.shizuku.shell.ShizukuShellLoader" ] || exit 38
+[ "$5" = "-c" ] || exit 39
+[ -z "$HOME" ] || exit 41
+case "$6" in
+  "exec /system/bin/id -u") printf '2000\n' ;;
+  "exec /system/bin/id -g") printf '2000\n' ;;
+  "exec /system/bin/id -G") printf '2000 1004 1007 3003\n' ;;
+  "exec /system/bin/id -Z") printf 'u:r:shell:s0\n' ;;
+  "exec /system/bin/getprop ro.build.version.sdk") printf '34\n' ;;
+  "exec /system/bin/getprop ro.build.fingerprint")
+    printf 'google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n'
+    ;;
+  "exec /system/bin/cat /proc/sys/kernel/random/boot_id")
+    printf '01234567-89ab-cdef-0123-456789abcdef\n'
+    ;;
+  *) exit 40 ;;
+esac
 "#;
 
     struct Fixture {
@@ -1304,6 +1704,10 @@ printf '2000\n'
                 RishBackendError::IdentityOutputInvalid,
                 "rish_probe_identity_invalid",
             ),
+            (
+                RishBackendError::AttestationOutputInvalid,
+                "rish_attestation_output_invalid",
+            ),
             (RishBackendError::WorkerFailed, "rish_probe_worker_failed"),
         ] {
             assert_eq!(error.reason_code(), code);
@@ -1311,5 +1715,112 @@ printf '2000\n'
             assert_eq!(format!("{error:?}"), format!("{error:?}"));
             assert!(!code.contains('/'));
         }
+    }
+
+    #[tokio::test]
+    async fn s3_attestation_mints_private_epoch_without_public_secrets() {
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let fixture = Fixture::new(S3_VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        assert!(!client.has_live_s3_epoch());
+        let status = client.attest_read_only().await.unwrap();
+        assert_eq!(
+            status,
+            RishBackendStatus {
+                available: true,
+                backend: "shizuku_rish",
+                principal: "android_shell",
+                uid: 2000,
+                state: "attested_read_only",
+                root_accepted: false,
+                arbitrary_shell: false,
+                mutation_ready: false,
+            }
+        );
+        assert!(client.has_live_s3_epoch());
+        let public = serde_json::to_value(status).unwrap();
+        assert_eq!(public["state"], "attested_read_only");
+        assert!(public.get("backendEpoch").is_none());
+        assert!(public.get("buildFingerprint").is_none());
+        assert!(public.get("bootId").is_none());
+        assert!(public.get("selinuxContext").is_none());
+        assert!(public.get("groups").is_none());
+        let debug = format!("{client:?}");
+        assert!(!debug.contains("01234567-89ab-cdef-0123-456789abcdef"));
+        assert!(!debug.contains("google/test/test"));
+        assert!(!debug.contains("u:r:shell:s0"));
+    }
+
+    #[tokio::test]
+    async fn s3_attestation_rejects_non_shell_gid_and_invalidates_epoch() {
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let fixture = Fixture::new(
+            r#"#!/bin/sh
+case "$6" in
+  "exec /system/bin/id -u") printf '2000\n' ;;
+  "exec /system/bin/id -g") printf '1000\n' ;;
+  *) printf '2000\n' ;;
+esac
+"#,
+        );
+        let client = fixture.client().unwrap();
+        // Seed a live epoch, then prove failure rotates it away.
+        {
+            let mut slot = client
+                .private_epoch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(PrivateBackendEpoch {
+                generation: 1,
+                dex_sha256: [0; 32],
+                build_fingerprint_sha256: [0; 32],
+                boot_id_sha256: [0; 32],
+                selinux_context_sha256: [0; 32],
+                sdk: 34,
+                gid: 2000,
+                groups: vec![2000],
+            });
+        }
+        assert!(client.has_live_s3_epoch());
+        assert_eq!(
+            client.attest_read_only().await.unwrap_err(),
+            RishBackendError::AttestationOutputInvalid
+        );
+        assert!(!client.has_live_s3_epoch());
+    }
+
+    #[test]
+    fn s3_parsers_fail_closed_on_malformed_identity_material() {
+        assert_eq!(parse_exact_u32_line(b"2000\n").unwrap(), 2000);
+        assert!(parse_exact_u32_line(b"2000").is_err());
+        assert!(parse_exact_u32_line(b" 2000\n").is_err());
+        assert!(parse_exact_u32_line(b"2000\nextra\n").is_err());
+        assert!(parse_exact_u32_line(b"0x2000\n").is_err());
+
+        assert_eq!(
+            parse_group_list_line(b"2000 1004 3003\n").unwrap(),
+            vec![2000, 1004, 3003]
+        );
+        assert!(parse_group_list_line(b"2000\n").is_ok());
+        assert!(parse_group_list_line(b"2000  \n").is_err());
+        assert!(parse_group_list_line(b"2000,-1\n").is_err());
+
+        assert_eq!(
+            parse_shell_selinux_context(b"u:r:shell:s0\n").unwrap(),
+            b"u:r:shell:s0"
+        );
+        assert!(parse_shell_selinux_context(b"u:r:system_server:s0\n").is_err());
+        assert!(parse_shell_selinux_context(b"u:r:shell:s0;id\n").is_err());
+
+        assert!(parse_build_fingerprint(
+            b"google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n"
+        )
+        .is_ok());
+        assert!(parse_build_fingerprint(b"\n").is_err());
+        assert!(parse_build_fingerprint(b"has space\n").is_err());
+
+        assert!(parse_boot_id(b"01234567-89ab-cdef-0123-456789abcdef\n").is_ok());
+        assert!(parse_boot_id(b"01234567-89AB-CDEF-0123-456789ABCDEF\n").is_err());
+        assert!(parse_boot_id(b"not-a-uuid\n").is_err());
     }
 }
