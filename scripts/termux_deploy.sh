@@ -98,8 +98,12 @@ is_true() {
   case "${1,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
 }
 is_valid_bearer_token() {
-  local LC_ALL=C value="$1"
-  [[ -n "$value" && ${#value} -le 4096 && "$value" != *[![:graph:]]* ]]
+  local value="$1"
+  # Require 1..4096 ASCII graphic bytes. Avoid bash locale character classes:
+  # under UTF-8, multi-byte letters can match [[:graph:]] and slip past the
+  # ASCII ceiling the runtime enforces. Use C-locale grep on the raw bytes.
+  [[ -n "$value" && ${#value} -le 4096 ]] || return 1
+  ! printf '%s' "$value" | LC_ALL=C grep -q '[^[:graph:]]'
 }
 run() {
   if is_true "$DRY_RUN"; then
