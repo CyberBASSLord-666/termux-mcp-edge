@@ -48,6 +48,12 @@ use crate::bounded_process::{
 pub(crate) const RISH_APP_PROCESS_PROGRAM: &str = "/system/bin/app_process64";
 pub(crate) const RISH_APPLICATION_ID: &str = "com.termux";
 pub(crate) const RISH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Per-command timeout for the seven S3 attestation probes. Kept below the
+/// historical 5s single-probe budget so the full public suite stays under the
+/// default 30s MCP request timeout even on a slow device.
+pub(crate) const RISH_S3_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Hard wall-clock budget for the full S3 multi-probe suite (7 fixed commands).
+pub(crate) const RISH_S3_SUITE_BUDGET: Duration = Duration::from_secs(24);
 /// Per-probe timeout for allowlisted `cmd package has-feature` reads.
 /// Ten sequential probes at the full status timeout would exceed typical
 /// MCP client/server budgets and monopolize the single concurrency lane.
@@ -565,8 +571,9 @@ impl RishBackendClient {
 
     /// First typed-read family: ten allowlisted PackageManager feature flags.
     ///
-    /// Acquires the sole rish concurrency lane first, then establishes a live
-    /// S3 epoch under that same permit when absent (no epoch/permit TOCTOU).
+    /// Acquires the sole rish concurrency lane first, then always re-runs the
+    /// full S3 admission suite under that permit before feature probes so a
+    /// stale in-memory epoch cannot outlive a Shizuku/rish principal change.
     /// Uses only fixed `cmd package has-feature <name>` probes for the
     /// compile-time allowlist. Never returns raw OEM inventory text.
     pub(crate) async fn list_system_features(
@@ -577,12 +584,9 @@ impl RishBackendClient {
             .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
         let lane = Arc::new(permit);
 
-        // Epoch precondition is established only while holding the lane so a
-        // concurrent attestation failure cannot invalidate the epoch between
-        // a pre-check and feature probe admission.
-        if !self.has_live_s3_epoch() {
-            self.attest_read_only_with_lane(Arc::clone(&lane)).await?;
-        }
+        // Fresh S3 admission under the held lane every call — never trust a
+        // previously minted epoch without re-proving UID/GID/SELinux/boot.
+        self.attest_read_only_with_lane(Arc::clone(&lane)).await?;
 
         let dex_path = Arc::clone(&self.dex_path);
         let dex_file = Arc::clone(&self.dex_file);
@@ -823,15 +827,26 @@ async fn run_s3_attestation_suite(
 ) -> Result<S3AttestationMaterial, RishBackendError> {
     // Order is intentional: prove shell UID before any broader identity claim.
     // Every fixed child retains a lane clone until process-group cleanup finishes.
+    // Suite budget keeps public android_rish_status under the default MCP timeout.
+    let suite_deadline = tokio::time::Instant::now() + RISH_S3_SUITE_BUDGET;
+    let ensure_suite_budget = || {
+        if tokio::time::Instant::now() >= suite_deadline {
+            Err(RishBackendError::TimedOut)
+        } else {
+            Ok(())
+        }
+    };
+
+    ensure_suite_budget()?;
     let uid_stdout =
-        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND, Arc::clone(&lane))
-            .await?;
+        run_s3_command_output(&program, &dex_guard, RISH_FIXED_COMMAND, Arc::clone(&lane)).await?;
     if uid_stdout.as_slice() != EXPECTED_STDOUT {
         return Err(RishBackendError::IdentityOutputInvalid);
     }
 
+    ensure_suite_budget()?;
     let gid = parse_exact_u32_line(
-        &run_fixed_command_output(
+        &run_s3_command_output(
             &program,
             &dex_guard,
             RISH_FIXED_COMMAND_GID,
@@ -843,8 +858,9 @@ async fn run_s3_attestation_suite(
         return Err(RishBackendError::AttestationOutputInvalid);
     }
 
+    ensure_suite_budget()?;
     let groups = parse_group_list_line(
-        &run_fixed_command_output(
+        &run_s3_command_output(
             &program,
             &dex_guard,
             RISH_FIXED_COMMAND_GROUPS,
@@ -856,7 +872,8 @@ async fn run_s3_attestation_suite(
         return Err(RishBackendError::AttestationOutputInvalid);
     }
 
-    let selinux_raw = run_fixed_command_output(
+    ensure_suite_budget()?;
+    let selinux_raw = run_s3_command_output(
         &program,
         &dex_guard,
         RISH_FIXED_COMMAND_SELINUX,
@@ -866,8 +883,9 @@ async fn run_s3_attestation_suite(
     let selinux = parse_shell_selinux_context(&selinux_raw)?;
     let selinux_context_sha256 = Sha256::digest(selinux).into();
 
+    ensure_suite_budget()?;
     let sdk = parse_exact_u32_line(
-        &run_fixed_command_output(
+        &run_s3_command_output(
             &program,
             &dex_guard,
             RISH_FIXED_COMMAND_SDK,
@@ -879,7 +897,8 @@ async fn run_s3_attestation_suite(
         return Err(RishBackendError::AttestationOutputInvalid);
     }
 
-    let fingerprint_raw = run_fixed_command_output(
+    ensure_suite_budget()?;
+    let fingerprint_raw = run_s3_command_output(
         &program,
         &dex_guard,
         RISH_FIXED_COMMAND_FINGERPRINT,
@@ -889,7 +908,8 @@ async fn run_s3_attestation_suite(
     let fingerprint = parse_build_fingerprint(&fingerprint_raw)?;
     let build_fingerprint_sha256 = Sha256::digest(fingerprint).into();
 
-    let boot_raw = run_fixed_command_output(
+    ensure_suite_budget()?;
+    let boot_raw = run_s3_command_output(
         &program,
         &dex_guard,
         RISH_FIXED_COMMAND_BOOT_ID,
@@ -916,8 +936,8 @@ struct FixedCommandBounds {
     accept_nonzero_exit: bool,
 }
 
-const RISH_STATUS_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
-    timeout: RISH_STATUS_TIMEOUT,
+const RISH_S3_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
+    timeout: RISH_S3_PROBE_TIMEOUT,
     max_stdout_bytes: RISH_STATUS_STDOUT_BYTES,
     max_stderr_bytes: RISH_STATUS_STDERR_BYTES,
     accept_nonzero_exit: false,
@@ -930,7 +950,7 @@ const RISH_FEATURE_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
     accept_nonzero_exit: true,
 };
 
-async fn run_fixed_command_output(
+async fn run_s3_command_output(
     program: &Path,
     dex_guard: &Arc<File>,
     fixed_command: &'static str,
@@ -940,7 +960,7 @@ async fn run_fixed_command_output(
         program,
         dex_guard,
         fixed_command,
-        &RISH_STATUS_COMMAND_BOUNDS,
+        &RISH_S3_COMMAND_BOUNDS,
         lane,
     )
     .await

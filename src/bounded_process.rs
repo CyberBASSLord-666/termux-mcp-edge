@@ -466,24 +466,26 @@ async fn supervise_process(
 
         let mut stdout_bytes = None;
         let mut stderr_bytes = None;
-        let mut child_finished = false;
         let mut child_succeeded = false;
+        // When accept_nonzero_exit is enabled, a non-zero exit still waits for
+        // both streams to drain so boolean payloads (e.g. has-feature false)
+        // remain readable. Default fail-closed paths break immediately so a
+        // descendant holding pipes cannot turn ProgramFailed into a timeout.
+        let mut child_failed_accepting_output = false;
 
         loop {
-            // Wait for both streams after any finished wait so non-zero exits
-            // can still yield a drained boolean payload when allowed.
-            if child_finished && stdout_bytes.is_some() && stderr_bytes.is_some() {
-                if child_succeeded || bounds.accept_nonzero_exit {
-                    break SupervisorTerminal::Complete {
-                        stdout: stdout_bytes
-                            .take()
-                            .expect("stdout completion checked before extraction"),
-                        stderr: stderr_bytes
-                            .take()
-                            .expect("stderr completion checked before extraction"),
-                    };
-                }
-                break SupervisorTerminal::Failure(BoundedProcessError::ProgramFailed);
+            if (child_succeeded || child_failed_accepting_output)
+                && stdout_bytes.is_some()
+                && stderr_bytes.is_some()
+            {
+                break SupervisorTerminal::Complete {
+                    stdout: stdout_bytes
+                        .take()
+                        .expect("stdout completion checked before extraction"),
+                    stderr: stderr_bytes
+                        .take()
+                        .expect("stderr completion checked before extraction"),
+                };
             }
 
             // Stable simultaneous-event precedence is cancellation, normal
@@ -519,15 +521,16 @@ async fn supervise_process(
                         Err(error) => break SupervisorTerminal::Failure(error),
                     }
                 }
-                status = &mut child_wait, if !child_finished => {
+                status = &mut child_wait, if !child_succeeded && !child_failed_accepting_output => {
                     match status {
-                        Ok(status) if status.success() => {
-                            child_finished = true;
-                            child_succeeded = true;
+                        Ok(status) if status.success() => child_succeeded = true,
+                        Ok(_) if bounds.accept_nonzero_exit => {
+                            child_failed_accepting_output = true;
                         }
                         Ok(_) => {
-                            child_finished = true;
-                            child_succeeded = false;
+                            break SupervisorTerminal::Failure(
+                                BoundedProcessError::ProgramFailed,
+                            );
                         }
                         Err(_) => {
                             break SupervisorTerminal::Failure(BoundedProcessError::WaitFailed);
