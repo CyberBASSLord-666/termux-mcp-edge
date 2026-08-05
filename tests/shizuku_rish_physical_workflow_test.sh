@@ -166,7 +166,7 @@ expected_job_contracts = {
         "needs": ["preflight-resolve", "candidate-build"],
     },
     "physical-gate": {
-        "runs-on": ["self-hosted", "linux", "x64", "termux-rish-controller"],
+        "runs-on": ["self-hosted", "linux", "termux-rish-controller"],
         "timeout-minutes": 30,
         "permissions": {
             "actions": "read",
