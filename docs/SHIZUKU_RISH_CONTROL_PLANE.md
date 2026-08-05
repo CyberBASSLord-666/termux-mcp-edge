@@ -79,7 +79,7 @@ It is acceptable for the pinned rish loader to use its own implementation machin
 - reject missing, relative, symlinked, non-regular, unexpectedly writable, or digest-mismatched assets;
 - pin parent directories and exact asset identities, and verify configured SHA-256 digests;
 - require the Android 14+ rish DEX to be non-writable, consistent with the [rish launcher’s documented Android 14 constraint](https://github.com/RikkaApps/Shizuku-API/blob/master/rish/README.md);
-- clear inherited environment and set only the minimum fixed rish variables, with `RISH_PRESERVE_ENV=0`;
+- clear inherited environment and set only the minimum fixed rish variables plus a closed Android ART runtime allowlist copied from the server process (`BOOTCLASSPATH`, ART apex roots, and related keys), with `RISH_PRESERVE_ENV=0`;
 - use null stdin, bounded independent stdout/stderr, a hard deadline, a dedicated non-queueing semaphore, process-group cleanup, and authoritative child reaping;
 - accept only exact UTF-8 output for that operation’s versioned parser and suppress raw output on every failure;
 - remeasure the backend before a mutation grant is consumed.

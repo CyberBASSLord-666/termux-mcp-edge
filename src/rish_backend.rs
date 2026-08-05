@@ -55,6 +55,24 @@ pub(crate) const RISH_STATUS_CONCURRENCY: usize = 1;
 const MIN_RISH_DEX_BYTES: u64 = 1;
 const MAX_RISH_DEX_BYTES: u64 = 16 * 1024 * 1024;
 const RISH_LOADER_CLASS: &str = "rikka.shizuku.shell.ShizukuShellLoader";
+/// Host process environment keys required for `app_process64`/ART to load the
+/// pinned rish DEX. Values are copied from the server process at spawn time;
+/// MCP callers cannot set or override them. This is not a general environment
+/// passthrough: only this closed Android runtime allowlist is considered.
+const RISH_ANDROID_RUNTIME_ENV_KEYS: &[&str] = &[
+    "ANDROID_ART_ROOT",
+    "ANDROID_ASSETS",
+    "ANDROID_DATA",
+    "ANDROID_I18N_ROOT",
+    "ANDROID_ROOT",
+    "ANDROID_RUNTIME_ROOT",
+    "ANDROID_STORAGE",
+    "ANDROID_TZDATA_ROOT",
+    "ANDROID__BUILD_VERSION_SDK",
+    "BOOTCLASSPATH",
+    "DEX2OATBOOTCLASSPATH",
+    "SYSTEMSERVERCLASSPATH",
+];
 /// S2.5 foundation command: prove exact Android shell UID only.
 const RISH_FIXED_COMMAND: &str = "exec /system/bin/id -u";
 /// S3 extended fixed commands. Each is a complete, non-shell argv payload for
@@ -375,6 +393,7 @@ impl RishBackendClient {
     /// fingerprints, boot id, SELinux context, group inventory, digests) never
     /// leave this module. Public MCP wiring remains S2.5-only until physical
     /// S2.5 evidence is accepted; this method is the next control-plane gate.
+    #[allow(dead_code)]
     pub(crate) async fn attest_read_only(&self) -> Result<RishBackendStatus, RishBackendError> {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
@@ -466,6 +485,7 @@ impl RishBackendClient {
         })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn has_live_s3_epoch(&self) -> bool {
         self.private_epoch
             .lock()
@@ -529,6 +549,28 @@ fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
     }
 }
 
+fn rish_child_environment() -> Vec<(OsString, OsString)> {
+    let mut environment = vec![
+        (
+            OsString::from("RISH_APPLICATION_ID"),
+            OsString::from(RISH_APPLICATION_ID),
+        ),
+        (OsString::from("RISH_PRESERVE_ENV"), OsString::from("0")),
+    ];
+    for key in RISH_ANDROID_RUNTIME_ENV_KEYS {
+        let Some(value) = std::env::var_os(key) else {
+            continue;
+        };
+        // Reject empty or NUL-bearing values so ambient corruption cannot open
+        // an injection channel into the fixed app_process child.
+        if value.is_empty() || value.as_bytes().contains(&0) {
+            continue;
+        }
+        environment.push((OsString::from(*key), value));
+    }
+    environment
+}
+
 async fn run_fixed_probe(
     program: PathBuf,
     dex_guard: Arc<File>,
@@ -554,13 +596,7 @@ async fn run_fixed_probe(
         RISH_STATUS_STDOUT_BYTES,
         RISH_STATUS_STDERR_BYTES,
         BoundedChildContext::with_inherited_descriptor(
-            vec![
-                (
-                    OsString::from("RISH_APPLICATION_ID"),
-                    OsString::from(RISH_APPLICATION_ID),
-                ),
-                (OsString::from("RISH_PRESERVE_ENV"), OsString::from("0")),
-            ],
+            rish_child_environment(),
             Arc::clone(&dex_guard),
         ),
     )
@@ -584,6 +620,7 @@ async fn run_fixed_probe(
     })
 }
 
+#[allow(dead_code)]
 async fn run_s3_attestation_suite(
     program: PathBuf,
     dex_guard: Arc<File>,
@@ -640,6 +677,7 @@ async fn run_s3_attestation_suite(
     })
 }
 
+#[allow(dead_code)]
 async fn run_fixed_command_output(
     program: &Path,
     dex_guard: &Arc<File>,
@@ -665,13 +703,7 @@ async fn run_fixed_command_output(
         RISH_STATUS_STDOUT_BYTES,
         RISH_STATUS_STDERR_BYTES,
         BoundedChildContext::with_inherited_descriptor(
-            vec![
-                (
-                    OsString::from("RISH_APPLICATION_ID"),
-                    OsString::from(RISH_APPLICATION_ID),
-                ),
-                (OsString::from("RISH_PRESERVE_ENV"), OsString::from("0")),
-            ],
+            rish_child_environment(),
             Arc::clone(dex_guard),
         ),
     )
@@ -683,6 +715,7 @@ async fn run_fixed_command_output(
     Ok(output.stdout)
 }
 
+#[allow(dead_code)]
 fn parse_exact_u32_line(stdout: &[u8]) -> Result<u32, RishBackendError> {
     let Some(line) = stdout.strip_suffix(b"\n") else {
         return Err(RishBackendError::AttestationOutputInvalid);
@@ -695,6 +728,7 @@ fn parse_exact_u32_line(stdout: &[u8]) -> Result<u32, RishBackendError> {
         .map_err(|_| RishBackendError::AttestationOutputInvalid)
 }
 
+#[allow(dead_code)]
 fn parse_group_list_line(stdout: &[u8]) -> Result<Vec<u32>, RishBackendError> {
     let Some(line) = stdout.strip_suffix(b"\n") else {
         return Err(RishBackendError::AttestationOutputInvalid);
@@ -720,6 +754,7 @@ fn parse_group_list_line(stdout: &[u8]) -> Result<Vec<u32>, RishBackendError> {
     Ok(groups)
 }
 
+#[allow(dead_code)]
 fn parse_shell_selinux_context(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
     let Some(line) = stdout.strip_suffix(b"\n") else {
         return Err(RishBackendError::AttestationOutputInvalid);
@@ -740,6 +775,7 @@ fn parse_shell_selinux_context(stdout: &[u8]) -> Result<&[u8], RishBackendError>
     Ok(line)
 }
 
+#[allow(dead_code)]
 fn parse_build_fingerprint(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
     let Some(line) = stdout.strip_suffix(b"\n") else {
         return Err(RishBackendError::AttestationOutputInvalid);
@@ -755,6 +791,7 @@ fn parse_build_fingerprint(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
     Ok(line)
 }
 
+#[allow(dead_code)]
 fn parse_boot_id(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
     let Some(line) = stdout.strip_suffix(b"\n") else {
         return Err(RishBackendError::AttestationOutputInvalid);

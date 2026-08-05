@@ -105,10 +105,28 @@ export RUST_LOG=termux_mcp_server=info
 
 setsid "$ARTIFACT" >"$LOG" 2>&1 &
 SERVER_PID=$!
+HOST_HEADER="127.0.0.1:$PORT"
+ORIGIN_HEADER="http://127.0.0.1:$PORT"
+ACCEPT_HEADER='application/json, text/event-stream'
+PROTOCOL_VERSION='2025-11-25'
+
+mcp_curl() {
+  # usage: mcp_curl <curl-extra-args...>
+  curl --fail --silent --show-error \
+    --connect-timeout 2 --max-time 15 \
+    -H "Host: $HOST_HEADER" \
+    -H "Origin: $ORIGIN_HEADER" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -H "Accept: $ACCEPT_HEADER" \
+    "$@"
+}
+
 READY=0
 for _ in $(seq 1 40); do
   if curl --fail --silent --show-error \
     --connect-timeout 1 --max-time 2 \
+    -H "Host: $HOST_HEADER" \
     "http://127.0.0.1:$PORT/health" >/dev/null 2>&1
   then
     READY=1
@@ -125,25 +143,26 @@ done
 # MCP initialize + tools/call android_rish_status
 HEADER_FILE="$WORKDIR/init.headers"
 BODY_FILE="$WORKDIR/init.body"
-curl --fail --silent --show-error \
-  --connect-timeout 2 --max-time 5 \
+mcp_curl \
   -D "$HEADER_FILE" -o "$BODY_FILE" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -H 'Accept: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"operator-local-s25","version":"1"}}}' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"$PROTOCOL_VERSION\",\"capabilities\":{},\"clientInfo\":{\"name\":\"operator-local-s25\",\"version\":\"1\"}}}" \
   "http://127.0.0.1:$PORT/mcp"
 SESSION="$(awk 'BEGIN{IGNORECASE=1} /^mcp-session-id:/{print $2}' "$HEADER_FILE" | tr -d '\r')"
 [[ -n "$SESSION" ]] || fail mcp_session_missing
 jq -e '.result.protocolVersion != null' "$BODY_FILE" >/dev/null || fail mcp_initialize_invalid
 
+# required notifications/initialized for sessionful MCP
+mcp_curl \
+  -H "Mcp-Session-Id: $SESSION" \
+  -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  "http://127.0.0.1:$PORT/mcp" >/dev/null \
+  || fail mcp_initialized_notification_failed
+
 STATUS_JSON="$(
-  curl --fail --silent --show-error \
-    --connect-timeout 2 --max-time 10 \
-    -H "Authorization: Bearer $TOKEN" \
+  mcp_curl \
     -H "Mcp-Session-Id: $SESSION" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json' \
+    -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"android_rish_status","arguments":{}}}' \
     "http://127.0.0.1:$PORT/mcp"
 )"
@@ -170,14 +189,16 @@ printf '%s\n' "$PAYLOAD" | jq -e '
 ' >/dev/null || fail status_contract_invalid
 
 # Extra arguments must fail closed.
-EXTRA_RC=0
 EXTRA_OUT="$(
   curl --silent --show-error \
     --connect-timeout 2 --max-time 10 \
+    -H "Host: $HOST_HEADER" \
+    -H "Origin: $ORIGIN_HEADER" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Mcp-Session-Id: $SESSION" \
+    -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
     -H 'Content-Type: application/json' \
-    -H 'Accept: application/json' \
+    -H "Accept: $ACCEPT_HEADER" \
     -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"android_rish_status","arguments":{"shell":"id"}}}' \
     "http://127.0.0.1:$PORT/mcp" || true
 )"
