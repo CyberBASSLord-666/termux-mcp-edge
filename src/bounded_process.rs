@@ -6,8 +6,12 @@
 //! cancellation-safe cleanup to an independently owned supervisor. This module
 //! never invokes a shell and never reads caller or ambient environment values.
 
-use std::{ffi::OsString, io::ErrorKind, path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    ffi::OsString, fs::File, io::ErrorKind, path::PathBuf, process::Stdio, sync::Arc,
+    time::Duration,
+};
 
+use rustix::io::{fcntl_getfd, fcntl_setfd, FdFlags};
 use rustix::process::{kill_process_group, Pid, Signal};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -53,10 +57,12 @@ pub(crate) enum BoundedProcessConfigError {
 pub(crate) struct BoundedProcess {
     program: PathBuf,
     arguments: Vec<OsString>,
+    environment: Vec<(OsString, OsString)>,
     working_directory: PathBuf,
     timeout: Duration,
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
+    inherited_descriptor: Option<Arc<File>>,
     #[cfg(test)]
     forced_cleanup_delay: Duration,
 }
@@ -68,7 +74,29 @@ pub(crate) struct BoundedProcessOutput {
     pub(crate) duration: Duration,
 }
 
+pub(crate) struct BoundedChildContext {
+    environment: Vec<(OsString, OsString)>,
+    inherited_descriptor: Option<Arc<File>>,
+}
+
+impl BoundedChildContext {
+    #[cfg(feature = "android-rish")]
+    pub(crate) fn with_inherited_descriptor(
+        environment: Vec<(OsString, OsString)>,
+        inherited_descriptor: Arc<File>,
+    ) -> Self {
+        Self {
+            environment,
+            inherited_descriptor: Some(inherited_descriptor),
+        }
+    }
+}
+
 impl BoundedProcess {
+    #[allow(
+        dead_code,
+        reason = "the isolated android-rish posture uses only the fixed-environment constructor"
+    )]
     pub(crate) fn new(
         program: PathBuf,
         arguments: Vec<OsString>,
@@ -77,6 +105,84 @@ impl BoundedProcess {
         max_stdout_bytes: usize,
         max_stderr_bytes: usize,
     ) -> Result<Self, BoundedProcessConfigError> {
+        Self::new_with_fixed_environment(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            max_stdout_bytes,
+            max_stderr_bytes,
+            Vec::new(),
+        )
+    }
+
+    /// Construct a bounded process with one project-owned, fixed environment.
+    ///
+    /// This remains crate-private: request data must never select environment
+    /// names or values. The child still starts from `env_clear`, so ambient
+    /// Termux values cannot cross the process boundary.
+    pub(crate) fn new_with_fixed_environment(
+        program: PathBuf,
+        arguments: Vec<OsString>,
+        working_directory: PathBuf,
+        timeout: Duration,
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+        environment: Vec<(OsString, OsString)>,
+    ) -> Result<Self, BoundedProcessConfigError> {
+        Self::new_inner(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            max_stdout_bytes,
+            max_stderr_bytes,
+            BoundedChildContext {
+                environment,
+                inherited_descriptor: None,
+            },
+        )
+    }
+
+    /// Construct one fixed child that alone inherits a caller-pinned descriptor.
+    ///
+    /// The parent descriptor must remain `CLOEXEC`. The pre-exec hook removes
+    /// that flag only in this forked child, so unrelated provider processes
+    /// cannot inherit the asset during concurrent execution.
+    #[cfg(feature = "android-rish")]
+    pub(crate) fn new_with_child_context(
+        program: PathBuf,
+        arguments: Vec<OsString>,
+        working_directory: PathBuf,
+        timeout: Duration,
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+        context: BoundedChildContext,
+    ) -> Result<Self, BoundedProcessConfigError> {
+        Self::new_inner(
+            program,
+            arguments,
+            working_directory,
+            timeout,
+            max_stdout_bytes,
+            max_stderr_bytes,
+            context,
+        )
+    }
+
+    fn new_inner(
+        program: PathBuf,
+        arguments: Vec<OsString>,
+        working_directory: PathBuf,
+        timeout: Duration,
+        max_stdout_bytes: usize,
+        max_stderr_bytes: usize,
+        context: BoundedChildContext,
+    ) -> Result<Self, BoundedProcessConfigError> {
+        let BoundedChildContext {
+            environment,
+            inherited_descriptor,
+        } = context;
         if timeout < MIN_PROVIDER_TIMEOUT {
             return Err(BoundedProcessConfigError::TimeoutTooShort);
         }
@@ -89,20 +195,53 @@ impl BoundedProcess {
         if max_stderr_bytes > MAX_BOUNDED_PROCESS_STDERR_BYTES {
             return Err(BoundedProcessConfigError::StderrLimitTooLarge);
         }
-
         Ok(Self {
             program,
             arguments,
+            environment,
             working_directory,
             timeout,
             max_stdout_bytes,
             max_stderr_bytes,
+            inherited_descriptor,
             #[cfg(test)]
             forced_cleanup_delay: Duration::ZERO,
         })
     }
 
+    #[cfg(any(
+        feature = "android-battery-status",
+        feature = "android-volume-status",
+        feature = "android-rish",
+        feature = "command-execution",
+        test
+    ))]
     pub(crate) async fn run(&self) -> Result<BoundedProcessOutput, BoundedProcessError> {
+        self.run_inner(None).await
+    }
+
+    /// Run while retaining an authority guard through cancellation-independent
+    /// process-group cleanup and direct-child reaping.
+    ///
+    /// The rish lane uses this for its sole non-queueing semaphore permit. If
+    /// the request future is dropped, the existing cancellation channel still
+    /// terminates the child immediately, while the supervisor keeps the guard
+    /// until that cleanup is authoritatively complete.
+    #[cfg(feature = "android-rish")]
+    pub(crate) async fn run_with_completion_guard<G>(
+        &self,
+        completion_guard: G,
+    ) -> Result<BoundedProcessOutput, BoundedProcessError>
+    where
+        G: Send + 'static,
+    {
+        self.run_inner(Some(Box::new(completion_guard))).await
+    }
+
+    async fn run_inner(
+        &self,
+        completion_guard: Option<Box<dyn Send>>,
+    ) -> Result<BoundedProcessOutput, BoundedProcessError> {
         let started_at = Instant::now();
         let final_deadline = started_at + self.timeout;
         // Construction rejects timeouts whose quarter-budget would round below
@@ -115,12 +254,26 @@ impl BoundedProcess {
         command
             .args(&self.arguments)
             .env_clear()
+            .envs(self.environment.iter().cloned())
             .current_dir(&self.working_directory)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
+        if let Some(descriptor) = self.inherited_descriptor.clone() {
+            // SAFETY: the hook performs only async-signal-safe `fcntl`
+            // operations on an already-open descriptor and does not allocate,
+            // lock, or access request-controlled data.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut flags =
+                        fcntl_getfd(descriptor.as_ref()).map_err(std::io::Error::from)?;
+                    flags.remove(FdFlags::CLOEXEC);
+                    fcntl_setfd(descriptor.as_ref(), flags).map_err(std::io::Error::from)
+                });
+            }
+        }
 
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == ErrorKind::NotFound {
@@ -166,6 +319,7 @@ impl BoundedProcess {
                 forced_cleanup_delay: self.forced_cleanup_delay,
             },
             cancellation_receiver,
+            completion_guard,
         ));
         let result = supervisor
             .await
@@ -275,6 +429,7 @@ async fn supervise_process(
     process: SpawnedProcess,
     bounds: SupervisorBounds,
     mut cancellation: oneshot::Receiver<()>,
+    completion_guard: Option<Box<dyn Send>>,
 ) -> Result<BoundedProcessOutput, BoundedProcessError> {
     #[cfg(test)]
     let _active_supervisor = ActiveSupervisorGuard::new();
@@ -367,7 +522,7 @@ async fn supervise_process(
         return Err(BoundedProcessError::WaitFailed);
     }
 
-    match terminal {
+    let result = match terminal {
         SupervisorTerminal::Complete { stdout, stderr } => Ok(BoundedProcessOutput {
             stdout,
             stderr,
@@ -375,7 +530,9 @@ async fn supervise_process(
         }),
         SupervisorTerminal::Failure(error) => Err(error),
         SupervisorTerminal::Cancelled => Err(BoundedProcessError::WaitFailed),
-    }
+    };
+    drop(completion_guard);
+    result
 }
 
 async fn terminate_process_group_and_reap(
@@ -456,6 +613,12 @@ async fn read_bounded(
 #[cfg(test)]
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    #[cfg(feature = "android-rish")]
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
     use rustix::process::test_kill_process;
     use tempfile::TempDir;
@@ -752,5 +915,34 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(active_supervisor_count(), 1);
         wait_for_supervisor_count(0).await;
+    }
+
+    #[cfg(feature = "android-rish")]
+    #[tokio::test]
+    async fn rish_completion_guard_survives_waiter_drop_until_cleanup_finishes() {
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let _test_guard = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let (_directory, process) = executable_process("/bin/sleep 30", Duration::from_secs(1));
+        let process = process.with_forced_cleanup_delay(Duration::from_millis(500));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let completion_guard = DropFlag(Arc::clone(&dropped));
+        let task =
+            tokio::spawn(async move { process.run_with_completion_guard(completion_guard).await });
+        wait_for_supervisor_count(1).await;
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(active_supervisor_count(), 1);
+        assert!(!dropped.load(Ordering::SeqCst));
+        wait_for_supervisor_count(0).await;
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

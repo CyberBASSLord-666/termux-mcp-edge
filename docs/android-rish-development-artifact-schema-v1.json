@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/android-rish-development-artifact-schema-v1.json",
+  "title": "Termux MCP Edge Android rish development artifact manifest v1",
+  "description": "Closed metadata for a test-only android-rish AArch64 binary. This manifest is not release evidence, does not add a governed Android posture, and never qualifies production device control.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "artifactClass",
+    "releaseEligible",
+    "productionControlQualified",
+    "repository",
+    "commit",
+    "workflowRunId",
+    "artifactName",
+    "posture",
+    "features",
+    "target",
+    "fileName",
+    "version",
+    "sha256",
+    "bytes",
+    "elf",
+    "cargoLockSha256",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "artifactClass": {
+      "const": "android_rish_development_only_v1"
+    },
+    "releaseEligible": {
+      "const": false
+    },
+    "productionControlQualified": {
+      "const": false
+    },
+    "repository": {
+      "const": "CyberBASSLord-666/termux-mcp-edge"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "workflowRunId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "artifactName": {
+      "const": "termux-mcp-server-aarch64-linux-android-android-rish-development"
+    },
+    "posture": {
+      "const": "android-rish-development"
+    },
+    "features": {
+      "const": [
+        "android-rish"
+      ]
+    },
+    "target": {
+      "const": "aarch64-linux-android"
+    },
+    "fileName": {
+      "const": "termux-mcp-server"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 67108864
+    },
+    "elf": {
+      "const": "aarch64-android-elf"
+    },
+    "cargoLockSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

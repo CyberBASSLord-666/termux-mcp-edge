@@ -1,6 +1,6 @@
 # Production Readiness Checklist
 
-This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes seven governed compile-time postures: six least-privilege artifacts and the explicit `full-suite` aggregate. The aggregate compiles every supported optional provider but leaves every runtime flag and request grant independent. Ordinary release readiness depends on exact-candidate filesystem, deployment, configuration, packaging, recovery, native official-Termux, policy, and protected-publication evidence.
+This checklist defines the evidence required to merge, release, and operate the current Termux MCP Edge codebase. It distinguishes seven governed compile-time postures: six least-privilege artifacts and the explicit `full-suite` aggregate. The aggregate compiles the four governed optional release providers but leaves every runtime flag and request grant independent. Ordinary release readiness depends on exact-candidate filesystem, deployment, configuration, packaging, recovery, native official-Termux, policy, and protected-publication evidence.
 
 ## Supported Compile-Time Postures
 
@@ -46,6 +46,7 @@ Every implementation pull request must satisfy all applicable items:
 6. All actionable review threads are resolved and the head SHA has not changed since validation.
 7. Documentation and tests match the resulting compiled behavior.
 8. No change combines protocol migration, dependency maintenance, and unrelated high-impact capability exposure.
+9. A change to `android-rish` passes its dedicated host posture and raw all-feature posture. It remains excluded from release qualification unless the exact candidate also passes the physical Shizuku matrix and introduces a reviewed evidence-inventory/schema revision.
 
 Documentation-only changes may document why path-filtered workflow non-runs are acceptable. Changes to Rust source comments still match `src/**` workflow filters and require the checks they trigger.
 
@@ -56,8 +57,10 @@ Run the host gates with the pinned toolchain:
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --features android-rish -- -D warnings
 cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features android-rish rish
 cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 bash tests/termux_deploy_test.sh
@@ -68,7 +71,10 @@ cargo build --release --locked --features android-volume-status
 cargo build --release --locked --features android-volume-control
 cargo build --release --locked --features command-execution
 cargo build --release --locked --features full-suite
+cargo build --release --locked --features android-rish
 ```
+
+The last command validates the development-only rish code path; it does not add an Android release artifact. Production enablement of that feature is blocked until the exact physical-device contract in [`SHIZUKU_RISH_CONTROL_PLANE.md`](SHIZUKU_RISH_CONTROL_PLANE.md) passes and the seven-artifact release evidence chain is intentionally versioned rather than silently broadened.
 
 For Android, require all posture-specific artifacts described in [`ANDROID_ARTIFACTS.md`](ANDROID_ARTIFACTS.md):
 
@@ -101,6 +107,15 @@ were individually installed:
 
 Run exact downloaded artifacts through the native ARM64 official-Termux gate in [`EMULATED_RELEASE_GATE.md`](EMULATED_RELEASE_GATE.md). The resulting `official_termux_native_automated_v1` envelope is the ordinary release qualification. Run [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) only when separate physical certification is requested; historical physical observation and inheritance records do not substitute for, or broaden, the automated class.
 
+The independent manual
+[`Android Rish Physical Identity`](SHIZUKU_RISH_PHYSICAL_WORKFLOW.md)
+workflow is narrower still: it can establish only the development S2.5
+Shizuku/rish UID-2000 identity probe for an exact open same-repository PR
+head. Its closed evidence always records `releaseEligible:false` and
+`productionControlQualified:false`; it is not an eighth governed Android
+release artifact, physical production certification, S3 attestation, or
+authority for any device mutation.
+
 Release validator v11 and the native official-Termux gates must execute deterministic authorization contracts for all four filesystem mutation families against the exact workflow artifact. They must also prove the full-suite 17-disabled/21-enabled truth table while keeping every optional provider flag and request-grant family independent. Reversible trash evidence must prove default-disabled discovery and denial, exact grant issuance, target identity/content binding, authorized recovery retention, mismatch denial, preflight preservation, private response/audit evidence, separate quarantine isolation/capacity, and service cleanup through deployment upgrade/rollback/uninstall. Device harness v11 is required only when separate physical certification is requested; it is not an input to ordinary automated release qualification.
 
 Run complete downloaded workflow bundles—binary, `SHA256SUMS`, and `artifact-manifest.json`—through the exact native workflow. The final exact-main commit needs passing aggregate [`emulated-release-evidence-schema-v4.json`](emulated-release-evidence-schema-v4.json), four specialized provider reports, classifier v3, the committed isolated deployment/recovery gate, and a closed [`release-automated-qualification-schema-v1.json`](release-automated-qualification-schema-v1.json) envelope. The Android run must expose exactly nine 30-day artifacts; the qualifier must expose one exact twelve-member artifact. The envelope binds all seven workflow manifests and binaries, immutable policy/scenario digests, the content-addressed runtime archive, package lock, snapshot, and no-network replay. It explicitly records `physicalDeviceObserved:false`, `androidFrameworkObserved:false`, `sustainedPhysicalSoak:false`, `physicalCertification:"not_run"`, and `rebuildReproducibilityClaim:false`.
@@ -129,6 +144,7 @@ A change to the stable transport or staged tool registry must prove:
 - read-only metadata excludes persistent identifiers, secrets, environments, process inventory, and control behavior;
 - errors and audit counters retain only stable non-sensitive data;
 - arbitrary command execution, broader Android control, shell fallback, and unrelated high-impact tools remain absent; fixed diagnostics and exact-stream volume control appear only in their explicit postures.
+- the development-only rish probe, if compiled, remains default-disabled, accepts no arguments, proves only exact shell UID `2000`, reports no mutation readiness, and cannot be represented as production-qualified without physical evidence.
 
 Stable transport regression evidence, including the independently gated SSE posture, is defined in [`MCP_RESTORATION_VALIDATION.md`](MCP_RESTORATION_VALIDATION.md). Future long-lived server-request streaming or protocol-version changes require a new focused transport gate rather than an implicit compatibility expansion.
 
@@ -151,6 +167,7 @@ Inert policy modules are not authorization to expose a live capability.
 Do not merge or release when any applicable condition is true:
 
 - exact-head CI, Android, or Security evidence is missing, stale, cancelled, or failing;
+- rish is included in a release artifact, enabled as a production control plane, or described as Shizuku-qualified without exact physical-device evidence and a new closed evidence schema;
 - an artifact's feature posture or source commit is ambiguous;
 - actionable review feedback remains unresolved;
 - documentation claims behavior or conformance the code does not implement;

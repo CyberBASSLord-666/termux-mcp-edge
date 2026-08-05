@@ -2,7 +2,7 @@
 
 The MCP runtime expands capability only through small, current-base pull requests with explicit scope, tests, and audit coverage. Every gate must preserve the existing default-deny posture unless the gate explicitly changes that posture and the change is covered by tests.
 
-Compile composition does not collapse these gates. The named `full-suite` feature compiles every currently supported optional provider, yet discovery remains at exactly 17 tools until battery, volume-status, volume-control, and fixed-command runtime flags are enabled independently; all four produce exactly 21. Filesystem and volume mutations still require their own default-disabled gate and exact-operation single-use grant. Raw Cargo `--all-features` is development compatibility coverage, not a public release posture.
+Compile composition does not collapse these gates. The named `full-suite` feature compiles the four governed optional release providers, yet discovery remains at exactly 17 tools until battery, volume-status, volume-control, and fixed-command runtime flags are enabled independently; all four produce exactly 21. Filesystem and volume mutations still require their own default-disabled gate and exact-operation single-use grant. Raw Cargo `--all-features` is development compatibility coverage, not a public release posture.
 
 ## Current baseline
 

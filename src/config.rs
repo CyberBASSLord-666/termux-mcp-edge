@@ -1,9 +1,13 @@
 //! Configuration management with strong validation.
 
-use std::{env, fmt, net::IpAddr, path::PathBuf};
+use std::{
+    env, fmt,
+    net::IpAddr,
+    path::{Component, Path, PathBuf},
+};
 
 #[cfg(feature = "mcp-runtime")]
-use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+use std::{collections::BTreeMap, fs::File, io::Read};
 
 use anyhow::{anyhow, bail};
 
@@ -110,7 +114,7 @@ impl fmt::Debug for CapabilityConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AndroidConfig {
     /// Explicit runtime opt-in for the separately feature-gated battery tool.
     pub battery_status_enabled: bool,
@@ -118,6 +122,42 @@ pub struct AndroidConfig {
     pub volume_status_enabled: bool,
     /// Explicit runtime opt-in for request-authorized volume mutation.
     pub volume_control_enabled: bool,
+    /// Default-disabled Shizuku/rish execution backend configuration.
+    pub rish: RishConfig,
+}
+
+#[derive(Clone)]
+pub struct RishConfig {
+    /// Explicit runtime opt-in for the separately feature-gated rish backend.
+    pub enabled: bool,
+    /// Absolute path to the operator-pinned Shizuku rish DEX.
+    dex_path: Option<PathBuf>,
+    /// Expected SHA-256 of the configured rish DEX.
+    dex_sha256: Option<String>,
+}
+
+impl RishConfig {
+    pub fn dex_path(&self) -> Option<&Path> {
+        self.dex_path.as_deref()
+    }
+
+    pub fn dex_sha256(&self) -> Option<&str> {
+        self.dex_sha256.as_deref()
+    }
+}
+
+impl fmt::Debug for RishConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RishConfig")
+            .field("enabled", &self.enabled)
+            .field("dex_path", &self.dex_path.as_ref().map(|_| "<redacted>"))
+            .field(
+                "dex_sha256",
+                &self.dex_sha256.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -272,6 +312,15 @@ impl AppConfig {
                     "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
                     false,
                 )?,
+                rish: RishConfig {
+                    enabled: env_bool(&read_variable, "MCP__ANDROID__RISH_ENABLED", false)?,
+                    dex_path: optional_env_string(&read_variable, "MCP__ANDROID__RISH_DEX_PATH")?
+                        .map(PathBuf::from),
+                    dex_sha256: optional_env_string(
+                        &read_variable,
+                        "MCP__ANDROID__RISH_DEX_SHA256",
+                    )?,
+                },
             },
             command: CommandConfig {
                 enabled: env_bool(&read_variable, "MCP__COMMAND__ENABLED", false)?,
@@ -351,6 +400,7 @@ impl AppConfig {
         validate_trash_file_mutation_capability(&config)?;
         validate_android_capabilities(&config.android)?;
         validate_android_volume_control_capability(&config)?;
+        validate_android_rish_configuration(&config)?;
         validate_command_capability(&config.command)?;
         validate_transport_security(&config.transport)?;
         Ok(config)
@@ -722,6 +772,84 @@ fn validate_android_volume_control_capability(config: &AppConfig) -> anyhow::Res
     Ok(())
 }
 
+fn validate_android_rish_configuration(config: &AppConfig) -> anyhow::Result<()> {
+    const SHA256_HEX_BYTES: usize = 64;
+
+    let rish = &config.android.rish;
+    if rish.dex_path.is_some() != rish.dex_sha256.is_some() {
+        bail!(
+            "MCP__ANDROID__RISH_DEX_PATH and MCP__ANDROID__RISH_DEX_SHA256 must be configured together"
+        );
+    }
+
+    if let Some(digest) = rish.dex_sha256() {
+        if digest.len() != SHA256_HEX_BYTES
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            bail!(
+                "MCP__ANDROID__RISH_DEX_SHA256 must contain exactly {SHA256_HEX_BYTES} lowercase hexadecimal characters"
+            );
+        }
+    }
+
+    if let Some(dex_path) = rish.dex_path() {
+        if !dex_path.is_absolute() {
+            bail!("MCP__ANDROID__RISH_DEX_PATH must be an absolute path");
+        }
+
+        let normalized_dex_path = normalize_absolute_path_lexically(dex_path)
+            .ok_or_else(|| anyhow!("MCP__ANDROID__RISH_DEX_PATH must use an absolute Unix path"))?;
+        for safe_root in &config.file.safe_roots {
+            let normalized_safe_root = normalize_absolute_path_lexically(safe_root)
+                .ok_or_else(|| anyhow!("MCP__FILE__SAFE_ROOTS must contain absolute Unix paths"))?;
+            if normalized_dex_path == normalized_safe_root
+                || normalized_dex_path.starts_with(&normalized_safe_root)
+            {
+                bail!(
+                    "MCP__ANDROID__RISH_DEX_PATH must be outside every MCP__FILE__SAFE_ROOTS entry"
+                );
+            }
+        }
+    }
+
+    if !rish.enabled {
+        return Ok(());
+    }
+    if rish.dex_path.is_none() {
+        bail!(
+            "MCP__ANDROID__RISH_ENABLED requires MCP__ANDROID__RISH_DEX_PATH and MCP__ANDROID__RISH_DEX_SHA256"
+        );
+    }
+    if !cfg!(feature = "android-rish") {
+        bail!("MCP__ANDROID__RISH_ENABLED requires a binary built with the android-rish feature");
+    }
+    validate_mutation_static_token(
+        config,
+        "MCP__ANDROID__RISH_ENABLED requires MCP__AUTH__STATIC_TOKEN",
+    )
+}
+
+fn normalize_absolute_path_lexically(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+
+    let mut normalized = PathBuf::from("/");
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(segment) => normalized.push(segment),
+            Component::Prefix(_) => return None,
+        }
+    }
+    Some(normalized)
+}
+
 fn validate_mutation_static_token(
     config: &AppConfig,
     missing_token_error: &'static str,
@@ -826,6 +954,11 @@ mod tests {
                 battery_status_enabled: false,
                 volume_status_enabled: false,
                 volume_control_enabled: false,
+                rish: RishConfig {
+                    enabled: false,
+                    dex_path: None,
+                    dex_sha256: None,
+                },
             },
             command: CommandConfig { enabled: false },
             file: FileConfig {
@@ -983,6 +1116,9 @@ mod tests {
         assert!(!config.android.battery_status_enabled);
         assert!(!config.android.volume_status_enabled);
         assert!(!config.android.volume_control_enabled);
+        assert!(!config.android.rish.enabled);
+        assert_eq!(config.android.rish.dex_path(), None);
+        assert_eq!(config.android.rish.dex_sha256(), None);
         assert!(!config.command.enabled);
         assert!(!config.file.create_directory_mutation_enabled);
         assert!(!config.file.write_file_mutation_enabled);
@@ -1172,6 +1308,207 @@ mod tests {
         assert!(error
             .to_string()
             .starts_with("MCP__ANDROID__VOLUME_CONTROL_ENABLED must be a boolean value"));
+    }
+
+    #[test]
+    fn android_rish_config_debug_output_redacts_path_and_digest() {
+        let rish = RishConfig {
+            enabled: true,
+            dex_path: Some(PathBuf::from("/data/local/tmp/private/rish.dex")),
+            dex_sha256: Some("d".repeat(64)),
+        };
+        let debug = format!("{rish:?}");
+
+        assert!(debug.contains("enabled: true"));
+        assert_eq!(debug.matches("<redacted>").count(), 2);
+        assert!(!debug.contains("/data/local/tmp/private/rish.dex"));
+        assert!(!debug.contains(&"d".repeat(64)));
+    }
+
+    #[test]
+    fn android_rish_configuration_truth_table_fails_closed() {
+        for enabled in [false, true] {
+            for has_path in [false, true] {
+                for has_digest in [false, true] {
+                    for has_static_token in [false, true] {
+                        let mut entries = vec![(
+                            "MCP__ANDROID__RISH_ENABLED",
+                            OsString::from(enabled.to_string()),
+                        )];
+                        if has_path {
+                            entries.push((
+                                "MCP__ANDROID__RISH_DEX_PATH",
+                                OsString::from("/data/local/tmp/shizuku/rish.dex"),
+                            ));
+                        }
+                        if has_digest {
+                            entries.push((
+                                "MCP__ANDROID__RISH_DEX_SHA256",
+                                OsString::from("a".repeat(64)),
+                            ));
+                        }
+                        if has_static_token {
+                            entries.push((
+                                "MCP__AUTH__STATIC_TOKEN",
+                                OsString::from("rish-static-principal"),
+                            ));
+                        }
+
+                        let configured = load_from_os_values(entries);
+                        match (enabled, has_path, has_digest, has_static_token) {
+                            (_, path, digest, _) if path != digest => assert_eq!(
+                                configured.unwrap_err().to_string(),
+                                "MCP__ANDROID__RISH_DEX_PATH and MCP__ANDROID__RISH_DEX_SHA256 must be configured together"
+                            ),
+                            (false, false, false, _) => {
+                                let configured = configured.unwrap();
+                                assert!(!configured.android.rish.enabled);
+                                assert_eq!(configured.android.rish.dex_path(), None);
+                                assert_eq!(configured.android.rish.dex_sha256(), None);
+                            }
+                            (false, true, true, _) => {
+                                let configured = configured.unwrap();
+                                assert!(!configured.android.rish.enabled);
+                                assert_eq!(
+                                    configured.android.rish.dex_path(),
+                                    Some(Path::new("/data/local/tmp/shizuku/rish.dex"))
+                                );
+                                assert_eq!(
+                                    configured.android.rish.dex_sha256(),
+                                    Some("a".repeat(64).as_str())
+                                );
+                            }
+                            (true, false, false, _) => assert_eq!(
+                                configured.unwrap_err().to_string(),
+                                "MCP__ANDROID__RISH_ENABLED requires MCP__ANDROID__RISH_DEX_PATH and MCP__ANDROID__RISH_DEX_SHA256"
+                            ),
+                            (true, true, true, _) if !cfg!(feature = "android-rish") => {
+                                assert_eq!(
+                                    configured.unwrap_err().to_string(),
+                                    "MCP__ANDROID__RISH_ENABLED requires a binary built with the android-rish feature"
+                                );
+                            }
+                            (true, true, true, false) => assert_eq!(
+                                configured.unwrap_err().to_string(),
+                                "MCP__ANDROID__RISH_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+                            ),
+                            (true, true, true, true) => {
+                                assert!(configured.unwrap().android.rish.enabled);
+                            }
+                            _ => unreachable!("all rish configuration states are covered"),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "android-rish")]
+    #[test]
+    fn android_rish_forbids_unauthenticated_localhost_and_invalid_static_tokens() {
+        let common = [
+            ("MCP__ANDROID__RISH_ENABLED", OsString::from("true")),
+            (
+                "MCP__ANDROID__RISH_DEX_PATH",
+                OsString::from("/data/local/tmp/shizuku/rish.dex"),
+            ),
+            (
+                "MCP__ANDROID__RISH_DEX_SHA256",
+                OsString::from("a".repeat(64)),
+            ),
+        ];
+        let unauthenticated = load_from_os_values(common.clone().into_iter().chain([(
+            "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY",
+            OsString::from("true"),
+        )]))
+        .unwrap_err();
+        assert_eq!(
+            unauthenticated.to_string(),
+            "MCP__ANDROID__RISH_ENABLED requires MCP__AUTH__STATIC_TOKEN"
+        );
+
+        let invalid_token = load_from_os_values(
+            common
+                .into_iter()
+                .chain([("MCP__AUTH__STATIC_TOKEN", OsString::from("invalid token"))]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            invalid_token.to_string(),
+            "configured bearer token must contain only ASCII graphic bytes"
+        );
+    }
+
+    #[test]
+    fn android_rish_preconfiguration_validates_path_and_digest_while_disabled() {
+        for invalid_digest in ["a".repeat(63), "A".repeat(64), "g".repeat(64)] {
+            let error = load_from_os_values([
+                (
+                    "MCP__ANDROID__RISH_DEX_PATH",
+                    OsString::from("/data/local/tmp/shizuku/rish.dex"),
+                ),
+                (
+                    "MCP__ANDROID__RISH_DEX_SHA256",
+                    OsString::from(invalid_digest),
+                ),
+            ])
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "MCP__ANDROID__RISH_DEX_SHA256 must contain exactly 64 lowercase hexadecimal characters"
+            );
+        }
+
+        let relative_path = load_from_os_values([
+            (
+                "MCP__ANDROID__RISH_DEX_PATH",
+                OsString::from("shizuku/rish.dex"),
+            ),
+            (
+                "MCP__ANDROID__RISH_DEX_SHA256",
+                OsString::from("a".repeat(64)),
+            ),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            relative_path.to_string(),
+            "MCP__ANDROID__RISH_DEX_PATH must be an absolute path"
+        );
+    }
+
+    #[test]
+    fn android_rish_dex_path_must_be_lexically_outside_safe_roots() {
+        for dex_path in [
+            DEFAULT_FILE_SAFE_ROOT.to_owned(),
+            format!("{DEFAULT_FILE_SAFE_ROOT}/rish.dex"),
+            format!("{DEFAULT_FILE_SAFE_ROOT}/../mcp-files/rish.dex"),
+        ] {
+            let error = load_from_os_values([
+                ("MCP__ANDROID__RISH_DEX_PATH", OsString::from(dex_path)),
+                (
+                    "MCP__ANDROID__RISH_DEX_SHA256",
+                    OsString::from("a".repeat(64)),
+                ),
+            ])
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "MCP__ANDROID__RISH_DEX_PATH must be outside every MCP__FILE__SAFE_ROOTS entry"
+            );
+        }
+
+        let configured = load_from_os_values([
+            (
+                "MCP__ANDROID__RISH_DEX_PATH",
+                OsString::from("/data/local/tmp/shizuku/../shizuku/rish.dex"),
+            ),
+            (
+                "MCP__ANDROID__RISH_DEX_SHA256",
+                OsString::from("a".repeat(64)),
+            ),
+        ])
+        .expect("disabled rish may be preconfigured outside every file safe root");
+        assert!(!configured.android.rish.enabled);
     }
 
     #[test]
@@ -1645,6 +1982,9 @@ mod tests {
             "MCP__ANDROID__BATTERY_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_STATUS_ENABLED",
             "MCP__ANDROID__VOLUME_CONTROL_ENABLED",
+            "MCP__ANDROID__RISH_ENABLED",
+            "MCP__ANDROID__RISH_DEX_PATH",
+            "MCP__ANDROID__RISH_DEX_SHA256",
             "MCP__COMMAND__ENABLED",
             "MCP__TRANSPORT__ALLOWED_HOSTS",
             "MCP__TRANSPORT__ALLOWED_ORIGINS",

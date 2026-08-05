@@ -19,6 +19,7 @@ pub mod auth;
     feature = "android-battery-status",
     feature = "android-volume-status",
     feature = "android-volume-control",
+    feature = "android-rish",
     feature = "command-execution"
 ))]
 mod bounded_process;
@@ -66,6 +67,8 @@ pub mod platform_info;
 #[cfg(feature = "mcp-runtime")]
 mod request_grant_capability;
 pub mod request_limits;
+#[cfg(feature = "android-rish")]
+mod rish_backend;
 pub mod service_status;
 pub mod tools;
 pub mod transport_security;

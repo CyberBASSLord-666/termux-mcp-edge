@@ -23,6 +23,12 @@ cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
 cargo build --locked --release --features full-suite
 bash tests/package_android_artifact_test.sh
+bash tests/package_shizuku_rish_test_artifact_test.sh
+bash tests/resolve_shizuku_rish_candidate_test.sh
+bash tests/rish_physical_identity_evidence_test.sh
+bash tests/shizuku_rish_physical_controller_test.sh
+bash tests/shizuku_rish_physical_workflow_test.sh
+bash tests/termux_rish_physical_gate_test.sh
 bash tests/termux_deploy_test.sh
 bash tests/termux_device_smoke_test.sh
 bash tests/termux_emulated_gate_test.sh

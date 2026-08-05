@@ -1,0 +1,738 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CyberBASSLord-666/termux-mcp-edge/blob/main/docs/android-rish-physical-identity-evidence-schema-v1.json",
+  "title": "Termux MCP Edge physical Shizuku/rish identity evidence v1",
+  "description": "Closed, pass-only evidence for the development-only S2.5 physical Shizuku/rish UID probe. This evidence is neither release eligible nor production-control qualification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateVersion",
+    "status",
+    "failureCode",
+    "releaseEligible",
+    "productionControlQualified",
+    "qualificationClass",
+    "scope",
+    "startedAt",
+    "completedAt",
+    "repository",
+    "commit",
+    "version",
+    "policySha256",
+    "cargoLockSha256",
+    "rawReportSha256",
+    "workflow",
+    "artifact",
+    "environment",
+    "backend",
+    "validation",
+    "claimBoundary",
+    "cleanup"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "gateVersion": {
+      "const": "1"
+    },
+    "status": {
+      "const": "pass"
+    },
+    "failureCode": {
+      "const": null
+    },
+    "releaseEligible": {
+      "const": false
+    },
+    "productionControlQualified": {
+      "const": false
+    },
+    "qualificationClass": {
+      "const": "physical_shizuku_rish_identity_development_v1"
+    },
+    "scope": {
+      "const": "s2_5_uid_probe_only"
+    },
+    "startedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "completedAt": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "repository": {
+      "const": "CyberBASSLord-666/termux-mcp-edge"
+    },
+    "commit": {
+      "$ref": "#/$defs/sha1"
+    },
+    "version": {
+      "$ref": "#/$defs/version"
+    },
+    "policySha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "cargoLockSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "rawReportSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "workflow": {
+      "$ref": "#/$defs/workflow"
+    },
+    "artifact": {
+      "$ref": "#/$defs/artifact"
+    },
+    "environment": {
+      "$ref": "#/$defs/environment"
+    },
+    "backend": {
+      "$ref": "#/$defs/backend"
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    },
+    "claimBoundary": {
+      "$ref": "#/$defs/claimBoundary"
+    },
+    "cleanup": {
+      "$ref": "#/$defs/cleanup"
+    }
+  },
+  "$defs": {
+    "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$"
+    },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "definitionSha256",
+        "runId",
+        "runAttempt",
+        "event",
+        "protectedEnvironment",
+        "controllerChallengeSha256",
+        "ciRunId",
+        "securityRunId",
+        "androidRunId"
+      ],
+      "properties": {
+        "name": {
+          "const": "Android Rish Physical Identity"
+        },
+        "definitionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runId": {
+          "$ref": "#/$defs/runId"
+        },
+        "runAttempt": {
+          "const": 1
+        },
+        "event": {
+          "const": "workflow_dispatch"
+        },
+        "protectedEnvironment": {
+          "const": "android-rish-physical-development"
+        },
+        "controllerChallengeSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "ciRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "securityRunId": {
+          "$ref": "#/$defs/runId"
+        },
+        "androidRunId": {
+          "$ref": "#/$defs/runId"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactName",
+        "posture",
+        "features",
+        "target",
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "artifactName": {
+          "const": "termux-mcp-server-aarch64-linux-android-android-rish-development"
+        },
+        "posture": {
+          "const": "android-rish-development"
+        },
+        "features": {
+          "const": [
+            "android-rish"
+          ]
+        },
+        "target": {
+          "const": "aarch64-linux-android"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "physicalDeviceObserved",
+        "androidFrameworkObserved",
+        "architecture",
+        "apiLevel",
+        "securityPatch",
+        "deviceProfileCommitment",
+        "buildFingerprintSha256",
+        "adbShellUid",
+        "shizukuStartModeObserved",
+        "termuxVersion",
+        "termuxSignerSha256",
+        "shizukuVersion",
+        "shizukuSignerSha256"
+      ],
+      "properties": {
+        "physicalDeviceObserved": {
+          "const": true
+        },
+        "androidFrameworkObserved": {
+          "const": true
+        },
+        "architecture": {
+          "const": "aarch64"
+        },
+        "apiLevel": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 36
+        },
+        "securityPatch": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "deviceProfileCommitment": {
+          "$ref": "#/$defs/sha256"
+        },
+        "buildFingerprintSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "adbShellUid": {
+          "const": 2000
+        },
+        "shizukuStartModeObserved": {
+          "const": false
+        },
+        "termuxVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "termuxSignerSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "shizukuVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "shizukuSignerSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "dexSha256",
+        "dexBytes",
+        "dexMode",
+        "dexParentMode",
+        "dexLinkCount",
+        "dexOwnerMatchesTermuxUid",
+        "dexCanonicalPrivatePath",
+        "principal",
+        "uid",
+        "state",
+        "rootAccepted",
+        "arbitraryShell",
+        "mutationReady"
+      ],
+      "properties": {
+        "name": {
+          "const": "shizuku_rish"
+        },
+        "dexSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "dexBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "dexMode": {
+          "const": "0400"
+        },
+        "dexParentMode": {
+          "const": "0700"
+        },
+        "dexLinkCount": {
+          "const": 1
+        },
+        "dexOwnerMatchesTermuxUid": {
+          "const": true
+        },
+        "dexCanonicalPrivatePath": {
+          "const": true
+        },
+        "principal": {
+          "const": "android_shell"
+        },
+        "uid": {
+          "const": 2000
+        },
+        "state": {
+          "const": "verified_shell_uid"
+        },
+        "rootAccepted": {
+          "const": false
+        },
+        "arbitraryShell": {
+          "const": false
+        },
+        "mutationReady": {
+          "const": false
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disabledToolCount",
+        "enabledToolCount",
+        "exactToolOrder",
+        "emptyArgumentsSchema",
+        "extraArgumentsRejected",
+        "unknownShellRejected",
+        "allMutationGatesDisabled",
+        "controllerOfflinePosturePreCandidate",
+        "trustedDirectRishProbePreCandidate",
+        "trustedDirectRishProbePostCandidate",
+        "controllerOfflinePosturePostCandidate",
+        "dexTamperRejected",
+        "dexModeRejected",
+        "dexSymlinkRejected",
+        "scenarioResults"
+      ],
+      "properties": {
+        "disabledToolCount": {
+          "const": 17
+        },
+        "enabledToolCount": {
+          "const": 18
+        },
+        "exactToolOrder": {
+          "const": true
+        },
+        "emptyArgumentsSchema": {
+          "const": true
+        },
+        "extraArgumentsRejected": {
+          "const": true
+        },
+        "unknownShellRejected": {
+          "const": true
+        },
+        "allMutationGatesDisabled": {
+          "const": true
+        },
+        "controllerOfflinePosturePreCandidate": {
+          "const": true
+        },
+        "trustedDirectRishProbePreCandidate": {
+          "const": true
+        },
+        "trustedDirectRishProbePostCandidate": {
+          "const": true
+        },
+        "controllerOfflinePosturePostCandidate": {
+          "const": true
+        },
+        "dexTamperRejected": {
+          "const": true
+        },
+        "dexModeRejected": {
+          "const": true
+        },
+        "dexSymlinkRejected": {
+          "const": true
+        },
+        "scenarioResults": {
+          "type": "array",
+          "minItems": 14,
+          "maxItems": 14,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/controllerOfflinePosturePreScenario"
+            },
+            {
+              "$ref": "#/$defs/trustedDirectRishPreScenario"
+            },
+            {
+              "$ref": "#/$defs/runtimeDisabledScenario"
+            },
+            {
+              "$ref": "#/$defs/candidateMcpUidScenario"
+            },
+            {
+              "$ref": "#/$defs/extraArgumentsScenario"
+            },
+            {
+              "$ref": "#/$defs/unknownShellScenario"
+            },
+            {
+              "$ref": "#/$defs/dexTamperScenario"
+            },
+            {
+              "$ref": "#/$defs/dexModeScenario"
+            },
+            {
+              "$ref": "#/$defs/dexSymlinkScenario"
+            },
+            {
+              "$ref": "#/$defs/mutationGatesScenario"
+            },
+            {
+              "$ref": "#/$defs/trustedDirectRishPostScenario"
+            },
+            {
+              "$ref": "#/$defs/controllerOfflinePosturePostScenario"
+            },
+            {
+              "$ref": "#/$defs/cleanupScenario"
+            },
+            {
+              "$ref": "#/$defs/deviceSlotQuarantinedScenario"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "scenarioResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "execution",
+        "outcome"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "execution": {
+          "const": "physical"
+        },
+        "outcome": {
+          "const": "pass"
+        }
+      }
+    },
+    "runtimeDisabledScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "runtime_disabled_tool_absent"
+            }
+          }
+        }
+      ]
+    },
+    "trustedDirectRishPreScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "trusted_direct_rish_probe_pre_candidate"
+            }
+          }
+        }
+      ]
+    },
+    "controllerOfflinePosturePreScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "controller_offline_posture_pre_candidate"
+            }
+          }
+        }
+      ]
+    },
+    "candidateMcpUidScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "candidate_mcp_status_uid_2000"
+            }
+          }
+        }
+      ]
+    },
+    "extraArgumentsScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "extra_arguments_rejected"
+            }
+          }
+        }
+      ]
+    },
+    "unknownShellScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "unknown_shell_rejected"
+            }
+          }
+        }
+      ]
+    },
+    "dexTamperScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "dex_tamper_rejected"
+            }
+          }
+        }
+      ]
+    },
+    "dexModeScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "dex_mode_rejected"
+            }
+          }
+        }
+      ]
+    },
+    "dexSymlinkScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "dex_symlink_rejected"
+            }
+          }
+        }
+      ]
+    },
+    "mutationGatesScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "all_mutation_gates_disabled"
+            }
+          }
+        }
+      ]
+    },
+    "trustedDirectRishPostScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "trusted_direct_rish_probe_post_candidate"
+            }
+          }
+        }
+      ]
+    },
+    "controllerOfflinePosturePostScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "controller_offline_posture_post_candidate"
+            }
+          }
+        }
+      ]
+    },
+    "cleanupScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "bounded_test_fixture_cleanup"
+            }
+          }
+        }
+      ]
+    },
+    "deviceSlotQuarantinedScenario": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/scenarioResult"
+        },
+        {
+          "properties": {
+            "id": {
+              "const": "device_slot_quarantined_after_candidate"
+            }
+          }
+        }
+      ]
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "s3Attestation",
+        "typedReads",
+        "grantV2",
+        "deviceMutation",
+        "productionControl",
+        "sameUidPersistenceExcluded",
+        "continuousNetworkIsolation",
+        "adversarialNetworkIsolation"
+      ],
+      "properties": {
+        "s3Attestation": {
+          "const": false
+        },
+        "typedReads": {
+          "const": false
+        },
+        "grantV2": {
+          "const": false
+        },
+        "deviceMutation": {
+          "const": false
+        },
+        "productionControl": {
+          "const": false
+        },
+        "sameUidPersistenceExcluded": {
+          "const": false
+        },
+        "continuousNetworkIsolation": {
+          "const": false
+        },
+        "adversarialNetworkIsolation": {
+          "const": false
+        }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateProcessGroupStopped",
+        "portReleased",
+        "deviceFixtureStateRemoved",
+        "controllerTransportRemoved",
+        "deviceSlotQuarantinedAfterCandidate"
+      ],
+      "properties": {
+        "candidateProcessGroupStopped": {
+          "const": true
+        },
+        "portReleased": {
+          "const": true
+        },
+        "deviceFixtureStateRemoved": {
+          "const": true
+        },
+        "controllerTransportRemoved": {
+          "const": true
+        },
+        "deviceSlotQuarantinedAfterCandidate": {
+          "const": true
+        }
+      }
+    }
+  }
+}

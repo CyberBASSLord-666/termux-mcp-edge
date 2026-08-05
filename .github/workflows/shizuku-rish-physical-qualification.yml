@@ -1,0 +1,1280 @@
+name: Android Rish Physical Identity
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: Exact open same-repository pull-request head SHA
+        required: true
+        type: string
+      pull_request_number:
+        description: Open same-repository pull request targeting main
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  ANDROID_RISH_PHYSICAL_SOLO_OPERATOR: ${{ vars.ANDROID_RISH_PHYSICAL_SOLO_OPERATOR }}
+
+concurrency:
+  group: android-rish-physical-controller-v1
+  cancel-in-progress: false
+
+jobs:
+  preflight-resolve:
+    name: Hosted trusted candidate preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      expected_commit: ${{ steps.companion-runs.outputs.expected_commit }}
+      head_branch: ${{ steps.companion-runs.outputs.head_branch }}
+      workflow_sha: ${{ steps.trusted-identity.outputs.workflow_sha }}
+      cross_compile_sha256: ${{ steps.trusted-identity.outputs.cross_compile_sha256 }}
+      packager_sha256: ${{ steps.trusted-identity.outputs.packager_sha256 }}
+      policy_sha256: ${{ steps.trusted-identity.outputs.policy_sha256 }}
+      workflow_definition_sha256: ${{ steps.trusted-identity.outputs.workflow_definition_sha256 }}
+      ci_run_id: ${{ steps.companion-runs.outputs.ci_run_id }}
+      security_run_id: ${{ steps.companion-runs.outputs.security_run_id }}
+      android_run_id: ${{ steps.companion-runs.outputs.android_run_id }}
+    steps:
+      - name: Validate closed dispatch identity
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = "CyberBASSLord-666/termux-mcp-edge"
+          test "$EVENT_NAME" = "workflow_dispatch"
+          test "$DISPATCH_REF" = "refs/heads/main"
+          test "$RUN_ATTEMPT" = "1"
+          [[ "$DISPATCH_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$WORKFLOW_SHA" = "$DISPATCH_SHA"
+          test "$WORKFLOW_REF" = \
+            "$REPOSITORY/.github/workflows/shizuku-rish-physical-qualification.yml@refs/heads/main"
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          jq -e '
+            type == "object"
+            and (keys == ["expected_commit", "pull_request_number"])
+          ' <<<"$INPUTS_JSON" >/dev/null
+
+      - name: Checkout trusted workflow definition
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Record trusted identities
+        id: trusted-identity
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="${GITHUB_WORKSPACE}/trusted"
+          definition="$trusted_root/.github/workflows/shizuku-rish-physical-qualification.yml"
+          policy="$trusted_root/docs/android-rish-physical-identity-policy-v1.json"
+          cross_compile="$trusted_root/scripts/cross_compile.sh"
+          packager="$trusted_root/scripts/package_shizuku_rish_test_artifact.sh"
+          test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test -f "$definition"
+          test ! -L "$definition"
+          test -f "$policy"
+          test ! -L "$policy"
+          test -f "$cross_compile"
+          test ! -L "$cross_compile"
+          test -f "$packager"
+          test ! -L "$packager"
+          definition_sha="$(sha256sum "$definition" | awk '{print $1}')"
+          policy_sha="$(sha256sum "$policy" | awk '{print $1}')"
+          cross_compile_sha="$(sha256sum "$cross_compile" | awk '{print $1}')"
+          packager_sha="$(sha256sum "$packager" | awk '{print $1}')"
+          [[ "$definition_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$policy_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$cross_compile_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$packager_sha" =~ ^[0-9a-f]{64}$ ]]
+          printf 'workflow_sha=%s\n' "$WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+          printf 'cross_compile_sha256=%s\n' "$cross_compile_sha" >>"$GITHUB_OUTPUT"
+          printf 'packager_sha256=%s\n' "$packager_sha" >>"$GITHUB_OUTPUT"
+          printf 'workflow_definition_sha256=%s\n' "$definition_sha" >>"$GITHUB_OUTPUT"
+          printf 'policy_sha256=%s\n' "$policy_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Resolve exact candidate and companion runs
+        id: companion-runs
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+        run: |
+          set -euo pipefail
+          resolution="${RUNNER_TEMP}/android-rish-candidate.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          printf 'expected_commit=%s\n' "$(jq -er '.commit' "$resolution")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'head_branch=%s\n' "$(jq -er '.headBranch' "$resolution")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'ci_run_id=%s\n' "$(jq -er '.ciRunId' "$resolution")" >>"$GITHUB_OUTPUT"
+          printf 'security_run_id=%s\n' \
+            "$(jq -er '.securityRunId' "$resolution")" >>"$GITHUB_OUTPUT"
+          printf 'android_run_id=%s\n' \
+            "$(jq -er '.androidRunId' "$resolution")" >>"$GITHUB_OUTPUT"
+
+      - name: Requery current workflow invocation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          current_run="${RUNNER_TEMP}/android-rish-current-run.json"
+          curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            >"$current_run"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sha "$WORKFLOW_SHA" \
+            --argjson run_id "$GITHUB_RUN_ID" '
+            .id == $run_id
+            and .event == "workflow_dispatch"
+            and .run_attempt == 1
+            and .head_sha == $sha
+            and .head_branch == "main"
+            and .path == ".github/workflows/shizuku-rish-physical-qualification.yml"
+            and .repository.full_name == $repository
+          ' "$current_run" >/dev/null
+
+  candidate-build:
+    name: Permissionless exact candidate build
+    needs: preflight-resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions: {}
+    outputs:
+      candidate_artifact_id: ${{ steps.candidate-artifact.outputs.artifact-id }}
+      candidate_artifact_digest: ${{ steps.candidate-artifact.outputs.artifact-digest }}
+      candidate_version: ${{ steps.candidate-identity.outputs.version }}
+      candidate_sha256: ${{ steps.candidate-identity.outputs.sha256 }}
+      candidate_bytes: ${{ steps.candidate-identity.outputs.bytes }}
+      cargo_lock_sha256: ${{ steps.candidate-identity.outputs.cargo_lock_sha256 }}
+    steps:
+      - name: Validate permissionless candidate boundary
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          EXPECTED_HEAD_BRANCH: ${{ needs.preflight-resolve.outputs.head_branch }}
+          INPUT_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_SHA: ${{ needs.preflight-resolve.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$REPOSITORY" = "CyberBASSLord-666/termux-mcp-edge"
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_COMMIT" = "$INPUT_EXPECTED_COMMIT"
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git check-ref-format "refs/heads/$EXPECTED_HEAD_BRANCH"
+          test -z "${GH_TOKEN:-}"
+          test -z "${GITHUB_TOKEN:-}"
+
+      - name: Checkout trusted build helpers without credentials
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_TERMINAL_PROMPT: "0"
+          WORKFLOW_SHA: ${{ needs.preflight-resolve.outputs.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="${GITHUB_WORKSPACE}/trusted"
+          test ! -e "$trusted_root"
+          test ! -L "$trusted_root"
+          git init --quiet "$trusted_root"
+          git -C "$trusted_root" \
+            -c credential.helper= \
+            -c http.extraheader= \
+            fetch --quiet --no-tags --depth=1 \
+              https://github.com/CyberBASSLord-666/termux-mcp-edge.git \
+              "$WORKFLOW_SHA"
+          git -C "$trusted_root" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test -z "$(git -C "$trusted_root" remote)"
+          if git -C "$trusted_root" config --local --get-regexp \
+            '^(http\..*\.extraheader|credential\.)'
+          then
+            exit 1
+          fi
+
+      - name: Checkout exact candidate without credentials
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          EXPECTED_HEAD_BRANCH: ${{ needs.preflight-resolve.outputs.head_branch }}
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          candidate_root="${GITHUB_WORKSPACE}/candidate"
+          test ! -e "$candidate_root"
+          test ! -L "$candidate_root"
+          git init --quiet "$candidate_root"
+          git -C "$candidate_root" \
+            -c credential.helper= \
+            -c http.extraheader= \
+            fetch --quiet --no-tags --depth=1 \
+              https://github.com/CyberBASSLord-666/termux-mcp-edge.git \
+              "refs/heads/$EXPECTED_HEAD_BRANCH"
+          git -C "$candidate_root" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$candidate_root" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test -z "$(git -C "$candidate_root" remote)"
+          if git -C "$candidate_root" config --local --get-regexp \
+            '^(http\..*\.extraheader|credential\.)'
+          then
+            exit 1
+          fi
+
+      - name: Install pinned Rust toolchain
+        # dtolnay/rust-toolchain@stable resolved 2026-06-26
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.88.0
+          targets: aarch64-linux-android
+
+      - name: Install Android NDK
+        id: setup-ndk
+        # nttld/setup-ndk@1.6.0 resolved 2026-07-10
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779
+        with:
+          ndk-version: r26d
+          add-to-path: false
+
+      - name: Verify and cross-compile exact candidate
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CROSS_COMPILE_SHA256: ${{ needs.preflight-resolve.outputs.cross_compile_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$(rustc --version | awk '{print $2}')" = "1.88.0"
+          test "$(cargo --version | awk '{print $2}')" = "1.88.0"
+          rustup target list --installed | grep -Fx aarch64-linux-android
+          test "$(sha256sum ../trusted/scripts/cross_compile.sh | awk '{print $1}')" = \
+            "$CROSS_COMPILE_SHA256"
+          metadata="$(cargo metadata --locked --format-version 1 --no-deps)"
+          jq -e '
+            [
+              .packages[]
+              | select(.name == "termux-mcp-server")
+              | .features["android-rish"]
+            ]
+            | length == 1 and .[0] == ["mcp-runtime"]
+          ' <<<"$metadata" >/dev/null
+          git diff --exit-code -- Cargo.toml Cargo.lock
+          env \
+            -u GH_TOKEN \
+            -u GITHUB_TOKEN \
+            -u GITHUB_ENV \
+            -u GITHUB_OUTPUT \
+            -u GITHUB_PATH \
+            -u GITHUB_STEP_SUMMARY \
+            ANDROID_NDK_HOME="$ANDROID_NDK_HOME" \
+            BUILD_FEATURES=android-rish \
+            bash ../trusted/scripts/cross_compile.sh
+          git diff --exit-code -- Cargo.toml Cargo.lock
+
+      - name: Package closed development artifact
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          PACKAGER_SHA256: ${{ needs.preflight-resolve.outputs.packager_sha256 }}
+        run: |
+          set -euo pipefail
+          candidate_root="${GITHUB_WORKSPACE}/candidate"
+          bundle="${RUNNER_TEMP}/android-rish-development-bundle"
+          test "$(sha256sum trusted/scripts/package_shizuku_rish_test_artifact.sh \
+            | awk '{print $1}')" = "$PACKAGER_SHA256"
+          version="$(
+            cargo metadata \
+              --manifest-path "$candidate_root/Cargo.toml" \
+              --locked \
+              --format-version 1 \
+              --no-deps \
+              | jq -er '
+                  .packages[]
+                  | select(.name == "termux-mcp-server")
+                  | .version
+                '
+          )"
+          bash trusted/scripts/package_shizuku_rish_test_artifact.sh \
+            --binary \
+              "$candidate_root/target/aarch64-linux-android/release/termux-mcp-server" \
+            --cargo-lock "$candidate_root/Cargo.lock" \
+            --output-dir "$bundle" \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --version "$version"
+
+      - name: Record candidate identity
+        id: candidate-identity
+        run: |
+          set -euo pipefail
+          manifest="${RUNNER_TEMP}/android-rish-development-bundle/artifact-manifest.json"
+          printf 'version=%s\n' "$(jq -er '.version' "$manifest")" >>"$GITHUB_OUTPUT"
+          printf 'sha256=%s\n' "$(jq -er '.sha256' "$manifest")" >>"$GITHUB_OUTPUT"
+          printf 'bytes=%s\n' "$(jq -er '.bytes' "$manifest")" >>"$GITHUB_OUTPUT"
+          printf 'cargo_lock_sha256=%s\n' \
+            "$(jq -er '.cargoLockSha256' "$manifest")" >>"$GITHUB_OUTPUT"
+
+      - name: Upload closed development artifact
+        id: candidate-artifact
+        # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: termux-mcp-android-rish-development-candidate
+          path: ${{ runner.temp }}/android-rish-development-bundle/
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
+          retention-days: 30
+
+  candidate-review:
+    name: Hosted trusted candidate reconciliation
+    needs: [preflight-resolve, candidate-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      expected_commit: ${{ needs.preflight-resolve.outputs.expected_commit }}
+      candidate_artifact_id: ${{ needs.candidate-build.outputs.candidate_artifact_id }}
+      candidate_artifact_digest: ${{ needs.candidate-build.outputs.candidate_artifact_digest }}
+      candidate_version: ${{ needs.candidate-build.outputs.candidate_version }}
+      candidate_sha256: ${{ needs.candidate-build.outputs.candidate_sha256 }}
+      candidate_bytes: ${{ needs.candidate-build.outputs.candidate_bytes }}
+      cargo_lock_sha256: ${{ needs.candidate-build.outputs.cargo_lock_sha256 }}
+      policy_sha256: ${{ needs.preflight-resolve.outputs.policy_sha256 }}
+      workflow_definition_sha256: ${{ needs.preflight-resolve.outputs.workflow_definition_sha256 }}
+      ci_run_id: ${{ needs.preflight-resolve.outputs.ci_run_id }}
+      security_run_id: ${{ needs.preflight-resolve.outputs.security_run_id }}
+      android_run_id: ${{ needs.preflight-resolve.outputs.android_run_id }}
+    steps:
+      - name: Checkout trusted reconciliation definition
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Requery exact candidate and companion runs after build
+        env:
+          ANDROID_RUN_ID: ${{ needs.preflight-resolve.outputs.android_run_id }}
+          CI_RUN_ID: ${{ needs.preflight-resolve.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.preflight-resolve.outputs.security_run_id }}
+        run: |
+          set -euo pipefail
+          resolution="${RUNNER_TEMP}/android-rish-post-build-resolution.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          test "$(jq -er '.ciRunId' "$resolution")" = "$CI_RUN_ID"
+          test "$(jq -er '.securityRunId' "$resolution")" = "$SECURITY_RUN_ID"
+          test "$(jq -er '.androidRunId' "$resolution")" = "$ANDROID_RUN_ID"
+
+      - name: Reconcile uploaded candidate artifact identity
+        env:
+          ARTIFACT_DIGEST: ${{ needs.candidate-build.outputs.candidate_artifact_digest }}
+          ARTIFACT_ID: ${{ needs.candidate-build.outputs.candidate_artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          case "$ARTIFACT_DIGEST" in
+            sha256:[0-9a-f][0-9a-f]*)
+              expected_digest="$ARTIFACT_DIGEST"
+              ;;
+            [0-9a-f][0-9a-f]*)
+              expected_digest="sha256:$ARTIFACT_DIGEST"
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+          [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          artifact_json="${RUNNER_TEMP}/android-rish-candidate-artifact.json"
+          curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" \
+            >"$artifact_json"
+          jq -e \
+            --arg digest "$expected_digest" \
+            --arg sha "$WORKFLOW_SHA" \
+            --argjson artifact_id "$ARTIFACT_ID" \
+            --argjson run_id "$GITHUB_RUN_ID" '
+            .id == $artifact_id
+            and .name == "termux-mcp-android-rish-development-candidate"
+            and .expired == false
+            and .digest == $digest
+            and (.size_in_bytes | type == "number" and . > 0)
+            and .workflow_run.id == $run_id
+            and .workflow_run.head_sha == $sha
+          ' "$artifact_json" >/dev/null
+
+      - name: Record protected physical review request
+        env:
+          ANDROID_RUN_ID: ${{ needs.preflight-resolve.outputs.android_run_id }}
+          ARTIFACT_DIGEST: ${{ needs.candidate-build.outputs.candidate_artifact_digest }}
+          ARTIFACT_ID: ${{ needs.candidate-build.outputs.candidate_artifact_id }}
+          CANDIDATE_VERSION: ${{ needs.candidate-build.outputs.candidate_version }}
+          CI_RUN_ID: ${{ needs.preflight-resolve.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.preflight-resolve.outputs.expected_commit }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.preflight-resolve.outputs.security_run_id }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Protected Android Rish physical review request\n\n'
+            printf -- '- Pull request: `#%s`\n' "$PULL_REQUEST_NUMBER"
+            printf -- '- Candidate: `%s`\n' "$EXPECTED_COMMIT"
+            printf -- '- Version: `%s`\n' "$CANDIDATE_VERSION"
+            printf -- '- CI run: `%s`\n' "$CI_RUN_ID"
+            printf -- '- Security run: `%s`\n' "$SECURITY_RUN_ID"
+            printf -- '- Android run: `%s`\n' "$ANDROID_RUN_ID"
+            printf -- '- Candidate artifact ID: `%s`\n' "$ARTIFACT_ID"
+            printf -- '- Candidate artifact digest: `%s`\n' "$ARTIFACT_DIGEST"
+            printf -- '- Release eligible: `false`\n'
+            printf -- '- Production control qualified: `false`\n'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  physical-gate:
+    name: Protected physical device gate
+    needs: candidate-review
+    runs-on: [self-hosted, linux, termux-rish-controller]
+    timeout-minutes: 30
+    environment:
+      name: android-rish-physical-development
+      deployment: false
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      evidence_artifact_id: ${{ steps.physical-evidence.outputs.artifact-id }}
+      evidence_artifact_digest: ${{ steps.physical-evidence.outputs.artifact-digest }}
+      controller_challenge_sha256: ${{ steps.physical-identity.outputs.controller_challenge_sha256 }}
+      raw_report_sha256: ${{ steps.physical-identity.outputs.raw_report_sha256 }}
+      api_level: ${{ steps.physical-identity.outputs.api_level }}
+      security_patch: ${{ steps.physical-identity.outputs.security_patch }}
+      device_profile_commitment: ${{ steps.physical-identity.outputs.device_profile_commitment }}
+      build_fingerprint_sha256: ${{ steps.physical-identity.outputs.build_fingerprint_sha256 }}
+      termux_version: ${{ steps.physical-identity.outputs.termux_version }}
+      termux_signer_sha256: ${{ steps.physical-identity.outputs.termux_signer_sha256 }}
+      shizuku_version: ${{ steps.physical-identity.outputs.shizuku_version }}
+      shizuku_signer_sha256: ${{ steps.physical-identity.outputs.shizuku_signer_sha256 }}
+      dex_sha256: ${{ steps.physical-identity.outputs.dex_sha256 }}
+      dex_bytes: ${{ steps.physical-identity.outputs.dex_bytes }}
+    steps:
+      - name: Validate protected controller boundary
+        env:
+          DEVICE_SLOT: ${{ vars.ANDROID_RISH_PHYSICAL_DEVICE_SLOT }}
+          DISPATCH_REF: ${{ github.ref }}
+          DEVELOPMENT_GUARD: ${{ vars.ANDROID_RISH_PHYSICAL_DEVELOPMENT_PROTECTED }}
+          ANDROID_RISH_PHYSICAL_SOLO_OPERATOR: ${{ vars.ANDROID_RISH_PHYSICAL_SOLO_OPERATOR }}
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = "workflow_dispatch"
+          test "$DISPATCH_REF" = "refs/heads/main"
+          test "$RUN_ATTEMPT" = "1"
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test "$DEVELOPMENT_GUARD" = "reviewed-v1"
+          [[ "$DEVICE_SLOT" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]
+
+      - name: Checkout trusted controller definition only
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Verify trusted controller checkout
+        env:
+          EXPECTED_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+          EXPECTED_POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="${GITHUB_WORKSPACE}/trusted"
+          definition="$trusted_root/.github/workflows/shizuku-rish-physical-qualification.yml"
+          policy="$trusted_root/docs/android-rish-physical-identity-policy-v1.json"
+          test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test "$(sha256sum "$definition" | awk '{print $1}')" = \
+            "$EXPECTED_DEFINITION_SHA256"
+          test "$(sha256sum "$policy" | awk '{print $1}')" = \
+            "$EXPECTED_POLICY_SHA256"
+          test -x "$trusted_root/scripts/shizuku_rish_physical_controller.sh"
+          test -x "$trusted_root/scripts/termux_rish_physical_gate.sh"
+
+      - name: Requery exact candidate and companion runs
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.candidate-review.outputs.candidate_artifact_digest }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+        run: |
+          set -euo pipefail
+          resolution="${RUNNER_TEMP}/android-rish-physical-resolution.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          test "$(jq -er '.ciRunId' "$resolution")" = "$CI_RUN_ID"
+          test "$(jq -er '.securityRunId' "$resolution")" = "$SECURITY_RUN_ID"
+          test "$(jq -er '.androidRunId' "$resolution")" = "$ANDROID_RUN_ID"
+          case "$CANDIDATE_ARTIFACT_DIGEST" in
+            sha256:*) expected_digest="$CANDIDATE_ARTIFACT_DIGEST" ;;
+            *) expected_digest="sha256:$CANDIDATE_ARTIFACT_DIGEST" ;;
+          esac
+          [[ "$CANDIDATE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          candidate_artifact="${RUNNER_TEMP}/android-rish-candidate-artifact.json"
+          curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$CANDIDATE_ARTIFACT_ID" \
+            >"$candidate_artifact"
+          jq -e \
+            --arg digest "$expected_digest" \
+            --argjson artifact_id "$CANDIDATE_ARTIFACT_ID" \
+            --argjson run_id "$GITHUB_RUN_ID" '
+            .id == $artifact_id
+            and .name == "termux-mcp-android-rish-development-candidate"
+            and .expired == false
+            and .digest == $digest
+            and .workflow_run.id == $run_id
+          ' "$candidate_artifact" >/dev/null
+          test ! -e "${RUNNER_TEMP}/android-rish-development-bundle"
+          test ! -L "${RUNNER_TEMP}/android-rish-development-bundle"
+
+      - name: Download exact hosted candidate artifact
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          path: ${{ runner.temp }}/android-rish-development-bundle
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          digest-mismatch: error
+
+      - name: Validate downloaded candidate identity
+        env:
+          CANDIDATE_BYTES: ${{ needs.candidate-review.outputs.candidate_bytes }}
+          CANDIDATE_SHA256: ${{ needs.candidate-review.outputs.candidate_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          bundle="${RUNNER_TEMP}/android-rish-development-bundle"
+          test "$(find "$bundle" -mindepth 1 -maxdepth 1 -type f | wc -l)" = "3"
+          test -z "$(find "$bundle" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test "$(sha256sum "$bundle/termux-mcp-server" | awk '{print $1}')" = \
+            "$CANDIDATE_SHA256"
+          test "$(stat -c '%s' "$bundle/termux-mcp-server")" = "$CANDIDATE_BYTES"
+          expected_line="$CANDIDATE_SHA256  termux-mcp-server"
+          test "$(wc -l <"$bundle/SHA256SUMS")" = "1"
+          test "$(<"$bundle/SHA256SUMS")" = "$expected_line"
+          jq -e \
+            --arg commit "$EXPECTED_COMMIT" \
+            --arg version "$CANDIDATE_VERSION" \
+            --arg sha "$CANDIDATE_SHA256" \
+            --arg cargo_lock_sha "$CARGO_LOCK_SHA256" \
+            --arg workflow_run_id "$GITHUB_RUN_ID" \
+            --argjson bytes "$CANDIDATE_BYTES" '
+            .schemaVersion == 1
+            and .artifactClass == "android_rish_development_only_v1"
+            and .releaseEligible == false
+            and .productionControlQualified == false
+            and .repository == "CyberBASSLord-666/termux-mcp-edge"
+            and .commit == $commit
+            and .workflowRunId == $workflow_run_id
+            and .artifactName == "termux-mcp-server-aarch64-linux-android-android-rish-development"
+            and .posture == "android-rish-development"
+            and .features == ["android-rish"]
+            and .target == "aarch64-linux-android"
+            and .fileName == "termux-mcp-server"
+            and .version == $version
+            and .sha256 == $sha
+            and .bytes == $bytes
+            and .elf == "aarch64-android-elf"
+            and .cargoLockSha256 == $cargo_lock_sha
+          ' "$bundle/artifact-manifest.json" >/dev/null
+          chmod 700 "$bundle/termux-mcp-server"
+
+      - name: Execute trusted physical identity controller
+        id: physical-identity
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          DEVICE_SLOT: ${{ vars.ANDROID_RISH_PHYSICAL_DEVICE_SLOT }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+          WORKFLOW_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+        run: |
+          set -euo pipefail
+          private_root="$(mktemp -d "${RUNNER_TEMP}/android-rish-physical.XXXXXX")"
+          chmod 700 "$private_root"
+          challenge="$private_root/controller-challenge.bin"
+          evidence="$private_root/android-rish-physical-identity-evidence-v1.json"
+          head -c 32 /dev/urandom >"$challenge"
+          chmod 600 "$challenge"
+          test "$(stat -c '%s' "$challenge")" = "32"
+          challenge_sha="$(sha256sum "$challenge" | awk '{print $1}')"
+          [[ "$challenge_sha" =~ ^[0-9a-f]{64}$ ]]
+
+          bash trusted/scripts/shizuku_rish_physical_controller.sh \
+            --artifact-dir "${RUNNER_TEMP}/android-rish-development-bundle" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --expected-version "$CANDIDATE_VERSION" \
+            --policy-sha256 "$POLICY_SHA256" \
+            --cargo-lock-sha256 "$CARGO_LOCK_SHA256" \
+            --workflow-definition-sha256 "$WORKFLOW_DEFINITION_SHA256" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --ci-run-id "$CI_RUN_ID" \
+            --security-run-id "$SECURITY_RUN_ID" \
+            --android-run-id "$ANDROID_RUN_ID" \
+            --controller-challenge-file "$challenge" \
+            --device-slot "$DEVICE_SLOT" \
+            --device-gate \
+              "${GITHUB_WORKSPACE}/trusted/scripts/termux_rish_physical_gate.sh" \
+            --output "$evidence"
+
+          public_root="${RUNNER_TEMP}/android-rish-public-evidence"
+          test ! -e "$public_root"
+          test ! -L "$public_root"
+          install -d -m 700 "$public_root"
+          install -m 600 "$evidence" \
+            "$public_root/android-rish-physical-identity-evidence-v1.json"
+          rm -f "$challenge" "$evidence"
+          rmdir "$private_root"
+
+          public_evidence="$public_root/android-rish-physical-identity-evidence-v1.json"
+          test "$(jq -er '.workflow.controllerChallengeSha256' "$public_evidence")" = \
+            "$challenge_sha"
+          printf 'controller_challenge_sha256=%s\n' "$challenge_sha" >>"$GITHUB_OUTPUT"
+          printf 'raw_report_sha256=%s\n' \
+            "$(jq -er '.rawReportSha256' "$public_evidence")" >>"$GITHUB_OUTPUT"
+          printf 'api_level=%s\n' \
+            "$(jq -er '.environment.apiLevel' "$public_evidence")" >>"$GITHUB_OUTPUT"
+          printf 'security_patch=%s\n' \
+            "$(jq -er '.environment.securityPatch' "$public_evidence")" >>"$GITHUB_OUTPUT"
+          printf 'device_profile_commitment=%s\n' \
+            "$(jq -er '.environment.deviceProfileCommitment' "$public_evidence")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'build_fingerprint_sha256=%s\n' \
+            "$(jq -er '.environment.buildFingerprintSha256' "$public_evidence")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'termux_version=%s\n' \
+            "$(jq -er '.environment.termuxVersion' "$public_evidence")" >>"$GITHUB_OUTPUT"
+          printf 'termux_signer_sha256=%s\n' \
+            "$(jq -er '.environment.termuxSignerSha256' "$public_evidence")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'shizuku_version=%s\n' \
+            "$(jq -er '.environment.shizukuVersion' "$public_evidence")" >>"$GITHUB_OUTPUT"
+          printf 'shizuku_signer_sha256=%s\n' \
+            "$(jq -er '.environment.shizukuSignerSha256' "$public_evidence")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'dex_sha256=%s\n' \
+            "$(jq -er '.backend.dexSha256' "$public_evidence")" >>"$GITHUB_OUTPUT"
+          printf 'dex_bytes=%s\n' \
+            "$(jq -er '.backend.dexBytes' "$public_evidence")" >>"$GITHUB_OUTPUT"
+
+      - name: Upload sanitized physical evidence
+        id: physical-evidence
+        # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: termux-mcp-android-rish-physical-capture
+          path: ${{ runner.temp }}/android-rish-public-evidence/android-rish-physical-identity-evidence-v1.json
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
+          retention-days: 30
+
+      - name: Reconcile uploaded physical evidence identity
+        env:
+          ARTIFACT_DIGEST: ${{ steps.physical-evidence.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.physical-evidence.outputs.artifact-id }}
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_DIGEST" in
+            sha256:*) expected_digest="$ARTIFACT_DIGEST" ;;
+            *) expected_digest="sha256:$ARTIFACT_DIGEST" ;;
+          esac
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          artifact_json="${RUNNER_TEMP}/android-rish-physical-artifact.json"
+          curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" \
+            >"$artifact_json"
+          jq -e \
+            --arg digest "$expected_digest" \
+            --arg sha "$WORKFLOW_SHA" \
+            --argjson artifact_id "$ARTIFACT_ID" \
+            --argjson run_id "$GITHUB_RUN_ID" '
+            .id == $artifact_id
+            and .name == "termux-mcp-android-rish-physical-capture"
+            and .expired == false
+            and .digest == $digest
+            and (.size_in_bytes | type == "number" and . > 0)
+            and .workflow_run.id == $run_id
+            and .workflow_run.head_sha == $sha
+          ' "$artifact_json" >/dev/null
+
+      - name: Record protected final review request
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          ARTIFACT_DIGEST: ${{ steps.physical-evidence.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.physical-evidence.outputs.artifact-id }}
+          CHALLENGE_SHA256: ${{ steps.physical-identity.outputs.controller_challenge_sha256 }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Protected Android Rish final review request\n\n'
+            printf -- '- Candidate: `%s`\n' "$EXPECTED_COMMIT"
+            printf -- '- CI run: `%s`\n' "$CI_RUN_ID"
+            printf -- '- Security run: `%s`\n' "$SECURITY_RUN_ID"
+            printf -- '- Android run: `%s`\n' "$ANDROID_RUN_ID"
+            printf -- '- Controller challenge SHA-256: `%s`\n' "$CHALLENGE_SHA256"
+            printf -- '- Physical evidence artifact ID: `%s`\n' "$ARTIFACT_ID"
+            printf -- '- Physical evidence artifact digest: `%s`\n' "$ARTIFACT_DIGEST"
+            printf -- '- Device slot quarantined after candidate: `true`\n'
+            printf -- '- Release eligible: `false`\n'
+            printf -- '- Production control qualified: `false`\n'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  validate-evidence:
+    name: Hosted physical evidence validation
+    needs: [candidate-review, physical-gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted validator definition
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Requery exact candidate and companion runs
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.candidate-review.outputs.candidate_artifact_digest }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ needs.physical-gate.outputs.evidence_artifact_digest }}
+          EVIDENCE_ARTIFACT_ID: ${{ needs.physical-gate.outputs.evidence_artifact_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          EXPECTED_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+          EXPECTED_POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="${GITHUB_WORKSPACE}/trusted"
+          test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test "$(sha256sum \
+            "$trusted_root/.github/workflows/shizuku-rish-physical-qualification.yml" \
+            | awk '{print $1}')" = "$EXPECTED_DEFINITION_SHA256"
+          test "$(sha256sum \
+            "$trusted_root/docs/android-rish-physical-identity-policy-v1.json" \
+            | awk '{print $1}')" = "$EXPECTED_POLICY_SHA256"
+          resolution="${RUNNER_TEMP}/android-rish-validation-resolution.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          test "$(jq -er '.ciRunId' "$resolution")" = "$CI_RUN_ID"
+          test "$(jq -er '.securityRunId' "$resolution")" = "$SECURITY_RUN_ID"
+          test "$(jq -er '.androidRunId' "$resolution")" = "$ANDROID_RUN_ID"
+          for artifact_kind in candidate evidence; do
+            if [[ "$artifact_kind" == candidate ]]; then
+              artifact_id="$CANDIDATE_ARTIFACT_ID"
+              artifact_digest="$CANDIDATE_ARTIFACT_DIGEST"
+              artifact_name="termux-mcp-android-rish-development-candidate"
+            else
+              artifact_id="$EVIDENCE_ARTIFACT_ID"
+              artifact_digest="$EVIDENCE_ARTIFACT_DIGEST"
+              artifact_name="termux-mcp-android-rish-physical-capture"
+            fi
+            case "$artifact_digest" in
+              sha256:*) expected_digest="$artifact_digest" ;;
+              *) expected_digest="sha256:$artifact_digest" ;;
+            esac
+            [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            artifact_json="${RUNNER_TEMP}/android-rish-$artifact_kind-artifact.json"
+            curl --fail --silent --show-error \
+              --connect-timeout 10 \
+              --max-time 30 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" \
+              >"$artifact_json"
+            jq -e \
+              --arg digest "$expected_digest" \
+              --arg name "$artifact_name" \
+              --argjson artifact_id "$artifact_id" \
+              --argjson run_id "$GITHUB_RUN_ID" '
+              .id == $artifact_id
+              and .name == $name
+              and .expired == false
+              and .digest == $digest
+              and .workflow_run.id == $run_id
+            ' "$artifact_json" >/dev/null
+          done
+
+      - name: Download exact sanitized evidence
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.physical-gate.outputs.evidence_artifact_id }}
+          path: ${{ runner.temp }}/android-rish-evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          digest-mismatch: error
+
+      - name: Download exact candidate artifact for reconciliation
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          path: ${{ runner.temp }}/android-rish-development-bundle
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          digest-mismatch: error
+
+      - name: Validate closed evidence and artifact binding
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          API_LEVEL: ${{ needs.physical-gate.outputs.api_level }}
+          BUILD_FINGERPRINT_SHA256: ${{ needs.physical-gate.outputs.build_fingerprint_sha256 }}
+          CANDIDATE_BYTES: ${{ needs.candidate-review.outputs.candidate_bytes }}
+          CANDIDATE_SHA256: ${{ needs.candidate-review.outputs.candidate_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
+          CHALLENGE_SHA256: ${{ needs.physical-gate.outputs.controller_challenge_sha256 }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          DEVICE_PROFILE_COMMITMENT: ${{ needs.physical-gate.outputs.device_profile_commitment }}
+          DEX_BYTES: ${{ needs.physical-gate.outputs.dex_bytes }}
+          DEX_SHA256: ${{ needs.physical-gate.outputs.dex_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          RAW_REPORT_SHA256: ${{ needs.physical-gate.outputs.raw_report_sha256 }}
+          SECURITY_PATCH: ${{ needs.physical-gate.outputs.security_patch }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+          SHIZUKU_SIGNER_SHA256: ${{ needs.physical-gate.outputs.shizuku_signer_sha256 }}
+          SHIZUKU_VERSION: ${{ needs.physical-gate.outputs.shizuku_version }}
+          TERMUX_SIGNER_SHA256: ${{ needs.physical-gate.outputs.termux_signer_sha256 }}
+          TERMUX_VERSION: ${{ needs.physical-gate.outputs.termux_version }}
+          WORKFLOW_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+        run: |
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/android-rish-evidence"
+          evidence="$evidence_root/android-rish-physical-identity-evidence-v1.json"
+          bundle="${RUNNER_TEMP}/android-rish-development-bundle"
+          test "$(find "$evidence_root" -mindepth 1 -maxdepth 1 -type f | wc -l)" = "1"
+          test -z "$(find "$evidence_root" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test "$(sha256sum "$bundle/termux-mcp-server" | awk '{print $1}')" = \
+            "$CANDIDATE_SHA256"
+          test "$(stat -c '%s' "$bundle/termux-mcp-server")" = "$CANDIDATE_BYTES"
+          test "$(jq -er '.sha256' "$bundle/artifact-manifest.json")" = \
+            "$CANDIDATE_SHA256"
+          test "$(jq -er '.cargoLockSha256' "$bundle/artifact-manifest.json")" = \
+            "$CARGO_LOCK_SHA256"
+          python3 trusted/scripts/validate_rish_physical_identity_evidence.py \
+            --evidence "$evidence" \
+            --policy \
+              "${GITHUB_WORKSPACE}/trusted/docs/android-rish-physical-identity-policy-v1.json" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --expected-version "$CANDIDATE_VERSION" \
+            --expected-policy-sha256 "$POLICY_SHA256" \
+            --expected-cargo-lock-sha256 "$CARGO_LOCK_SHA256" \
+            --expected-raw-report-sha256 "$RAW_REPORT_SHA256" \
+            --expected-workflow-definition-sha256 "$WORKFLOW_DEFINITION_SHA256" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-ci-run-id "$CI_RUN_ID" \
+            --expected-security-run-id "$SECURITY_RUN_ID" \
+            --expected-android-run-id "$ANDROID_RUN_ID" \
+            --expected-controller-challenge-sha256 "$CHALLENGE_SHA256" \
+            --expected-artifact-sha256 "$CANDIDATE_SHA256" \
+            --expected-artifact-bytes "$CANDIDATE_BYTES" \
+            --expected-api-level "$API_LEVEL" \
+            --expected-security-patch "$SECURITY_PATCH" \
+            --expected-device-profile-commitment "$DEVICE_PROFILE_COMMITMENT" \
+            --expected-build-fingerprint-sha256 "$BUILD_FINGERPRINT_SHA256" \
+            --expected-termux-version "$TERMUX_VERSION" \
+            --expected-termux-signer-sha256 "$TERMUX_SIGNER_SHA256" \
+            --expected-shizuku-version "$SHIZUKU_VERSION" \
+            --expected-shizuku-signer-sha256 "$SHIZUKU_SIGNER_SHA256" \
+            --expected-dex-sha256 "$DEX_SHA256" \
+            --expected-dex-bytes "$DEX_BYTES"
+
+  final-review:
+    name: Protected final evidence review
+    needs: [candidate-review, physical-gate, validate-evidence]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: android-rish-physical-final-review
+      deployment: false
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Validate final protected boundary
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          FINAL_GUARD: ${{ vars.ANDROID_RISH_PHYSICAL_FINAL_REVIEW_PROTECTED }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_NAME" = "workflow_dispatch"
+          test "$DISPATCH_REF" = "refs/heads/main"
+          test "$RUN_ATTEMPT" = "1"
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$FINAL_GUARD" = "reviewed-v1"
+
+      - name: Checkout trusted final validator definition
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Requery exact identities after final approval
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ needs.candidate-review.outputs.candidate_artifact_digest }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ needs.physical-gate.outputs.evidence_artifact_digest }}
+          EVIDENCE_ARTIFACT_ID: ${{ needs.physical-gate.outputs.evidence_artifact_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          EXPECTED_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+          EXPECTED_POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          trusted_root="${GITHUB_WORKSPACE}/trusted"
+          test "$(git -C "$trusted_root" rev-parse HEAD)" = "$WORKFLOW_SHA"
+          test "$(sha256sum \
+            "$trusted_root/.github/workflows/shizuku-rish-physical-qualification.yml" \
+            | awk '{print $1}')" = "$EXPECTED_DEFINITION_SHA256"
+          test "$(sha256sum \
+            "$trusted_root/docs/android-rish-physical-identity-policy-v1.json" \
+            | awk '{print $1}')" = "$EXPECTED_POLICY_SHA256"
+          resolution="${RUNNER_TEMP}/android-rish-final-resolution.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          test "$(jq -er '.ciRunId' "$resolution")" = "$CI_RUN_ID"
+          test "$(jq -er '.securityRunId' "$resolution")" = "$SECURITY_RUN_ID"
+          test "$(jq -er '.androidRunId' "$resolution")" = "$ANDROID_RUN_ID"
+          for artifact_kind in candidate evidence; do
+            if [[ "$artifact_kind" == candidate ]]; then
+              artifact_id="$CANDIDATE_ARTIFACT_ID"
+              artifact_digest="$CANDIDATE_ARTIFACT_DIGEST"
+              artifact_name="termux-mcp-android-rish-development-candidate"
+            else
+              artifact_id="$EVIDENCE_ARTIFACT_ID"
+              artifact_digest="$EVIDENCE_ARTIFACT_DIGEST"
+              artifact_name="termux-mcp-android-rish-physical-capture"
+            fi
+            case "$artifact_digest" in
+              sha256:*) expected_digest="$artifact_digest" ;;
+              *) expected_digest="sha256:$artifact_digest" ;;
+            esac
+            [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]
+            [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            artifact_json="${RUNNER_TEMP}/android-rish-final-$artifact_kind-artifact.json"
+            curl --fail --silent --show-error \
+              --connect-timeout 10 \
+              --max-time 30 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" \
+              >"$artifact_json"
+            jq -e \
+              --arg digest "$expected_digest" \
+              --arg name "$artifact_name" \
+              --argjson artifact_id "$artifact_id" \
+              --argjson run_id "$GITHUB_RUN_ID" '
+              .id == $artifact_id
+              and .name == $name
+              and .expired == false
+              and .digest == $digest
+              and .workflow_run.id == $run_id
+            ' "$artifact_json" >/dev/null
+          done
+
+      - name: Download exact sanitized evidence after approval
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.physical-gate.outputs.evidence_artifact_id }}
+          path: ${{ runner.temp }}/android-rish-final-evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          digest-mismatch: error
+
+      - name: Download exact candidate artifact after approval
+        # actions/download-artifact@v8.0.1 resolved 2026-07-19
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.candidate-review.outputs.candidate_artifact_id }}
+          path: ${{ runner.temp }}/android-rish-final-bundle
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          digest-mismatch: error
+
+      - name: Repeat closed validation after final approval
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          API_LEVEL: ${{ needs.physical-gate.outputs.api_level }}
+          BUILD_FINGERPRINT_SHA256: ${{ needs.physical-gate.outputs.build_fingerprint_sha256 }}
+          CANDIDATE_BYTES: ${{ needs.candidate-review.outputs.candidate_bytes }}
+          CANDIDATE_SHA256: ${{ needs.candidate-review.outputs.candidate_sha256 }}
+          CANDIDATE_VERSION: ${{ needs.candidate-review.outputs.candidate_version }}
+          CARGO_LOCK_SHA256: ${{ needs.candidate-review.outputs.cargo_lock_sha256 }}
+          CHALLENGE_SHA256: ${{ needs.physical-gate.outputs.controller_challenge_sha256 }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          DEVICE_PROFILE_COMMITMENT: ${{ needs.physical-gate.outputs.device_profile_commitment }}
+          DEX_BYTES: ${{ needs.physical-gate.outputs.dex_bytes }}
+          DEX_SHA256: ${{ needs.physical-gate.outputs.dex_sha256 }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          POLICY_SHA256: ${{ needs.candidate-review.outputs.policy_sha256 }}
+          RAW_REPORT_SHA256: ${{ needs.physical-gate.outputs.raw_report_sha256 }}
+          SECURITY_PATCH: ${{ needs.physical-gate.outputs.security_patch }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+          SHIZUKU_SIGNER_SHA256: ${{ needs.physical-gate.outputs.shizuku_signer_sha256 }}
+          SHIZUKU_VERSION: ${{ needs.physical-gate.outputs.shizuku_version }}
+          TERMUX_SIGNER_SHA256: ${{ needs.physical-gate.outputs.termux_signer_sha256 }}
+          TERMUX_VERSION: ${{ needs.physical-gate.outputs.termux_version }}
+          WORKFLOW_DEFINITION_SHA256: ${{ needs.candidate-review.outputs.workflow_definition_sha256 }}
+        run: |
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/android-rish-final-evidence"
+          evidence="$evidence_root/android-rish-physical-identity-evidence-v1.json"
+          bundle="${RUNNER_TEMP}/android-rish-final-bundle"
+          test "$(find "$evidence_root" -mindepth 1 -maxdepth 1 -type f | wc -l)" = "1"
+          test -z "$(find "$evidence_root" -mindepth 1 -maxdepth 1 ! -type f -print -quit)"
+          test "$(sha256sum "$bundle/termux-mcp-server" | awk '{print $1}')" = \
+            "$CANDIDATE_SHA256"
+          test "$(stat -c '%s' "$bundle/termux-mcp-server")" = "$CANDIDATE_BYTES"
+          test "$(jq -er '.sha256' "$bundle/artifact-manifest.json")" = \
+            "$CANDIDATE_SHA256"
+          test "$(jq -er '.cargoLockSha256' "$bundle/artifact-manifest.json")" = \
+            "$CARGO_LOCK_SHA256"
+          python3 trusted/scripts/validate_rish_physical_identity_evidence.py \
+            --evidence "$evidence" \
+            --policy \
+              "${GITHUB_WORKSPACE}/trusted/docs/android-rish-physical-identity-policy-v1.json" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --expected-version "$CANDIDATE_VERSION" \
+            --expected-policy-sha256 "$POLICY_SHA256" \
+            --expected-cargo-lock-sha256 "$CARGO_LOCK_SHA256" \
+            --expected-raw-report-sha256 "$RAW_REPORT_SHA256" \
+            --expected-workflow-definition-sha256 "$WORKFLOW_DEFINITION_SHA256" \
+            --expected-workflow-run-id "$GITHUB_RUN_ID" \
+            --expected-ci-run-id "$CI_RUN_ID" \
+            --expected-security-run-id "$SECURITY_RUN_ID" \
+            --expected-android-run-id "$ANDROID_RUN_ID" \
+            --expected-controller-challenge-sha256 "$CHALLENGE_SHA256" \
+            --expected-artifact-sha256 "$CANDIDATE_SHA256" \
+            --expected-artifact-bytes "$CANDIDATE_BYTES" \
+            --expected-api-level "$API_LEVEL" \
+            --expected-security-patch "$SECURITY_PATCH" \
+            --expected-device-profile-commitment "$DEVICE_PROFILE_COMMITMENT" \
+            --expected-build-fingerprint-sha256 "$BUILD_FINGERPRINT_SHA256" \
+            --expected-termux-version "$TERMUX_VERSION" \
+            --expected-termux-signer-sha256 "$TERMUX_SIGNER_SHA256" \
+            --expected-shizuku-version "$SHIZUKU_VERSION" \
+            --expected-shizuku-signer-sha256 "$SHIZUKU_SIGNER_SHA256" \
+            --expected-dex-sha256 "$DEX_SHA256" \
+            --expected-dex-bytes "$DEX_BYTES"
+
+      - name: Final candidate state requery before evidence upload
+        env:
+          ANDROID_RUN_ID: ${{ needs.candidate-review.outputs.android_run_id }}
+          CI_RUN_ID: ${{ needs.candidate-review.outputs.ci_run_id }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          SECURITY_RUN_ID: ${{ needs.candidate-review.outputs.security_run_id }}
+        run: |
+          set -euo pipefail
+          resolution="${RUNNER_TEMP}/android-rish-final-upload-resolution.json"
+          bash trusted/scripts/resolve_shizuku_rish_candidate.sh \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$EXPECTED_COMMIT" \
+            --pull-request "$PULL_REQUEST_NUMBER" \
+            --output "$resolution"
+          test "$(jq -er '.ciRunId' "$resolution")" = "$CI_RUN_ID"
+          test "$(jq -er '.securityRunId' "$resolution")" = "$SECURITY_RUN_ID"
+          test "$(jq -er '.androidRunId' "$resolution")" = "$ANDROID_RUN_ID"
+
+      - name: Upload final development-only identity evidence
+        id: final-evidence
+        # actions/upload-artifact@v7.0.1 resolved 2026-07-10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: termux-mcp-android-rish-physical-identity-evidence
+          path: ${{ runner.temp }}/android-rish-final-evidence/android-rish-physical-identity-evidence-v1.json
+          if-no-files-found: error
+          include-hidden-files: false
+          compression-level: 0
+          overwrite: false
+          retention-days: 30
+
+      - name: Reconcile uploaded final evidence identity
+        env:
+          ARTIFACT_DIGEST: ${{ steps.final-evidence.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.final-evidence.outputs.artifact-id }}
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_DIGEST" in
+            sha256:*) expected_digest="$ARTIFACT_DIGEST" ;;
+            *) expected_digest="sha256:$ARTIFACT_DIGEST" ;;
+          esac
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$expected_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          artifact_json="${RUNNER_TEMP}/android-rish-final-artifact.json"
+          curl --fail --silent --show-error \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" \
+            >"$artifact_json"
+          jq -e \
+            --arg digest "$expected_digest" \
+            --arg sha "$WORKFLOW_SHA" \
+            --argjson artifact_id "$ARTIFACT_ID" \
+            --argjson run_id "$GITHUB_RUN_ID" '
+            .id == $artifact_id
+            and .name == "termux-mcp-android-rish-physical-identity-evidence"
+            and .expired == false
+            and .digest == $digest
+            and (.size_in_bytes | type == "number" and . > 0)
+            and .workflow_run.id == $run_id
+            and .workflow_run.head_sha == $sha
+          ' "$artifact_json" >/dev/null
+
+      - name: Record non-release qualification boundary
+        env:
+          EVIDENCE_ARTIFACT_ID: ${{ steps.final-evidence.outputs.artifact-id }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ steps.final-evidence.outputs.artifact-digest }}
+          EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Android Rish physical identity\n\n'
+            printf -- '- Candidate: `%s`\n' "$EXPECTED_COMMIT"
+            printf -- '- Evidence artifact ID: `%s`\n' "$EVIDENCE_ARTIFACT_ID"
+            printf -- '- Evidence artifact digest: `%s`\n' "$EVIDENCE_ARTIFACT_DIGEST"
+            printf -- '- Qualification class: `physical_shizuku_rish_identity_development_v1`\n'
+            printf -- '- Scope: `s2_5_uid_probe_only`\n'
+            printf -- '- Release eligible: `false`\n'
+            printf -- '- Production control qualified: `false`\n'
+          } >>"$GITHUB_STEP_SUMMARY"

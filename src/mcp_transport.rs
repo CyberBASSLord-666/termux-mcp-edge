@@ -40,6 +40,8 @@ use crate::command_policy::{
     COMMAND_STDERR_LIMIT_REASON, COMMAND_STDOUT_LIMIT_REASON, COMMAND_TIMEOUT_REASON,
     COMMAND_WAIT_FAILED_REASON,
 };
+#[cfg(feature = "android-rish")]
+use crate::rish_backend::RishBackendClient;
 use crate::{
     android_status::collect_android_status,
     audit::{
@@ -142,6 +144,7 @@ const ANDROID_STATUS_TOOL: &str = "android_status";
 const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
 const SET_ANDROID_VOLUME_TOOL: &str = "set_android_volume";
+const ANDROID_RISH_STATUS_TOOL: &str = "android_rish_status";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const COPY_FILE_TOOL: &str = "copy_file";
@@ -217,6 +220,7 @@ const ANDROID_STATUS_GATE: &str = "android_read_only_status";
 const ANDROID_BATTERY_STATUS_GATE: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_GATE: &str = "android_volume_status";
 const ANDROID_VOLUME_CONTROL_GATE: &str = "android_volume_control";
+const ANDROID_RISH_STATUS_GATE: &str = "android_rish_status";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
 const FILESYSTEM_METADATA_GATE: &str = "filesystem_metadata";
 const FILESYSTEM_READ_GATE: &str = "filesystem_read";
@@ -228,6 +232,13 @@ const PLATFORM_INFO_ALLOWED: &str = "read_only_platform_metadata";
 const PLATFORM_INFO_ARGUMENTS_DENIED: &str = "arguments_not_supported";
 const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
 const ANDROID_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
+#[cfg(feature = "android-rish")]
+const ANDROID_RISH_STATUS_ALLOWED: &str = "rish_identity_verified";
+const ANDROID_RISH_STATUS_ARGUMENTS_DENIED: &str = "rish_arguments_invalid";
+#[cfg(not(feature = "android-rish"))]
+const ANDROID_RISH_STATUS_FEATURE_DISABLED: &str = "rish_feature_not_compiled";
+#[cfg(feature = "android-rish")]
+const ANDROID_RISH_STATUS_RUNTIME_DISABLED: &str = "rish_runtime_disabled";
 #[cfg(feature = "android-battery-status")]
 const ANDROID_BATTERY_STATUS_ALLOWED: &str = "battery_status_read";
 const ANDROID_BATTERY_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
@@ -1189,6 +1200,9 @@ pub enum McpRouterBuildError {
 
     #[error("the command execution client could not be initialized")]
     CommandClientUnavailable,
+
+    #[error("the Android rish backend requires static bearer authentication")]
+    RishStaticAuthenticationRequired,
 }
 
 /// The single secure-by-composition public MCP router construction surface.
@@ -1217,6 +1231,8 @@ pub struct McpRouterBuilder {
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     command_execution_enabled: bool,
+    #[cfg(feature = "android-rish")]
+    rish_backend_client: Option<RishBackendClient>,
     filesystem_authorities: FilesystemMutationAuthorities,
     #[cfg(feature = "android-volume-control")]
     android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
@@ -1245,6 +1261,16 @@ impl std::fmt::Debug for McpRouterBuilder {
                 &self.android_volume_status_enabled,
             )
             .field("command_execution_enabled", &self.command_execution_enabled)
+            .field("android_rish_enabled", &{
+                #[cfg(feature = "android-rish")]
+                {
+                    self.rish_backend_client.is_some()
+                }
+                #[cfg(not(feature = "android-rish"))]
+                {
+                    false
+                }
+            })
             .field(
                 "create_directory_authority",
                 &self.filesystem_authorities.create_directory.is_some(),
@@ -1291,6 +1317,8 @@ impl McpRouterBuilder {
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
             command_execution_enabled: false,
+            #[cfg(feature = "android-rish")]
+            rish_backend_client: None,
             filesystem_authorities: FilesystemMutationAuthorities::default(),
             #[cfg(feature = "android-volume-control")]
             android_volume_control_authority: None,
@@ -1399,6 +1427,22 @@ impl McpRouterBuilder {
         self
     }
 
+    #[cfg(feature = "android-rish")]
+    #[allow(
+        dead_code,
+        reason = "the binary target compiles this module independently and owns rish enablement"
+    )]
+    pub(crate) fn try_with_rish_backend(
+        mut self,
+        client: RishBackendClient,
+    ) -> Result<Self, McpRouterBuildError> {
+        if self.auth_policy.static_principal().is_none() {
+            return Err(McpRouterBuildError::RishStaticAuthenticationRequired);
+        }
+        self.rish_backend_client = Some(client);
+        Ok(self)
+    }
+
     fn ensure_authority_principal(
         &self,
         capability: &'static str,
@@ -1423,6 +1467,8 @@ impl McpRouterBuilder {
             android_battery_status_enabled,
             android_volume_status_enabled,
             command_execution_enabled,
+            #[cfg(feature = "android-rish")]
+            rish_backend_client,
             filesystem_authorities,
             #[cfg(feature = "android-volume-control")]
             android_volume_control_authority,
@@ -1445,6 +1491,8 @@ impl McpRouterBuilder {
         .with_copy_file_authority(copy_file)
         .with_trash_file_authority(trash_file)
         .with_options(options);
+        #[cfg(feature = "android-rish")]
+        let state = state.with_rish_backend(rish_backend_client);
         #[cfg(feature = "android-volume-control")]
         let state = state.with_android_volume_control_authority(android_volume_control_authority);
 
@@ -1468,6 +1516,7 @@ struct McpTransportState {
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
+    android_rish_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     copy_file_authority: Option<CopyFileGrantAuthority>,
@@ -1483,6 +1532,8 @@ struct McpTransportState {
     android_volume_control_client: AndroidVolumeControlClient,
     #[cfg(feature = "command-execution")]
     command_execution_client: Option<CommandExecutionClient>,
+    #[cfg(feature = "android-rish")]
+    rish_backend_client: Option<RishBackendClient>,
 }
 
 impl McpTransportState {
@@ -1555,6 +1606,7 @@ impl McpTransportState {
             android_battery_status_enabled,
             android_volume_status_enabled,
             android_volume_control_enabled: false,
+            android_rish_enabled: false,
             command_execution_enabled,
             create_directory_authority,
             copy_file_authority: None,
@@ -1570,6 +1622,8 @@ impl McpTransportState {
             android_volume_control_client,
             #[cfg(feature = "command-execution")]
             command_execution_client,
+            #[cfg(feature = "android-rish")]
+            rish_backend_client: None,
         })
     }
 
@@ -1611,6 +1665,13 @@ impl McpTransportState {
         self
     }
 
+    #[cfg(feature = "android-rish")]
+    fn with_rish_backend(mut self, client: Option<RishBackendClient>) -> Self {
+        self.android_rish_enabled = client.is_some();
+        self.rish_backend_client = client;
+        self
+    }
+
     #[cfg(feature = "android-volume-control")]
     fn with_android_volume_control_authority(
         mut self,
@@ -1639,6 +1700,7 @@ impl McpTransportState {
             android_battery_status_enabled,
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
+            android_rish_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
@@ -1653,6 +1715,8 @@ impl McpTransportState {
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
             command_execution_client: None,
+            #[cfg(feature = "android-rish")]
+            rish_backend_client: None,
         }
     }
 
@@ -1674,6 +1738,7 @@ impl McpTransportState {
             android_battery_status_enabled: false,
             android_volume_status_enabled,
             android_volume_control_enabled: false,
+            android_rish_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
@@ -1688,6 +1753,8 @@ impl McpTransportState {
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             #[cfg(feature = "command-execution")]
             command_execution_client: None,
+            #[cfg(feature = "android-rish")]
+            rish_backend_client: None,
         }
     }
 
@@ -1709,6 +1776,7 @@ impl McpTransportState {
             android_battery_status_enabled: false,
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
+            android_rish_enabled: false,
             command_execution_enabled,
             create_directory_authority: None,
             copy_file_authority: None,
@@ -1723,6 +1791,8 @@ impl McpTransportState {
             #[cfg(feature = "android-volume-control")]
             android_volume_control_client: AndroidVolumeControlClient::termux(),
             command_execution_client: Some(command_execution_client),
+            #[cfg(feature = "android-rish")]
+            rish_backend_client: None,
         }
     }
 
@@ -2448,6 +2518,7 @@ async fn handle_stateless_mcp_post(
                 state.android_battery_status_enabled,
                 state.android_volume_status_enabled,
                 state.android_volume_control_enabled,
+                state.android_rish_enabled,
                 state.command_execution_enabled,
             )
             .contains(&tool_name.as_str())
@@ -4071,6 +4142,21 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             }));
     }
 
+    if state.android_rish_enabled {
+        body.pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+            .expect("tools/list response owns an array")
+            .push(json!({
+                "name": ANDROID_RISH_STATUS_TOOL,
+                "description": "Probe the statically attested Shizuku/rish bridge and verify only the non-root Android ADB-shell identity (UID 2000). This tool exposes no shell, arguments, output, or mutation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                },
+            }));
+    }
+
     if state.command_execution_enabled {
         body.pointer_mut("/result/tools")
             .and_then(Value::as_array_mut)
@@ -4164,6 +4250,9 @@ async fn handle_tool_call(
         }
         ANDROID_VOLUME_STATUS_TOOL => {
             handle_android_volume_status_call(id, call.arguments, state).await
+        }
+        ANDROID_RISH_STATUS_TOOL => {
+            handle_android_rish_status_call(id, call.arguments, state).await
         }
         SET_ANDROID_VOLUME_TOOL => {
             handle_set_android_volume_call(
@@ -4496,6 +4585,88 @@ async fn handle_android_volume_status_call(
                     id,
                     ANDROID_VOLUME_STATUS_TOOL,
                     "android_volume_status_unavailable",
+                    reason_code,
+                )
+            }
+        }
+    }
+}
+
+async fn handle_android_rish_status_call(
+    id: Option<Value>,
+    arguments: ToolArguments,
+    state: &McpTransportState,
+) -> Response {
+    if !arguments.is_omitted_or_empty_object() {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_RISH_STATUS_TOOL,
+            ANDROID_RISH_STATUS_GATE,
+            ANDROID_RISH_STATUS_ARGUMENTS_DENIED,
+        );
+        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
+    }
+
+    #[cfg(not(feature = "android-rish"))]
+    {
+        record_read_only_denied(
+            &state.audit_counters,
+            ANDROID_RISH_STATUS_TOOL,
+            ANDROID_RISH_STATUS_GATE,
+            ANDROID_RISH_STATUS_FEATURE_DISABLED,
+        );
+        tool_error_result(
+            id,
+            ANDROID_RISH_STATUS_TOOL,
+            "android_rish_status_unavailable",
+            ANDROID_RISH_STATUS_FEATURE_DISABLED,
+        )
+    }
+
+    #[cfg(feature = "android-rish")]
+    {
+        let Some(client) = state.rish_backend_client.as_ref() else {
+            record_read_only_denied(
+                &state.audit_counters,
+                ANDROID_RISH_STATUS_TOOL,
+                ANDROID_RISH_STATUS_GATE,
+                ANDROID_RISH_STATUS_RUNTIME_DISABLED,
+            );
+            return tool_error_result(
+                id,
+                ANDROID_RISH_STATUS_TOOL,
+                "android_rish_status_unavailable",
+                ANDROID_RISH_STATUS_RUNTIME_DISABLED,
+            );
+        };
+
+        match client.probe().await {
+            Ok(status) => {
+                record_read_only_allowed(
+                    &state.audit_counters,
+                    ANDROID_RISH_STATUS_TOOL,
+                    ANDROID_RISH_STATUS_GATE,
+                    ANDROID_RISH_STATUS_ALLOWED,
+                );
+                ok_result(
+                    id,
+                    "android_rish_status: attested Shizuku/rish bridge verified Android ADB-shell UID 2000; no shell or mutation is exposed."
+                        .to_owned(),
+                    json!(status),
+                )
+            }
+            Err(error) => {
+                let reason_code = error.reason_code();
+                record_read_only_denied(
+                    &state.audit_counters,
+                    ANDROID_RISH_STATUS_TOOL,
+                    ANDROID_RISH_STATUS_GATE,
+                    reason_code,
+                );
+                tool_error_result(
+                    id,
+                    ANDROID_RISH_STATUS_TOOL,
+                    "android_rish_status_unavailable",
                     reason_code,
                 )
             }
@@ -4884,6 +5055,7 @@ fn available_tools(
     android_battery_status_enabled: bool,
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
+    android_rish_enabled: bool,
     command_execution_enabled: bool,
 ) -> Vec<&'static str> {
     let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
@@ -4895,6 +5067,9 @@ fn available_tools(
     }
     if android_volume_control_enabled {
         tools.push(SET_ANDROID_VOLUME_TOOL);
+    }
+    if android_rish_enabled {
+        tools.push(ANDROID_RISH_STATUS_TOOL);
     }
     if command_execution_enabled {
         tools.push(RUN_COMMAND_PROFILE_TOOL);
@@ -4916,12 +5091,14 @@ fn runtime_status_response(
     let android_battery_status_enabled = state.android_battery_status_enabled;
     let android_volume_status_enabled = state.android_volume_status_enabled;
     let android_volume_control_enabled = state.android_volume_control_enabled;
+    let android_rish_enabled = state.android_rish_enabled;
     let command_execution_enabled = state.command_execution_enabled;
     let sse_enabled = state.sse_enabled;
     let available_tools = available_tools(
         android_battery_status_enabled,
         android_volume_status_enabled,
         android_volume_control_enabled,
+        android_rish_enabled,
         command_execution_enabled,
     );
     let battery_mode = if android_battery_status_enabled {
@@ -4939,7 +5116,12 @@ fn runtime_status_response(
     } else {
         "disabled"
     };
-    let android_platform_mode = match (
+    let android_rish_mode = if android_rish_enabled {
+        "configured_probe_on_call_adb_shell_uid_2000"
+    } else {
+        "disabled"
+    };
+    let legacy_android_platform_mode = match (
         android_battery_status_enabled,
         android_volume_status_enabled,
         android_volume_control_enabled,
@@ -4954,6 +5136,15 @@ fn runtime_status_response(
         (true, false, false) => "read_only_battery_telemetry",
         (false, true, false) => "read_only_volume_telemetry",
         (false, false, false) => "disabled",
+    };
+    let android_platform_mode = if android_rish_enabled {
+        if legacy_android_platform_mode == "disabled" {
+            "rish_shell_uid_status_probe".to_owned()
+        } else {
+            format!("{legacy_android_platform_mode}_plus_rish_shell_uid_status_probe")
+        }
+    } else {
+        legacy_android_platform_mode.to_owned()
     };
     let command_execution_mode = if command_execution_enabled {
         "fixed_read_only_server_diagnostics"
@@ -5074,7 +5265,7 @@ fn runtime_status_response(
         "fileWriteGrantTtlSeconds": WRITE_FILE_GRANT_TTL_SECONDS,
         "fileWriteMaxBytes": DEFAULT_MAX_WRITE_BYTES,
         "fileWriteMaxResponseBytes": MAX_WRITE_FILE_RESPONSE_BYTES,
-        "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled,
+        "androidPlatformTools": android_battery_status_enabled || android_volume_status_enabled || android_volume_control_enabled || android_rish_enabled,
         "androidPlatformToolMode": android_platform_mode,
         "androidBatteryStatusCompiled": cfg!(feature = "android-battery-status"),
         "androidBatteryStatusEnabled": android_battery_status_enabled,
@@ -5087,6 +5278,12 @@ fn runtime_status_response(
         "androidVolumeGrantHeader": REQUEST_GRANT_HEADER,
         "androidVolumeGrantTtlSeconds": ANDROID_VOLUME_GRANT_TTL_SECONDS_IF_COMPILED,
         "androidDeviceControl": android_volume_control_enabled,
+        "androidRishCompiled": cfg!(feature = "android-rish"),
+        "androidRishEnabled": android_rish_enabled,
+        "androidRishMode": android_rish_mode,
+        "androidRishPrivilegeBoundary": "adb_shell_uid_2000_only",
+        "androidRishArbitraryShell": false,
+        "androidRishMutations": false,
         "commandExecutionCompiled": cfg!(feature = "command-execution"),
         "commandExecution": command_execution_enabled,
         "commandExecutionMode": command_execution_mode,
@@ -5109,12 +5306,13 @@ fn runtime_status_response(
                 {
                     "type": "text",
                     "text": format!(
-                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, copy_file_mutation={}, trash_file_mutation={}, write_file_mutation={}, filesystem=default-dry-run-grant-gated-create-directory-copy-file-trash-file-write-file-plus-bounded-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
+                        "termux-mcp-edge runtime_status: transport={}, platform_info=read-only-non-sensitive, android_status=read-only-allowlisted, android_platform={}, android_battery_status={}, android_volume_status={}, android_volume_control={}, android_rish={}, project_service_status=read-only-allowlisted, create_directory_mutation={}, copy_file_mutation={}, trash_file_mutation={}, write_file_mutation={}, filesystem=default-dry-run-grant-gated-create-directory-copy-file-trash-file-write-file-plus-bounded-find-paths-hash-file-list-metadata-binary-read-binary-range-text-read-text-range-search, android_device_control={}, command_execution={}, arbitrary_command_execution=disabled",
                         transport_mode,
                         android_platform_mode,
                         battery_mode,
                         volume_mode,
                         volume_control_mode,
+                        android_rish_mode,
                         create_directory_mode,
                         copy_file_mode,
                         trash_file_mode,
@@ -10553,6 +10751,181 @@ mod tests {
             counters.by_reason_code[ANDROID_VOLUME_STATUS_RUNTIME_DISABLED].denied,
             1
         );
+    }
+
+    #[cfg(feature = "android-rish")]
+    #[tokio::test]
+    async fn enabled_rish_status_is_discoverable_bounded_and_audited() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+
+        use axum::body::to_bytes;
+        use sha2::{Digest, Sha256};
+
+        let _test_guard = crate::bounded_process::BOUNDED_PROCESS_TEST_LOCK
+            .lock()
+            .await;
+        let backend_root = tempfile::tempdir().unwrap();
+        fs::set_permissions(backend_root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let dex_path = backend_root.path().join("rish_shizuku.dex");
+        let dex_bytes = b"transport-rish-dex";
+        fs::write(&dex_path, dex_bytes).unwrap();
+        fs::set_permissions(&dex_path, fs::Permissions::from_mode(0o400)).unwrap();
+        let digest = Sha256::digest(dex_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let program = backend_root.path().join("fake-app-process64");
+        fs::write(&program, "#!/bin/sh\nprintf '2000\\n'\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let client =
+            RishBackendClient::with_test_program(dex_path, &digest, program).unwrap();
+
+        let safe_root = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let unauthenticated_error = McpRouterBuilder::try_new(
+            &listener,
+            McpAuthPolicy::unauthenticated_localhost_only(),
+            McpRequestLimits::from_seconds(1, 1, 1_024).unwrap(),
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            vec![safe_root.path().to_path_buf()],
+        )
+        .unwrap()
+        .try_with_rish_backend(client.clone())
+        .unwrap_err();
+        assert_eq!(
+            unauthenticated_error,
+            McpRouterBuildError::RishStaticAuthenticationRequired
+        );
+
+        let state = McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+                .expect("test safe root must validate"),
+            false,
+            false,
+            false,
+            None,
+            None,
+        )
+        .with_rish_backend(Some(client));
+
+        let tools = response_json(tools_list_response(Some(json!("tools")), &state)).await;
+        let rish_tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == ANDROID_RISH_STATUS_TOOL)
+            .expect("enabled rish status must be discoverable");
+        assert_eq!(rish_tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(rish_tool["inputSchema"]["properties"], json!({}));
+
+        let runtime = response_json(runtime_status_response(
+            Some(json!("runtime")),
+            &state,
+        ))
+        .await;
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidRishMode"],
+            "configured_probe_on_call_adb_shell_uid_2000"
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidPlatformToolMode"],
+            "rish_shell_uid_status_probe"
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidRishArbitraryShell"],
+            false
+        );
+        assert_eq!(
+            runtime["result"]["structuredContent"]["androidRishMutations"],
+            false
+        );
+
+        let response = handle_android_rish_status_call(
+            Some(json!("rish-status")),
+            ToolArguments::Omitted,
+            &state,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["result"]["isError"], false);
+        assert_eq!(
+            payload["result"]["structuredContent"],
+            json!({
+                "available": true,
+                "backend": "shizuku_rish",
+                "principal": "android_shell",
+                "uid": 2000,
+                "state": "verified_shell_uid",
+                "rootAccepted": false,
+                "arbitraryShell": false,
+                "mutationReady": false,
+            })
+        );
+
+        let invalid = handle_android_rish_status_call(
+            Some(json!("invalid-rish-status")),
+            ToolArguments::Present(json!({"command": "id"})),
+            &state,
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[ANDROID_RISH_STATUS_TOOL].allowed, 1);
+        assert_eq!(counters.by_tool[ANDROID_RISH_STATUS_TOOL].denied, 1);
+        assert_eq!(
+            counters.by_reason_code[ANDROID_RISH_STATUS_ALLOWED].allowed,
+            1
+        );
+        assert_eq!(
+            counters.by_reason_code[ANDROID_RISH_STATUS_ARGUMENTS_DENIED].denied,
+            1
+        );
+    }
+
+    #[cfg(feature = "android-rish")]
+    #[tokio::test]
+    async fn disabled_rish_status_is_hidden_and_does_not_launch_a_backend() {
+        let safe_root = tempfile::tempdir().unwrap();
+        let state = McpTransportState::new(
+            TransportSecurityPolicy::localhost(8000, false).unwrap(),
+            FileSystemTools::try_new(vec![safe_root.path().to_path_buf()])
+                .expect("test safe root must validate"),
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+
+        let tools = response_json(tools_list_response(Some(json!("tools")), &state)).await;
+        assert!(tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tool| tool["name"] != ANDROID_RISH_STATUS_TOOL));
+
+        let response = handle_android_rish_status_call(
+            Some(json!("rish-disabled")),
+            ToolArguments::Omitted,
+            &state,
+        )
+        .await;
+        let payload = response_json(response).await;
+        assert_eq!(payload["result"]["isError"], true);
+        assert_eq!(
+            payload["result"]["structuredContent"]["reasonCode"],
+            ANDROID_RISH_STATUS_RUNTIME_DISABLED
+        );
+
+        let counters = state.audit_counters.lock().unwrap().clone();
+        assert_eq!(counters.by_tool[ANDROID_RISH_STATUS_TOOL].denied, 1);
     }
 
     #[cfg(feature = "android-volume-control")]
