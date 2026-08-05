@@ -156,6 +156,10 @@ twelve staged qualification members, and sixteen public assets. Security adds
 buildless `java-kotlin` CodeQL analysis alongside the unchanged Rust and
 GitHub-Actions analyses; it does not treat a green workflow result as proof of
 runtime authority or Android-device behavior.
+The final tracked-source governed-claim scan uses `git grep` with an explicit
+three-way status contract: status zero finds a forbidden claim, status one is
+the only accepted no-match result, and every other status is a scanner failure.
+Missing tooling can therefore never be interpreted as an empty scan.
 
 Run the same Rust gates enforced by `.github/workflows/ci.yml`:
 

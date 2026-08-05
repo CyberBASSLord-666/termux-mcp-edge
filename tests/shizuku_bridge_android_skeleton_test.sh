@@ -665,7 +665,7 @@ workflow_path = root / ".github/workflows/shizuku-bridge-skeleton.yml"
 workflow = text(".github/workflows/shizuku-bridge-skeleton.yml")
 require(
     hashlib.sha256(workflow_path.read_bytes()).hexdigest()
-    == "1197eb554f440d30ceb34247c029b09ab517e0f1447a131b15b5cc943c787d0a",
+    == "24d4fa9113dbb974710278866aa9f4589a5148e88003c2a99f11b7f517e849d2",
     "closed Stage 2 workflow bytes changed",
 )
 for fragment in (
@@ -783,6 +783,8 @@ for fragment in (
     '"stream": ""',
     "unexpected or duplicate instrumentation result key",
     "final instrumentation code changed or was not final",
+    "governed_scan_status=$?",
+    "Stage 2 governed-claim scan failed with status %d",
     "adb_bounded()",
     "kill -TERM -- \"-$emulator_pgid\"",
     "kill -KILL -- \"-$emulator_pgid\"",
@@ -985,6 +987,29 @@ require(
     workflow.count(normal_uninstall_and_absence) == 1,
     "normal uninstall, absence, or cleanup-disarm ordering changed",
 )
+governed_claim_scan = (
+    '          set +e\n'
+    '          git grep -nE \\\n'
+    "            'releaseEligible[[:space:]]*:[[:space:]]*true|productionControlQualified[[:space:]]*:[[:space:]]*true' \\\n"
+    '            -- "$BRIDGE_ROOT"\n'
+    '          governed_scan_status=$?\n'
+    '          set -e\n'
+    '          case "$governed_scan_status" in\n'
+    '            0)\n'
+    "              printf '%s\\n' 'Stage 2 source made a governed-release claim' >&2\n"
+    '              exit 1\n'
+    '              ;;\n'
+    '            1)\n'
+    '              ;;\n'
+    '            *)\n'
+    "              printf 'Stage 2 governed-claim scan failed with status %d\\n' \\\n"
+    '                "$governed_scan_status" >&2\n'
+    '              exit 1\n'
+    '              ;;\n'
+    '          esac'
+)
+require(workflow.count(governed_claim_scan) == 1, "governed-claim scan is not fail closed")
+require("rg -n 'releaseEligible" not in workflow, "missing-rg governed scan returned")
 require("uninstall_output" not in workflow, "pipeline-masked uninstall status returned")
 for forbidden in (
     "actions/upload-artifact@",
@@ -1112,6 +1137,10 @@ for fragment in (
     "emits no exception text or",
     "stack trace",
     "Failures before the runner catch",
+    "tracked-source governed-claim scan uses `git grep`",
+    "status one is",
+    "only accepted no-match result",
+    "Missing tooling can therefore never be interpreted as an empty scan",
     "cannot pass the",
     "closed success parser",
     "This is emulator evidence for the inert Stage 2 skeleton only",
@@ -1633,6 +1662,31 @@ expect_rejected_replace \
   .github/workflows/shizuku-bridge-skeleton.yml \
   'validate_package_absent "$label-post-uninstall" "$package_name"' \
   'true # package absence not proven'
+expect_rejected_replace \
+  governed_scan_status_zeroed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'governed_scan_status=$?' \
+  'governed_scan_status=1'
+expect_rejected_replace \
+  governed_scan_missing_tool_restored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'git grep -nE' \
+  'rg -n'
+expect_rejected_replace \
+  governed_scan_path_removed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'            -- "$BRIDGE_ROOT"\n          governed_scan_status=$?' \
+  $'            -- .github\n          governed_scan_status=$?'
+expect_rejected_replace \
+  governed_scan_matcher_weakened \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'releaseEligible[[:space:]]*:[[:space:]]*true|productionControlQualified[[:space:]]*:[[:space:]]*true' \
+  'releaseEligible[[:space:]]*:[[:space:]]*true'
+expect_rejected_replace \
+  governed_scan_tool_failure_accepted \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'            *)\n              printf \'Stage 2 governed-claim scan failed with status %d\\n\' \\\n                "$governed_scan_status" >&2\n              exit 1' \
+  $'            *)\n              ;; # scanner failure accepted'
 expect_rejected_append \
   extra_instrumentation_test_added \
   android/shizuku-bridge/bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeParcelInstrumentationTest.java \

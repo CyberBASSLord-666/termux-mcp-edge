@@ -1236,9 +1236,23 @@ jobs:
             printf '%s\n' 'Stage 2 workflow must not upload an artifact' >&2
             exit 1
           fi
-          if rg -n 'releaseEligible[[:space:]]*:[[:space:]]*true|productionControlQualified[[:space:]]*:[[:space:]]*true' \
-            "$BRIDGE_ROOT"; then
-            printf '%s\n' 'Stage 2 source made a governed-release claim' >&2
-            exit 1
-          fi
+          set +e
+          git grep -nE \
+            'releaseEligible[[:space:]]*:[[:space:]]*true|productionControlQualified[[:space:]]*:[[:space:]]*true' \
+            -- "$BRIDGE_ROOT"
+          governed_scan_status=$?
+          set -e
+          case "$governed_scan_status" in
+            0)
+              printf '%s\n' 'Stage 2 source made a governed-release claim' >&2
+              exit 1
+              ;;
+            1)
+              ;;
+            *)
+              printf 'Stage 2 governed-claim scan failed with status %d\n' \
+                "$governed_scan_status" >&2
+              exit 1
+              ;;
+          esac
           git diff --exit-code
