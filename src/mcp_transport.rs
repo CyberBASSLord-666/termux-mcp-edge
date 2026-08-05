@@ -236,10 +236,13 @@ const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
 const ANDROID_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
 #[cfg(feature = "android-rish")]
 const ANDROID_RISH_STATUS_ALLOWED: &str = "rish_identity_verified";
+#[allow(dead_code)]
 const ANDROID_SYSTEM_FEATURES_ALLOWED: &str = "system_features_read";
+#[allow(dead_code)]
 const ANDROID_SYSTEM_FEATURES_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
 #[allow(dead_code)] // used in #[cfg(not(feature = "android-rish"))] handler path
 const ANDROID_SYSTEM_FEATURES_FEATURE_DISABLED: &str = "system_features_feature_not_compiled";
+#[allow(dead_code)]
 const ANDROID_SYSTEM_FEATURES_RUNTIME_DISABLED: &str = "system_features_runtime_disabled";
 const ANDROID_RISH_STATUS_ARGUMENTS_DENIED: &str = "rish_arguments_invalid";
 #[cfg(not(feature = "android-rish"))]
@@ -1240,6 +1243,7 @@ pub struct McpRouterBuilder {
     command_execution_enabled: bool,
     #[cfg(feature = "android-rish")]
     rish_backend_client: Option<RishBackendClient>,
+    #[cfg(feature = "android-rish")]
     android_system_features_enabled: bool,
     filesystem_authorities: FilesystemMutationAuthorities,
     #[cfg(feature = "android-volume-control")]
@@ -1326,7 +1330,9 @@ impl McpRouterBuilder {
             android_volume_status_enabled: false,
             command_execution_enabled: false,
             #[cfg(feature = "android-rish")]
+            #[cfg(feature = "android-rish")]
             rish_backend_client: None,
+            #[cfg(feature = "android-rish")]
             android_system_features_enabled: false,
             filesystem_authorities: FilesystemMutationAuthorities::default(),
             #[cfg(feature = "android-volume-control")]
