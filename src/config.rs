@@ -130,6 +130,9 @@ pub struct AndroidConfig {
 pub struct RishConfig {
     /// Explicit runtime opt-in for the separately feature-gated rish backend.
     pub enabled: bool,
+    /// Explicit runtime opt-in for the first typed-read family
+    /// (`android_system_features`). Requires the rish backend enabled.
+    pub system_features_enabled: bool,
     /// Absolute path to the operator-pinned Shizuku rish DEX.
     dex_path: Option<PathBuf>,
     /// Expected SHA-256 of the configured rish DEX.
@@ -151,6 +154,7 @@ impl fmt::Debug for RishConfig {
         formatter
             .debug_struct("RishConfig")
             .field("enabled", &self.enabled)
+            .field("system_features_enabled", &self.system_features_enabled)
             .field("dex_path", &self.dex_path.as_ref().map(|_| "<redacted>"))
             .field(
                 "dex_sha256",
@@ -314,6 +318,11 @@ impl AppConfig {
                 )?,
                 rish: RishConfig {
                     enabled: env_bool(&read_variable, "MCP__ANDROID__RISH_ENABLED", false)?,
+                    system_features_enabled: env_bool(
+                        &read_variable,
+                        "MCP__ANDROID__SYSTEM_FEATURES_ENABLED",
+                        false,
+                    )?,
                     dex_path: optional_env_string(&read_variable, "MCP__ANDROID__RISH_DEX_PATH")?
                         .map(PathBuf::from),
                     dex_sha256: optional_env_string(
@@ -814,6 +823,9 @@ fn validate_android_rish_configuration(config: &AppConfig) -> anyhow::Result<()>
         }
     }
 
+    if rish.system_features_enabled && !rish.enabled {
+        bail!("MCP__ANDROID__SYSTEM_FEATURES_ENABLED requires MCP__ANDROID__RISH_ENABLED");
+    }
     if !rish.enabled {
         return Ok(());
     }
@@ -956,6 +968,7 @@ mod tests {
                 volume_control_enabled: false,
                 rish: RishConfig {
                     enabled: false,
+                    system_features_enabled: false,
                     dex_path: None,
                     dex_sha256: None,
                 },
@@ -1314,6 +1327,7 @@ mod tests {
     fn android_rish_config_debug_output_redacts_path_and_digest() {
         let rish = RishConfig {
             enabled: true,
+            system_features_enabled: false,
             dex_path: Some(PathBuf::from("/data/local/tmp/private/rish.dex")),
             dex_sha256: Some("d".repeat(64)),
         };

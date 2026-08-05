@@ -302,7 +302,8 @@ async fn main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "android-rish")]
         if let Some(client) = rish_backend_client {
-            builder = builder.try_with_rish_backend(client)?;
+            builder = builder
+                .try_with_rish_backend(client, config.android.rish.system_features_enabled)?;
         }
         let mcp_app = builder.build()?;
         app.merge(mcp_app)
