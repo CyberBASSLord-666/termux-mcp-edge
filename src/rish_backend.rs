@@ -81,8 +81,7 @@ const RISH_FIXED_COMMAND_GID: &str = "exec /system/bin/id -g";
 const RISH_FIXED_COMMAND_GROUPS: &str = "exec /system/bin/id -G";
 // Prefer /proc attr over `id -Z`: under rish some devices emit context on
 // stderr, which would fail-closed the empty-stderr identity contract.
-const RISH_FIXED_COMMAND_SELINUX: &str =
-    "exec /system/bin/cat /proc/self/attr/current";
+const RISH_FIXED_COMMAND_SELINUX: &str = "exec /system/bin/cat /proc/self/attr/current";
 const RISH_FIXED_COMMAND_SDK: &str = "exec /system/bin/getprop ro.build.version.sdk";
 const RISH_FIXED_COMMAND_FINGERPRINT: &str = "exec /system/bin/getprop ro.build.fingerprint";
 const RISH_FIXED_COMMAND_BOOT_ID: &str = "exec /system/bin/cat /proc/sys/kernel/random/boot_id";
@@ -2067,5 +2066,4 @@ esac
         assert!(!status.features.nfc); // not in S3_VALID_SCRIPT fixture list
         assert!(client.has_live_s3_epoch());
     }
-
 }

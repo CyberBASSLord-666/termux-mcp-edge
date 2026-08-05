@@ -824,9 +824,7 @@ fn validate_android_rish_configuration(config: &AppConfig) -> anyhow::Result<()>
     }
 
     if rish.system_features_enabled && !rish.enabled {
-        bail!(
-            "MCP__ANDROID__SYSTEM_FEATURES_ENABLED requires MCP__ANDROID__RISH_ENABLED"
-        );
+        bail!("MCP__ANDROID__SYSTEM_FEATURES_ENABLED requires MCP__ANDROID__RISH_ENABLED");
     }
     if !rish.enabled {
         return Ok(());
