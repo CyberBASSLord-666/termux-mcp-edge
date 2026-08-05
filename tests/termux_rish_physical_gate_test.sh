@@ -205,7 +205,8 @@ fi
   export STARTED_AT=2026-07-31T12:00:00Z
   export COMPLETED_AT=2026-07-31T12:10:00Z
   # Mirror the observed MCP status payload (S2.5 fixture path for this unit test).
-  OBSERVED_RISH_STATE=verified_shell_uid
+  # write_evidence reads this global from the sourced gate script.
+  export OBSERVED_RISH_STATE=verified_shell_uid
 
   write_raw_report
   write_evidence

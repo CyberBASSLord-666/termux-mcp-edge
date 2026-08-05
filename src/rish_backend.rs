@@ -632,15 +632,12 @@ impl RishBackendClient {
                 self.invalidate_private_epoch();
                 return Err(RishBackendError::TimedOut);
             }
-            let stdout = match run_fixed_command_output_with_limits(
+            let stdout = match run_fixed_command_output_with_bounds(
                 &program,
                 &dex_guard,
                 command,
-                RISH_FEATURE_PROBE_TIMEOUT,
-                RISH_STATUS_STDOUT_BYTES,
-                RISH_STATUS_STDERR_BYTES,
+                &RISH_FEATURE_COMMAND_BOUNDS,
                 Arc::clone(&lane),
-                true,
             )
             .await
             {
@@ -912,34 +909,49 @@ async fn run_s3_attestation_suite(
     })
 }
 
+struct FixedCommandBounds {
+    timeout: Duration,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+    accept_nonzero_exit: bool,
+}
+
+const RISH_STATUS_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
+    timeout: RISH_STATUS_TIMEOUT,
+    max_stdout_bytes: RISH_STATUS_STDOUT_BYTES,
+    max_stderr_bytes: RISH_STATUS_STDERR_BYTES,
+    accept_nonzero_exit: false,
+};
+
+const RISH_FEATURE_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
+    timeout: RISH_FEATURE_PROBE_TIMEOUT,
+    max_stdout_bytes: RISH_STATUS_STDOUT_BYTES,
+    max_stderr_bytes: RISH_STATUS_STDERR_BYTES,
+    accept_nonzero_exit: true,
+};
+
 async fn run_fixed_command_output(
     program: &Path,
     dex_guard: &Arc<File>,
     fixed_command: &'static str,
     lane: RishLanePermit,
 ) -> Result<Vec<u8>, RishBackendError> {
-    run_fixed_command_output_with_limits(
+    run_fixed_command_output_with_bounds(
         program,
         dex_guard,
         fixed_command,
-        RISH_STATUS_TIMEOUT,
-        RISH_STATUS_STDOUT_BYTES,
-        RISH_STATUS_STDERR_BYTES,
+        &RISH_STATUS_COMMAND_BOUNDS,
         lane,
-        false,
     )
     .await
 }
 
-async fn run_fixed_command_output_with_limits(
+async fn run_fixed_command_output_with_bounds(
     program: &Path,
     dex_guard: &Arc<File>,
     fixed_command: &'static str,
-    timeout: Duration,
-    max_stdout_bytes: usize,
-    max_stderr_bytes: usize,
+    bounds: &FixedCommandBounds,
     lane: RishLanePermit,
-    accept_nonzero_exit: bool,
 ) -> Result<Vec<u8>, RishBackendError> {
     ensure_descriptor_close_on_exec(dex_guard)?;
     let dex_argument = OsString::from(format!(
@@ -957,16 +969,16 @@ async fn run_fixed_command_output_with_limits(
             OsString::from(fixed_command),
         ],
         PathBuf::from("/"),
-        timeout,
-        max_stdout_bytes,
-        max_stderr_bytes,
+        bounds.timeout,
+        bounds.max_stdout_bytes,
+        bounds.max_stderr_bytes,
         BoundedChildContext::with_inherited_descriptor(
             rish_child_environment(),
             Arc::clone(dex_guard),
         ),
     )
     .map_err(map_fixed_process_config)?
-    .with_accept_nonzero_exit(accept_nonzero_exit);
+    .with_accept_nonzero_exit(bounds.accept_nonzero_exit);
     // Hold a lane clone in the cancellation-independent supervisor so a
     // dropped request future cannot open the concurrency lane before reaping.
     let output = process.run_with_completion_guard(lane).await?;
