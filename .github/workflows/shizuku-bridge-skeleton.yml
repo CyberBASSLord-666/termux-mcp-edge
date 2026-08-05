@@ -913,7 +913,7 @@ jobs:
           bounded 10s sudo chmod 0666 /dev/kvm
           [[ -r /dev/kvm && -w /dev/kvm ]]
           bounded 10s "$emulator" -accel-check
-          bounded 10s "$emulator" -version \
+          bounded 10s "$emulator" -no-window -version \
             | grep -F "Android emulator version $ANDROID_EMULATOR_REVISION"
 
           export ANDROID_AVD_HOME="$avd_home"

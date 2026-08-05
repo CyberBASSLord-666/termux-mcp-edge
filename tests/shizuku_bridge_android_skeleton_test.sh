@@ -706,6 +706,7 @@ for fragment in (
     "BRIDGE_APPLICATION_ID: io.github.cyberbasslord666.termuxmcpedge.bridge",
     "BRIDGE_TEST_APPLICATION_ID: io.github.cyberbasslord666.termuxmcpedge.bridge.test",
     "BRIDGE_TEST_RUNNER: io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation",
+    'bounded 10s "$emulator" -no-window -version',
     "-avd \"$avd_name\"",
     "ro.build.version.sdk",
     "OK (3 tests)",
@@ -725,6 +726,20 @@ for fragment in (
     "git diff --exit-code",
 ):
     require_fragment(workflow, fragment, f"Android workflow missing {fragment}")
+headless_version_probe = 'bounded 10s "$emulator" -no-window -version'
+require(workflow.count(headless_version_probe) == 1, "headless emulator version probe changed")
+active_headless_version_probe = (
+    '          bounded 10s "$emulator" -no-window -version \\\n'
+    '            | grep -F "Android emulator version $ANDROID_EMULATOR_REVISION"'
+)
+require(
+    workflow.count(active_headless_version_probe) == 1,
+    "active headless emulator version probe changed",
+)
+require(
+    'bounded 10s "$emulator" -version' not in workflow,
+    "GUI-linked emulator version probe added",
+)
 for forbidden in (
     "actions/upload-artifact@",
     "actions/download-artifact@",
@@ -1227,6 +1242,19 @@ expect_rejected_replace \
   .github/workflows/shizuku-bridge-skeleton.yml \
   'ANDROID_EMULATOR_LINUX_SHA256: 95771e0ae431897b2a4bd2d97fa095f29a8b0624a7b216baf529f9306161c266' \
   'ANDROID_EMULATOR_LINUX_SHA256: 0000000000000000000000000000000000000000000000000000000000000000'
+expect_rejected_replace \
+  headless_emulator_version_probe_removed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'bounded 10s "$emulator" -no-window -version' \
+  'bounded 10s "$emulator" -version'
+expect_rejected_append \
+  bare_emulator_version_probe_added \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'\n# bounded 10s "$emulator" -version\n'
+expect_rejected_append \
+  commented_headless_emulator_probe_added \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'\n# bounded 10s "$emulator" -no-window -version\n'
 expect_rejected_append \
   extra_instrumentation_test_added \
   android/shizuku-bridge/bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeParcelInstrumentationTest.java \

@@ -80,7 +80,9 @@ the exact derived emulator package-registration XML (SHA-256
 and the exact JDK runtime build are independently checked before any Android
 tool or Gradle wrapper executes. Any selected-package metadata, URL, archive,
 or installed-package drift fails closed and requires an explicit reviewed pin
-update.
+update. The emulator identity probe and the device boot both pass `-no-window`,
+selecting the pinned archive's headless QEMU path instead of its optional
+GUI/audio-linked binary; the boot also passes `-no-audio`.
 
 Run the adversarial repository contract and the same aggregate Gradle gate used
 by `.github/workflows/shizuku-bridge-skeleton.yml`:
