@@ -182,7 +182,7 @@ printf '%s\n' "$PAYLOAD" | jq -e '
   and .backend == "shizuku_rish"
   and .principal == "android_shell"
   and .uid == 2000
-  and (.state == "verified_shell_uid" or .state == "attested_read_only")
+  and .state == "verified_shell_uid"
   and .rootAccepted == false
   and .arbitraryShell == false
   and .mutationReady == false
@@ -246,7 +246,7 @@ jq -cn \
 ' >"$EVIDENCE"
 chmod 600 "$EVIDENCE"
 
-log "PASS android_rish_status state=$(jq -er '.state' <<<"$PAYLOAD") uid=2000"
+log "PASS android_rish_status verified_shell_uid uid=2000"
 log "evidence=$EVIDENCE"
 printf 'OPERATOR_LOCAL_S25_RESULT=PASS evidence=%s\n' "$EVIDENCE"
 # Keep evidence outside workdir cleanup by copying to a stable path
