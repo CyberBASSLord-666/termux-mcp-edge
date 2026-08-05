@@ -100,9 +100,9 @@ expected_android_hashes = {
     "bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeManifestInstrumentationTest.java":
         "2abe988883c7832c66972e4e0bf39c5e63e6f5591a9e52e3b0d7b9017182695e",
     "bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeParcelInstrumentationTest.java":
-        "440d51dc9ed07ea72ad4d43d2e3190fb561b280d60886c70a6e532b7234d8c86",
+        "29d3c74f229085514b1bba2099a7bb00875f7530686ccb01d6adc0314ec9f339",
     "bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeStage2Instrumentation.java":
-        "9ef4a5536628e23e949f79c996ba4e69a142ec76024522ec04b1037b6d361776",
+        "6acd5e1649672e747923bb8efdabddceb101e394395e612f5b5856099a58b8bb",
     "bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeTestAssertions.java":
         "03fffb21e47e3c12a2ef9bb06979e5dea9efba0ceda471a1db3e607c8e58f4bb",
     "bridge-app/src/main/AndroidManifest.xml": "26039d157792851b1db77869e00baa35aebbbcfbe0fabbd87a3609316427316c",
@@ -552,9 +552,9 @@ expected_instrumentation_hashes = {
     "BridgeManifestInstrumentationTest.java":
         "2abe988883c7832c66972e4e0bf39c5e63e6f5591a9e52e3b0d7b9017182695e",
     "BridgeParcelInstrumentationTest.java":
-        "440d51dc9ed07ea72ad4d43d2e3190fb561b280d60886c70a6e532b7234d8c86",
+        "29d3c74f229085514b1bba2099a7bb00875f7530686ccb01d6adc0314ec9f339",
     "BridgeStage2Instrumentation.java":
-        "9ef4a5536628e23e949f79c996ba4e69a142ec76024522ec04b1037b6d361776",
+        "6acd5e1649672e747923bb8efdabddceb101e394395e612f5b5856099a58b8bb",
     "BridgeTestAssertions.java":
         "03fffb21e47e3c12a2ef9bb06979e5dea9efba0ceda471a1db3e607c8e58f4bb",
 }
@@ -589,6 +589,11 @@ runner_source = next(
     for path in instrumentation_sources
     if path.name == "BridgeStage2Instrumentation.java"
 )
+parcel_instrumentation_source = next(
+    path.read_text(encoding="utf-8")
+    for path in instrumentation_sources
+    if path.name == "BridgeParcelInstrumentationTest.java"
+)
 expected_runtime_inventory = (
     "BridgeManifestInstrumentationTest#testTargetManifestHasNoPermissionOrComponent;"
     "BridgeParcelInstrumentationTest#testContextRoundTripPreservesOnlyFixedFields;"
@@ -603,10 +608,45 @@ for fragment in (
     'result.putInt("numtests", EXPECTED_TEST_COUNT);',
     'result.putString("tests", EXACT_TEST_INVENTORY);',
     'result.putString("stream", "\\nOK (3 tests)\\n");',
+    'result.putString("failure", failureCheckpoint);',
+    'result.putString("stream", "\\nFAILURES (checkpoint=" + failureCheckpoint + ")\\n");',
+    'failureCheckpoint = "M00";',
+    'failureCheckpoint = "R00";',
+    'failureCheckpoint = "P00";',
     "finish(Activity.RESULT_OK, result);",
     "finish(Activity.RESULT_CANCELED, result);",
 ):
     require_fragment(runner_source, fragment, f"custom instrumentation runner missing {fragment}")
+for fragment in (
+    "static final class CheckpointFailure extends AssertionError",
+    'super("closed instrumentation checkpoint failed");',
+    "assertEveryAlignedTruncationRejected",
+    "encoded.length % Integer.BYTES",
+    "cut += Integer.BYTES",
+):
+    require_fragment(
+        parcel_instrumentation_source,
+        fragment,
+        f"closed Parcel checkpoint/truncation contract missing {fragment}",
+    )
+checkpoint_codes = re.findall(
+    r'runCheckpoint\(\s*"(P[0-9]{2})"', parcel_instrumentation_source
+)
+require(
+    checkpoint_codes == [f"P{index:02d}" for index in range(1, 12)],
+    f"closed Parcel checkpoint inventory changed: {checkpoint_codes}",
+)
+for forbidden in (
+    "failure.getMessage()",
+    "failure.getClass()",
+    "failure.printStackTrace",
+    "Log.",
+    "cut++",
+):
+    require(
+        forbidden not in runner_source + parcel_instrumentation_source,
+        f"unbounded or byte-prefix instrumentation diagnostic added: {forbidden}",
+    )
 inventory_match = re.search(
     r"private\s+static\s+final\s+String\s+EXACT_TEST_INVENTORY\s*=\s*"
     r"(.*?)\n\s*\n\s*@Override",
@@ -1012,7 +1052,19 @@ for fragment in (
     "Both cleanup flags remain armed until `pm path` proves both package IDs absent",
     "`OK (3 tests)`",
     "final result code `-1`",
-    "real API-30 `Parcel` test rejects every byte truncation",
+    "real API-30 `Parcel` test rejects truncation at every four-byte Parcel",
+    "Android 11 `Parcel.unmarshall` aligns and zero-pads a non-word byte prefix",
+    "Stage 2 therefore makes no impossible claim",
+    "sender's pre-canonicalization byte count",
+    "Later identity stages must compare",
+    "every fixed commitment byte-exactly",
+    "A runner-caught test failure emits only",
+    "one closed checkpoint",
+    "emits no exception text or",
+    "stack trace",
+    "Failures before the runner catch",
+    "cannot pass the",
+    "closed success parser",
     "This is emulator evidence for the inert Stage 2 skeleton only",
     "The workflow contains no artifact-upload step",
     "exactly seven governed Android postures, nine Android-workflow artifacts,",

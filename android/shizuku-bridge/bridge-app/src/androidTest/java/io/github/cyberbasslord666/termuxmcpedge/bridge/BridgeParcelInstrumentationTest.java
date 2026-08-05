@@ -4,6 +4,20 @@ import android.os.Parcel;
 import android.os.Parcelable;
 
 public final class BridgeParcelInstrumentationTest {
+    static final class CheckpointFailure extends AssertionError {
+        private final String checkpoint;
+
+        CheckpointFailure(String checkpoint, Throwable cause) {
+            super("closed instrumentation checkpoint failed");
+            this.checkpoint = checkpoint;
+            initCause(cause);
+        }
+
+        String getCheckpoint() {
+            return checkpoint;
+        }
+    }
+
     public void testContextRoundTripPreservesOnlyFixedFields() {
         byte[] nonce = bytes(1);
         byte[] manifest = bytes(2);
@@ -92,49 +106,77 @@ public final class BridgeParcelInstrumentationTest {
         BridgeIdentityObservation identity = identity(context);
         SystemFeaturesResult features = SystemFeaturesResult.inertMarker();
 
-        assertEveryTruncationRejected(context, BridgeCallContext.CREATOR);
-        assertEveryTruncationRejected(failure, BridgeFailure.CREATOR);
-        assertEveryTruncationRejected(identity, BridgeIdentityObservation.CREATOR);
-        assertEveryTruncationRejected(features, SystemFeaturesResult.CREATOR);
+        runCheckpoint(
+                "P01",
+                () -> assertEveryAlignedTruncationRejected(
+                        context, BridgeCallContext.CREATOR));
+        runCheckpoint(
+                "P02",
+                () -> assertEveryAlignedTruncationRejected(
+                        failure, BridgeFailure.CREATOR));
+        runCheckpoint(
+                "P03",
+                () -> assertEveryAlignedTruncationRejected(
+                        identity, BridgeIdentityObservation.CREATOR));
+        runCheckpoint(
+                "P04",
+                () -> assertEveryAlignedTruncationRejected(
+                        features, SystemFeaturesResult.CREATOR));
 
-        assertIntMutationRejected(context, BridgeCallContext.CREATOR, 4, 2);
-        assertIntMutationRejected(failure, BridgeFailure.CREATOR, 4, 2);
-        assertIntMutationRejected(identity, BridgeIdentityObservation.CREATOR, 4, 2);
-        assertIntMutationRejected(features, SystemFeaturesResult.CREATOR, 4, 1);
-        assertIntMutationRejected(context, BridgeCallContext.CREATOR, 8, 2);
-        assertIntMutationRejected(context, BridgeCallContext.CREATOR, 20, 31);
-        assertIdentityProtocolVersionsRejected(identity);
-        assertNonCanonicalAsciiWordsRejected(identity);
+        runCheckpoint("P05", () -> {
+            assertIntMutationRejected(context, BridgeCallContext.CREATOR, 4, 2);
+            assertIntMutationRejected(failure, BridgeFailure.CREATOR, 4, 2);
+            assertIntMutationRejected(identity, BridgeIdentityObservation.CREATOR, 4, 2);
+            assertIntMutationRejected(features, SystemFeaturesResult.CREATOR, 4, 1);
+            assertIntMutationRejected(context, BridgeCallContext.CREATOR, 8, 2);
+            assertIntMutationRejected(context, BridgeCallContext.CREATOR, 20, 31);
+        });
+        runCheckpoint("P06", () -> {
+            assertIdentityProtocolVersionsRejected(identity);
+            assertNonCanonicalAsciiWordsRejected(identity);
+        });
 
-        assertIntFromFrameEndRejected(failure, BridgeFailure.CREATOR, 8, 0);
-        assertIntFromFrameEndRejected(failure, BridgeFailure.CREATOR, 4, 2);
-        assertIntFromFrameEndRejected(identity, BridgeIdentityObservation.CREATOR, 8, 2);
-        assertIntFromFrameEndRejected(identity, BridgeIdentityObservation.CREATOR, 4, 2);
+        runCheckpoint("P07", () -> {
+            assertIntFromFrameEndRejected(failure, BridgeFailure.CREATOR, 8, 0);
+            assertIntFromFrameEndRejected(failure, BridgeFailure.CREATOR, 4, 2);
+            assertIntFromFrameEndRejected(
+                    identity, BridgeIdentityObservation.CREATOR, 8, 2);
+            assertIntFromFrameEndRejected(
+                    identity, BridgeIdentityObservation.CREATOR, 4, 2);
+        });
 
-        assertNestedContextCannotEscapeParent(failure, BridgeFailure.CREATOR);
-        assertNestedContextCannotEscapeParent(identity, BridgeIdentityObservation.CREATOR);
-        assertNestedContextSizeRejected(failure, BridgeFailure.CREATOR, -4);
-        assertNestedContextSizeRejected(failure, BridgeFailure.CREATOR, 4);
-        assertNestedContextSizeRejected(identity, BridgeIdentityObservation.CREATOR, -4);
-        assertNestedContextSizeRejected(identity, BridgeIdentityObservation.CREATOR, 4);
+        runCheckpoint("P08", () -> {
+            assertNestedContextCannotEscapeParent(failure, BridgeFailure.CREATOR);
+            assertNestedContextCannotEscapeParent(identity, BridgeIdentityObservation.CREATOR);
+            assertNestedContextSizeRejected(failure, BridgeFailure.CREATOR, -4);
+            assertNestedContextSizeRejected(failure, BridgeFailure.CREATOR, 4);
+            assertNestedContextSizeRejected(identity, BridgeIdentityObservation.CREATOR, -4);
+            assertNestedContextSizeRejected(identity, BridgeIdentityObservation.CREATOR, 4);
+        });
 
-        assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 0);
-        assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, -8);
-        assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 4);
-        assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 10);
-        assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 4100);
-        assertFrameHeaderRejected(
-                context, BridgeCallContext.CREATOR, Integer.MAX_VALUE - 3);
+        runCheckpoint("P09", () -> {
+            assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 0);
+            assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, -8);
+            assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 4);
+            assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 10);
+            assertFrameHeaderRejected(context, BridgeCallContext.CREATOR, 4100);
+            assertFrameHeaderRejected(
+                    context, BridgeCallContext.CREATOR, Integer.MAX_VALUE - 3);
+        });
 
-        assertDeclaredTrailingFieldRejected(context, BridgeCallContext.CREATOR);
-        assertDeclaredTrailingFieldRejected(failure, BridgeFailure.CREATOR);
-        assertDeclaredTrailingFieldRejected(identity, BridgeIdentityObservation.CREATOR);
-        assertDeclaredTrailingFieldRejected(features, SystemFeaturesResult.CREATOR);
+        runCheckpoint("P10", () -> {
+            assertDeclaredTrailingFieldRejected(context, BridgeCallContext.CREATOR);
+            assertDeclaredTrailingFieldRejected(failure, BridgeFailure.CREATOR);
+            assertDeclaredTrailingFieldRejected(identity, BridgeIdentityObservation.CREATOR);
+            assertDeclaredTrailingFieldRejected(features, SystemFeaturesResult.CREATOR);
+        });
 
-        assertExactTopLevelCallerRejectsTrailing(context, BridgeCallContext.CREATOR);
-        assertExactTopLevelCallerRejectsTrailing(failure, BridgeFailure.CREATOR);
-        assertExactTopLevelCallerRejectsTrailing(identity, BridgeIdentityObservation.CREATOR);
-        assertExactTopLevelCallerRejectsTrailing(features, SystemFeaturesResult.CREATOR);
+        runCheckpoint("P11", () -> {
+            assertExactTopLevelCallerRejectsTrailing(context, BridgeCallContext.CREATOR);
+            assertExactTopLevelCallerRejectsTrailing(failure, BridgeFailure.CREATOR);
+            assertExactTopLevelCallerRejectsTrailing(identity, BridgeIdentityObservation.CREATOR);
+            assertExactTopLevelCallerRejectsTrailing(features, SystemFeaturesResult.CREATOR);
+        });
     }
 
     private static BridgeCallContext context() {
@@ -193,7 +235,15 @@ public final class BridgeParcelInstrumentationTest {
         return parcel;
     }
 
-    private static void assertEveryTruncationRejected(
+    private static void runCheckpoint(String checkpoint, Runnable assertion) {
+        try {
+            assertion.run();
+        } catch (RuntimeException | AssertionError failure) {
+            throw new CheckpointFailure(checkpoint, failure);
+        }
+    }
+
+    private static void assertEveryAlignedTruncationRejected(
             Parcelable value, Parcelable.Creator<?> creator) {
         Parcel complete = encode(value);
         byte[] encoded;
@@ -202,7 +252,8 @@ public final class BridgeParcelInstrumentationTest {
         } finally {
             complete.recycle();
         }
-        for (int cut = 0; cut < encoded.length; cut++) {
+        BridgeTestAssertions.equalsInt(0, encoded.length % Integer.BYTES);
+        for (int cut = 0; cut < encoded.length; cut += Integer.BYTES) {
             Parcel truncated = Parcel.obtain();
             boolean rejected = false;
             try {

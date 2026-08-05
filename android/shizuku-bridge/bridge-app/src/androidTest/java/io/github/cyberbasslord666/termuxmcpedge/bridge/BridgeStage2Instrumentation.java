@@ -43,9 +43,22 @@ public final class BridgeStage2Instrumentation extends Instrumentation {
             result.putString("stream", "\nOK (3 tests)\n");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable failure) {
+            String failureCheckpoint;
+            if (failure instanceof BridgeParcelInstrumentationTest.CheckpointFailure) {
+                failureCheckpoint =
+                        ((BridgeParcelInstrumentationTest.CheckpointFailure) failure)
+                                .getCheckpoint();
+            } else if (completed == 0) {
+                failureCheckpoint = "M00";
+            } else if (completed == 1) {
+                failureCheckpoint = "R00";
+            } else {
+                failureCheckpoint = "P00";
+            }
             result.putInt("numtests", EXPECTED_TEST_COUNT);
             result.putInt("completed", completed);
-            result.putString("stream", "\nFAILURES (completed=" + completed + ")\n");
+            result.putString("failure", failureCheckpoint);
+            result.putString("stream", "\nFAILURES (checkpoint=" + failureCheckpoint + ")\n");
             finish(Activity.RESULT_CANCELED, result);
         }
     }

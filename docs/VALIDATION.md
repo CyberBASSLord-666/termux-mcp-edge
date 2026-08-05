@@ -124,14 +124,22 @@ Every uninstall independently requires status zero, exact `Success` stdout, and 
 Both cleanup flags remain armed until `pm path` proves both package IDs absent,
 so a transcript, timeout, or absence-check failure cannot mask the status or
 disable the trap's retry.
-The run must complete exactly the three closed-source inert manifest/parcel
+A successful run must complete exactly the three closed-source inert manifest/parcel
 tests with only result keys `numtests`, `tests`, and `stream`, `OK (3 tests)`,
 final result code `-1`, and no unrecognized status, result, or trailing protocol
-line. The real API-30 `Parcel` test rejects every byte truncation of all four
-parcelables, malformed/nested frame boundaries, noncanonical tokens, and
-trailing fields while retaining the fixed-field round trip. Boot, install, test,
-uninstall, emulator termination, process-group reap, and cleanup commands are
-independently bounded.
+line. The real API-30 `Parcel` test rejects truncation at every four-byte Parcel
+boundary for all four parcelables, malformed/nested frame boundaries,
+noncanonical tokens, and trailing fields while retaining the fixed-field round
+trip. Android 11 `Parcel.unmarshall` aligns and zero-pads a non-word byte prefix;
+that becomes a content mutation rather than a representable truncated frame.
+Stage 2 therefore makes no impossible claim that its decoder can recover the
+sender's pre-canonicalization byte count. Later identity stages must compare
+every fixed commitment byte-exactly. A runner-caught test failure emits only
+one closed checkpoint from `M00`, `R00`, `P00`, or `P01` through `P11`; it
+emits no exception text or stack trace. Failures before the runner catch
+boundary may produce platform diagnostics but still cannot pass the
+closed success parser. Boot, install, test, uninstall, emulator termination,
+process-group reap, and cleanup commands are independently bounded.
 This is emulator evidence for the inert Stage 2 skeleton only; it is not a
 physical-device, Shizuku, Binder-identity, lifecycle, production-control, or
 release-eligibility claim.
