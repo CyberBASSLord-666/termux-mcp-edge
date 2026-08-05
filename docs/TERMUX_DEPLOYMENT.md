@@ -60,6 +60,7 @@ MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false
 MCP__FILE__COPY_FILE_MUTATION_ENABLED=false
 MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false
 MCP__FILE__WRITE_MUTATION_ENABLED=false
+MCP__ANDROID__RISH_ENABLED=false
 RUST_LOG=termux_mcp_server=info
 EOF
 chmod 600 "$HOME/.config/termux-mcp-edge/runtime.env"
@@ -92,6 +93,29 @@ MCP__ANDROID__VOLUME_CONTROL_ENABLED=true
 ```
 
 This gate requires static-token authentication and the complete capability key pair described below. It does not implicitly enable read-only `android_volume_status` discovery. Every `dry_run:false` request still needs one exact-session, exact-stream, exact-level grant issued locally by the deployed binary; see [`ANDROID_VOLUME_CONTROL.md`](ANDROID_VOLUME_CONTROL.md).
+
+An artifact built with the isolated `android-rish` development feature may enable only the fixed shell-UID identity probe. Obtain `rish_shizuku.dex` from the operator’s trusted official Shizuku installation, verify its provenance out of band, and install the exact reviewed bytes into a dedicated private directory outside every MCP safe root:
+
+```bash
+install -d -m 700 "$HOME/.local/share/termux-mcp-edge/rish"
+install -m 400 /absolute/source/rish_shizuku.dex \
+  "$HOME/.local/share/termux-mcp-edge/rish/rish_shizuku.dex"
+RISH_DEX_SHA256="$(
+  sha256sum "$HOME/.local/share/termux-mcp-edge/rish/rish_shizuku.dex" |
+    awk '{print $1}'
+)"
+printf '%s\n' "$RISH_DEX_SHA256"
+```
+
+After separately recording and reviewing that digest, add these literal entries:
+
+```text
+MCP__ANDROID__RISH_ENABLED=true
+MCP__ANDROID__RISH_DEX_PATH=/data/data/com.termux/files/home/.local/share/termux-mcp-edge/rish/rish_shizuku.dex
+MCP__ANDROID__RISH_DEX_SHA256=<recorded-64-lowercase-hex-digest>
+```
+
+Restart the service and invoke only `android_rish_status`. A successful response proves exactly one live rish command returned Android shell UID `2000`; it does not authorize a shell or Android action. For each call, the server revalidates the private source DEX, executes only a sealed anonymous snapshot of its exact digest-matched bytes, and retains the sole probe permit until any cancellation cleanup and child reaping finishes. Shizuku normally becomes unavailable after reboot until the operator restarts its adb-mode service. The MCP server remains available, but the probe fails closed with a stable reason until Shizuku recovers. This feature is excluded from current release qualification and must not be enabled as a production-control claim until the physical-device matrix in [`SHIZUKU_RISH_CONTROL_PLANE.md`](SHIZUKU_RISH_CONTROL_PLANE.md) passes.
 
 An artifact built with `--features command-execution` may opt into fixed read-only server diagnostics:
 
@@ -246,10 +270,13 @@ Both operations target only the configured project deployment root, the fixed `m
 ```bash
 cargo metadata --locked --all-features --format-version 1 --no-deps >/dev/null
 cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets --features android-rish -- -D warnings
 cargo clippy --locked --workspace --all-targets --features full-suite -- -D warnings
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-targets --features android-rish rish
 cargo test --locked --workspace --all-targets --features full-suite
 cargo test --locked --workspace --all-targets --all-features
+cargo build --locked --release --features android-rish
 bash tests/termux_deploy_test.sh
 ```
 
