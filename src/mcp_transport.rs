@@ -4744,12 +4744,12 @@ async fn handle_android_system_features_call(
             ANDROID_SYSTEM_FEATURES_GATE,
             ANDROID_SYSTEM_FEATURES_FEATURE_DISABLED,
         );
-        return tool_error_result(
+        tool_error_result(
             id,
             ANDROID_SYSTEM_FEATURES_TOOL,
             "android_system_features_unavailable",
             ANDROID_SYSTEM_FEATURES_FEATURE_DISABLED,
-        );
+        )
     }
 
     #[cfg(feature = "android-rish")]
