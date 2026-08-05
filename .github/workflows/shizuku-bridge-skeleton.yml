@@ -564,6 +564,7 @@ jobs:
         env:
           GRADLE_USER_HOME: ${{ runner.temp }}/shizuku-bridge-gradle
         run: |
+          test ! -e "$GRADLE_USER_HOME"
           install -d -m 700 "$GRADLE_USER_HOME"
           timeout --verbose --signal=TERM --kill-after=30s 20m \
             ./gradlew \

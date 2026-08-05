@@ -36,7 +36,9 @@ APK, and emulator PackageManager checks independently enforce the debug flag.
 Repository mode rejects project-defined dependency repositories, closes the two
 module dependency blocks, rejects local JAR/AAR inputs, and uses committed strict
 dependency locks plus artifact-specific SHA-256 verification metadata. CI never
-generates or repairs those inputs. The repository contract closes the exact
+generates or repairs those inputs, and it requires a newly created empty
+task-scoped Gradle home so a warm dependency-resolution cache cannot hide a
+missing metadata checksum. The repository contract closes the exact
 41-file Android subtree inventory and SHA-256 of every reviewed source, manifest,
 resource, host test, build input, lock, verification, and wrapper byte. It also
 requires exactly nine contract host-test methods and one application host-test

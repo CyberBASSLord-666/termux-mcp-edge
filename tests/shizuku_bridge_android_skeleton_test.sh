@@ -152,7 +152,7 @@ expected_android_hashes = {
     "build.gradle.kts": "750c78e3a4bbd09f8b6485e76379a9f74395208e414a3cbfa2d4d00eaa3f69a6",
     "gradle.properties": "c0651164d8d678e58dfada42373a40ea37b5f6982c7841bcb79f7ddf4b3da842",
     "gradle/libs.versions.toml": "7c84fd7a5d63ca638d33dcbdd9b1cfe15e9d77ad59179f3dcdd86c51ab10cab0",
-    "gradle/verification-metadata.xml": "6f4e4552b5a5576b090e9f13c44625fcf6ffc25c87224406f09b89d0b9ca3f48",
+    "gradle/verification-metadata.xml": "4f002a6e10dbcb3ad3aa1ccb108e774e3ea05cef657a60fe8ca76080672195da",
     "gradle/wrapper/gradle-wrapper.jar": "81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f",
     "gradle/wrapper/gradle-wrapper.properties":
         "c040b6ef2fb893ff5beea5a281614f2848f1c3996a7886f650b713f8240656a2",
@@ -673,6 +673,8 @@ for fragment in (
     "96f51acc01cabbcc32e158817daef7302add78b77365bf18b189cc3941ddea30",
     "emulator package registration template changed",
     'java.runtime.version[[:space:]]*$/',
+    'GRADLE_USER_HOME: ${{ runner.temp }}/shizuku-bridge-gradle',
+    'test ! -e "$GRADLE_USER_HOME"',
     "--dependency-verification=strict",
     "stage2Check",
     ":bridge-contract:testDebugUnitTest",
@@ -1055,6 +1057,11 @@ expect_rejected_replace \
   .github/workflows/shizuku-bridge-skeleton.yml \
   '--dependency-verification=strict' \
   '--dependency-verification=off'
+expect_rejected_replace \
+  cold_gradle_home_guard_removed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'test ! -e "$GRADLE_USER_HOME"' \
+  'test -d "$GRADLE_USER_HOME" || true'
 expect_rejected_append \
   artifact_upload_added \
   .github/workflows/shizuku-bridge-skeleton.yml \
