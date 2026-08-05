@@ -24,7 +24,7 @@ Modern mutation schemas fix `dry_run` to `true`. Every `MCP-Capability-Grant` he
 | Baseline plus volume status | `--features android-volume-status` | 18 when its runtime flag is enabled | Isolated posture |
 | Baseline plus volume control | `--features android-volume-control` | 18 for control alone, or 19 when volume-status discovery is also enabled | Isolated posture |
 | Baseline plus fixed diagnostics | `--features command-execution` | 18 when its runtime flag is enabled | Isolated posture |
-| Baseline plus rish identity probe | `--features android-rish` | 18 when its runtime flag and attested DEX configuration are enabled | Development-only; physical Shizuku qualification required |
+| Baseline plus rish UID diagnostic | `--features android-rish` | 18 when its runtime flag and pinned DEX configuration are enabled | Development-only; a typed lifecycle-authoritative bridge, new evidence/inventory version, and physical qualification are all required for any future release posture |
 | Governed aggregate | `--features full-suite` | Exactly 17 with optional flags off; exactly 21 when all four are enabled | Named public aggregate posture |
 | Raw compatibility build | `--all-features` | Up to 22, including the development-only rish status probe | Development/compatibility coverage only; not a release artifact |
 
@@ -83,10 +83,9 @@ Detailed request schemas and fixed resource ceilings are advertised by `tools/li
 | `android_volume_status` | `android-volume-status` | `MCP__ANDROID__VOLUME_STATUS_ENABLED=true` | Bounded read-only status for the six supported Android audio streams. | None. |
 | `set_android_volume` | `android-volume-control` | `MCP__ANDROID__VOLUME_CONTROL_ENABLED=true` | Previews or sets one supported audio stream to one validated level, then verifies the result and attempts restoration on failure. | Required for every `dry_run:false` call. Static-token authentication and capability-key configuration are also mandatory. |
 | `run_command_profile` | `command-execution` | `MCP__COMMAND__ENABLED=true` | Runs only `server_version`, `server_help`, or `execution_boundary` against the attested server executable. | None. The caller cannot supply a program, argv, environment, path, timeout, or limit. |
-| `android_rish_status` | `android-rish` | `MCP__ANDROID__RISH_ENABLED=true` plus static authentication and the paired private DEX path/digest | S3 multi-probe attestation; returns non-sensitive status with `state=attested_read_only` and UID `2000`. | No shell, fingerprints, epoch, raw output, or mutation. |
-| `android_system_features` | `android-rish` | rish enabled plus `MCP__ANDROID__SYSTEM_FEATURES_ENABLED=true` | Ten allowlisted PackageManager feature booleans via fixed `cmd package has-feature` probes. | No raw OEM lines, non-allowlisted names, shell, or mutation; `controlAuthorityProven=false`. |
+| `android_rish_status` | `android-rish` | `MCP__ANDROID__RISH_ENABLED=true` plus static authentication and the paired private DEX path/digest | Revalidates the pinned DEX and observes exact `2000\n` bytes in exactly one local capture of one fixed rish probe. Stock rish does not qualify remote exit, stream separation, or Binder lifecycle. | None. It accepts no arguments, exposes no raw output or Android action, rejects root, and reports mutation readiness false. |
 
-Battery and volume tools require the official Termux:API add-on and package. The fixed-command posture is not arbitrary command execution. The rish status posture is development-only until exact physical-device Shizuku qualification passes.
+Battery and volume tools require the official Termux:API add-on and package. The fixed-command posture is not arbitrary command execution. The rish status posture remains development-only: existing physical v1 evidence cannot elevate it, and any release posture requires a typed lifecycle-authoritative bridge, a new reviewed evidence-schema/inventory revision, and exact physical-device qualification together.
 
 ## Live mutation authorization
 
@@ -119,4 +118,4 @@ For issuance and recovery details, use the dedicated contracts for [directory cr
 
 ## Deliberately unavailable authority
 
-No build exposes a general shell, caller-selected command execution, global process inventory, arbitrary service control, package management, network mutation, recursive deletion, broad Android control, or unrestricted shared-storage access. The isolated rish status probe verifies UID only and grants none of those authorities. Adding one of those authority classes requires the staged prerequisites, typed family contract, tests, physical-device evidence, and release evidence defined in [the control-plane plan](SHIZUKU_RISH_CONTROL_PLANE.md); neither `full-suite` nor raw `--all-features` bypasses that boundary.
+No build exposes a general shell, caller-selected command execution, global process inventory, arbitrary service control, package management, network mutation, recursive deletion, broad Android control, or unrestricted shared-storage access. The isolated rish status diagnostic observes only the exact UID token and grants none of those authorities. Adding one of those authority classes requires the staged prerequisites, typed family contract, tests, physical-device evidence, and release evidence defined in [the control-plane plan](SHIZUKU_RISH_CONTROL_PLANE.md); neither `full-suite` nor raw `--all-features` bypasses that boundary.

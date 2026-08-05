@@ -10,6 +10,7 @@ chmod 700 "$ROOT"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 GATE="$REPO_ROOT/scripts/termux_rish_physical_gate.sh"
+OPERATOR_GATE="$REPO_ROOT/scripts/operator_local_s25_rish_gate.sh"
 CONTROLLER="$REPO_ROOT/scripts/shizuku_rish_physical_controller.sh"
 COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 SHA_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -35,6 +36,7 @@ assert_fails() {
 }
 
 bash -n "$GATE"
+bash -n "$OPERATOR_GATE"
 bash -n "${BASH_SOURCE[0]}"
 bash "$GATE" --help | grep -Fq 'Usage:' \
   || fail_test help_contract_missing
@@ -47,10 +49,28 @@ assert_fails artifact_digest_invalid \
 
 grep -Fq '"PATH=$PREFIX/bin:/system/bin"' "$GATE" \
   || fail_test sanitized_runtime_path_missing
+grep -Fq 'set +m' "$GATE" \
+  || fail_test physical_gate_monitor_mode_not_disabled
+grep -Fq '"$PREFIX/bin/setsid" --wait -- "$ARTIFACT"' "$GATE" \
+  || fail_test physical_gate_setsid_wait_contract_missing
 grep -Fq 'MCP__COMMAND__ENABLED=false' "$GATE" \
   || fail_test general_command_lane_not_disabled
 grep -Fq 'MCP__ANDROID__RISH_ENABLED=$rish_enabled' "$GATE" \
   || fail_test fixed_rish_gate_missing
+grep -Fq 'and (has("required") | not)' "$GATE" \
+  || fail_test empty_schema_required_field_absence_not_asserted
+if grep -Fq '.required == []' "$GATE"; then
+  fail_test empty_schema_invented_required_array
+fi
+for art_key in \
+  ANDROID_ART_ROOT ANDROID_ASSETS ANDROID_DATA ANDROID_I18N_ROOT \
+  ANDROID_ROOT ANDROID_RUNTIME_ROOT ANDROID_STORAGE ANDROID_TZDATA_ROOT \
+  ANDROID__BUILD_VERSION_SDK BOOTCLASSPATH DEX2OATBOOTCLASSPATH \
+  SYSTEMSERVERCLASSPATH
+do
+  grep -Fxq "  $art_key" "$GATE" \
+    || fail_test "ART runtime environment allowlist omits $art_key"
+done
 grep -Fq 'androidRishArbitraryShell == false' "$GATE" \
   || fail_test arbitrary_shell_boundary_not_asserted
 grep -Fq 'androidRishMutations == false' "$GATE" \
@@ -84,6 +104,111 @@ fi
 if grep -Eq -- '--(command|argv|stdin|environment)([[:space:]]|$)' "$GATE"; then
   fail_test caller_selected_command_surface_present
 fi
+grep -Fq 'uid_predicate_observed_in_one_bounded_capture' "$OPERATOR_GATE" \
+  || fail_test operator_local_exact_token_helper_missing
+grep -Fq '((RISH_LOCAL_STATUS == 0)) || fail rish_launcher_failed' "$OPERATOR_GATE" \
+  || fail_test operator_local_launcher_status_not_checked
+grep -Fq 'remote exit/stream/Binder lifecycle unqualified' "$OPERATOR_GATE" \
+  || fail_test operator_local_diagnostic_boundary_missing
+grep -Fq 'ulimit -f 8' "$OPERATOR_GATE" \
+  || fail_test operator_local_pre_capture_file_limit_missing
+grep -Fq 'RISH_APPLICATION_ID=com.termux' "$OPERATOR_GATE" \
+  || fail_test operator_local_fixed_rish_application_id_missing
+grep -Fq 'exec env -i "${server_environment[@]}"' "$OPERATOR_GATE" \
+  || fail_test operator_local_sanitized_environment_missing
+grep -Fq 'MCP__FILE__WRITE_MUTATION_ENABLED=false' "$OPERATOR_GATE" \
+  || fail_test operator_local_mutation_posture_not_closed
+grep -Fq 'MCP__COMMAND__ENABLED=false' "$OPERATOR_GATE" \
+  || fail_test operator_local_command_posture_not_closed
+grep -Fq 'TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none' "$OPERATOR_GATE" \
+  || fail_test operator_local_random_token_generation_missing
+if grep -Fq 'operator-local-s25-token' "$OPERATOR_GATE"; then
+  fail_test operator_local_predictable_token_retained
+fi
+grep -Fq 'set +m' "$OPERATOR_GATE" \
+  || fail_test operator_local_monitor_mode_not_disabled
+grep -Fq '"$PREFIX/bin/setsid" --wait -- "$ARTIFACT"' "$OPERATOR_GATE" \
+  || fail_test operator_local_setsid_wait_contract_missing
+grep -Fq 'kill -TERM -- "-$pid"' "$OPERATOR_GATE" \
+  || fail_test operator_local_bounded_TERM_cleanup_missing
+grep -Fq 'kill -KILL -- "-$pid"' "$OPERATOR_GATE" \
+  || fail_test operator_local_bounded_KILL_cleanup_missing
+grep -Fq -- '--argjson expected "$ENABLED_TOOLS"' "$OPERATOR_GATE" \
+  || fail_test operator_local_exact_tool_inventory_missing
+grep -Fq '.result.structuredContent.availableTools == $expected' "$OPERATOR_GATE" \
+  || fail_test operator_local_runtime_inventory_parity_missing
+if grep -Fq 'RISH_OUT="$(' "$OPERATOR_GATE"; then
+  fail_test operator_local_stdout_only_command_substitution_retained
+fi
+stable_copy_line="$(grep -nF 'cp -f -- "$EVIDENCE" "$STABLE"' "$OPERATOR_GATE" | cut -d: -f1)"
+cleanup_line="$(grep -nF 'if ! cleanup_runtime; then' "$OPERATOR_GATE" | cut -d: -f1)"
+pass_line="$(grep -nF 'log "PASS android_rish_status exact UID-2000' "$OPERATOR_GATE" | cut -d: -f1)"
+[[ "$stable_copy_line" =~ ^[0-9]+$ && "$cleanup_line" =~ ^[0-9]+$ \
+  && "$pass_line" =~ ^[0-9]+$ \
+  && "$stable_copy_line" -lt "$cleanup_line" && "$cleanup_line" -lt "$pass_line" ]] \
+  || fail_test operator_local_PASS_precedes_stable_copy_or_cleanup
+
+(
+  # shellcheck source=/dev/null
+  source "$OPERATOR_GATE"
+  printf '2000\n' >"$ROOT/operator.expected"
+  : >"$ROOT/operator.stdout"
+  : >"$ROOT/operator.stderr"
+
+  cp "$ROOT/operator.expected" "$ROOT/operator.stdout"
+  uid_predicate_observed_in_one_bounded_capture \
+    "$ROOT/operator.expected" "$ROOT/operator.stdout" "$ROOT/operator.stderr" \
+    || fail_test operator_local_stdout_token_rejected
+
+  : >"$ROOT/operator.stdout"
+  cp "$ROOT/operator.expected" "$ROOT/operator.stderr"
+  uid_predicate_observed_in_one_bounded_capture \
+    "$ROOT/operator.expected" "$ROOT/operator.stdout" "$ROOT/operator.stderr" \
+    || fail_test operator_local_stderr_token_rejected
+
+  cp "$ROOT/operator.expected" "$ROOT/operator.stdout"
+  if uid_predicate_observed_in_one_bounded_capture \
+    "$ROOT/operator.expected" "$ROOT/operator.stdout" "$ROOT/operator.stderr"
+  then
+    fail_test operator_local_duplicate_token_accepted
+  fi
+
+  printf '20' >"$ROOT/operator.stdout"
+  printf '00\n' >"$ROOT/operator.stderr"
+  if uid_predicate_observed_in_one_bounded_capture \
+    "$ROOT/operator.expected" "$ROOT/operator.stdout" "$ROOT/operator.stderr"
+  then
+    fail_test operator_local_split_token_accepted
+  fi
+
+  cp "$ROOT/operator.expected" "$ROOT/operator.stdout"
+  printf 'warning\n' >"$ROOT/operator.stderr"
+  if uid_predicate_observed_in_one_bounded_capture \
+    "$ROOT/operator.expected" "$ROOT/operator.stdout" "$ROOT/operator.stderr"
+  then
+    fail_test operator_local_injected_token_accepted
+  fi
+
+  dd if=/dev/zero of="$ROOT/operator.stdout" bs=1025 count=1 status=none
+  : >"$ROOT/operator.stderr"
+  if uid_predicate_observed_in_one_bounded_capture \
+    "$ROOT/operator.expected" "$ROOT/operator.stdout" "$ROOT/operator.stderr"
+  then
+    fail_test operator_local_oversize_capture_accepted
+  fi
+
+  for key in "${ART_RUNTIME_ENV_KEYS[@]}"; do
+    unset "$key"
+  done
+  export ANDROID_ROOT=/system
+  export BOOTCLASSPATH=/apex/com.android.art/javalib/core-oj.jar
+  export UNRELATED_RUNTIME_VALUE=must-not-pass
+  capture_art_runtime_environment
+  [[ "${#ART_RUNTIME_ENV[@]}" == 2 \
+    && "${ART_RUNTIME_ENV[0]}" == ANDROID_ROOT=/system \
+    && "${ART_RUNTIME_ENV[1]}" == BOOTCLASSPATH=/apex/com.android.art/javalib/core-oj.jar ]] \
+    || fail_test operator_local_ART_runtime_environment_allowlist_invalid
+)
 
 (
   # shellcheck source=/dev/null
@@ -92,6 +217,44 @@ fi
   is_sha256 "$SHA_A" || fail_test valid_digest_rejected
   if is_sha256 "${SHA_A}g"; then
     fail_test invalid_digest_accepted
+  fi
+
+  for key in "${ART_RUNTIME_ENV_KEYS[@]}"; do
+    unset "$key"
+  done
+  export ANDROID_ROOT=/system
+  export BOOTCLASSPATH=/apex/com.android.art/javalib/core-oj.jar
+  export UNRELATED_RUNTIME_VALUE=must-not-pass
+  capture_art_runtime_environment
+  [[ "${#ART_RUNTIME_ENV[@]}" == 2 \
+    && "${ART_RUNTIME_ENV[0]}" == ANDROID_ROOT=/system \
+    && "${ART_RUNTIME_ENV[1]}" == BOOTCLASSPATH=/apex/com.android.art/javalib/core-oj.jar ]] \
+    || fail_test ART_runtime_environment_allowlist_invalid
+
+  printf '2000\n' >"$ROOT/uid.expected"
+  : >"$ROOT/uid.stdout"
+  : >"$ROOT/uid.stderr"
+  cp "$ROOT/uid.expected" "$ROOT/uid.stdout"
+  exact_uid_token_in_one_capture \
+    "$ROOT/uid.expected" "$ROOT/uid.stdout" "$ROOT/uid.stderr" \
+    || fail_test stdout_UID_token_rejected
+  : >"$ROOT/uid.stdout"
+  cp "$ROOT/uid.expected" "$ROOT/uid.stderr"
+  exact_uid_token_in_one_capture \
+    "$ROOT/uid.expected" "$ROOT/uid.stdout" "$ROOT/uid.stderr" \
+    || fail_test stderr_UID_token_rejected
+  cp "$ROOT/uid.expected" "$ROOT/uid.stdout"
+  if exact_uid_token_in_one_capture \
+    "$ROOT/uid.expected" "$ROOT/uid.stdout" "$ROOT/uid.stderr"
+  then
+    fail_test duplicated_UID_token_accepted
+  fi
+  printf '20' >"$ROOT/uid.stdout"
+  printf '00\n' >"$ROOT/uid.stderr"
+  if exact_uid_token_in_one_capture \
+    "$ROOT/uid.expected" "$ROOT/uid.stdout" "$ROOT/uid.stderr"
+  then
+    fail_test split_UID_token_accepted
   fi
 
   mkdir -m 700 "$ROOT/private"
@@ -141,10 +304,29 @@ fi
   # Verify the group/session accounting used to bound every candidate server.
   # shellcheck source=/dev/null
   source "$GATE"
-  setsid sleep 30 &
-  SERVER_PID=$!
+  set +m
+  setsid --wait -- bash -c 'printf "%s\n" "$$" >"$1"; exec sleep 30' \
+    physical-gate-setsid "$ROOT/setsid.pid" &
+  launcher_pid=$!
+  for _ in $(seq 1 20); do
+    [[ -s "$ROOT/setsid.pid" ]] && break
+    sleep 0.05
+  done
+  if [[ ! -s "$ROOT/setsid.pid" ]]; then
+    kill "$launcher_pid" >/dev/null 2>&1 || true
+    wait "$launcher_pid" >/dev/null 2>&1 || true
+    fail_test isolated_candidate_process_pid_not_observed
+  fi
+  observed_inner_pid="$(<"$ROOT/setsid.pid")"
+  if [[ "$observed_inner_pid" != "$launcher_pid" ]]; then
+    kill -- "-$launcher_pid" >/dev/null 2>&1 || kill "$launcher_pid" >/dev/null 2>&1 || true
+    wait "$launcher_pid" >/dev/null 2>&1 || true
+    fail_test isolated_candidate_launcher_inner_pid_mismatch
+  fi
+  SERVER_PID="$launcher_pid"
   SERVER_PGID=$SERVER_PID
-  if [[ -r "/proc/$SERVER_PID/stat" ]]; then
+  IFS=' ' read -r proc_self_pid _ < /proc/self/stat
+  if [[ "$proc_self_pid" == "$BASHPID" && -r "/proc/$SERVER_PID/stat" ]]; then
     for _ in $(seq 1 20); do
       server_process_group_is_isolated && break
       sleep 0.05
@@ -156,12 +338,15 @@ fi
     if process_group_alive "$SERVER_PGID"; then
       fail_test isolated_candidate_process_group_survived
     fi
+    wait "$launcher_pid" >/dev/null 2>&1 || true
   else
     # Some containerized CI shells expose namespace-local PIDs while /proc is
-    # mounted from the parent namespace. The physical Termux gate fails closed
-    # unless its own PID is visible and group/session identity can be proved.
-    kill "$SERVER_PID" >/dev/null 2>&1 || true
-    wait "$SERVER_PID" >/dev/null 2>&1 || true
+    # mounted from the parent namespace. BASHPID is the actual subshell PID;
+    # comparing it with /proc/self avoids mistaking a colliding host PID for
+    # this fixture. The physical gate itself still fails closed unless its
+    # PID/group/session can be proved.
+    kill -- "-$launcher_pid" >/dev/null 2>&1 || kill "$launcher_pid" >/dev/null 2>&1 || true
+    wait "$launcher_pid" >/dev/null 2>&1 || true
   fi
 )
 
@@ -204,9 +389,6 @@ fi
   export ADB_SHELL_UID=2000
   export STARTED_AT=2026-07-31T12:00:00Z
   export COMPLETED_AT=2026-07-31T12:10:00Z
-  # Mirror the observed MCP status payload (S2.5 fixture path for this unit test).
-  # write_evidence reads this global from the sourced gate script.
-  export OBSERVED_RISH_STATE=verified_shell_uid
 
   write_raw_report
   write_evidence

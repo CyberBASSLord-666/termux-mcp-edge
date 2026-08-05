@@ -1,17 +1,20 @@
-//! Attested, read-only Shizuku/rish availability probe.
+//! Diagnostic, read-only Shizuku/rish UID-token probe.
 //!
-//! This module deliberately does not expose a general shell. Production uses
-//! one fixed Android runtime, one pinned and digest-bound loader DEX, one fixed
-//! loader class, and one fixed command which can only prove that the remote
-//! principal is Android's non-root `shell` UID. The configured DEX descriptor
+//! This module deliberately does not expose a general shell. This diagnostic
+//! backend uses one fixed Android runtime, one pinned and digest-bound loader
+//! DEX, one fixed loader class, and one fixed command which evaluates an exact
+//! UID-2000 predicate. Stock rish races two local readers over one remote output
+//! pipe and does not expose a trustworthy remote exit status. The accepted token is
+//! therefore only a local diagnostic observation; it does not prove remote
+//! stream separation, orderly exit, Binder identity/lifecycle, or revocation.
+//! The configured DEX descriptor
 //! remains pinned for the client's lifetime. Each probe copies its revalidated
 //! bytes into an execution snapshot and passes only that snapshot through
 //! `/proc/self/fd` so pathname replacement of the operator source cannot change
-//! the bytes `app_process64` loads. When the kernel allows it, the snapshot is a
-//! sealed memfd. Android kernels that refuse to reopen memfd paths for ART fall
-//! back to a private `O_TMPFILE` (or exclusive named) read-only copy; that
-//! fallback still isolates the operator source, but it cannot claim sealed
-//! same-UID immutability.
+//! the bytes `app_process64` loads. Only a fully sealed memfd snapshot is
+//! executable. Android kernels that refuse to reopen that path for ART fail
+//! closed: owner-private tmpfiles remain mutable by the same UID and cannot
+//! satisfy this boundary.
 
 use std::{
     ffi::OsString,
@@ -20,13 +23,10 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::ffi::OsStrExt,
-        unix::fs::{DirBuilderExt, FileExt, MetadataExt},
+        unix::fs::{FileExt, MetadataExt},
     },
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -48,26 +48,9 @@ use crate::bounded_process::{
 pub(crate) const RISH_APP_PROCESS_PROGRAM: &str = "/system/bin/app_process64";
 pub(crate) const RISH_APPLICATION_ID: &str = "com.termux";
 pub(crate) const RISH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
-/// Per-command timeout for the seven S3 attestation probes. Kept below the
-/// historical 5s single-probe budget so the full public suite stays under the
-/// default 30s MCP request timeout even on a slow device.
-pub(crate) const RISH_S3_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-/// Hard wall-clock budget for the full S3 multi-probe suite (7 fixed commands).
-pub(crate) const RISH_S3_SUITE_BUDGET: Duration = Duration::from_secs(24);
-/// Per-probe timeout for allowlisted `cmd package has-feature` reads.
-/// Ten sequential probes at the full status timeout would exceed typical
-/// MCP client/server budgets and monopolize the single concurrency lane.
-pub(crate) const RISH_FEATURE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-/// Hard wall-clock budget for the full ten-probe system-features family.
-pub(crate) const RISH_FEATURE_FAMILY_BUDGET: Duration = Duration::from_secs(12);
 pub(crate) const RISH_STATUS_STDOUT_BYTES: usize = 1024;
 pub(crate) const RISH_STATUS_STDERR_BYTES: usize = 4 * 1024;
 pub(crate) const RISH_STATUS_CONCURRENCY: usize = 1;
-
-/// Shared concurrency lane: each sequential child holds a clone through
-/// cancellation-independent cleanup so the permit cannot be released while
-/// a prior rish process group is still being reaped.
-type RishLanePermit = Arc<OwnedSemaphorePermit>;
 
 const MIN_RISH_DEX_BYTES: u64 = 1;
 const MAX_RISH_DEX_BYTES: u64 = 16 * 1024 * 1024;
@@ -90,40 +73,10 @@ const RISH_ANDROID_RUNTIME_ENV_KEYS: &[&str] = &[
     "DEX2OATBOOTCLASSPATH",
     "SYSTEMSERVERCLASSPATH",
 ];
-/// S2.5 foundation command: prove exact Android shell UID only.
+/// S2.5 foundation command: evaluate the fixed UID-2000 predicate only.
 const RISH_FIXED_COMMAND: &str = "exec /system/bin/id -u";
-/// S3 extended fixed commands. Each is a complete, non-shell argv payload for
-/// the pinned rish loader (`-c <command>`). No caller input is interpolated.
-const RISH_FIXED_COMMAND_GID: &str = "exec /system/bin/id -g";
-const RISH_FIXED_COMMAND_GROUPS: &str = "exec /system/bin/id -G";
-// Prefer /proc attr over `id -Z`: under rish some devices emit context on
-// stderr, which would fail-closed the empty-stderr identity contract.
-const RISH_FIXED_COMMAND_SELINUX: &str = "exec /system/bin/cat /proc/self/attr/current";
-const RISH_FIXED_COMMAND_SDK: &str = "exec /system/bin/getprop ro.build.version.sdk";
-const RISH_FIXED_COMMAND_FINGERPRINT: &str = "exec /system/bin/getprop ro.build.fingerprint";
-const RISH_FIXED_COMMAND_BOOT_ID: &str = "exec /system/bin/cat /proc/sys/kernel/random/boot_id";
 const ANDROID_SHELL_UID: u32 = 2000;
-const EXPECTED_STDOUT: &[u8] = b"2000\n";
-const MIN_SUPPORTED_SDK: u32 = 30;
-const MAX_SUPPORTED_SDK: u32 = 36;
-const MAX_SUPPLEMENTARY_GROUPS: usize = 64;
-const MAX_SELINUX_CONTEXT_BYTES: usize = 128;
-const MAX_FINGERPRINT_BYTES: usize = 256;
-const EXPECTED_SHELL_SELINUX_PREFIX: &[u8] = b"u:r:shell:";
-/// First typed-read family: one fixed `has-feature` probe per allowlisted name.
-/// Full `list features` dumps exceed rish stream bounds on large OEM builds.
-const SYSTEM_FEATURE_PROBES: &[&str] = &[
-    "exec /system/bin/cmd package has-feature android.hardware.wifi",
-    "exec /system/bin/cmd package has-feature android.hardware.bluetooth",
-    "exec /system/bin/cmd package has-feature android.hardware.camera.any",
-    "exec /system/bin/cmd package has-feature android.hardware.location",
-    "exec /system/bin/cmd package has-feature android.hardware.microphone",
-    "exec /system/bin/cmd package has-feature android.hardware.nfc",
-    "exec /system/bin/cmd package has-feature android.hardware.fingerprint",
-    "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer",
-    "exec /system/bin/cmd package has-feature android.hardware.touchscreen",
-    "exec /system/bin/cmd package has-feature android.software.webview",
-];
+const EXPECTED_UID_TOKEN: &[u8] = b"2000\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RishBackendConfigError {
@@ -179,7 +132,6 @@ pub(crate) enum RishBackendError {
     StderrLimitExceeded,
     ProgramFailed,
     IdentityOutputInvalid,
-    AttestationOutputInvalid,
     WorkerFailed,
 }
 
@@ -203,7 +155,6 @@ impl RishBackendError {
             Self::StderrLimitExceeded => "rish_probe_stderr_limit_exceeded",
             Self::ProgramFailed => "rish_probe_failed",
             Self::IdentityOutputInvalid => "rish_probe_identity_invalid",
-            Self::AttestationOutputInvalid => "rish_attestation_output_invalid",
             Self::WorkerFailed => "rish_probe_worker_failed",
         }
     }
@@ -242,49 +193,6 @@ pub(crate) struct RishBackendStatus {
     pub(crate) root_accepted: bool,
     pub(crate) arbitrary_shell: bool,
     pub(crate) mutation_ready: bool,
-}
-
-/// First typed-read family: ten compile-time-allowlisted feature booleans.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AndroidSystemFeaturesStatus {
-    pub(crate) available: bool,
-    pub(crate) backend: &'static str,
-    pub(crate) state: &'static str,
-    pub(crate) control_authority_proven: bool,
-    pub(crate) arbitrary_shell: bool,
-    pub(crate) mutation_ready: bool,
-    pub(crate) features: AndroidSystemFeatureFlags,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AndroidSystemFeatureFlags {
-    pub(crate) wifi: bool,
-    pub(crate) bluetooth: bool,
-    pub(crate) camera_any: bool,
-    pub(crate) location: bool,
-    pub(crate) microphone: bool,
-    pub(crate) nfc: bool,
-    pub(crate) fingerprint: bool,
-    pub(crate) accelerometer: bool,
-    pub(crate) touchscreen: bool,
-    pub(crate) webview: bool,
-}
-
-/// Private S3 attestation material. Never serialized to MCP responses, logs, or
-/// runtime_status. A new epoch is minted only after a complete successful
-/// multi-probe attestation; any later failure rotates the epoch away.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PrivateBackendEpoch {
-    generation: u64,
-    dex_sha256: [u8; 32],
-    build_fingerprint_sha256: [u8; 32],
-    boot_id_sha256: [u8; 32],
-    selinux_context_sha256: [u8; 32],
-    sdk: u32,
-    gid: u32,
-    groups: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,12 +235,10 @@ pub(crate) struct RishBackendClient {
     expected_sha256: [u8; 32],
     program: PathBuf,
     concurrency: Arc<Semaphore>,
-    /// Monotonic private epoch generation counter. Public surfaces never see it.
-    epoch_generation: Arc<AtomicU64>,
-    /// Current S3 private epoch, if a complete attestation has succeeded.
-    private_epoch: Arc<Mutex<Option<PrivateBackendEpoch>>>,
     #[cfg(test)]
     validation_delay: Duration,
+    #[cfg(test)]
+    process_cleanup_delay: Duration,
 }
 
 impl fmt::Debug for RishBackendClient {
@@ -344,7 +250,6 @@ impl fmt::Debug for RishBackendClient {
             .field("expected_sha256", &"<redacted>")
             .field("program", &RISH_APP_PROCESS_PROGRAM)
             .field("concurrency_limit", &RISH_STATUS_CONCURRENCY)
-            .field("private_epoch", &"<redacted>")
             .finish()
     }
 }
@@ -385,18 +290,19 @@ impl RishBackendClient {
             expected_sha256,
             program,
             concurrency: Arc::new(Semaphore::new(RISH_STATUS_CONCURRENCY)),
-            epoch_generation: Arc::new(AtomicU64::new(0)),
-            private_epoch: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             validation_delay: Duration::ZERO,
+            #[cfg(test)]
+            process_cleanup_delay: Duration::ZERO,
         })
     }
 
-    /// S2.5 foundation probe: exact Android shell UID `2000` only.
+    /// S2.5 foundation probe: exact UID-2000 predicate token only.
     ///
-    /// Retained for development physical evidence lanes that claim only the
-    /// UID-2000 contract. Public `android_rish_status` uses [`Self::attest_read_only`].
-    #[allow(dead_code)] // retained for S2.5-only physical evidence callers/tests
+    /// The public state label remains `verified_shell_uid` for the existing v1
+    /// evidence contract. Success means only that exact `2000\n` bytes were
+    /// captured in one local reader while the other capture was empty. It does
+    /// not qualify remote exit status, stream separation, or Binder lifecycle.
     pub(crate) async fn probe(&self) -> Result<RishBackendStatus, RishBackendError> {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
@@ -410,6 +316,8 @@ impl RishBackendClient {
         let program = self.program.clone();
         #[cfg(test)]
         let validation_delay = self.validation_delay;
+        #[cfg(test)]
+        let process_cleanup_delay = self.process_cleanup_delay;
 
         // Validation owns the permit even if its request waiter disappears.
         // On success the permit is transferred into the bounded process's
@@ -443,265 +351,14 @@ impl RishBackendClient {
         .await
         .map_err(|_| RishBackendError::WorkerFailed)??;
 
-        run_fixed_probe(program, dex_guard, permit).await
-    }
-
-    /// S3 public read-only attestation used by `android_rish_status`.
-    ///
-    /// Runs the fixed multi-command identity suite under one concurrency lane,
-    /// mints a private backend epoch on full success, and returns a public
-    /// status with `state = attested_read_only`. Sensitive fields (epoch,
-    /// fingerprints, boot id, SELinux context, group inventory, digests) never
-    /// leave this module.
-    pub(crate) async fn attest_read_only(&self) -> Result<RishBackendStatus, RishBackendError> {
-        let permit = Arc::clone(&self.concurrency)
-            .try_acquire_owned()
-            .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
-        let lane = Arc::new(permit);
-        self.attest_read_only_with_lane(lane).await
-    }
-
-    /// S3 attestation under a pre-acquired concurrency lane.
-    ///
-    /// Callers that already hold the sole rish permit (typed-read families)
-    /// must use this path so epoch establishment cannot TOCTOU against a
-    /// second acquisition and so each child keeps a lane clone through cleanup.
-    async fn attest_read_only_with_lane(
-        &self,
-        lane: RishLanePermit,
-    ) -> Result<RishBackendStatus, RishBackendError> {
-        let dex_path = Arc::clone(&self.dex_path);
-        let dex_file = Arc::clone(&self.dex_file);
-        let expected_identity = self.dex_identity;
-        let expected_parent = self.parent_identity;
-        let expected_sha256 = self.expected_sha256;
-        let program = self.program.clone();
-        #[cfg(test)]
-        let validation_delay = self.validation_delay;
-
-        let prepare = tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            std::thread::sleep(validation_delay);
-            let parent = validate_parent(&dex_path)?;
-            if parent != expected_parent {
-                return Err(RishBackendError::DexIdentityChanged);
-            }
-            validate_dex_identity(
-                &dex_path,
-                &dex_file,
-                Some(expected_identity),
-                expected_sha256,
-            )?;
-            let snapshot =
-                create_execution_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
-            validate_dex_identity(
-                &dex_path,
-                &dex_file,
-                Some(expected_identity),
-                expected_sha256,
-            )?;
-            Ok::<Arc<File>, RishBackendError>(Arc::new(snapshot))
-        })
-        .await
-        .map_err(|_| RishBackendError::WorkerFailed)?;
-
-        let dex_guard = match prepare {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                self.invalidate_private_epoch();
-                return Err(error);
-            }
-        };
-
-        let attestation = match run_s3_attestation_suite(
+        run_fixed_probe(
             program,
-            Arc::clone(&dex_guard),
-            Arc::clone(&lane),
+            dex_guard,
+            permit,
+            #[cfg(test)]
+            process_cleanup_delay,
         )
         .await
-        {
-            Ok(attestation) => attestation,
-            Err(error) => {
-                drop(dex_guard);
-                drop(lane);
-                self.invalidate_private_epoch();
-                return Err(error);
-            }
-        };
-        drop(dex_guard);
-        drop(lane);
-
-        let generation = self.epoch_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let epoch = PrivateBackendEpoch {
-            generation,
-            dex_sha256: expected_sha256,
-            build_fingerprint_sha256: attestation.build_fingerprint_sha256,
-            boot_id_sha256: attestation.boot_id_sha256,
-            selinux_context_sha256: attestation.selinux_context_sha256,
-            sdk: attestation.sdk,
-            gid: attestation.gid,
-            groups: attestation.groups,
-        };
-        {
-            let mut slot = self
-                .private_epoch
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *slot = Some(epoch);
-        }
-
-        Ok(RishBackendStatus {
-            available: true,
-            backend: "shizuku_rish",
-            principal: "android_shell",
-            uid: ANDROID_SHELL_UID,
-            state: "attested_read_only",
-            root_accepted: false,
-            arbitrary_shell: false,
-            mutation_ready: false,
-        })
-    }
-
-    pub(crate) fn has_live_s3_epoch(&self) -> bool {
-        self.private_epoch
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_some()
-    }
-
-    /// First typed-read family: ten allowlisted PackageManager feature flags.
-    ///
-    /// Acquires the sole rish concurrency lane first, then always re-runs the
-    /// full S3 admission suite under that permit before feature probes so a
-    /// stale in-memory epoch cannot outlive a Shizuku/rish principal change.
-    /// Uses only fixed `cmd package has-feature <name>` probes for the
-    /// compile-time allowlist. Never returns raw OEM inventory text.
-    pub(crate) async fn list_system_features(
-        &self,
-    ) -> Result<AndroidSystemFeaturesStatus, RishBackendError> {
-        let permit = Arc::clone(&self.concurrency)
-            .try_acquire_owned()
-            .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
-        let lane = Arc::new(permit);
-
-        // Fresh S3 admission under the held lane every call — never trust a
-        // previously minted epoch without re-proving UID/GID/SELinux/boot.
-        self.attest_read_only_with_lane(Arc::clone(&lane)).await?;
-
-        let dex_path = Arc::clone(&self.dex_path);
-        let dex_file = Arc::clone(&self.dex_file);
-        let expected_identity = self.dex_identity;
-        let expected_parent = self.parent_identity;
-        let expected_sha256 = self.expected_sha256;
-        let program = self.program.clone();
-
-        let prepare = tokio::task::spawn_blocking(move || {
-            let parent = validate_parent(&dex_path)?;
-            if parent != expected_parent {
-                return Err(RishBackendError::DexIdentityChanged);
-            }
-            validate_dex_identity(
-                &dex_path,
-                &dex_file,
-                Some(expected_identity),
-                expected_sha256,
-            )?;
-            let snapshot =
-                create_execution_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
-            validate_dex_identity(
-                &dex_path,
-                &dex_file,
-                Some(expected_identity),
-                expected_sha256,
-            )?;
-            Ok::<Arc<File>, RishBackendError>(Arc::new(snapshot))
-        })
-        .await
-        .map_err(|_| RishBackendError::WorkerFailed)?;
-
-        let dex_guard = match prepare {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                self.invalidate_private_epoch();
-                return Err(error);
-            }
-        };
-
-        let family_deadline = tokio::time::Instant::now() + RISH_FEATURE_FAMILY_BUDGET;
-        let mut present = [false; SYSTEM_FEATURE_PROBES.len()];
-        for (index, command) in SYSTEM_FEATURE_PROBES.iter().enumerate() {
-            if tokio::time::Instant::now() >= family_deadline {
-                drop(dex_guard);
-                drop(lane);
-                self.invalidate_private_epoch();
-                return Err(RishBackendError::TimedOut);
-            }
-            let stdout = match run_fixed_command_output_with_bounds(
-                &program,
-                &dex_guard,
-                command,
-                &RISH_FEATURE_COMMAND_BOUNDS,
-                Arc::clone(&lane),
-            )
-            .await
-            {
-                Ok(stdout) => stdout,
-                Err(error) => {
-                    drop(dex_guard);
-                    drop(lane);
-                    self.invalidate_private_epoch();
-                    return Err(error);
-                }
-            };
-            present[index] = match parse_has_feature_line(&stdout) {
-                Ok(value) => value,
-                Err(error) => {
-                    drop(dex_guard);
-                    drop(lane);
-                    self.invalidate_private_epoch();
-                    return Err(error);
-                }
-            };
-        }
-        drop(dex_guard);
-        drop(lane);
-
-        if !self.has_live_s3_epoch() {
-            return Err(RishBackendError::AttestationOutputInvalid);
-        }
-
-        Ok(AndroidSystemFeaturesStatus {
-            available: true,
-            backend: "shizuku_rish",
-            state: "attested_read_only",
-            control_authority_proven: false,
-            arbitrary_shell: false,
-            mutation_ready: false,
-            features: AndroidSystemFeatureFlags {
-                wifi: present[0],
-                bluetooth: present[1],
-                camera_any: present[2],
-                location: present[3],
-                microphone: present[4],
-                nfc: present[5],
-                fingerprint: present[6],
-                accelerometer: present[7],
-                touchscreen: present[8],
-                webview: present[9],
-            },
-        })
-    }
-
-    fn invalidate_private_epoch(&self) {
-        let mut slot = self
-            .private_epoch
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if slot.take().is_some() {
-            // Bump generation so any future grant/epoch binding cannot reuse
-            // the previous private identity after a fail-closed transition.
-            self.epoch_generation.fetch_add(1, Ordering::AcqRel);
-        }
     }
 
     #[cfg(test)]
@@ -712,16 +369,6 @@ impl RishBackendClient {
     ) -> Result<Self, RishBackendConfigError> {
         Self::new_inner(dex_path, expected_sha256, program)
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct S3AttestationMaterial {
-    gid: u32,
-    groups: Vec<u32>,
-    sdk: u32,
-    build_fingerprint_sha256: [u8; 32],
-    boot_id_sha256: [u8; 32],
-    selinux_context_sha256: [u8; 32],
 }
 
 fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
@@ -743,7 +390,6 @@ fn map_config_error(error: RishBackendError) -> RishBackendConfigError {
         | RishBackendError::StderrLimitExceeded
         | RishBackendError::ProgramFailed
         | RishBackendError::IdentityOutputInvalid
-        | RishBackendError::AttestationOutputInvalid
         | RishBackendError::WorkerFailed => RishBackendConfigError::Internal,
     }
 }
@@ -770,11 +416,11 @@ fn rish_child_environment() -> Vec<(OsString, OsString)> {
     environment
 }
 
-#[allow(dead_code)] // used by probe() S2.5 path
 async fn run_fixed_probe(
     program: PathBuf,
     dex_guard: Arc<File>,
     permit: OwnedSemaphorePermit,
+    #[cfg(test)] process_cleanup_delay: Duration,
 ) -> Result<RishBackendStatus, RishBackendError> {
     ensure_descriptor_close_on_exec(&dex_guard)?;
     let dex_argument = OsString::from(format!(
@@ -801,10 +447,12 @@ async fn run_fixed_probe(
         ),
     )
     .map_err(map_fixed_process_config)?;
+    #[cfg(test)]
+    let process = process.with_forced_cleanup_delay(process_cleanup_delay);
     let output = process.run_with_completion_guard(permit).await?;
     drop(dex_guard);
 
-    if output.stdout.as_slice() != EXPECTED_STDOUT || !output.stderr.is_empty() {
+    if !uid_token_is_exactly_one_capture(&output.stdout, &output.stderr) {
         return Err(RishBackendError::IdentityOutputInvalid);
     }
 
@@ -820,299 +468,9 @@ async fn run_fixed_probe(
     })
 }
 
-async fn run_s3_attestation_suite(
-    program: PathBuf,
-    dex_guard: Arc<File>,
-    lane: RishLanePermit,
-) -> Result<S3AttestationMaterial, RishBackendError> {
-    // Order is intentional: prove shell UID before any broader identity claim.
-    // Every fixed child retains a lane clone until process-group cleanup finishes.
-    // Suite budget keeps public android_rish_status under the default MCP timeout.
-    let suite_deadline = tokio::time::Instant::now() + RISH_S3_SUITE_BUDGET;
-    let ensure_suite_budget = || {
-        if tokio::time::Instant::now() >= suite_deadline {
-            Err(RishBackendError::TimedOut)
-        } else {
-            Ok(())
-        }
-    };
-
-    ensure_suite_budget()?;
-    let uid_stdout =
-        run_s3_command_output(&program, &dex_guard, RISH_FIXED_COMMAND, Arc::clone(&lane)).await?;
-    if uid_stdout.as_slice() != EXPECTED_STDOUT {
-        return Err(RishBackendError::IdentityOutputInvalid);
-    }
-
-    ensure_suite_budget()?;
-    let gid = parse_exact_u32_line(
-        &run_s3_command_output(
-            &program,
-            &dex_guard,
-            RISH_FIXED_COMMAND_GID,
-            Arc::clone(&lane),
-        )
-        .await?,
-    )?;
-    if gid != ANDROID_SHELL_UID {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-
-    ensure_suite_budget()?;
-    let groups = parse_group_list_line(
-        &run_s3_command_output(
-            &program,
-            &dex_guard,
-            RISH_FIXED_COMMAND_GROUPS,
-            Arc::clone(&lane),
-        )
-        .await?,
-    )?;
-    if !groups.contains(&ANDROID_SHELL_UID) {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-
-    ensure_suite_budget()?;
-    let selinux_raw = run_s3_command_output(
-        &program,
-        &dex_guard,
-        RISH_FIXED_COMMAND_SELINUX,
-        Arc::clone(&lane),
-    )
-    .await?;
-    let selinux = parse_shell_selinux_context(&selinux_raw)?;
-    let selinux_context_sha256 = Sha256::digest(selinux).into();
-
-    ensure_suite_budget()?;
-    let sdk = parse_exact_u32_line(
-        &run_s3_command_output(
-            &program,
-            &dex_guard,
-            RISH_FIXED_COMMAND_SDK,
-            Arc::clone(&lane),
-        )
-        .await?,
-    )?;
-    if !(MIN_SUPPORTED_SDK..=MAX_SUPPORTED_SDK).contains(&sdk) {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-
-    ensure_suite_budget()?;
-    let fingerprint_raw = run_s3_command_output(
-        &program,
-        &dex_guard,
-        RISH_FIXED_COMMAND_FINGERPRINT,
-        Arc::clone(&lane),
-    )
-    .await?;
-    let fingerprint = parse_build_fingerprint(&fingerprint_raw)?;
-    let build_fingerprint_sha256 = Sha256::digest(fingerprint).into();
-
-    ensure_suite_budget()?;
-    let boot_raw = run_s3_command_output(
-        &program,
-        &dex_guard,
-        RISH_FIXED_COMMAND_BOOT_ID,
-        Arc::clone(&lane),
-    )
-    .await?;
-    let boot_id = parse_boot_id(&boot_raw)?;
-    let boot_id_sha256 = Sha256::digest(boot_id).into();
-
-    Ok(S3AttestationMaterial {
-        gid,
-        groups,
-        sdk,
-        build_fingerprint_sha256,
-        boot_id_sha256,
-        selinux_context_sha256,
-    })
-}
-
-struct FixedCommandBounds {
-    timeout: Duration,
-    max_stdout_bytes: usize,
-    max_stderr_bytes: usize,
-    accept_nonzero_exit: bool,
-}
-
-const RISH_S3_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
-    timeout: RISH_S3_PROBE_TIMEOUT,
-    max_stdout_bytes: RISH_STATUS_STDOUT_BYTES,
-    max_stderr_bytes: RISH_STATUS_STDERR_BYTES,
-    accept_nonzero_exit: false,
-};
-
-const RISH_FEATURE_COMMAND_BOUNDS: FixedCommandBounds = FixedCommandBounds {
-    timeout: RISH_FEATURE_PROBE_TIMEOUT,
-    max_stdout_bytes: RISH_STATUS_STDOUT_BYTES,
-    max_stderr_bytes: RISH_STATUS_STDERR_BYTES,
-    accept_nonzero_exit: true,
-};
-
-async fn run_s3_command_output(
-    program: &Path,
-    dex_guard: &Arc<File>,
-    fixed_command: &'static str,
-    lane: RishLanePermit,
-) -> Result<Vec<u8>, RishBackendError> {
-    run_fixed_command_output_with_bounds(
-        program,
-        dex_guard,
-        fixed_command,
-        &RISH_S3_COMMAND_BOUNDS,
-        lane,
-    )
-    .await
-}
-
-async fn run_fixed_command_output_with_bounds(
-    program: &Path,
-    dex_guard: &Arc<File>,
-    fixed_command: &'static str,
-    bounds: &FixedCommandBounds,
-    lane: RishLanePermit,
-) -> Result<Vec<u8>, RishBackendError> {
-    ensure_descriptor_close_on_exec(dex_guard)?;
-    let dex_argument = OsString::from(format!(
-        "-Djava.class.path=/proc/self/fd/{}",
-        dex_guard.as_raw_fd()
-    ));
-    let process = BoundedProcess::new_with_child_context(
-        program.to_path_buf(),
-        vec![
-            dex_argument,
-            OsString::from("/system/bin"),
-            OsString::from("--nice-name=termux-mcp-rish"),
-            OsString::from(RISH_LOADER_CLASS),
-            OsString::from("-c"),
-            OsString::from(fixed_command),
-        ],
-        PathBuf::from("/"),
-        bounds.timeout,
-        bounds.max_stdout_bytes,
-        bounds.max_stderr_bytes,
-        BoundedChildContext::with_inherited_descriptor(
-            rish_child_environment(),
-            Arc::clone(dex_guard),
-        ),
-    )
-    .map_err(map_fixed_process_config)?
-    .with_accept_nonzero_exit(bounds.accept_nonzero_exit);
-    // Hold a lane clone in the cancellation-independent supervisor so a
-    // dropped request future cannot open the concurrency lane before reaping.
-    let output = process.run_with_completion_guard(lane).await?;
-    // Under rish, a few Android utilities occasionally emit the sole payload on
-    // stderr with empty stdout. Accept exactly one non-empty stream.
-    match (output.stdout.is_empty(), output.stderr.is_empty()) {
-        (false, true) => Ok(output.stdout),
-        (true, false) => Ok(output.stderr),
-        _ => Err(RishBackendError::AttestationOutputInvalid),
-    }
-}
-
-fn parse_has_feature_line(stdout: &[u8]) -> Result<bool, RishBackendError> {
-    match stdout {
-        b"true\n" | b"true" => Ok(true),
-        b"false\n" | b"false" => Ok(false),
-        _ => Err(RishBackendError::AttestationOutputInvalid),
-    }
-}
-
-#[allow(dead_code)]
-fn parse_exact_u32_line(stdout: &[u8]) -> Result<u32, RishBackendError> {
-    let Some(line) = stdout.strip_suffix(b"\n") else {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    };
-    if line.is_empty() || !line.iter().all(u8::is_ascii_digit) || line.len() > 10 {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-    let text = std::str::from_utf8(line).map_err(|_| RishBackendError::AttestationOutputInvalid)?;
-    text.parse::<u32>()
-        .map_err(|_| RishBackendError::AttestationOutputInvalid)
-}
-
-#[allow(dead_code)]
-fn parse_group_list_line(stdout: &[u8]) -> Result<Vec<u32>, RishBackendError> {
-    let Some(line) = stdout.strip_suffix(b"\n") else {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    };
-    if line.is_empty() {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-    let mut groups = Vec::new();
-    for part in line.split(|byte| *byte == b' ') {
-        if part.is_empty() || !part.iter().all(u8::is_ascii_digit) || part.len() > 10 {
-            return Err(RishBackendError::AttestationOutputInvalid);
-        }
-        let text =
-            std::str::from_utf8(part).map_err(|_| RishBackendError::AttestationOutputInvalid)?;
-        let group = text
-            .parse::<u32>()
-            .map_err(|_| RishBackendError::AttestationOutputInvalid)?;
-        groups.push(group);
-        if groups.len() > MAX_SUPPLEMENTARY_GROUPS {
-            return Err(RishBackendError::AttestationOutputInvalid);
-        }
-    }
-    Ok(groups)
-}
-
-fn parse_shell_selinux_context(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
-    // `cat /proc/self/attr/current` is NUL-terminated; `id -Z` uses a newline.
-    let line = stdout
-        .strip_suffix(&[0])
-        .or_else(|| stdout.strip_suffix(b"\n"))
-        .unwrap_or(stdout);
-    if line.is_empty()
-        || line.len() > MAX_SELINUX_CONTEXT_BYTES
-        || !line.starts_with(EXPECTED_SHELL_SELINUX_PREFIX)
-    {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-    // Allow only a tight charset so raw policy strings never become free text.
-    if !line
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b','))
-    {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-    Ok(line)
-}
-
-fn parse_build_fingerprint(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
-    // Accept optional trailing newline; reject empty and control characters.
-    let line = stdout.strip_suffix(b"\n").unwrap_or(stdout);
-    if line.is_empty()
-        || line.len() > MAX_FINGERPRINT_BYTES
-        || !line
-            .iter()
-            .all(|byte| byte.is_ascii_graphic() && *byte != b'\\')
-    {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-    Ok(line)
-}
-
-#[allow(dead_code)]
-fn parse_boot_id(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
-    let Some(line) = stdout.strip_suffix(b"\n") else {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    };
-    // Canonical Linux boot_id: 8-4-4-4-12 lowercase hex with hyphens.
-    if line.len() != 36 {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    }
-    for (index, byte) in line.iter().enumerate() {
-        let ok = match index {
-            8 | 13 | 18 | 23 => *byte == b'-',
-            _ => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
-        };
-        if !ok {
-            return Err(RishBackendError::AttestationOutputInvalid);
-        }
-    }
-    Ok(line)
+fn uid_token_is_exactly_one_capture(stdout: &[u8], stderr: &[u8]) -> bool {
+    (stdout == EXPECTED_UID_TOKEN && stderr.is_empty())
+        || (stderr == EXPECTED_UID_TOKEN && stdout.is_empty())
 }
 
 fn map_fixed_process_config(_: BoundedProcessConfigError) -> RishBackendError {
@@ -1261,16 +619,9 @@ fn create_execution_dex_snapshot(
     bytes: u64,
     expected_sha256: [u8; 32],
 ) -> Result<File, RishBackendError> {
-    // Prefer a sealed memfd when the child can reopen it through
-    // `/proc/self/fd` for ART's classpath. Android kernels commonly allow
-    // sealed memfd creation but deny path reopen, which would make real
-    // `app_process64` DEX loading fail closed after a false host-side success.
-    if let Ok(snapshot) = try_create_sealed_memfd_snapshot(source, bytes, expected_sha256) {
-        if snapshot_classpath_path_is_usable(&snapshot, bytes, expected_sha256) {
-            return Ok(snapshot);
-        }
-    }
-    create_private_tmpfile_snapshot(source, bytes, expected_sha256)
+    let snapshot = try_create_sealed_memfd_snapshot(source, bytes, expected_sha256)?;
+    ensure_execution_snapshot_qualified(&snapshot, bytes, expected_sha256)?;
+    Ok(snapshot)
 }
 
 fn try_create_sealed_memfd_snapshot(
@@ -1293,17 +644,38 @@ fn try_create_sealed_memfd_snapshot(
     ensure_descriptor_close_on_exec(&snapshot).map_err(|_| RishBackendError::DexSnapshotFailed)?;
     finalize_writable_snapshot(source, &snapshot, bytes, expected_sha256)?;
 
-    let required_seals = SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL;
-    fcntl_add_seals(&snapshot, required_seals).map_err(|_| RishBackendError::DexSnapshotFailed)?;
+    fcntl_add_seals(&snapshot, required_snapshot_seals())
+        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
     let observed_seals =
         fcntl_get_seals(&snapshot).map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    if !observed_seals.contains(required_seals) {
+    if !observed_seals.contains(required_snapshot_seals()) {
         return Err(RishBackendError::DexSnapshotFailed);
     }
     if hash_exact_file(&snapshot, bytes)? != expected_sha256 {
         return Err(RishBackendError::DexSnapshotFailed);
     }
     Ok(snapshot)
+}
+
+fn ensure_execution_snapshot_qualified(
+    snapshot: &File,
+    bytes: u64,
+    expected_sha256: [u8; 32],
+) -> Result<(), RishBackendError> {
+    if !snapshot_is_fully_sealed(snapshot)
+        || !snapshot_classpath_path_is_usable(snapshot, bytes, expected_sha256)
+    {
+        return Err(RishBackendError::DexSnapshotFailed);
+    }
+    Ok(())
+}
+
+fn required_snapshot_seals() -> SealFlags {
+    SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE | SealFlags::SEAL
+}
+
+fn snapshot_is_fully_sealed(snapshot: &File) -> bool {
+    fcntl_get_seals(snapshot).is_ok_and(|seals| seals.contains(required_snapshot_seals()))
 }
 
 fn snapshot_classpath_path_is_usable(
@@ -1323,102 +695,6 @@ fn snapshot_classpath_path_is_usable(
     };
     let reopened = File::from(reopened);
     hash_exact_file(&reopened, bytes).is_ok_and(|digest| digest == expected_sha256)
-}
-
-fn create_private_tmpfile_snapshot(
-    source: &File,
-    bytes: u64,
-    expected_sha256: [u8; 32],
-) -> Result<File, RishBackendError> {
-    let snapshot_dir = private_snapshot_directory()?;
-    let writable = match open(
-        &snapshot_dir,
-        OFlags::TMPFILE | OFlags::RDWR | OFlags::CLOEXEC,
-        Mode::from_raw_mode(0o600),
-    ) {
-        Ok(descriptor) => File::from(descriptor),
-        Err(_) => create_named_private_snapshot_file(&snapshot_dir)?,
-    };
-    ensure_descriptor_close_on_exec(&writable).map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    finalize_writable_snapshot(source, &writable, bytes, expected_sha256)?;
-    rustix::fs::fchmod(&writable, Mode::from_raw_mode(0o400))
-        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
-
-    // Re-open read-only through the classpath path so the inherited descriptor
-    // matches what ART will open and so mode 0400 is enforced on that open.
-    let path = format!("/proc/self/fd/{}", writable.as_raw_fd());
-    let readonly = open(
-        path.as_str(),
-        OFlags::RDONLY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    ensure_descriptor_close_on_exec(&readonly).map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    if hash_exact_file(&readonly, bytes)? != expected_sha256 {
-        return Err(RishBackendError::DexSnapshotFailed);
-    }
-    drop(writable);
-    Ok(readonly)
-}
-
-fn private_snapshot_directory() -> Result<PathBuf, RishBackendError> {
-    let mut snapshot_dir = std::env::temp_dir();
-    // Unique per call so concurrent probes never share a named-fallback
-    // directory or race on mkdir mode verification.
-    snapshot_dir.push(format!(
-        "termux-mcp-rish-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    ));
-    // Create mode 0700 at mkdir time (not chmod-after) so umask cannot leave a
-    // briefly world-accessible directory under temp_dir().
-    let mut builder = fs::DirBuilder::new();
-    builder.mode(0o700);
-    builder
-        .create(&snapshot_dir)
-        .map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    let metadata =
-        fs::symlink_metadata(&snapshot_dir).map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    if !metadata.file_type().is_dir()
-        || metadata.uid() != getuid().as_raw()
-        || metadata.mode() & 0o777 != 0o700
-    {
-        let _ = fs::remove_dir(&snapshot_dir);
-        return Err(RishBackendError::DexSnapshotFailed);
-    }
-    Ok(snapshot_dir)
-}
-
-fn create_named_private_snapshot_file(snapshot_dir: &Path) -> Result<File, RishBackendError> {
-    // Exclusive named fallback when O_TMPFILE is unavailable. The name is
-    // unlinked immediately after open so only the descriptor remains. Unlink
-    // failure is fatal: leaving a named 0600 DEX copy on disk changes the
-    // security posture of the fallback.
-    let mut name = snapshot_dir.to_path_buf();
-    name.push(format!(
-        "snap-{}-{}.dex",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    ));
-    let file = open(
-        &name,
-        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::from_raw_mode(0o600),
-    )
-    .map(File::from)
-    .map_err(|_| RishBackendError::DexSnapshotFailed)?;
-    if fs::remove_file(&name).is_err() {
-        drop(file);
-        return Err(RishBackendError::DexSnapshotFailed);
-    }
-    Ok(file)
 }
 
 fn finalize_writable_snapshot(
@@ -1504,7 +780,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::bounded_process::BOUNDED_PROCESS_TEST_LOCK;
+    use crate::bounded_process::{active_supervisor_count, BOUNDED_PROCESS_TEST_LOCK};
 
     const VALID_SCRIPT: &str = r#"#!/bin/sh
 [ "$RISH_APPLICATION_ID" = "com.termux" ] || exit 31
@@ -1524,55 +800,9 @@ content=$(cat "$dex" 2>/dev/null) || exit 35
 [ "$4" = "rikka.shizuku.shell.ShizukuShellLoader" ] || exit 38
 [ "$5" = "-c" ] || exit 39
 [ -z "$HOME" ] || exit 41
-# S2.5 fixtures accept only the UID probe. S3 fixtures dispatch on $6.
+# S2.5 exposes only the fixed UID predicate.
 [ "$6" = "exec /system/bin/id -u" ] || exit 40
 printf '2000\n'
-"#;
-
-    const S3_VALID_SCRIPT: &str = r#"#!/bin/sh
-[ "$RISH_APPLICATION_ID" = "com.termux" ] || exit 31
-[ "$RISH_PRESERVE_ENV" = "0" ] || exit 32
-[ "$#" -eq 6 ] || exit 33
-case "$1" in
-  -Djava.class.path=/proc/self/fd/*) ;;
-  *) exit 34 ;;
-esac
-dex="${1#-Djava.class.path=}"
-content=$(cat "$dex" 2>/dev/null) || exit 35
-[ "$content" = "fixed-test-rish-dex" ] || exit 35
-[ "$2" = "/system/bin" ] || exit 36
-[ "$3" = "--nice-name=termux-mcp-rish" ] || exit 37
-[ "$4" = "rikka.shizuku.shell.ShizukuShellLoader" ] || exit 38
-[ "$5" = "-c" ] || exit 39
-[ -z "$HOME" ] || exit 41
-case "$6" in
-  "exec /system/bin/id -u") printf '2000\n' ;;
-  "exec /system/bin/id -g") printf '2000\n' ;;
-  "exec /system/bin/id -G") printf '2000 1004 1007 3003\n' ;;
-  "exec /system/bin/cat /proc/self/attr/current") printf 'u:r:shell:s0\0' ;;
-  "exec /system/bin/getprop ro.build.version.sdk") printf '34\n' ;;
-  "exec /system/bin/getprop ro.build.fingerprint")
-    printf 'google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n'
-    ;;
-  "exec /system/bin/cat /proc/sys/kernel/random/boot_id")
-    printf '01234567-89ab-cdef-0123-456789abcdef\n'
-    ;;
-  "exec /system/bin/cmd package has-feature android.hardware.wifi") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.bluetooth") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.camera.any") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.location") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.microphone") printf 'true\n' ;;
-  # Mirror AOSP: has-feature prints the boolean and exits 1 when false.
-  "exec /system/bin/cmd package has-feature android.hardware.nfc")
-    printf 'false\n'
-    exit 1
-    ;;
-  "exec /system/bin/cmd package has-feature android.hardware.fingerprint") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.touchscreen") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.software.webview") printf 'true\n' ;;
-  *) exit 40 ;;
-esac
 "#;
 
     struct Fixture {
@@ -1613,8 +843,24 @@ esac
         }
     }
 
+    async fn wait_for_valid_pid(path: &Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match fs::read_to_string(path)
+                    .ok()
+                    .and_then(|contents| contents.trim().parse::<u32>().ok())
+                {
+                    Some(pid) if pid > 0 => return pid,
+                    _ => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("PID fixture did not become valid: {}", path.display()))
+    }
+
     #[tokio::test]
-    async fn fixed_probe_attests_environment_arguments_descriptor_and_shell_uid() {
+    async fn fixed_probe_observes_environment_arguments_descriptor_and_uid_token() {
         let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
         let fixture = Fixture::new(VALID_SCRIPT);
         let client = fixture.client().unwrap();
@@ -1786,13 +1032,25 @@ esac
     }
 
     #[tokio::test]
-    async fn every_non_shell_or_noncanonical_output_fails_closed() {
+    async fn uid_token_is_accepted_from_exactly_one_stock_rish_capture() {
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let stdout = Fixture::new("#!/bin/sh\nprintf '2000\\n'\n");
+        assert!(stdout.client().unwrap().probe().await.is_ok());
+
+        let stderr = Fixture::new("#!/bin/sh\nprintf '2000\\n' >&2\n");
+        assert!(stderr.client().unwrap().probe().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn malformed_split_duplicated_or_injected_uid_tokens_fail_closed() {
         let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
         for output in [
+            "",
             "0\n",
             "1000\n",
             "2001\n",
             "2000",
+            "2000\r\n",
             "2000\nextra\n",
             " 2000\n",
             "not-a-uid\n",
@@ -1806,10 +1064,23 @@ esac
             );
         }
 
-        let fixture = Fixture::new("#!/bin/sh\nprintf 'warning\\n' >&2\nprintf '2000\\n'\n");
+        for script in [
+            "#!/bin/sh\nprintf 'warning\\n' >&2\nprintf '2000\\n'\n",
+            "#!/bin/sh\nprintf '2000\\n' >&2\nprintf '2000\\n'\n",
+            "#!/bin/sh\nprintf '20'\nprintf '00\\n' >&2\n",
+            "#!/bin/sh\nprintf '2000\\nextra\\n' >&2\n",
+        ] {
+            let fixture = Fixture::new(script);
+            assert_eq!(
+                fixture.client().unwrap().probe().await.unwrap_err(),
+                RishBackendError::IdentityOutputInvalid
+            );
+        }
+
+        let nonzero = Fixture::new("#!/bin/sh\nprintf '2000\\n'\nexit 73\n");
         assert_eq!(
-            fixture.client().unwrap().probe().await.unwrap_err(),
-            RishBackendError::IdentityOutputInvalid
+            nonzero.client().unwrap().probe().await.unwrap_err(),
+            RishBackendError::ProgramFailed
         );
     }
 
@@ -1867,45 +1138,31 @@ esac
     }
 
     #[test]
-    fn private_tmpfile_snapshot_is_art_openable_and_digest_matched() {
-        // Explicitly exercises the O_TMPFILE / named fallback path used when
-        // sealed memfd path-reopen is unusable (common on Android kernels).
+    fn owner_private_regular_snapshot_is_rejected_as_mutable() {
         let fixture = Fixture::new(VALID_SCRIPT);
-        let client = fixture.client().unwrap();
-        let snapshot = create_private_tmpfile_snapshot(
-            client.dex_file.as_ref(),
-            client.dex_identity.bytes,
-            client.expected_sha256,
-        )
-        .unwrap();
-        assert!(fcntl_getfd(&snapshot).unwrap().contains(FdFlags::CLOEXEC));
-        assert!(snapshot_classpath_path_is_usable(
-            &snapshot,
-            client.dex_identity.bytes,
-            client.expected_sha256,
-        ));
+        let path = fixture._directory.path().join("owner-private-snapshot.dex");
+        fs::write(&path, b"fixed-test-rish-dex").unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(0o400)).unwrap();
+        let ordinary = File::open(&path).unwrap();
+
+        assert!(!snapshot_is_fully_sealed(&ordinary));
         assert_eq!(
-            hash_exact_file(&snapshot, client.dex_identity.bytes).unwrap(),
-            client.expected_sha256
+            ensure_execution_snapshot_qualified(
+                &ordinary,
+                b"fixed-test-rish-dex".len() as u64,
+                Sha256::digest(b"fixed-test-rish-dex").into(),
+            ),
+            Err(RishBackendError::DexSnapshotFailed)
         );
-        // Mode 0400 on the reopen path: same-UID writes through the classpath
-        // path must fail after finalize.
-        let path = format!("/proc/self/fd/{}", snapshot.as_raw_fd());
-        assert!(File::options().write(true).open(&path).is_err());
+
+        // Mode 0400 is not immutability: the same owner can restore write
+        // permission and replace the bytes. Such files must never reach ART.
+        fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+        fs::write(&path, b"same-uid-replacement").unwrap();
     }
 
     #[test]
-    fn private_snapshot_directory_is_owner_private_at_creation() {
-        let dir = private_snapshot_directory().unwrap();
-        let metadata = fs::symlink_metadata(&dir).unwrap();
-        assert!(metadata.file_type().is_dir());
-        assert_eq!(metadata.uid(), getuid().as_raw());
-        assert_eq!(metadata.mode() & 0o777, 0o700);
-        let _ = fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn execution_snapshot_prefers_usable_classpath_path() {
+    fn execution_snapshot_is_fully_sealed_and_art_reopenable() {
         let fixture = Fixture::new(VALID_SCRIPT);
         let client = fixture.client().unwrap();
         let snapshot = create_execution_dex_snapshot(
@@ -1914,6 +1171,7 @@ esac
             client.expected_sha256,
         )
         .unwrap();
+        assert!(snapshot_is_fully_sealed(&snapshot));
         assert!(snapshot_classpath_path_is_usable(
             &snapshot,
             client.dex_identity.bytes,
@@ -1998,6 +1256,71 @@ printf '2000\n'
         assert!(client.probe().await.is_ok());
     }
 
+    #[tokio::test]
+    async fn cancelled_probe_retains_lane_until_child_cleanup_finishes() {
+        // This covers only the local bounded-process supervisor: its direct and
+        // descendant PIDs are gone before the permit returns. Stock rish still
+        // supplies no authoritative remote Binder lifecycle or revocation fact.
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let fixture = Fixture::new(
+            r#"#!/bin/sh
+root="${0%/*}"
+printf '%s\n' "$$" >"$root/direct.pid"
+/bin/sleep 30 &
+descendant=$!
+printf '%s\n' "$descendant" >"$root/descendant.pid"
+wait "$descendant"
+printf '2000\n'
+"#,
+        );
+        let mut client = fixture.client().unwrap();
+        client.process_cleanup_delay = Duration::from_millis(500);
+
+        let active = client.clone();
+        let waiter = tokio::spawn(async move { active.probe().await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while active_supervisor_count() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rish child supervisor did not start");
+        let direct_pid_path = fixture._directory.path().join("direct.pid");
+        let descendant_pid_path = fixture._directory.path().join("descendant.pid");
+        let (direct_pid, descendant_pid) = tokio::join!(
+            wait_for_valid_pid(&direct_pid_path),
+            wait_for_valid_pid(&descendant_pid_path),
+        );
+
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(client.concurrency.available_permits(), 0);
+        assert_eq!(
+            client.probe().await.unwrap_err(),
+            RishBackendError::ConcurrencyLimitExceeded
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while active_supervisor_count() != 0
+                || client.concurrency.available_permits() != RISH_STATUS_CONCURRENCY
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rish child cleanup did not release the operation lane");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while Path::new(&format!("/proc/{direct_pid}")).exists()
+                || Path::new(&format!("/proc/{descendant_pid}")).exists()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("rish direct or descendant child survived cleanup");
+    }
+
     #[test]
     fn debug_and_errors_never_disclose_path_descriptor_or_digest() {
         let fixture = Fixture::new(VALID_SCRIPT);
@@ -2058,10 +1381,6 @@ printf '2000\n'
                 RishBackendError::IdentityOutputInvalid,
                 "rish_probe_identity_invalid",
             ),
-            (
-                RishBackendError::AttestationOutputInvalid,
-                "rish_attestation_output_invalid",
-            ),
             (RishBackendError::WorkerFailed, "rish_probe_worker_failed"),
         ] {
             assert_eq!(error.reason_code(), code);
@@ -2069,135 +1388,5 @@ printf '2000\n'
             assert_eq!(format!("{error:?}"), format!("{error:?}"));
             assert!(!code.contains('/'));
         }
-    }
-
-    #[tokio::test]
-    async fn s3_attestation_mints_private_epoch_without_public_secrets() {
-        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
-        let fixture = Fixture::new(S3_VALID_SCRIPT);
-        let client = fixture.client().unwrap();
-        assert!(!client.has_live_s3_epoch());
-        let status = client.attest_read_only().await.unwrap();
-        assert_eq!(
-            status,
-            RishBackendStatus {
-                available: true,
-                backend: "shizuku_rish",
-                principal: "android_shell",
-                uid: 2000,
-                state: "attested_read_only",
-                root_accepted: false,
-                arbitrary_shell: false,
-                mutation_ready: false,
-            }
-        );
-        assert!(client.has_live_s3_epoch());
-        let public = serde_json::to_value(status).unwrap();
-        assert_eq!(public["state"], "attested_read_only");
-        assert!(public.get("backendEpoch").is_none());
-        assert!(public.get("buildFingerprint").is_none());
-        assert!(public.get("bootId").is_none());
-        assert!(public.get("selinuxContext").is_none());
-        assert!(public.get("groups").is_none());
-        let debug = format!("{client:?}");
-        assert!(!debug.contains("01234567-89ab-cdef-0123-456789abcdef"));
-        assert!(!debug.contains("google/test/test"));
-        assert!(!debug.contains("u:r:shell:s0"));
-    }
-
-    #[tokio::test]
-    async fn s3_attestation_rejects_non_shell_gid_and_invalidates_epoch() {
-        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
-        let fixture = Fixture::new(
-            r#"#!/bin/sh
-case "$6" in
-  "exec /system/bin/id -u") printf '2000\n' ;;
-  "exec /system/bin/id -g") printf '1000\n' ;;
-  *) printf '2000\n' ;;
-esac
-"#,
-        );
-        let client = fixture.client().unwrap();
-        // Seed a live epoch, then prove failure rotates it away.
-        {
-            let mut slot = client
-                .private_epoch
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *slot = Some(PrivateBackendEpoch {
-                generation: 1,
-                dex_sha256: [0; 32],
-                build_fingerprint_sha256: [0; 32],
-                boot_id_sha256: [0; 32],
-                selinux_context_sha256: [0; 32],
-                sdk: 34,
-                gid: 2000,
-                groups: vec![2000],
-            });
-        }
-        assert!(client.has_live_s3_epoch());
-        assert_eq!(
-            client.attest_read_only().await.unwrap_err(),
-            RishBackendError::AttestationOutputInvalid
-        );
-        assert!(!client.has_live_s3_epoch());
-    }
-
-    #[test]
-    fn s3_parsers_fail_closed_on_malformed_identity_material() {
-        assert_eq!(parse_exact_u32_line(b"2000\n").unwrap(), 2000);
-        assert!(parse_exact_u32_line(b"2000").is_err());
-        assert!(parse_exact_u32_line(b" 2000\n").is_err());
-        assert!(parse_exact_u32_line(b"2000\nextra\n").is_err());
-        assert!(parse_exact_u32_line(b"0x2000\n").is_err());
-
-        assert_eq!(
-            parse_group_list_line(b"2000 1004 3003\n").unwrap(),
-            vec![2000, 1004, 3003]
-        );
-        assert!(parse_group_list_line(b"2000\n").is_ok());
-        assert!(parse_group_list_line(b"2000  \n").is_err());
-        assert!(parse_group_list_line(b"2000,-1\n").is_err());
-
-        assert_eq!(
-            parse_shell_selinux_context(b"u:r:shell:s0\n").unwrap(),
-            b"u:r:shell:s0"
-        );
-        assert_eq!(
-            parse_shell_selinux_context(b"u:r:shell:s0\0").unwrap(),
-            b"u:r:shell:s0"
-        );
-        assert!(parse_shell_selinux_context(b"u:r:system_server:s0\n").is_err());
-        assert!(parse_shell_selinux_context(b"u:r:shell:s0;id\n").is_err());
-
-        assert!(parse_build_fingerprint(
-            b"google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n"
-        )
-        .is_ok());
-        assert!(parse_build_fingerprint(
-            b"google/test/test:14/UQ1A.000000.000/0000000:user/release-keys"
-        )
-        .is_ok());
-        assert!(parse_build_fingerprint(b"\n").is_err());
-        assert!(parse_build_fingerprint(b"has space\n").is_err());
-
-        assert!(parse_boot_id(b"01234567-89ab-cdef-0123-456789abcdef\n").is_ok());
-        assert!(parse_boot_id(b"01234567-89AB-CDEF-0123-456789ABCDEF\n").is_err());
-        assert!(parse_boot_id(b"not-a-uuid\n").is_err());
-    }
-
-    #[tokio::test]
-    async fn list_system_features_returns_allowlisted_booleans() {
-        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
-        let fixture = Fixture::new(S3_VALID_SCRIPT);
-        let client = fixture.client().unwrap();
-        let status = client.list_system_features().await.unwrap();
-        assert_eq!(status.state, "attested_read_only");
-        assert!(!status.control_authority_proven);
-        assert!(!status.mutation_ready);
-        assert!(status.features.wifi);
-        assert!(status.features.webview);
-        assert!(!status.features.nfc); // not in S3_VALID_SCRIPT fixture list
-        assert!(client.has_live_s3_epoch());
     }
 }

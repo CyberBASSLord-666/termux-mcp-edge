@@ -145,7 +145,6 @@ const ANDROID_BATTERY_STATUS_TOOL: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_TOOL: &str = "android_volume_status";
 const SET_ANDROID_VOLUME_TOOL: &str = "set_android_volume";
 const ANDROID_RISH_STATUS_TOOL: &str = "android_rish_status";
-const ANDROID_SYSTEM_FEATURES_TOOL: &str = "android_system_features";
 const PROJECT_SERVICE_STATUS_TOOL: &str = "project_service_status";
 const CREATE_DIRECTORY_TOOL: &str = "create_directory";
 const COPY_FILE_TOOL: &str = "copy_file";
@@ -222,7 +221,6 @@ const ANDROID_BATTERY_STATUS_GATE: &str = "android_battery_status";
 const ANDROID_VOLUME_STATUS_GATE: &str = "android_volume_status";
 const ANDROID_VOLUME_CONTROL_GATE: &str = "android_volume_control";
 const ANDROID_RISH_STATUS_GATE: &str = "android_rish_status";
-const ANDROID_SYSTEM_FEATURES_GATE: &str = "android_system_features";
 const PROJECT_SERVICE_STATUS_GATE: &str = "project_service_state";
 const FILESYSTEM_METADATA_GATE: &str = "filesystem_metadata";
 const FILESYSTEM_READ_GATE: &str = "filesystem_read";
@@ -235,15 +233,7 @@ const PLATFORM_INFO_ARGUMENTS_DENIED: &str = "arguments_not_supported";
 const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
 const ANDROID_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
 #[cfg(feature = "android-rish")]
-const ANDROID_RISH_STATUS_ALLOWED: &str = "rish_identity_verified";
-#[allow(dead_code)]
-const ANDROID_SYSTEM_FEATURES_ALLOWED: &str = "system_features_read";
-#[allow(dead_code)]
-const ANDROID_SYSTEM_FEATURES_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
-#[allow(dead_code)] // used in #[cfg(not(feature = "android-rish"))] handler path
-const ANDROID_SYSTEM_FEATURES_FEATURE_DISABLED: &str = "system_features_feature_not_compiled";
-#[allow(dead_code)]
-const ANDROID_SYSTEM_FEATURES_RUNTIME_DISABLED: &str = "system_features_runtime_disabled";
+const ANDROID_RISH_STATUS_ALLOWED: &str = "rish_uid_predicate_observed";
 const ANDROID_RISH_STATUS_ARGUMENTS_DENIED: &str = "rish_arguments_invalid";
 #[cfg(not(feature = "android-rish"))]
 const ANDROID_RISH_STATUS_FEATURE_DISABLED: &str = "rish_feature_not_compiled";
@@ -1243,8 +1233,6 @@ pub struct McpRouterBuilder {
     command_execution_enabled: bool,
     #[cfg(feature = "android-rish")]
     rish_backend_client: Option<RishBackendClient>,
-    #[cfg(feature = "android-rish")]
-    android_system_features_enabled: bool,
     filesystem_authorities: FilesystemMutationAuthorities,
     #[cfg(feature = "android-volume-control")]
     android_volume_control_authority: Option<AndroidVolumeGrantAuthority>,
@@ -1330,10 +1318,7 @@ impl McpRouterBuilder {
             android_volume_status_enabled: false,
             command_execution_enabled: false,
             #[cfg(feature = "android-rish")]
-            #[cfg(feature = "android-rish")]
             rish_backend_client: None,
-            #[cfg(feature = "android-rish")]
-            android_system_features_enabled: false,
             filesystem_authorities: FilesystemMutationAuthorities::default(),
             #[cfg(feature = "android-volume-control")]
             android_volume_control_authority: None,
@@ -1450,13 +1435,11 @@ impl McpRouterBuilder {
     pub(crate) fn try_with_rish_backend(
         mut self,
         client: RishBackendClient,
-        system_features_enabled: bool,
     ) -> Result<Self, McpRouterBuildError> {
         if self.auth_policy.static_principal().is_none() {
             return Err(McpRouterBuildError::RishStaticAuthenticationRequired);
         }
         self.rish_backend_client = Some(client);
-        self.android_system_features_enabled = system_features_enabled;
         Ok(self)
     }
 
@@ -1486,8 +1469,6 @@ impl McpRouterBuilder {
             command_execution_enabled,
             #[cfg(feature = "android-rish")]
             rish_backend_client,
-            #[cfg(feature = "android-rish")]
-            android_system_features_enabled,
             filesystem_authorities,
             #[cfg(feature = "android-volume-control")]
             android_volume_control_authority,
@@ -1511,7 +1492,7 @@ impl McpRouterBuilder {
         .with_trash_file_authority(trash_file)
         .with_options(options);
         #[cfg(feature = "android-rish")]
-        let state = state.with_rish_backend(rish_backend_client, android_system_features_enabled);
+        let state = state.with_rish_backend(rish_backend_client);
         #[cfg(feature = "android-volume-control")]
         let state = state.with_android_volume_control_authority(android_volume_control_authority);
 
@@ -1536,7 +1517,6 @@ struct McpTransportState {
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
     android_rish_enabled: bool,
-    android_system_features_enabled: bool,
     command_execution_enabled: bool,
     create_directory_authority: Option<CreateDirectoryGrantAuthority>,
     copy_file_authority: Option<CopyFileGrantAuthority>,
@@ -1627,7 +1607,6 @@ impl McpTransportState {
             android_volume_status_enabled,
             android_volume_control_enabled: false,
             android_rish_enabled: false,
-            android_system_features_enabled: false,
             command_execution_enabled,
             create_directory_authority,
             copy_file_authority: None,
@@ -1687,13 +1666,8 @@ impl McpTransportState {
     }
 
     #[cfg(feature = "android-rish")]
-    fn with_rish_backend(
-        mut self,
-        client: Option<RishBackendClient>,
-        system_features_enabled: bool,
-    ) -> Self {
+    fn with_rish_backend(mut self, client: Option<RishBackendClient>) -> Self {
         self.android_rish_enabled = client.is_some();
-        self.android_system_features_enabled = system_features_enabled && client.is_some();
         self.rish_backend_client = client;
         self
     }
@@ -1727,7 +1701,6 @@ impl McpTransportState {
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
             android_rish_enabled: false,
-            android_system_features_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
@@ -1766,7 +1739,6 @@ impl McpTransportState {
             android_volume_status_enabled,
             android_volume_control_enabled: false,
             android_rish_enabled: false,
-            android_system_features_enabled: false,
             command_execution_enabled: false,
             create_directory_authority: None,
             copy_file_authority: None,
@@ -1805,7 +1777,6 @@ impl McpTransportState {
             android_volume_status_enabled: false,
             android_volume_control_enabled: false,
             android_rish_enabled: false,
-            android_system_features_enabled: false,
             command_execution_enabled,
             create_directory_authority: None,
             copy_file_authority: None,
@@ -2548,7 +2519,6 @@ async fn handle_stateless_mcp_post(
                 state.android_volume_status_enabled,
                 state.android_volume_control_enabled,
                 state.android_rish_enabled,
-                state.android_system_features_enabled,
                 state.command_execution_enabled,
             )
             .contains(&tool_name.as_str())
@@ -4178,22 +4148,7 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             .expect("tools/list response owns an array")
             .push(json!({
                 "name": ANDROID_RISH_STATUS_TOOL,
-                "description": "Run the S3 Shizuku/rish attestation suite and return only non-sensitive identity status (UID 2000, attested_read_only). This tool exposes no shell, fingerprints, epoch material, raw output, or mutation.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": false,
-                },
-            }));
-    }
-
-    if state.android_system_features_enabled {
-        body.pointer_mut("/result/tools")
-            .and_then(Value::as_array_mut)
-            .expect("tools/list response owns an array")
-            .push(json!({
-                "name": ANDROID_SYSTEM_FEATURES_TOOL,
-                "description": "Return ten compile-time-allowlisted PackageManager feature booleans via fixed rish-backed cmd package has-feature probes. Requires a live S3 rish epoch. Exposes no shell, raw OEM inventory, or mutation.",
+                "description": "Run the fixed Shizuku/rish UID predicate and report only an exact UID-2000 token observed in one local capture. This does not qualify remote exit status, stream separation, typed Binder identity or lifecycle, or S3 authority, and exposes no shell, arguments, raw output, or mutation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -4298,9 +4253,6 @@ async fn handle_tool_call(
         }
         ANDROID_RISH_STATUS_TOOL => {
             handle_android_rish_status_call(id, call.arguments, state).await
-        }
-        ANDROID_SYSTEM_FEATURES_TOOL => {
-            handle_android_system_features_call(id, call.arguments, state).await
         }
         SET_ANDROID_VOLUME_TOOL => {
             handle_set_android_volume_call(
@@ -4688,7 +4640,7 @@ async fn handle_android_rish_status_call(
             );
         };
 
-        match client.attest_read_only().await {
+        match client.probe().await {
             Ok(status) => {
                 record_read_only_allowed(
                     &state.audit_counters,
@@ -4698,7 +4650,7 @@ async fn handle_android_rish_status_call(
                 );
                 ok_result(
                     id,
-                    "android_rish_status: S3-attested Shizuku/rish bridge verified Android ADB-shell identity; no shell or mutation is exposed."
+                    "android_rish_status: exact UID-2000 predicate token observed in one local capture; remote exit status, stream separation, typed Binder identity/lifecycle, and S3 authority remain unqualified, and no shell or mutation is exposed."
                         .to_owned(),
                     json!(status),
                 )
@@ -4715,103 +4667,6 @@ async fn handle_android_rish_status_call(
                     id,
                     ANDROID_RISH_STATUS_TOOL,
                     "android_rish_status_unavailable",
-                    reason_code,
-                )
-            }
-        }
-    }
-}
-
-async fn handle_android_system_features_call(
-    id: Option<Value>,
-    arguments: ToolArguments,
-    state: &McpTransportState,
-) -> Response {
-    if !arguments.is_omitted_or_empty_object() {
-        record_read_only_denied(
-            &state.audit_counters,
-            ANDROID_SYSTEM_FEATURES_TOOL,
-            ANDROID_SYSTEM_FEATURES_GATE,
-            ANDROID_SYSTEM_FEATURES_ARGUMENTS_DENIED,
-        );
-        return invalid_params(id, TOOL_ARGUMENTS_INVALID);
-    }
-
-    #[cfg(not(feature = "android-rish"))]
-    {
-        record_read_only_denied(
-            &state.audit_counters,
-            ANDROID_SYSTEM_FEATURES_TOOL,
-            ANDROID_SYSTEM_FEATURES_GATE,
-            ANDROID_SYSTEM_FEATURES_FEATURE_DISABLED,
-        );
-        tool_error_result(
-            id,
-            ANDROID_SYSTEM_FEATURES_TOOL,
-            "android_system_features_unavailable",
-            ANDROID_SYSTEM_FEATURES_FEATURE_DISABLED,
-        )
-    }
-
-    #[cfg(feature = "android-rish")]
-    {
-        if !state.android_system_features_enabled {
-            record_read_only_denied(
-                &state.audit_counters,
-                ANDROID_SYSTEM_FEATURES_TOOL,
-                ANDROID_SYSTEM_FEATURES_GATE,
-                ANDROID_SYSTEM_FEATURES_RUNTIME_DISABLED,
-            );
-            return tool_error_result(
-                id,
-                ANDROID_SYSTEM_FEATURES_TOOL,
-                "android_system_features_unavailable",
-                ANDROID_SYSTEM_FEATURES_RUNTIME_DISABLED,
-            );
-        }
-
-        let Some(client) = state.rish_backend_client.as_ref() else {
-            record_read_only_denied(
-                &state.audit_counters,
-                ANDROID_SYSTEM_FEATURES_TOOL,
-                ANDROID_SYSTEM_FEATURES_GATE,
-                ANDROID_SYSTEM_FEATURES_RUNTIME_DISABLED,
-            );
-            return tool_error_result(
-                id,
-                ANDROID_SYSTEM_FEATURES_TOOL,
-                "android_system_features_unavailable",
-                ANDROID_SYSTEM_FEATURES_RUNTIME_DISABLED,
-            );
-        };
-
-        match client.list_system_features().await {
-            Ok(status) => {
-                record_read_only_allowed(
-                    &state.audit_counters,
-                    ANDROID_SYSTEM_FEATURES_TOOL,
-                    ANDROID_SYSTEM_FEATURES_GATE,
-                    ANDROID_SYSTEM_FEATURES_ALLOWED,
-                );
-                ok_result(
-                    id,
-                    "android_system_features: ten allowlisted PackageManager feature booleans; no shell or mutation is exposed."
-                        .to_owned(),
-                    json!(status),
-                )
-            }
-            Err(error) => {
-                let reason_code = error.reason_code();
-                record_read_only_denied(
-                    &state.audit_counters,
-                    ANDROID_SYSTEM_FEATURES_TOOL,
-                    ANDROID_SYSTEM_FEATURES_GATE,
-                    reason_code,
-                );
-                tool_error_result(
-                    id,
-                    ANDROID_SYSTEM_FEATURES_TOOL,
-                    "android_system_features_unavailable",
                     reason_code,
                 )
             }
@@ -5201,7 +5056,6 @@ fn available_tools(
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
     android_rish_enabled: bool,
-    android_system_features_enabled: bool,
     command_execution_enabled: bool,
 ) -> Vec<&'static str> {
     let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
@@ -5216,9 +5070,6 @@ fn available_tools(
     }
     if android_rish_enabled {
         tools.push(ANDROID_RISH_STATUS_TOOL);
-    }
-    if android_system_features_enabled {
-        tools.push(ANDROID_SYSTEM_FEATURES_TOOL);
     }
     if command_execution_enabled {
         tools.push(RUN_COMMAND_PROFILE_TOOL);
@@ -5241,7 +5092,6 @@ fn runtime_status_response(
     let android_volume_status_enabled = state.android_volume_status_enabled;
     let android_volume_control_enabled = state.android_volume_control_enabled;
     let android_rish_enabled = state.android_rish_enabled;
-    let android_system_features_enabled = state.android_system_features_enabled;
     let command_execution_enabled = state.command_execution_enabled;
     let sse_enabled = state.sse_enabled;
     let available_tools = available_tools(
@@ -5249,7 +5099,6 @@ fn runtime_status_response(
         android_volume_status_enabled,
         android_volume_control_enabled,
         android_rish_enabled,
-        android_system_features_enabled,
         command_execution_enabled,
     );
     let battery_mode = if android_battery_status_enabled {
@@ -5267,9 +5116,8 @@ fn runtime_status_response(
     } else {
         "disabled"
     };
-    // Public android_rish_status runs the S3 multi-probe suite (attested_read_only).
     let android_rish_mode = if android_rish_enabled {
-        "configured_s3_attestation_on_call_adb_shell_uid_2000"
+        "configured_probe_on_call_adb_shell_uid_2000"
     } else {
         "disabled"
     };
@@ -5291,9 +5139,9 @@ fn runtime_status_response(
     };
     let android_platform_mode = if android_rish_enabled {
         if legacy_android_platform_mode == "disabled" {
-            "rish_s3_attested_read_only".to_owned()
+            "rish_shell_uid_status_probe".to_owned()
         } else {
-            format!("{legacy_android_platform_mode}_plus_rish_s3_attested_read_only")
+            format!("{legacy_android_platform_mode}_plus_rish_shell_uid_status_probe")
         }
     } else {
         legacy_android_platform_mode.to_owned()
@@ -10927,40 +10775,7 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let program = backend_root.path().join("fake-app-process64");
-        // S3 multi-command fixture used by public android_rish_status.
-        fs::write(
-            &program,
-            r#"#!/bin/sh
-case "$6" in
-  "exec /system/bin/id -u") printf '2000\n' ;;
-  "exec /system/bin/id -g") printf '2000\n' ;;
-  "exec /system/bin/id -G") printf '2000 1004 3003\n' ;;
-  "exec /system/bin/cat /proc/self/attr/current") printf 'u:r:shell:s0\0' ;;
-  "exec /system/bin/getprop ro.build.version.sdk") printf '34\n' ;;
-  "exec /system/bin/getprop ro.build.fingerprint")
-    printf 'google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n'
-    ;;
-  "exec /system/bin/cat /proc/sys/kernel/random/boot_id")
-    printf '01234567-89ab-cdef-0123-456789abcdef\n'
-    ;;
-  "exec /system/bin/cmd package has-feature android.hardware.wifi") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.bluetooth") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.camera.any") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.location") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.microphone") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.nfc")
-    printf 'false\n'
-    exit 1
-    ;;
-  "exec /system/bin/cmd package has-feature android.hardware.fingerprint") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.touchscreen") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.software.webview") printf 'true\n' ;;
-  *) exit 40 ;;
-esac
-"#,
-        )
-        .unwrap();
+        fs::write(&program, "#!/bin/sh\nprintf '2000\\n'\n").unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         let client =
             RishBackendClient::with_test_program(dex_path, &digest, program).unwrap();
@@ -10977,7 +10792,7 @@ esac
             vec![safe_root.path().to_path_buf()],
         )
         .unwrap()
-        .try_with_rish_backend(client.clone(), false)
+        .try_with_rish_backend(client.clone())
         .unwrap_err();
         assert_eq!(
             unauthenticated_error,
@@ -10994,7 +10809,7 @@ esac
             None,
             None,
         )
-        .with_rish_backend(Some(client.clone()), true);
+        .with_rish_backend(Some(client));
 
         let tools = response_json(tools_list_response(Some(json!("tools")), &state)).await;
         let rish_tool = tools["result"]["tools"]
@@ -11003,6 +10818,11 @@ esac
             .iter()
             .find(|tool| tool["name"] == ANDROID_RISH_STATUS_TOOL)
             .expect("enabled rish status must be discoverable");
+        let description = rish_tool["description"].as_str().unwrap();
+        assert!(description.contains("one local capture"));
+        assert!(description.contains("remote exit status"));
+        assert!(description.contains("typed Binder"));
+        assert!(description.contains("S3 authority"));
         assert_eq!(rish_tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(rish_tool["inputSchema"]["properties"], json!({}));
 
@@ -11013,18 +10833,11 @@ esac
         .await;
         assert_eq!(
             runtime["result"]["structuredContent"]["androidRishMode"],
-            "configured_s3_attestation_on_call_adb_shell_uid_2000"
+            "configured_probe_on_call_adb_shell_uid_2000"
         );
         assert_eq!(
             runtime["result"]["structuredContent"]["androidPlatformToolMode"],
-            "rish_s3_attested_read_only"
-        );
-        assert!(
-            runtime["result"]["structuredContent"]["availableTools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool == ANDROID_SYSTEM_FEATURES_TOOL)
+            "rish_shell_uid_status_probe"
         );
         assert_eq!(
             runtime["result"]["structuredContent"]["androidRishArbitraryShell"],
@@ -11046,6 +10859,11 @@ esac
             serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
                 .unwrap();
         assert_eq!(payload["result"]["isError"], false);
+        let success_text = payload["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(success_text.contains("one local capture"));
+        assert!(success_text.contains("remote exit status"));
+        assert!(success_text.contains("typed Binder"));
+        assert!(success_text.contains("S3 authority"));
         assert_eq!(
             payload["result"]["structuredContent"],
             json!({
@@ -11053,43 +10871,11 @@ esac
                 "backend": "shizuku_rish",
                 "principal": "android_shell",
                 "uid": 2000,
-                "state": "attested_read_only",
+                "state": "verified_shell_uid",
                 "rootAccepted": false,
                 "arbitraryShell": false,
                 "mutationReady": false,
             })
-        );
-
-        let features_tool = tools["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|tool| tool["name"] == ANDROID_SYSTEM_FEATURES_TOOL)
-            .expect("enabled system features must be discoverable when gated on");
-        assert_eq!(features_tool["inputSchema"]["additionalProperties"], false);
-
-        let features = handle_android_system_features_call(
-            Some(json!("system-features")),
-            ToolArguments::Omitted,
-            &state,
-        )
-        .await;
-        assert_eq!(features.status(), StatusCode::OK);
-        let features_payload: Value =
-            serde_json::from_slice(&to_bytes(features.into_body(), 64 * 1024).await.unwrap())
-                .unwrap();
-        assert_eq!(features_payload["result"]["isError"], false);
-        assert_eq!(
-            features_payload["result"]["structuredContent"]["features"]["wifi"],
-            true
-        );
-        assert_eq!(
-            features_payload["result"]["structuredContent"]["controlAuthorityProven"],
-            false
-        );
-        assert_eq!(
-            features_payload["result"]["structuredContent"]["mutationReady"],
-            false
         );
 
         let invalid = handle_android_rish_status_call(
