@@ -5,3 +5,13 @@
 *.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+*.aidl text eol=lf whitespace=-blank-at-eof
+*.gradle text eol=lf
+*.java text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.properties text eol=lf
+*.xml text eol=lf
+gradlew text eol=lf whitespace=-blank-at-eof
+gradlew.bat text eol=lf whitespace=-blank-at-eof
+gradle-wrapper.jar binary

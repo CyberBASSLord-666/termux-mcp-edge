@@ -15,6 +15,7 @@ on:
       - "tests/**"
       - "benches/**"
       - "examples/**"
+      - "android/shizuku-bridge/**"
       - "scripts/cross_compile.sh"
       - "scripts/package_android_artifact.sh"
       - "scripts/package_shizuku_rish_test_artifact.sh"
@@ -41,6 +42,8 @@ on:
       - "scripts/prepare_release_publication_assets.sh"
       - "scripts/publish_release_assets.sh"
       - "scripts/latest_workflow_run.jq"
+      - "docs/SHIZUKU_TYPED_BRIDGE_ARCHITECTURE.md"
+      - "docs/VALIDATION.md"
       - "docs/emulated-release-evidence-schema-v*.json"
       - "docs/release-evidence-schema-v*.json"
       - "docs/android-battery-emulated-evidence-schema-v*.json"
@@ -62,7 +65,10 @@ on:
       - "docs/runtime-snapshot-replay-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/actions/**"
+      - ".github/dependabot.yml"
       - ".github/workflows/*"
+      - ".gitattributes"
+      - ".gitignore"
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
@@ -132,6 +138,7 @@ jobs:
         language:
           - rust
           - actions
+          - java-kotlin
     steps:
       - name: Checkout
         # actions/checkout@v7.0.1 resolved 2026-07-24

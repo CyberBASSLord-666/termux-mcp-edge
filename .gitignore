@@ -30,3 +30,11 @@ release/
 coverage/
 *.tar.gz
 *.zip
+
+# Android / Gradle (the wrapper JAR remains committed and hash-pinned)
+/android/shizuku-bridge/.gradle/
+/android/shizuku-bridge/**/build/
+/android/shizuku-bridge/local.properties
+/android/shizuku-bridge/captures/
+/android/shizuku-bridge/.externalNativeBuild/
+/android/shizuku-bridge/.cxx/

@@ -13,3 +13,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  - package-ecosystem: "gradle"
+    directory: "/android/shizuku-bridge"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      shizuku-bridge-dependencies:
+        patterns:
+          - "*"
