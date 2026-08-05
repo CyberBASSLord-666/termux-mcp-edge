@@ -63,6 +63,9 @@ pub(crate) struct BoundedProcess {
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
     inherited_descriptor: Option<Arc<File>>,
+    /// When true, a non-zero child exit still returns drained stdout/stderr.
+    /// Used only by fixed has-feature probes that print `false` and exit 1.
+    accept_nonzero_exit: bool,
     #[cfg(test)]
     forced_cleanup_delay: Duration,
 }
@@ -204,15 +207,26 @@ impl BoundedProcess {
             max_stdout_bytes,
             max_stderr_bytes,
             inherited_descriptor,
+            accept_nonzero_exit: false,
             #[cfg(test)]
             forced_cleanup_delay: Duration::ZERO,
         })
     }
 
+    /// Accept non-zero exits after both output streams have been fully drained.
+    ///
+    /// Default remains fail-closed (`ProgramFailed`). The rish has-feature path
+    /// enables this so Android's `cmd package has-feature` exit-1-for-false
+    /// can still yield a boolean payload.
+    #[cfg(feature = "android-rish")]
+    pub(crate) fn with_accept_nonzero_exit(mut self, accept: bool) -> Self {
+        self.accept_nonzero_exit = accept;
+        self
+    }
+
     #[cfg(any(
         feature = "android-battery-status",
         feature = "android-volume-status",
-        feature = "android-rish",
         feature = "command-execution",
         test
     ))]
@@ -315,6 +329,7 @@ impl BoundedProcess {
                 max_stderr_bytes: self.max_stderr_bytes,
                 operation_deadline,
                 final_deadline,
+                accept_nonzero_exit: self.accept_nonzero_exit,
                 #[cfg(test)]
                 forced_cleanup_delay: self.forced_cleanup_delay,
             },
@@ -421,6 +436,7 @@ struct SupervisorBounds {
     max_stderr_bytes: usize,
     operation_deadline: Instant,
     final_deadline: Instant,
+    accept_nonzero_exit: bool,
     #[cfg(test)]
     forced_cleanup_delay: Duration,
 }
@@ -450,18 +466,24 @@ async fn supervise_process(
 
         let mut stdout_bytes = None;
         let mut stderr_bytes = None;
+        let mut child_finished = false;
         let mut child_succeeded = false;
 
         loop {
-            if child_succeeded && stdout_bytes.is_some() && stderr_bytes.is_some() {
-                break SupervisorTerminal::Complete {
-                    stdout: stdout_bytes
-                        .take()
-                        .expect("stdout completion checked before extraction"),
-                    stderr: stderr_bytes
-                        .take()
-                        .expect("stderr completion checked before extraction"),
-                };
+            // Wait for both streams after any finished wait so non-zero exits
+            // can still yield a drained boolean payload when allowed.
+            if child_finished && stdout_bytes.is_some() && stderr_bytes.is_some() {
+                if child_succeeded || bounds.accept_nonzero_exit {
+                    break SupervisorTerminal::Complete {
+                        stdout: stdout_bytes
+                            .take()
+                            .expect("stdout completion checked before extraction"),
+                        stderr: stderr_bytes
+                            .take()
+                            .expect("stderr completion checked before extraction"),
+                    };
+                }
+                break SupervisorTerminal::Failure(BoundedProcessError::ProgramFailed);
             }
 
             // Stable simultaneous-event precedence is cancellation, normal
@@ -497,13 +519,15 @@ async fn supervise_process(
                         Err(error) => break SupervisorTerminal::Failure(error),
                     }
                 }
-                status = &mut child_wait, if !child_succeeded => {
+                status = &mut child_wait, if !child_finished => {
                     match status {
-                        Ok(status) if status.success() => child_succeeded = true,
+                        Ok(status) if status.success() => {
+                            child_finished = true;
+                            child_succeeded = true;
+                        }
                         Ok(_) => {
-                            break SupervisorTerminal::Failure(
-                                BoundedProcessError::ProgramFailed,
-                            );
+                            child_finished = true;
+                            child_succeeded = false;
                         }
                         Err(_) => {
                             break SupervisorTerminal::Failure(BoundedProcessError::WaitFailed);

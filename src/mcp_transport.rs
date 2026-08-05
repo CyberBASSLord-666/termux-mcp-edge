@@ -2548,6 +2548,7 @@ async fn handle_stateless_mcp_post(
                 state.android_volume_status_enabled,
                 state.android_volume_control_enabled,
                 state.android_rish_enabled,
+                state.android_system_features_enabled,
                 state.command_execution_enabled,
             )
             .contains(&tool_name.as_str())
@@ -5200,6 +5201,7 @@ fn available_tools(
     android_volume_status_enabled: bool,
     android_volume_control_enabled: bool,
     android_rish_enabled: bool,
+    android_system_features_enabled: bool,
     command_execution_enabled: bool,
 ) -> Vec<&'static str> {
     let mut tools = BASE_AVAILABLE_TOOLS.to_vec();
@@ -5214,6 +5216,9 @@ fn available_tools(
     }
     if android_rish_enabled {
         tools.push(ANDROID_RISH_STATUS_TOOL);
+    }
+    if android_system_features_enabled {
+        tools.push(ANDROID_SYSTEM_FEATURES_TOOL);
     }
     if command_execution_enabled {
         tools.push(RUN_COMMAND_PROFILE_TOOL);
@@ -5236,6 +5241,7 @@ fn runtime_status_response(
     let android_volume_status_enabled = state.android_volume_status_enabled;
     let android_volume_control_enabled = state.android_volume_control_enabled;
     let android_rish_enabled = state.android_rish_enabled;
+    let android_system_features_enabled = state.android_system_features_enabled;
     let command_execution_enabled = state.command_execution_enabled;
     let sse_enabled = state.sse_enabled;
     let available_tools = available_tools(
@@ -5243,6 +5249,7 @@ fn runtime_status_response(
         android_volume_status_enabled,
         android_volume_control_enabled,
         android_rish_enabled,
+        android_system_features_enabled,
         command_execution_enabled,
     );
     let battery_mode = if android_battery_status_enabled {
@@ -5260,8 +5267,9 @@ fn runtime_status_response(
     } else {
         "disabled"
     };
+    // Public android_rish_status runs the S3 multi-probe suite (attested_read_only).
     let android_rish_mode = if android_rish_enabled {
-        "configured_probe_on_call_adb_shell_uid_2000"
+        "configured_s3_attestation_on_call_adb_shell_uid_2000"
     } else {
         "disabled"
     };
@@ -5283,9 +5291,9 @@ fn runtime_status_response(
     };
     let android_platform_mode = if android_rish_enabled {
         if legacy_android_platform_mode == "disabled" {
-            "rish_shell_uid_status_probe".to_owned()
+            "rish_s3_attested_read_only".to_owned()
         } else {
-            format!("{legacy_android_platform_mode}_plus_rish_shell_uid_status_probe")
+            format!("{legacy_android_platform_mode}_plus_rish_s3_attested_read_only")
         }
     } else {
         legacy_android_platform_mode.to_owned()
@@ -10940,7 +10948,10 @@ case "$6" in
   "exec /system/bin/cmd package has-feature android.hardware.camera.any") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.location") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.microphone") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.nfc") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.nfc")
+    printf 'false\n'
+    exit 1
+    ;;
   "exec /system/bin/cmd package has-feature android.hardware.fingerprint") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.touchscreen") printf 'true\n' ;;
@@ -11002,11 +11013,18 @@ esac
         .await;
         assert_eq!(
             runtime["result"]["structuredContent"]["androidRishMode"],
-            "configured_probe_on_call_adb_shell_uid_2000"
+            "configured_s3_attestation_on_call_adb_shell_uid_2000"
         );
         assert_eq!(
             runtime["result"]["structuredContent"]["androidPlatformToolMode"],
-            "rish_shell_uid_status_probe"
+            "rish_s3_attested_read_only"
+        );
+        assert!(
+            runtime["result"]["structuredContent"]["availableTools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool == ANDROID_SYSTEM_FEATURES_TOOL)
         );
         assert_eq!(
             runtime["result"]["structuredContent"]["androidRishArbitraryShell"],

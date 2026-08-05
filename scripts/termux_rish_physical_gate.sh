@@ -56,6 +56,8 @@ RAW_REPORT_NEXT=""
 CLEANUP_CONFIRMED=1
 STARTED_AT=""
 COMPLETED_AT=""
+# Captured from the live android_rish_status payload during validation.
+OBSERVED_RISH_STATE=""
 
 usage() {
   cat <<'EOF'
@@ -493,7 +495,7 @@ validate_enabled_posture() {
   jq -e '
     .result.structuredContent.androidRishCompiled == true
     and .result.structuredContent.androidRishEnabled == true
-    and .result.structuredContent.androidRishMode == "configured_probe_on_call_adb_shell_uid_2000"
+    and .result.structuredContent.androidRishMode == "configured_s3_attestation_on_call_adb_shell_uid_2000"
     and .result.structuredContent.androidRishArbitraryShell == false
     and .result.structuredContent.androidRishMutations == false
     and .result.structuredContent.createDirectoryMutationEnabled == false
@@ -520,6 +522,12 @@ validate_enabled_posture() {
     and .result.structuredContent.arbitraryShell == false
     and .result.structuredContent.mutationReady == false
   ' "$body" >/dev/null || fail rish_status_contract_invalid
+  # Record the observed state for evidence — never hard-code a different posture.
+  OBSERVED_RISH_STATE="$(jq -r '.result.structuredContent.state' "$body")"
+  case "$OBSERVED_RISH_STATE" in
+    verified_shell_uid|attested_read_only) ;;
+    *) fail rish_status_state_invalid ;;
+  esac
 
   status="$(mcp_post "$body" '{"jsonrpc":"2.0","id":"arguments","method":"tools/call","params":{"name":"android_rish_status","arguments":{"command":"id","argv":["-u"],"dry_run":false}}}' "$MCP_SESSION_ID")"
   [[ "$status" == 400 ]] || fail rish_arguments_http_invalid
@@ -597,6 +605,10 @@ write_evidence() {
   dex_sha="$(sha256sum -- "$RISH_DEX" | awk '{print $1}')" || fail rish_dex_digest_invalid
   dex_bytes="$(stat -c '%s' -- "$RISH_DEX")" || fail rish_dex_size_invalid
   [[ "$dex_sha" == "$RISH_DEX_SHA256" ]] || fail rish_dex_changed
+  case "$OBSERVED_RISH_STATE" in
+    verified_shell_uid|attested_read_only) ;;
+    *) fail observed_rish_state_missing ;;
+  esac
   raw_report_sha="$(sha256sum -- "$RAW_REPORT" | awk '{print $1}')" \
     || fail raw_report_digest_failed
   is_sha256 "$raw_report_sha" || fail raw_report_digest_failed
@@ -632,7 +644,8 @@ write_evidence() {
     --arg shizuku_signer_sha "$SHIZUKU_SIGNER_SHA256" \
     --argjson adb_shell_uid "$ADB_SHELL_UID" \
     --arg dex_sha "$dex_sha" \
-    --argjson dex_bytes "$dex_bytes" '
+    --argjson dex_bytes "$dex_bytes" \
+    --arg observed_rish_state "$OBSERVED_RISH_STATE" '
     {
       schemaVersion: 1,
       gateVersion: $gate_version,
@@ -696,7 +709,7 @@ write_evidence() {
         dexCanonicalPrivatePath: true,
         principal: "android_shell",
         uid: 2000,
-        state: "verified_shell_uid",
+        state: $observed_rish_state,
         rootAccepted: false,
         arbitraryShell: false,
         mutationReady: false

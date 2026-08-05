@@ -48,9 +48,20 @@ use crate::bounded_process::{
 pub(crate) const RISH_APP_PROCESS_PROGRAM: &str = "/system/bin/app_process64";
 pub(crate) const RISH_APPLICATION_ID: &str = "com.termux";
 pub(crate) const RISH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Per-probe timeout for allowlisted `cmd package has-feature` reads.
+/// Ten sequential probes at the full status timeout would exceed typical
+/// MCP client/server budgets and monopolize the single concurrency lane.
+pub(crate) const RISH_FEATURE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// Hard wall-clock budget for the full ten-probe system-features family.
+pub(crate) const RISH_FEATURE_FAMILY_BUDGET: Duration = Duration::from_secs(12);
 pub(crate) const RISH_STATUS_STDOUT_BYTES: usize = 1024;
 pub(crate) const RISH_STATUS_STDERR_BYTES: usize = 4 * 1024;
 pub(crate) const RISH_STATUS_CONCURRENCY: usize = 1;
+
+/// Shared concurrency lane: each sequential child holds a clone through
+/// cancellation-independent cleanup so the permit cannot be released while
+/// a prior rish process group is still being reaped.
+type RishLanePermit = Arc<OwnedSemaphorePermit>;
 
 const MIN_RISH_DEX_BYTES: u64 = 1;
 const MAX_RISH_DEX_BYTES: u64 = 16 * 1024 * 1024;
@@ -440,7 +451,19 @@ impl RishBackendClient {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
             .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
+        let lane = Arc::new(permit);
+        self.attest_read_only_with_lane(lane).await
+    }
 
+    /// S3 attestation under a pre-acquired concurrency lane.
+    ///
+    /// Callers that already hold the sole rish permit (typed-read families)
+    /// must use this path so epoch establishment cannot TOCTOU against a
+    /// second acquisition and so each child keeps a lane clone through cleanup.
+    async fn attest_read_only_with_lane(
+        &self,
+        lane: RishLanePermit,
+    ) -> Result<RishBackendStatus, RishBackendError> {
         let dex_path = Arc::clone(&self.dex_path);
         let dex_file = Arc::clone(&self.dex_file);
         let expected_identity = self.dex_identity;
@@ -484,17 +507,23 @@ impl RishBackendClient {
             }
         };
 
-        let attestation = match run_s3_attestation_suite(program, Arc::clone(&dex_guard)).await {
+        let attestation = match run_s3_attestation_suite(
+            program,
+            Arc::clone(&dex_guard),
+            Arc::clone(&lane),
+        )
+        .await
+        {
             Ok(attestation) => attestation,
             Err(error) => {
                 drop(dex_guard);
-                drop(permit);
+                drop(lane);
                 self.invalidate_private_epoch();
                 return Err(error);
             }
         };
         drop(dex_guard);
-        drop(permit);
+        drop(lane);
 
         let generation = self.epoch_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let epoch = PrivateBackendEpoch {
@@ -536,19 +565,24 @@ impl RishBackendClient {
 
     /// First typed-read family: ten allowlisted PackageManager feature flags.
     ///
-    /// Requires a live S3 epoch (establishes one via [`Self::attest_read_only`]
-    /// when absent). Uses only fixed `cmd package has-feature <name>` probes for
-    /// the compile-time allowlist. Never returns raw OEM inventory text.
+    /// Acquires the sole rish concurrency lane first, then establishes a live
+    /// S3 epoch under that same permit when absent (no epoch/permit TOCTOU).
+    /// Uses only fixed `cmd package has-feature <name>` probes for the
+    /// compile-time allowlist. Never returns raw OEM inventory text.
     pub(crate) async fn list_system_features(
         &self,
     ) -> Result<AndroidSystemFeaturesStatus, RishBackendError> {
-        if !self.has_live_s3_epoch() {
-            self.attest_read_only().await?;
-        }
-
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
             .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
+        let lane = Arc::new(permit);
+
+        // Epoch precondition is established only while holding the lane so a
+        // concurrent attestation failure cannot invalidate the epoch between
+        // a pre-check and feature probe admission.
+        if !self.has_live_s3_epoch() {
+            self.attest_read_only_with_lane(Arc::clone(&lane)).await?;
+        }
 
         let dex_path = Arc::clone(&self.dex_path);
         let dex_file = Arc::clone(&self.dex_file);
@@ -589,13 +623,31 @@ impl RishBackendClient {
             }
         };
 
+        let family_deadline = tokio::time::Instant::now() + RISH_FEATURE_FAMILY_BUDGET;
         let mut present = [false; SYSTEM_FEATURE_PROBES.len()];
         for (index, command) in SYSTEM_FEATURE_PROBES.iter().enumerate() {
-            let stdout = match run_fixed_command_output(&program, &dex_guard, command).await {
+            if tokio::time::Instant::now() >= family_deadline {
+                drop(dex_guard);
+                drop(lane);
+                self.invalidate_private_epoch();
+                return Err(RishBackendError::TimedOut);
+            }
+            let stdout = match run_fixed_command_output_with_limits(
+                &program,
+                &dex_guard,
+                command,
+                RISH_FEATURE_PROBE_TIMEOUT,
+                RISH_STATUS_STDOUT_BYTES,
+                RISH_STATUS_STDERR_BYTES,
+                Arc::clone(&lane),
+                true,
+            )
+            .await
+            {
                 Ok(stdout) => stdout,
                 Err(error) => {
                     drop(dex_guard);
-                    drop(permit);
+                    drop(lane);
                     self.invalidate_private_epoch();
                     return Err(error);
                 }
@@ -604,14 +656,14 @@ impl RishBackendClient {
                 Ok(value) => value,
                 Err(error) => {
                     drop(dex_guard);
-                    drop(permit);
+                    drop(lane);
                     self.invalidate_private_epoch();
                     return Err(error);
                 }
             };
         }
         drop(dex_guard);
-        drop(permit);
+        drop(lane);
 
         if !self.has_live_s3_epoch() {
             return Err(RishBackendError::AttestationOutputInvalid);
@@ -767,50 +819,86 @@ async fn run_fixed_probe(
     })
 }
 
-#[allow(dead_code)]
 async fn run_s3_attestation_suite(
     program: PathBuf,
     dex_guard: Arc<File>,
+    lane: RishLanePermit,
 ) -> Result<S3AttestationMaterial, RishBackendError> {
     // Order is intentional: prove shell UID before any broader identity claim.
-    let uid_stdout = run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND).await?;
+    // Every fixed child retains a lane clone until process-group cleanup finishes.
+    let uid_stdout =
+        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND, Arc::clone(&lane))
+            .await?;
     if uid_stdout.as_slice() != EXPECTED_STDOUT {
         return Err(RishBackendError::IdentityOutputInvalid);
     }
 
     let gid = parse_exact_u32_line(
-        &run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_GID).await?,
+        &run_fixed_command_output(
+            &program,
+            &dex_guard,
+            RISH_FIXED_COMMAND_GID,
+            Arc::clone(&lane),
+        )
+        .await?,
     )?;
     if gid != ANDROID_SHELL_UID {
         return Err(RishBackendError::AttestationOutputInvalid);
     }
 
     let groups = parse_group_list_line(
-        &run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_GROUPS).await?,
+        &run_fixed_command_output(
+            &program,
+            &dex_guard,
+            RISH_FIXED_COMMAND_GROUPS,
+            Arc::clone(&lane),
+        )
+        .await?,
     )?;
     if !groups.contains(&ANDROID_SHELL_UID) {
         return Err(RishBackendError::AttestationOutputInvalid);
     }
 
-    let selinux_raw =
-        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_SELINUX).await?;
+    let selinux_raw = run_fixed_command_output(
+        &program,
+        &dex_guard,
+        RISH_FIXED_COMMAND_SELINUX,
+        Arc::clone(&lane),
+    )
+    .await?;
     let selinux = parse_shell_selinux_context(&selinux_raw)?;
     let selinux_context_sha256 = Sha256::digest(selinux).into();
 
     let sdk = parse_exact_u32_line(
-        &run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_SDK).await?,
+        &run_fixed_command_output(
+            &program,
+            &dex_guard,
+            RISH_FIXED_COMMAND_SDK,
+            Arc::clone(&lane),
+        )
+        .await?,
     )?;
     if !(MIN_SUPPORTED_SDK..=MAX_SUPPORTED_SDK).contains(&sdk) {
         return Err(RishBackendError::AttestationOutputInvalid);
     }
 
-    let fingerprint_raw =
-        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_FINGERPRINT).await?;
+    let fingerprint_raw = run_fixed_command_output(
+        &program,
+        &dex_guard,
+        RISH_FIXED_COMMAND_FINGERPRINT,
+        Arc::clone(&lane),
+    )
+    .await?;
     let fingerprint = parse_build_fingerprint(&fingerprint_raw)?;
     let build_fingerprint_sha256 = Sha256::digest(fingerprint).into();
 
-    let boot_raw =
-        run_fixed_command_output(&program, &dex_guard, RISH_FIXED_COMMAND_BOOT_ID).await?;
+    let boot_raw = run_fixed_command_output(
+        &program,
+        &dex_guard,
+        RISH_FIXED_COMMAND_BOOT_ID,
+        Arc::clone(&lane),
+    )
+    .await?;
     let boot_id = parse_boot_id(&boot_raw)?;
     let boot_id_sha256 = Sha256::digest(boot_id).into();
 
@@ -828,13 +916,17 @@ async fn run_fixed_command_output(
     program: &Path,
     dex_guard: &Arc<File>,
     fixed_command: &'static str,
+    lane: RishLanePermit,
 ) -> Result<Vec<u8>, RishBackendError> {
     run_fixed_command_output_with_limits(
         program,
         dex_guard,
         fixed_command,
+        RISH_STATUS_TIMEOUT,
         RISH_STATUS_STDOUT_BYTES,
         RISH_STATUS_STDERR_BYTES,
+        lane,
+        false,
     )
     .await
 }
@@ -843,8 +935,11 @@ async fn run_fixed_command_output_with_limits(
     program: &Path,
     dex_guard: &Arc<File>,
     fixed_command: &'static str,
+    timeout: Duration,
     max_stdout_bytes: usize,
     max_stderr_bytes: usize,
+    lane: RishLanePermit,
+    accept_nonzero_exit: bool,
 ) -> Result<Vec<u8>, RishBackendError> {
     ensure_descriptor_close_on_exec(dex_guard)?;
     let dex_argument = OsString::from(format!(
@@ -862,7 +957,7 @@ async fn run_fixed_command_output_with_limits(
             OsString::from(fixed_command),
         ],
         PathBuf::from("/"),
-        RISH_STATUS_TIMEOUT,
+        timeout,
         max_stdout_bytes,
         max_stderr_bytes,
         BoundedChildContext::with_inherited_descriptor(
@@ -870,8 +965,11 @@ async fn run_fixed_command_output_with_limits(
             Arc::clone(dex_guard),
         ),
     )
-    .map_err(map_fixed_process_config)?;
-    let output = process.run().await?;
+    .map_err(map_fixed_process_config)?
+    .with_accept_nonzero_exit(accept_nonzero_exit);
+    // Hold a lane clone in the cancellation-independent supervisor so a
+    // dropped request future cannot open the concurrency lane before reaping.
+    let output = process.run_with_completion_guard(lane).await?;
     // Under rish, a few Android utilities occasionally emit the sole payload on
     // stderr with empty stdout. Accept exactly one non-empty stream.
     match (output.stdout.is_empty(), output.stderr.is_empty()) {
@@ -1432,7 +1530,11 @@ case "$6" in
   "exec /system/bin/cmd package has-feature android.hardware.camera.any") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.location") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.microphone") printf 'true\n' ;;
-  "exec /system/bin/cmd package has-feature android.hardware.nfc") printf 'false\n' ;;
+  # Mirror AOSP: has-feature prints the boolean and exits 1 when false.
+  "exec /system/bin/cmd package has-feature android.hardware.nfc")
+    printf 'false\n'
+    exit 1
+    ;;
   "exec /system/bin/cmd package has-feature android.hardware.fingerprint") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer") printf 'true\n' ;;
   "exec /system/bin/cmd package has-feature android.hardware.touchscreen") printf 'true\n' ;;

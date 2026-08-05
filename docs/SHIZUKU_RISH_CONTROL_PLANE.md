@@ -117,7 +117,7 @@ The backend implements a private `attest_read_only` multi-probe suite that, unde
 1. `exec /system/bin/id -u` — exact `2000`
 2. `exec /system/bin/id -g` — exact `2000`
 3. `exec /system/bin/id -G` — space-separated GIDs including `2000`
-4. `exec /system/bin/id -Z` — shell SELinux domain prefix `u:r:shell:`
+4. `exec /system/bin/cat /proc/self/attr/current` — shell SELinux domain prefix `u:r:shell:` (preferred over `id -Z`, which can emit the context on stderr under rish)
 5. `exec /system/bin/getprop ro.build.version.sdk` — integer in the supported API band
 6. `exec /system/bin/getprop ro.build.fingerprint` — bounded graphic fingerprint (hashed privately)
 7. `exec /system/bin/cat /proc/sys/kernel/random/boot_id` — canonical UUID (hashed privately)
@@ -172,7 +172,7 @@ Separately default-disabled via `MCP__ANDROID__SYSTEM_FEATURES_ENABLED=true` (re
 
 Never returns raw OEM lines, feature versions, or non-allowlisted names.
 
-When configured but unavailable, the tool returns an MCP tool error containing only `android_rish_status_unavailable` and one stable low-cardinality reason code. It never reflects raw stderr or configuration details. When the runtime gate is false, the tool is absent from discovery and direct invocation fails closed.
+When configured but unavailable, each tool returns an MCP tool error containing only its stable unavailable token (`android_rish_status_unavailable` or `android_system_features_unavailable`) plus one stable low-cardinality reason code. It never reflects raw stderr or configuration details. When the runtime gate is false, the tool is absent from discovery and direct invocation fails closed.
 
 The feature has dedicated host Clippy, tests, and release-build checks, and raw `--all-features` validation. It is intentionally excluded from the governed `full-suite` alias and existing Android release-artifact inventory: the official Termux container reports no Android framework and cannot qualify a real Shizuku Binder lifecycle. Physical-device evidence remains mandatory before this feature can join release qualification or support any broader production claim.
 
