@@ -109,6 +109,10 @@ required = {
         "has no constructor in the server binary, AppConfig, an MCP handler, an environment variable, a CLI, or an Android workflow artifact",
     "stage3_harness_owns_path":
         "test module itself creates and canonicalizes the temporary fixture root and `base.apk` path; no test caller supplies a path",
+    "stage3_fixture_apk_compile_time_only":
+        "compile-time includes the exact fixture APK with `include_bytes!` and writes only those bytes",
+    "stage3_fixture_no_runtime_artifact":
+        "No runtime build output, workflow artifact, path, or byte payload can supply the fixture",
     "stage3_topology_fixture_only":
         "In Stage 3, Rust opens and pins only the exact harness-created fixture `base.apk` admitted by `Stage3DirectTestAdmissionV1`",
     "stage4_topology_installed_apk":
@@ -118,8 +122,18 @@ required = {
     "stage4_package_manager_root_admission":
         "Stage 4 and later require an absolute, canonical path beneath the observed PackageManager application-code root",
     "stage3_admission_exact_fields": "record contains exactly",
-    "stage3_fixture_manifest_bound":
-        "checked-in fixture manifest and environment-pair inventory are included in the frozen Stage-3 Rust source manifest",
+    "stage3_environment_inventory_source_bound":
+        "checked-in environment-pair inventory is included in the frozen Stage-3 Rust source manifest",
+    "stage3_fixture_manifest_source_excluded":
+        "fixture manifest is deliberately excluded from both source manifests and from the AIDL closure",
+    "stage3_fixture_manifest_separately_closed":
+        "documentation/build contract byte-closes the fixture-APK and fixture-manifest paths and the manifest schema separately",
+    "stage3_fixture_artifacts_compile_time_only":
+        "Rust test module uses `include_bytes!` on both the exact APK and the separately closed manifest",
+    "stage3_fixture_artifacts_cross_checked":
+        "requires their length and raw SHA-256 to equal the manifest",
+    "stage3_fixture_no_runtime_input":
+        "never accepts a runtime APK or manifest path, or runtime APK or manifest bytes",
     "stage3_dynamic_facts_internal":
         "never read from a file, process environment, test argument, or operator input",
     "stage3_fixture_nonqualification":
@@ -130,8 +144,56 @@ required = {
         "introduce a separate production admission constructor whose inputs come only from verified signed-release-manifest, protected PackageManager/controller, runtime configuration, and versioned physical-policy records",
     "stage3_fixture_not_promotable":
         "may not reinterpret or promote the Stage-3 fixture record",
-    "five_high_cloexec_sources":
-        "five child source endpoints to distinct descriptors numbered 5 or greater, all with `CLOEXEC`",
+    "six_high_cloexec_sources":
+        "six child source endpoints to distinct descriptors numbered 5 or greater, all with `CLOEXEC`",
+    "parent_release_pipe_source":
+        "read end of one private parent-to-child release pipe",
+    "child_identity_from_fork_only":
+        "returned child PID is the only accepted child identity and the only possible child process-group ID",
+    "child_owned_pgid_first":
+        "first setup action is `setpgid(0, 0)`",
+    "child_parent_release_barrier":
+        "child then blocks on an exact one-byte parent-release gate",
+    "child_closes_parent_endpoints_before_barrier":
+        "child closes every known inherited parent-side endpoint while retaining only the six high-numbered child-source descriptors",
+    "child_closes_release_writer_before_read":
+        "child's inherited release-writer copy must close before its first gate read",
+    "unknown_fds_deferred_to_close_range":
+        "Unknown inherited descriptors remain untouched until the later fail-closed `close_range`",
+    "release_barrier_precedes_exec":
+        "before descriptor remapping, ART execution, or any operation that can create a descendant",
+    "parent_closes_setpgid_race":
+        "parent immediately makes the idempotent `setpgid(childPid, childPid)` call to close the fork race",
+    "parent_verifies_pgid":
+        "requires `getpgid(childPid) == childPid` and `childPid` unequal to the recorded caller PGID",
+    "parent_releases_after_confirmation":
+        "Only after recording that transition does the parent write the single fixed release byte and close its writer",
+    "preconfirmation_positive_pid_only":
+        "Until exact PGID confirmation, cleanup may signal only the positive direct-child PID while the child remains gated",
+    "postconfirmation_group_cleanup_only":
+        "Immediately after confirmation, the parent irreversibly switches cleanup to the confirmed negative child PGID",
+    "release_consumption_not_cleanup_boundary":
+        "every later cleanup signal uses that group whether or not the release byte has been written or consumed",
+    "barrier_prevents_preconfirmation_descendant":
+        "barrier guarantees that the pre-confirmation path cannot contain an exec'd ART process or descendant",
+    "direct_child_unreaped_during_group_signals":
+        "keeps the direct child unreaped while any process-group signal is possible",
+    "exit_observed_without_reap":
+        "`waitid(P_PID, childPid, WEXITED | WNOHANG | WNOWAIT)`",
+    "bounded_term_then_group_kill":
+        "sends `SIGTERM` only to the confirmed negative child PGID, and allows one fixed bounded grace interval",
+    "final_group_kill_before_reap":
+        "Before reaping on every path, including after an already-observed normal direct-child exit, the parent sends `SIGKILL` to that same confirmed negative PGID",
+    "exact_waitpid_and_no_late_signal":
+        "calls `waitpid(childPid, ...)` exactly once, and performs no process-group signal after that reap",
+    "pre_pgid_direct_cleanup":
+        "setup failure before exact PGID confirmation closes the release writer, uses only positive-PID `SIGKILL`",
+    "post_pgid_release_failure_group_cleanup":
+        "Any failure after PGID confirmation, including a release-byte write or close failure, follows the confirmed negative-PGID cleanup path",
+    "process_cleanup_status_reconciled":
+        "WNOWAIT observation and final `waitpid` status agree and report one orderly zero exit that occurred before the final group kill",
+    "process_group_adversarial_tests":
+        "TERM-resistant cleanup, cancellation before and after PGID establishment, normal-exit descendant cleanup, exact one-time reaping, caller-group survival, and the absence of any negative-PGID signal after reap",
     "normalized_preexec_descriptors":
         "normalized pre-exec child descriptor set is therefore exactly FDs `0` through `4`",
     "status_writer_fd4":
@@ -141,7 +203,7 @@ required = {
     "parent_closes_child_endpoints":
         "parent closes every duplicated child-only endpoint on every path",
     "parent_retained_endpoints":
-        "only its request writer when applicable, the stdout and stderr readers, the exec-status reader, and the original admitted read-only APK descriptor",
+        "exec-status reader, release writer until the gate is resolved, and the original admitted read-only APK descriptor",
     "fork_failure_closes_endpoints":
         "A `fork` failure closes both ends of every newly created pipe and every duplicate before returning",
     "parent_writer_eof_closed":
@@ -231,6 +293,16 @@ required = {
         "Rust executor holds the expected CLI digest internally, with no operator, configuration, or MCP override",
     "stage3_cli_digest_equality":
         "Rust requires exact byte equality before accepting the probe",
+    "stage3_acyclic_build_graph":
+        "Stage-3 build graph is strictly acyclic and enforced in this order",
+    "stage3_manifest_artifact_exclusion":
+        "Neither source manifest may list generated identity constants, an APK, the fixture manifest, or any artifact-digest file",
+    "stage3_build_order":
+        "source/AIDL commitments to generated constants to APK to fixture manifest to the test binary/admission",
+    "stage3_no_digest_back_edge":
+        "There is no edge from the fixture APK, fixture manifest, or APK digest back to a source/AIDL commitment",
+    "stage3_no_hash_fixed_point":
+        "no fixed-point or preimage assumption",
     "stage3_main_entry":
         "The Stage-3 `BridgeCliMain` is a plain public `main` class",
     "stage3_main_absent_manifest": "It is absent from the Android manifest",
@@ -348,14 +420,56 @@ if stage3_present:
 forbidden = {
     "overqualified_memfd_claim": "Physical testing already showed",
     "mutable_aosp_source_ref": "/+/master/",
+    "old_fixture_manifest_source_back_edge":
+        "checked-in fixture manifest and environment-pair inventory are included in the frozen Stage-3 Rust source manifest",
+    "fixture_manifest_rust_source_back_edge":
+        "fixture manifest is included in the frozen Stage-3 Rust source manifest",
+    "fixture_apk_rust_source_back_edge":
+        "fixture APK is included in the frozen Stage-3 Rust source manifest",
+    "fixture_digest_rust_commitment_back_edge":
+        "APK digest contributes to `rustBuildDigest`",
+    "unsafe_preconfirmation_progress_claim":
+        "Because group setup is the child's first action, that pre-confirmation path cannot contain an exec'd ART process or descendant",
+    "unsafe_prerelease_positive_pid_cleanup":
+        "setup failure before release instead closes the release writer, uses only positive-PID `SIGKILL`",
 }
-present = [name for name, fragment in forbidden.items() if fragment in raw]
+present = [name for name, fragment in forbidden.items() if fragment in text]
 if re.search(r"\bAPI\s+`?13`?\s+or\s+newer\b", raw, re.IGNORECASE):
     present.append("wildcard_server_api")
 if "old compile-time build identity" in raw:
     present.append("compile_identity_claimed_to_detect_identical_reinstall")
 if present:
     raise SystemExit("forbidden typed-bridge ADR claims: " + ", ".join(present))
+
+ordered_build_graph = (
+    "1. Validate the exact Rust and CLI source manifests and canonical AIDL closure",
+    "2. Generate and embed only those three commitments on the Rust and Java sides.",
+    "3. Build the exact fixture APK containing the Java constants.",
+    "4. Generate or validate the separately closed fixture manifest from that APK's",
+    "5. Compile the direct Rust test with both the fixture APK and fixture manifest",
+)
+ordered_barrier = (
+    "first setup action is `setpgid(0, 0)`",
+    "child closes every known inherited parent-side endpoint",
+    "child's inherited release-writer copy must close before its first gate read",
+    "child then blocks on an exact one-byte parent-release gate",
+    "parent immediately makes the idempotent `setpgid(childPid, childPid)` call",
+    "requires `getpgid(childPid) == childPid`",
+    "Immediately after confirmation, the parent irreversibly switches cleanup",
+    "Only after recording that transition does the parent write the single fixed release byte",
+    "After consuming the release byte, the child closes the release reader",
+)
+for label, markers in (
+    ("Stage-3 build graph", ordered_build_graph),
+    ("Stage-3 parent-release barrier", ordered_barrier),
+):
+    positions = []
+    for marker in markers:
+        if text.count(marker) != 1:
+            raise SystemExit(f"{label} marker missing or duplicated: {marker}")
+        positions.append(text.index(marker))
+    if positions != sorted(positions):
+        raise SystemExit(f"{label} markers are out of order")
 
 counts_match = re.search(
     r"exactly seven governed Android postures, exactly nine workflow "

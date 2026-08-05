@@ -381,7 +381,10 @@ module. It is not serializable or deserializable, is compiled only under
 `cfg(test)`, and has no constructor in the server binary, AppConfig, an MCP
 handler, an environment variable, a CLI, or an Android workflow artifact. The
 test module itself creates and canonicalizes the temporary fixture root and
-`base.apk` path; no test caller supplies a path. The record contains exactly:
+`base.apk` path; no test caller supplies a path. It compile-time includes the
+exact fixture APK with `include_bytes!` and writes only those bytes to the new
+path. No runtime build output, workflow artifact, path, or byte payload can
+supply the fixture. The record contains exactly:
 
 - record version `1`;
 - the harness-created canonical fixture root and `base.apk` path;
@@ -394,18 +397,32 @@ test module itself creates and canonicalizes the temporary fixture root and
 - one nonzero raw SHA-256 fixture-manifest commitment, used only as the opaque
   `manifestDigest` echo.
 
-The checked-in fixture manifest and environment-pair inventory are included in
-the frozen Stage-3 Rust source manifest. Dynamic path and descriptor facts are
-created and observed only inside the same test, then reconciled before and
-after the child. They are never read from a file, process environment, test
-argument, or operator input. Test-only owner/mode and environment values do not
-qualify an installed APK, release identity, or physical ART profile. Stage 3
-can therefore prove only descriptor/supervisor/frame mechanics. Stage 4 must
-delete or make unreachable the test-only constructor in non-test builds and
-introduce a separate production admission constructor whose inputs come only
-from verified signed-release-manifest, protected PackageManager/controller,
-runtime configuration, and versioned physical-policy records; it may not
-reinterpret or promote the Stage-3 fixture record.
+The checked-in environment-pair inventory is included in the frozen Stage-3
+Rust source manifest. The checked-in fixture manifest is deliberately excluded
+from both source manifests and from the AIDL closure: its APK digest cannot
+contribute to `rustBuildDigest`, `cliBuildDigest`, or `aidlDigest`, because the
+APK embeds those three earlier commitments. Instead, the documentation/build
+contract byte-closes the fixture-APK and fixture-manifest paths and the
+manifest schema separately, builds the constants-bearing APK first, and then
+requires the manifest's byte length and raw SHA-256 to equal that exact APK.
+The Rust test module uses `include_bytes!` on both the exact APK and the
+separately closed manifest. Before writing the included APK bytes, it requires
+their length and raw SHA-256 to equal the manifest; it parses only the
+manifest's fixed fields into `Stage3DirectTestAdmissionV1` and hashes the exact
+manifest bytes for the opaque `manifestDigest` echo. It never accepts a runtime
+APK or manifest path, or runtime APK or manifest bytes.
+
+Dynamic path and descriptor facts are created and observed only inside the
+same test, then reconciled before and after the child. They are never read from
+a file, process environment, test argument, or operator input. Test-only
+owner/mode and environment values do not qualify an installed APK, release
+identity, or physical ART profile. Stage 3 can therefore prove only
+descriptor/supervisor/frame mechanics. Stage 4 must delete or make unreachable
+the test-only constructor in non-test builds and introduce a separate
+production admission constructor whose inputs come only from verified
+signed-release-manifest, protected PackageManager/controller, runtime
+configuration, and versioned physical-policy records; it may not reinterpret
+or promote the Stage-3 fixture record.
 
 Before every local bridge launch, Rust must:
 
@@ -442,12 +459,53 @@ Before every local bridge launch, Rust must:
    fork/exec supervisor whose complete child descriptor setup is project-owned
    and adversarially tested.
 
-   Before `fork`, that supervisor duplicates the five child source endpoints
+   Before `fork`, that supervisor duplicates six child source endpoints
    to distinct descriptors numbered 5 or greater, all with `CLOEXEC`: bounded
    request input (or `/dev/null`), bounded stdout, bounded stderr, the already
    validated read-only APK, and the write end of one private child-to-parent
-   exec-status pipe. In the child, using only async-signal-safe syscalls, it
-   maps those five sources to FDs `0`, `1`, `2`, `3`, and `4` respectively,
+   exec-status pipe, plus the read end of one private parent-to-child release
+   pipe. The parent records its own process group before `fork`.
+   The returned child PID is the only accepted child identity and the only
+   possible child process-group ID; neither value is read from output, a file,
+   or caller input.
+
+   In the child, using only async-signal-safe syscalls, the first setup action
+   is `setpgid(0, 0)`. It must establish a new child-owned process group whose
+   PGID equals the fork-returned child PID. Failure writes a fixed bounded
+   process-group setup-error record through the private status source and calls
+   `_exit`. After successful `setpgid`, the child closes every known inherited
+   parent-side endpoint while retaining only the six high-numbered child-source
+   descriptors: the request writer when present, stdout reader, stderr reader,
+   exec-status reader, parent-release writer, and original parent APK
+   descriptor are all closed in the child. In particular, the child's inherited
+   release-writer copy must close before its first gate read so parent closure
+   can produce authoritative EOF. Any close failure is a fixed setup error.
+   Unknown inherited descriptors remain untouched until the later fail-closed
+   `close_range`; none is used by the barrier protocol.
+
+   The child then blocks on an exact one-byte parent-release gate before
+   descriptor remapping, ART execution, or any operation that can create a
+   descendant. EOF, an unexpected byte, a short or failed read, or a second
+   byte is a fixed setup error followed by `_exit`.
+
+   The parent immediately makes the idempotent
+   `setpgid(childPid, childPid)` call to close the fork race, then requires
+   `getpgid(childPid) == childPid` and `childPid` unequal to the recorded caller
+   PGID. An `EACCES`/race result is acceptable only when that exact `getpgid`
+   check succeeds; every other result closes the release writer without a byte
+   and fails closed. Until exact PGID confirmation, cleanup may signal only the
+   positive direct-child PID while the child remains gated. Immediately after
+   confirmation, the parent irreversibly switches cleanup to the confirmed
+   negative child PGID; every later cleanup signal uses that group whether or
+   not the release byte has been written or consumed. Only after recording that
+   transition does the parent write the single fixed release byte and close its
+   writer; that write and close are themselves required to succeed. The barrier
+   guarantees that the pre-confirmation path cannot contain an exec'd ART
+   process or descendant.
+
+   After consuming the release byte, the child closes the release reader and
+   maps the other five sources to FDs `0`,
+   `1`, `2`, `3`, and `4` respectively,
    leaves `CLOEXEC` set only on FD 4, verifies FD 3 against the admitted APK,
    and closes every descriptor numbered 5 or greater with one fail-closed
    `close_range` operation before `execve`. Unsupported or failed
@@ -456,12 +514,40 @@ Before every local bridge launch, Rust must:
 
    Immediately after a successful `fork`, the parent closes every duplicated
    child-only endpoint on every path: the child's stdin source, stdout writer,
-   stderr writer, APK duplicate, and exec-status writer. The parent retains
+   stderr writer, APK duplicate, exec-status writer, and release reader. The parent retains
    only its request writer when applicable, the stdout and stderr readers, the
-   exec-status reader, and the original admitted read-only APK descriptor.
+   exec-status reader, release writer until the gate is resolved, and the
+   original admitted read-only APK descriptor.
    A `fork` failure closes both ends of every newly created pipe and every
    duplicate before returning. In particular, no parent copy of the status or
    stdout writer may keep EOF from being authoritative.
+
+   The parent owns one exact cleanup state machine. It keeps the direct child
+   unreaped while any process-group signal is possible, so the child PID/PGID
+   cannot be reused. Normal or abnormal exit is first observed with
+   `waitid(P_PID, childPid, WEXITED | WNOHANG | WNOWAIT)`; that observation must
+   not reap the child. Timeout, cancellation, or overflow first closes the
+   request writer, sends `SIGTERM` only to the confirmed negative child PGID,
+   and allows one fixed bounded grace interval. Before reaping on every path,
+   including after an already-observed normal direct-child exit, the parent
+   sends `SIGKILL` to that same confirmed negative PGID so no surviving
+   descendant can retain a protocol pipe. It then requires bounded status,
+   stdout, and stderr EOF, calls `waitpid(childPid, ...)` exactly once, and
+   performs no process-group signal after that reap. A setup failure before
+   exact PGID confirmation closes the release writer, uses only positive-PID
+   `SIGKILL`, and performs the exact direct-child `waitpid`; the blocked child
+   cannot yet have an exec'd ART process or descendant. Any failure after PGID
+   confirmation, including a release-byte write or close failure, follows the
+   confirmed negative-PGID cleanup path before the exact direct-child reap.
+
+   Any unexpected `setpgid`, `getpgid`, `kill`, `waitid`, `waitpid`, stream
+   drain, or deadline result fails the probe. Acceptance additionally requires
+   that the WNOWAIT observation and final `waitpid` status agree and report one
+   orderly zero exit that occurred before the final group kill. Tests must use
+   direct-child and descendant PID witnesses to prove TERM-resistant cleanup,
+   cancellation before and after PGID establishment, normal-exit descendant
+   cleanup, exact one-time reaping, caller-group survival, and the absence of
+   any negative-PGID signal after reap.
 
    The normalized pre-exec child descriptor set is therefore exactly FDs
    `0` through `4`. FD 3 must be the already validated, admitted read-only APK
@@ -744,6 +830,25 @@ the sides that compare them. Java holds the expected Rust digest; the Rust
 executor holds the expected CLI digest internally, with no operator,
 configuration, or MCP override. Java returns its embedded `cliBuildDigest`,
 and Rust requires exact byte equality before accepting the probe.
+
+The Stage-3 build graph is strictly acyclic and enforced in this order:
+
+1. Validate the exact Rust and CLI source manifests and canonical AIDL closure,
+   then compute `rustBuildDigest`, `cliBuildDigest`, and `aidlDigest`. Neither
+   source manifest may list generated identity constants, an APK, the fixture
+   manifest, or any artifact-digest file.
+2. Generate and embed only those three commitments on the Rust and Java sides.
+3. Build the exact fixture APK containing the Java constants.
+4. Generate or validate the separately closed fixture manifest from that APK's
+   exact byte length and raw SHA-256.
+5. Compile the direct Rust test with both the fixture APK and fixture manifest
+   included as fixed test data, without feeding either artifact's bytes or APK
+   digest back into any source or AIDL commitment.
+
+Thus the dependency direction is source/AIDL commitments to generated
+constants to APK to fixture manifest to the test binary/admission. There is no
+edge from the fixture APK, fixture manifest, or APK digest back to a source/AIDL
+commitment, and no fixed-point or preimage assumption.
 
 The maximum accepted body is 204 bytes and the maximum accepted complete frame
 is 220 bytes. Each frame kind has only the exact length above; the Stage-3
