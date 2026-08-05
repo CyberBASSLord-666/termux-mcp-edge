@@ -30,7 +30,7 @@ grep -Fq 'io.github.cyberbasslord666.termuxmcpedge.bridge' "$bridge_architecture
   || fail shizuku_typed_bridge_application_id_not_frozen
 grep -Fq 'The first implementation is read-only.' "$bridge_architecture" \
   || fail shizuku_typed_bridge_read_only_scope_missing
-grep -Fq 'PackageManager-installed, non-Termux-owned `base.apk`' "$bridge_architecture" \
+grep -Fq 'In Stage 4 and later, the local ART loader must prefer a read-only descriptor' "$bridge_architecture" \
   || fail shizuku_typed_bridge_installed_apk_boundary_missing
 grep -Fq -- '-cp /proc/self/fd/3' "$bridge_architecture" \
   || fail shizuku_typed_bridge_descriptor_classpath_missing
@@ -63,15 +63,95 @@ required = {
     "server_api_patch_exact": "`Shizuku.getServerPatchVersion() == 6`",
     "manager_install_exact":
         "exact manager package, version code/name, installed base-APK SHA-256, current signer SHA-256",
-    "environment_cleared": "Rust must call `env_clear()`",
+    "environment_cleared":
+        "dedicated supervisor must construct a new empty `envp` rather than copy or enumerate the parent environment",
     "art_environment_allowlist": "signed, versioned ART environment allowlist",
     "loader_environment_forbidden":
         "`LD_*`, `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, and `JDK_JAVA_OPTIONS` are forbidden",
     "path_resolution_forbidden":
         "`PATH` is unset and no executable or library is resolved through it",
     "fixed_working_directory": "The working directory is exactly `/`",
-    "closed_descriptor_set":
-        "Close every other descriptor except stdin, stdout, stderr, and FD 3 before `execve`",
+    "successful_exec_descriptor_set":
+        "After successful exec, only FDs `0`, `1`, `2`, and `3` may remain open",
+    "validated_read_only_fd3":
+        "FD 3 must be the already validated, admitted read-only APK descriptor",
+    "stage3_fd3_fixture":
+        "the Stage-3 fixture descriptor in a direct test",
+    "stage4_fd3_installed":
+        "the Stage-4-and-later installed-APK descriptor",
+    "stage3_owner_record_only":
+        "Stage-3 direct test requires exact equality to its test-only record",
+    "stage4_non_termux_owner":
+        "In Stage 4 and later, the owner must not be the Termux UID",
+    "stage3_fixture_digest_source":
+        "Stage-3 direct test requires equality to the closed fixture digest in `Stage3DirectTestAdmissionV1`",
+    "stage4_release_digest_source":
+        "Stage 4 and later require equality to the verified release manifest",
+    "stage3_environment_source":
+        "Stage-3 direct test adds only the exact pair list bound by `Stage3DirectTestAdmissionV1`",
+    "stage3_environment_nonqualification":
+        "that is test input, not a qualified Android profile",
+    "generic_command_forbidden":
+        "must not use `BoundedProcess`, `std::process::Command`, or `tokio::process::Command`",
+    "generic_command_fd_reason":
+        "implementation-private exec-error and child-side stdio descriptors",
+    "dedicated_fd_supervisor":
+        "dedicated FD-aware low-level fork/exec supervisor",
+    "stage3_stage4_postcheck_split":
+        "Stage 3 must never satisfy a postcheck by entering the later broker topology",
+    "stage4_runtime_configuration_only":
+        "In Stage 4 and later, runtime configuration binds the path",
+    "stage3_no_runtime_configuration":
+        "Stage 3 has no such runtime configuration and uses only the closed direct-test record",
+    "stage3_direct_admission_type": "`Stage3DirectTestAdmissionV1`",
+    "stage3_admission_cfg_test_only": "compiled only under `cfg(test)`",
+    "stage3_admission_no_external_constructor":
+        "has no constructor in the server binary, AppConfig, an MCP handler, an environment variable, a CLI, or an Android workflow artifact",
+    "stage3_harness_owns_path":
+        "test module itself creates and canonicalizes the temporary fixture root and `base.apk` path; no test caller supplies a path",
+    "stage3_topology_fixture_only":
+        "In Stage 3, Rust opens and pins only the exact harness-created fixture `base.apk` admitted by `Stage3DirectTestAdmissionV1`",
+    "stage4_topology_installed_apk":
+        "In Stage 4 and later, Rust instead opens and pins the exact PackageManager-installed bridge `base.apk`",
+    "stage3_fixture_root_admission":
+        "Stage 3 requires an absolute, canonical path beneath the canonical harness-created temporary fixture root",
+    "stage4_package_manager_root_admission":
+        "Stage 4 and later require an absolute, canonical path beneath the observed PackageManager application-code root",
+    "stage3_admission_exact_fields": "record contains exactly",
+    "stage3_fixture_manifest_bound":
+        "checked-in fixture manifest and environment-pair inventory are included in the frozen Stage-3 Rust source manifest",
+    "stage3_dynamic_facts_internal":
+        "never read from a file, process environment, test argument, or operator input",
+    "stage3_fixture_nonqualification":
+        "do not qualify an installed APK, release identity, or physical ART profile",
+    "stage3_mechanics_only":
+        "Stage 3 can therefore prove only descriptor/supervisor/frame mechanics",
+    "stage4_separate_admission":
+        "introduce a separate production admission constructor whose inputs come only from verified signed-release-manifest, protected PackageManager/controller, runtime configuration, and versioned physical-policy records",
+    "stage3_fixture_not_promotable":
+        "may not reinterpret or promote the Stage-3 fixture record",
+    "five_high_cloexec_sources":
+        "five child source endpoints to distinct descriptors numbered 5 or greater, all with `CLOEXEC`",
+    "normalized_preexec_descriptors":
+        "normalized pre-exec child descriptor set is therefore exactly FDs `0` through `4`",
+    "status_writer_fd4":
+        "FD 4 is the private `CLOEXEC` exec-status writer",
+    "close_range_fail_closed":
+        "Unsupported or failed `close_range` has no scanning or launcher fallback",
+    "parent_closes_child_endpoints":
+        "parent closes every duplicated child-only endpoint on every path",
+    "parent_retained_endpoints":
+        "only its request writer when applicable, the stdout and stderr readers, the exec-status reader, and the original admitted read-only APK descriptor",
+    "fork_failure_closes_endpoints":
+        "A `fork` failure closes both ends of every newly created pipe and every duplicate before returning",
+    "parent_writer_eof_closed":
+        "no parent copy of the status or stdout writer may keep EOF from being authoritative",
+    "exec_eof_not_proof":
+        "means only that no child setup/exec error was reported; it is not proof of accepted execution",
+    "complete_exec_acceptance":
+        "the one exact Java frame, empty stderr, zero local child exit, complete process-group cleanup, and final descriptor/path reconciliation",
+    "exec_failure_no_frame":
+        "A setup or `execve` error, an unexpected descriptor, a status record, or failure to reach status EOF yields no accepted frame",
     "bounded_stdio":
         "Stdout accepts exactly one bounded protocol frame, stderr is bounded and must be empty",
     "pinned_app_process_source":
@@ -92,6 +172,83 @@ required = {
         "The manifest digest in `BridgeCallContext` is an opaque correlation value to the Java layers",
     "nonce_manifest_binding":
         "`BridgeCallContext` carries a fresh Rust-CSPRNG 32-byte request nonce that the MCP caller cannot supply, plus the signed manifest digest",
+    "stage3_stops_before_bootstrap":
+        "Stage 3 performs only the descriptor launch in step 1 followed by the authority-free local probe defined below; it must not enter step 2 or contact the installed application process",
+    "stage3_descriptor_only_postcheck":
+        "Stage 3 accepts only its exact authority-free local-probe frame plus that descriptor/path postcheck",
+    "stage3_no_broker_postcheck":
+        "it obtains no PackageManager or broker observation and performs no Binder reconciliation",
+    "stage4_broker_postcheck":
+        "Stage 4 and later additionally require the broker to return commitments",
+    "stage3_no_nested_binder_fields":
+        "Stage 3 has no such signed-manifest, typed-result, broker, UserService, or Binder completion fields",
+    "stage3_lane_scope":
+        "Stage-3 lane is one non-queueing permit held through APK validation, local child cleanup, descriptor/path reconciliation, and direct-child reaping",
+    "stage3_frame_exact_tables_only":
+        "Stage 3 uses only the exact 152-byte request and 220-byte response tables below",
+    "stage3_fixture_manifest_unsigned_opaque":
+        "an opaque unsigned fixture-manifest commitment",
+    "stage4_frame_signed_manifest_only":
+        "In Stage 4 and later, a separately reviewed frame adds the expected CLI build identity, AIDL contract and signed-release-manifest digests",
+    "stage3_frame_excludes_stage4_identity":
+        "Stage 3 has no such signed-manifest, typed-result, broker, UserService, or Binder completion fields",
+    "stage3_probe_method":
+        "`LOCAL_PROTOCOL_PROBE` method with method code `1`",
+    "stage3_big_endian": "Every integer is unsigned big-endian",
+    "stage3_header_length": "Every frame starts with this exact 16-byte header",
+    "stage3_magic": "ASCII `TMCPBRG1`",
+    "stage3_request_length":
+        "The request body is exactly 136 bytes and the complete request frame is exactly 152 bytes",
+    "stage3_response_length":
+        "The response body is exactly 204 bytes and the complete response frame is exactly 220 bytes",
+    "stage3_request_echo": "byte-exact request body",
+    "stage3_maximums":
+        "The maximum accepted body is 204 bytes and the maximum accepted complete frame is 220 bytes",
+    "stage3_closed_lengths":
+        "Each frame kind has only the exact length above; the Stage-3 codec has no generic or caller-sized body",
+    "stage3_fail_closed_inputs":
+        "a zero `requestId`; an all-zero nonce or required digest; a request-echo mismatch; an unexpected Rust build, CLI build, or AIDL digest",
+    "stage3_raw_sha256":
+        "Every digest in these tables is the raw 32-byte output of SHA-256, never hex text",
+    "stage3_aidl_closure_header": "`TMCP-AIDL-CLOSURE-V1\\n`",
+    "stage3_aidl_closure_inventory":
+        "exact nine tracked Stage-3 `.aidl` files in unsigned bytewise repository-path order",
+    "stage3_aidl_digest_equality":
+        "Rust requires all three values to be byte-equal",
+    "stage3_source_manifest_header":
+        "`TMCP-STAGE3-SOURCE-MANIFEST-V1\\n`",
+    "stage3_source_manifest_inventory":
+        "contract freezes both exact path inventories and recomputes every entry",
+    "stage3_rust_digest_source":
+        "`rustBuildDigest` is raw SHA-256 of the exact Rust manifest bytes",
+    "stage3_java_expected_rust_digest":
+        "`BridgeCliMain` embeds the same expected Rust digest",
+    "stage3_java_rejects_rust_digest":
+        "rejects byte inequality before producing any response",
+    "stage3_cli_digest_source":
+        "`cliBuildDigest` is raw SHA-256 of the exact CLI manifest bytes",
+    "stage3_cli_digest_closed_expected":
+        "Rust executor holds the expected CLI digest internally, with no operator, configuration, or MCP override",
+    "stage3_cli_digest_equality":
+        "Rust requires exact byte equality before accepting the probe",
+    "stage3_main_entry":
+        "The Stage-3 `BridgeCliMain` is a plain public `main` class",
+    "stage3_main_absent_manifest": "It is absent from the Android manifest",
+    "stage3_zero_argv": "accepts zero argv entries",
+    "stage3_no_android_authority":
+        "It must not obtain an Android `Context`, call Binder or PackageManager, link Shizuku, send a broadcast, or instantiate any Stage-4 broker/bootstrap type",
+    "stage3_three_false_authority_fields":
+        "Its three authority fields above are always false",
+    "stage3_opaque_manifest_commitment":
+        "`manifestDigest` is opaque to Java and its echo is not signed-manifest parsing, signature verification, provenance, or authorization",
+    "stage3_rust_unwired":
+        "Rust has no bridge configuration field, no MCP registration or tool, no status surface, and no runtime feature wiring for it",
+    "stage4_loader_threat_scope":
+        "In Stage 4 and later, no Termux loader file exists and production executes only the pinned installed-APK descriptor",
+    "stage3_loader_threat_scope":
+        "The Stage-3 harness-created fixture is test-only and authority-free; its same-UID mutability is mechanics-test input, not installed-code provenance",
+    "stage3_generic_spawn_reuse_forbidden":
+        "installed-APK executor must not reuse `BoundedProcess` or any standard/Tokio process-spawn, stdio, or exec setup",
     "same_version_identical_byte_reinstall":
         "same-version, identical-byte `adb install -r`",
     "install_generation": "`installGeneration`",
@@ -120,6 +277,73 @@ required = {
 missing = [name for name, fragment in required.items() if fragment not in text]
 if missing:
     raise SystemExit("missing typed-bridge ADR invariants: " + ", ".join(missing))
+
+stage3_match = re.search(
+    r"### Stage-3 authority-free protocol probe\n(?P<body>.*?)\n"
+    r"The proposed public surface remains default-disabled",
+    raw,
+    re.DOTALL,
+)
+if stage3_match is None:
+    raise SystemExit("typed-bridge ADR Stage-3 probe section is not closed")
+stage3_raw = stage3_match.group("body")
+stage3_text = re.sub(r"\s+", " ", stage3_raw)
+
+exact_stage3_rows = (
+    "| 0 | 8 | magic | ASCII `TMCPBRG1` |",
+    "| 8 | 2 | `protocolVersion` | `1` |",
+    "| 10 | 1 | `frameKind` | request `1`; response `2` |",
+    "| 11 | 1 | `method` | `LOCAL_PROTOCOL_PROBE = 1` |",
+    "| 12 | 4 | `bodyLength` | request `136`; response `204` |",
+    "| 0 | 8 | `requestId` | positive and nonzero |",
+    "| 8 | 32 | `nonce` | not all zero |",
+    "| 40 | 32 | `manifestDigest` | not all zero; opaque commitment only |",
+    "| 72 | 32 | `rustBuildDigest` | exact compiled-in Stage-3 Rust source-manifest digest |",
+    "| 104 | 32 | `aidlDigest` | exact compiled-in canonical AIDL-closure digest |",
+    "| 0 | 136 | request echo | byte-exact request body |",
+    "| 136 | 32 | `cliBuildDigest` | exact Rust-expected Stage-3 CLI source-manifest digest |",
+    "| 168 | 32 | `cliAidlDigest` | byte-equal request `aidlDigest` and embedded canonical AIDL-closure digest |",
+    "| 200 | 1 | `outcome` | success `0` |",
+    "| 201 | 1 | `runtimeAuthorityEnabled` | `0` (false) |",
+    "| 202 | 1 | `shizukuLinked` | `0` (false) |",
+    "| 203 | 1 | `binderBootstrapEnabled` | `0` (false) |",
+)
+missing_rows = [row for row in exact_stage3_rows if stage3_raw.count(row) != 1]
+if missing_rows:
+    raise SystemExit(
+        "typed-bridge ADR Stage-3 frame rows missing or duplicated: "
+        + ", ".join(missing_rows)
+    )
+
+stage3_forbidden = {
+    "authority_enabled": "`runtimeAuthorityEnabled` | `1`",
+    "shizuku_linked": "`shizukuLinked` | `1`",
+    "binder_bootstrap_enabled": "`binderBootstrapEnabled` | `1`",
+    "java_verifies_manifest": "manifestDigest is verified by Java",
+    "manifest_authenticates": "manifestDigest authenticates",
+    "mcp_probe_exposed": "Stage 3 exposes an MCP",
+    "mcp_probe_registered": "Stage 3 registers",
+    "stage3_configuration_added": "Stage 3 adds a bridge configuration field",
+    "fd4_survives_exec": "FD 4 remains after successful exec",
+    "status_pipe_reaches_art": "exec-status pipe is inherited by ART",
+    "original_apk_fd_reaches_art":
+        "original APK descriptor is inherited by ART",
+}
+stage3_present = [
+    name for name, fragment in stage3_forbidden.items() if fragment in stage3_raw
+]
+if re.search(
+    r"(?:allows?|accepts?|supports?)\s+(?:a\s+)?"
+    r"(?:generic|variable-length|caller-sized)\s+(?:frame|body)",
+    stage3_text,
+    re.IGNORECASE,
+):
+    stage3_present.append("generic_stage3_frame")
+if stage3_present:
+    raise SystemExit(
+        "forbidden typed-bridge ADR Stage-3 claims: "
+        + ", ".join(stage3_present)
+    )
 
 forbidden = {
     "overqualified_memfd_claim": "Physical testing already showed",

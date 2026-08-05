@@ -31,13 +31,16 @@ Android service, command, executable, argv, environment, stdin, package name,
 feature name, path, or raw framework output. The existing `android-rish`
 posture remains a development diagnostic and is not the production transport.
 
-The local ART loader must prefer a read-only descriptor opened directly on the
-PackageManager-installed, non-Termux-owned `base.apk`. The child must load that
-exact descriptor through `/proc/self/fd/3`. The initial implementation must not
-copy an APK or DEX into Termux storage or a sealed memfd as a compatibility
-fallback. If the installed APK cannot be opened with the required identity
-checks, or ART cannot load the inherited descriptor on a physically observed
-target, the bridge is unavailable.
+In Stage 4 and later, the local ART loader must prefer a read-only descriptor
+opened directly on the PackageManager-installed, non-Termux-owned `base.apk`.
+The child must load that exact descriptor through `/proc/self/fd/3`. Stage 3
+does not claim or test that installed-code provenance boundary: it admits only
+the harness-created fixture descriptor defined below and proves only local
+descriptor, supervisor, and frame mechanics. No stage may copy an APK or DEX
+into Termux storage or a sealed memfd as a compatibility fallback. If the
+stage-specific APK cannot be opened with its required admission checks, or ART
+cannot load the inherited descriptor on an observed target, the bridge is
+unavailable.
 
 ## Authority and trust boundary
 
@@ -98,8 +101,17 @@ flowchart TD
 
 The steps are:
 
-1. Rust opens and pins the exact installed bridge `base.apk` and starts the
-   fixed local `BridgeCliMain` class from the inherited read-only descriptor.
+The full sequence below is the eventual Stage-4-and-later topology. Stage 3
+performs only the descriptor launch in step 1 followed by the authority-free
+local probe defined below; it must not enter step 2 or contact the installed
+application process.
+
+1. In Stage 3, Rust opens and pins only the exact harness-created fixture
+   `base.apk` admitted by `Stage3DirectTestAdmissionV1`, then starts the fixed
+   authority-free `BridgeCliMain` class from that inherited read-only
+   descriptor. In Stage 4 and later, Rust instead opens and pins the exact
+   PackageManager-installed bridge `base.apk` and starts the later fixed local
+   class from that installed read-only descriptor.
 2. `BridgeCliMain`, running under the Termux UID, sends an explicit-package
    bootstrap broadcast to the fixed bridge application ID. The only supplied
    object is a typed AIDL callback Binder and fixed protocol metadata.
@@ -350,35 +362,121 @@ and [`IBinder.linkToDeath`](https://developer.android.com/reference/android/os/I
 Android exposes the installed base APK path as
 [`ApplicationInfo.sourceDir`](https://developer.android.com/reference/android/content/pm/ApplicationInfo#sourceDir).
 The setup/controller records that PackageManager-derived path for the exact
-approved package; the MCP caller cannot provide or change it. The runtime
-configuration binds the path to the exact expected APK SHA-256, release signer
-SHA-256, package name, version code, and version name.
+approved package; the MCP caller cannot provide or change it. In Stage 4 and
+later, runtime configuration binds the path to the exact expected APK SHA-256,
+release signer SHA-256, package name, version code, and version name. Stage 3
+has no such runtime configuration and uses only the closed direct-test record
+below.
 
 ### Admission and descriptor checks
 
+Stages 3 and later share the mechanisms in steps 1 through 6 below. Step 7 has
+an explicit Stage-3 descriptor-only branch and a separate Stage-4-and-later
+broker branch; Stage 3 must never satisfy a postcheck by entering the later
+broker topology.
+
+Stage 3 has exactly one admission source: a crate-private
+`Stage3DirectTestAdmissionV1` value constructed inside the Stage-3 unit-test
+module. It is not serializable or deserializable, is compiled only under
+`cfg(test)`, and has no constructor in the server binary, AppConfig, an MCP
+handler, an environment variable, a CLI, or an Android workflow artifact. The
+test module itself creates and canonicalizes the temporary fixture root and
+`base.apk` path; no test caller supplies a path. The record contains exactly:
+
+- record version `1`;
+- the harness-created canonical fixture root and `base.apk` path;
+- the expected fixture byte length and raw SHA-256 from the checked-in fixture
+  manifest;
+- the harness-set and then independently observed UID, GID, mode, and link
+  count, plus the opened descriptor's observed device/inode/timestamps;
+- the raw SHA-256 of one exact ordered test-only ART-environment pair list and
+  that closed list; and
+- one nonzero raw SHA-256 fixture-manifest commitment, used only as the opaque
+  `manifestDigest` echo.
+
+The checked-in fixture manifest and environment-pair inventory are included in
+the frozen Stage-3 Rust source manifest. Dynamic path and descriptor facts are
+created and observed only inside the same test, then reconciled before and
+after the child. They are never read from a file, process environment, test
+argument, or operator input. Test-only owner/mode and environment values do not
+qualify an installed APK, release identity, or physical ART profile. Stage 3
+can therefore prove only descriptor/supervisor/frame mechanics. Stage 4 must
+delete or make unreachable the test-only constructor in non-test builds and
+introduce a separate production admission constructor whose inputs come only
+from verified signed-release-manifest, protected PackageManager/controller,
+runtime configuration, and versioned physical-policy records; it may not
+reinterpret or promote the Stage-3 fixture record.
+
 Before every local bridge launch, Rust must:
 
-1. Require an absolute, canonical path beneath the observed PackageManager
-   application-code root, ending in `base.apk`. Reject relative paths,
-   lexical aliases, symlinks, and any path inside an MCP filesystem safe root.
+1. Stage 3 requires an absolute, canonical path beneath the canonical
+   harness-created temporary fixture root, ending in `base.apk`, with exact
+   root and path equality to `Stage3DirectTestAdmissionV1`. Stage 4 and later
+   require an absolute, canonical path beneath the observed PackageManager
+   application-code root, ending in the installed `base.apk`. Every stage
+   rejects relative paths, lexical aliases, symlinks, and any path inside an
+   MCP filesystem safe root.
 2. Walk every parent with descriptor-relative, no-follow opens, then open the
    final file `O_RDONLY | O_CLOEXEC | O_NOFOLLOW`. The resulting access mode
    must be read-only. A separate write-open attempt by the Termux UID must fail.
 3. Require one regular file and record its device, inode, owner UID/GID, mode,
-   link count, size, mtime, and ctime. The owner must not be the Termux UID,
-   the link count must be one, and no accepted mode may grant write access to
-   the Termux UID. The exact accepted owner/group/mode tuple is not guessed by
-   this ADR: it must be measured on the supported physical profile and frozen
-   in the versioned physical policy before production enablement.
+   link count, size, mtime, and ctime. A Stage-3 direct test requires exact
+   equality to its test-only record and a link count of one, but that same-UID
+   fixture is never an installed-code or immutability claim. In Stage 4 and
+   later, the owner must not be the Termux UID, the link count must be one, and
+   no accepted mode may grant write access to the Termux UID. The exact
+   production owner/group/mode tuple is not guessed by this ADR: it must be
+   measured on the supported physical profile and frozen in the versioned
+   physical policy before production enablement.
 4. Require the pathname immediately before launch to resolve to the same
    device/inode as the descriptor. Hash only the descriptor, within a fixed APK
-   size ceiling, and require its SHA-256 to equal the release manifest. Require
-   unchanged descriptor metadata before and after hashing.
-5. In the child only, duplicate the descriptor to the fixed
-   `BRIDGE_APK_FD=3` and clear `CLOEXEC` only on that duplicate. Close every
-   other descriptor except stdin, stdout, stderr, and FD 3 before `execve`.
-   Keep the parent's read-only descriptor alive until the child is reaped and
-   every Binder request is reconciled.
+   size ceiling. A Stage-3 direct test requires equality to the closed fixture
+   digest in `Stage3DirectTestAdmissionV1`; Stage 4 and later require equality
+   to the verified release manifest. Require unchanged descriptor metadata
+   before and after hashing.
+5. The installed-APK executor must not use `BoundedProcess`,
+   `std::process::Command`, or `tokio::process::Command`. Those launchers own
+   implementation-private exec-error and child-side stdio descriptors; their
+   numbers are not available to this contract, and one may occupy or be
+   clobbered by FD 3. Stage 3 instead requires a dedicated FD-aware low-level
+   fork/exec supervisor whose complete child descriptor setup is project-owned
+   and adversarially tested.
+
+   Before `fork`, that supervisor duplicates the five child source endpoints
+   to distinct descriptors numbered 5 or greater, all with `CLOEXEC`: bounded
+   request input (or `/dev/null`), bounded stdout, bounded stderr, the already
+   validated read-only APK, and the write end of one private child-to-parent
+   exec-status pipe. In the child, using only async-signal-safe syscalls, it
+   maps those five sources to FDs `0`, `1`, `2`, `3`, and `4` respectively,
+   leaves `CLOEXEC` set only on FD 4, verifies FD 3 against the admitted APK,
+   and closes every descriptor numbered 5 or greater with one fail-closed
+   `close_range` operation before `execve`. Unsupported or failed
+   `close_range` has no scanning or launcher fallback: the child reports a
+   fixed bounded setup-error record on FD 4 and calls `_exit`.
+
+   Immediately after a successful `fork`, the parent closes every duplicated
+   child-only endpoint on every path: the child's stdin source, stdout writer,
+   stderr writer, APK duplicate, and exec-status writer. The parent retains
+   only its request writer when applicable, the stdout and stderr readers, the
+   exec-status reader, and the original admitted read-only APK descriptor.
+   A `fork` failure closes both ends of every newly created pipe and every
+   duplicate before returning. In particular, no parent copy of the status or
+   stdout writer may keep EOF from being authoritative.
+
+   The normalized pre-exec child descriptor set is therefore exactly FDs
+   `0` through `4`. FD 3 must be the already validated, admitted read-only APK
+   descriptor: the Stage-3 fixture descriptor in a direct test, or the
+   Stage-4-and-later installed-APK descriptor. FD 4 is the private `CLOEXEC`
+   exec-status writer. Neither FD 4 nor its record is named in argv,
+   the environment, or the local protocol. Successful `execve` closes FD 4
+   and exposes exactly stdin, stdout, stderr, and FD 3 to ART. EOF on the
+   parent status reader means only that no child setup/exec error was reported;
+   it is not proof of accepted execution. Acceptance additionally requires
+   the one exact Java frame, empty stderr, zero local child exit, complete
+   process-group cleanup, and final descriptor/path reconciliation. A setup or
+   `execve` error, an unexpected descriptor, a status record, or failure to
+   reach status EOF yields no accepted frame. Keep the parent's read-only APK
+   descriptor alive until the child is reaped and every request is reconciled.
 6. Start only the fixed system runtime and class:
 
    ```text
@@ -395,9 +493,12 @@ Before every local bridge launch, Rust must:
    options. The descriptor classpath is therefore an argv pair, not a mutable
    `CLASSPATH` value and not an assumed `-Djava.class.path` alias.
 
-   Rust must call `env_clear()` and then add only the exact name/value pairs in
-   the signed, versioned ART environment allowlist for the selected physical
-   profile. Unlisted variables are absent. `LD_*`, `CLASSPATH`,
+   The dedicated supervisor must construct a new empty `envp` rather than copy
+   or enumerate the parent environment. A Stage-3 direct test adds only the
+   exact pair list bound by `Stage3DirectTestAdmissionV1`; that is test input,
+   not a qualified Android profile. Stage 4 and later add only the exact
+   name/value pairs in the signed, versioned ART environment allowlist for the
+   selected physical profile. Unlisted variables are absent. `LD_*`, `CLASSPATH`,
    `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, and `JDK_JAVA_OPTIONS` are forbidden;
    `PATH` is unset and no executable or library is resolved through it. Any
    Android/ART root or boot-classpath variable that a profile actually needs
@@ -411,16 +512,22 @@ Before every local bridge launch, Rust must:
    closes; no terminal or inherited stdin is allowed. Stdout accepts exactly
    one bounded protocol frame, stderr is bounded and must be empty, and timeout
    or overflow kills the process group and reaps the direct child. The child
-   supervisor verifies immediately before `execve` that only FDs `0`, `1`,
-   `2`, and `3` are open and that FD 3 is the expected read-only APK
-   descriptor.
-7. After the call, recheck descriptor metadata and pathname identity. The
-   broker must independently return commitments to its current
+   supervisor verifies immediately before `execve` that the open descriptor
+   inventory is exactly `0` through `4`, FD 3 is the expected read-only APK,
+   FD 4 is the private status writer with `CLOEXEC`, and no descriptor numbered
+   5 or greater remains open. After successful exec, only FDs `0`, `1`, `2`,
+   and `3` may remain open.
+7. After every call, recheck descriptor metadata and pathname identity.
+   Stage 3 accepts only its exact authority-free local-probe frame plus that
+   descriptor/path postcheck; it obtains no PackageManager or broker
+   observation and performs no Binder reconciliation. Stage 4 and later
+   additionally require the broker to return commitments to its current
    PackageManager `sourceDir`, installed-package digest, version, and signing
-   certificate through the typed identity observation. Rust accepts the result
-   only when those private values match the descriptor, configured path, and
-   configured release identity. The protected controller repeats the
-   comparison from ADB and verifies the APK signature independently.
+   certificate through the typed identity observation. Rust accepts a later
+   typed result only when those private values match the descriptor,
+   configured path, and configured release identity. The protected controller
+   repeats the comparison from ADB and verifies the APK signature
+   independently.
 
 An installed APK is not immutable against the trusted Android system. The
 descriptor is safe from a Termux pathname replacement, while PackageManager
@@ -548,15 +655,120 @@ or aggregate audit labels.
 ## Local frame and public read contract
 
 Rust and `BridgeCliMain` use a small versioned local frame carried over bounded
-stdin/stdout. It contains a protocol version, CLI build ID, AIDL contract and
-signed-manifest digests, fixed method, request ID, 32-byte nonce, and the exact
-typed result. The broker and UserService observations are nested typed fields
-with their own compile-time identities and the same nonce. Unknown
+stdin/stdout. Stage 3 uses only the exact 152-byte request and 220-byte response
+tables below: source-manifest commitments, an opaque unsigned fixture-manifest
+commitment, the fixed local-probe method, request ID, nonce, outcome, and three
+false authority flags. In Stage 4 and later, a separately reviewed frame adds
+the expected CLI build identity, AIDL contract and signed-release-manifest
+digests, exact typed result, and nested broker/UserService observations with
+their own compile-time identities and the same nonce. Stage 3 has no such
+signed-manifest, typed-result, broker, UserService, or Binder completion fields. Unknown
 fields/versions, duplicate keys, invalid UTF-8, invalid lengths, extra frames,
 stderr bytes, nonzero local exit, timeout, cancellation, or trailing bytes fail
-closed. The bridge lane is initially one non-queueing permit and remains held
-through APK validation, child cleanup, Binder completion, callback death, and
-direct-child reaping.
+closed. The Stage-3 lane is one non-queueing permit held through APK validation,
+local child cleanup, descriptor/path reconciliation, and direct-child reaping.
+Stage 4 and later extend that same hold through Binder completion and callback
+death.
+
+### Stage-3 authority-free protocol probe
+
+Stage 3 implements only the closed `LOCAL_PROTOCOL_PROBE` method with method
+code `1`. It exists to test descriptor admission, ART launch, exact framing,
+timeout/cancellation, and child cleanup. It is not bridge status, does not
+observe Android or Shizuku identity, and confers no runtime authority.
+
+Every integer is unsigned big-endian. Every frame starts with this exact
+16-byte header; there is no alternate header or variable-length extension:
+
+| Offset | Size | Field | Required value |
+|---:|---:|---|---|
+| 0 | 8 | magic | ASCII `TMCPBRG1` |
+| 8 | 2 | `protocolVersion` | `1` |
+| 10 | 1 | `frameKind` | request `1`; response `2` |
+| 11 | 1 | `method` | `LOCAL_PROTOCOL_PROBE = 1` |
+| 12 | 4 | `bodyLength` | request `136`; response `204` |
+
+The request body is exactly 136 bytes and the complete request frame is
+exactly 152 bytes:
+
+| Body offset | Size | Field | Required value |
+|---:|---:|---|---|
+| 0 | 8 | `requestId` | positive and nonzero |
+| 8 | 32 | `nonce` | not all zero |
+| 40 | 32 | `manifestDigest` | not all zero; opaque commitment only |
+| 72 | 32 | `rustBuildDigest` | exact compiled-in Stage-3 Rust source-manifest digest |
+| 104 | 32 | `aidlDigest` | exact compiled-in canonical AIDL-closure digest |
+
+The response body is exactly 204 bytes and the complete response frame is
+exactly 220 bytes:
+
+| Body offset | Size | Field | Required value |
+|---:|---:|---|---|
+| 0 | 136 | request echo | byte-exact request body |
+| 136 | 32 | `cliBuildDigest` | exact Rust-expected Stage-3 CLI source-manifest digest |
+| 168 | 32 | `cliAidlDigest` | byte-equal request `aidlDigest` and embedded canonical AIDL-closure digest |
+| 200 | 1 | `outcome` | success `0` |
+| 201 | 1 | `runtimeAuthorityEnabled` | `0` (false) |
+| 202 | 1 | `shizukuLinked` | `0` (false) |
+| 203 | 1 | `binderBootstrapEnabled` | `0` (false) |
+
+Every digest in these tables is the raw 32-byte output of SHA-256, never hex
+text. The canonical AIDL closure is the byte string formed from the ASCII
+header `TMCP-AIDL-CLOSURE-V1\n`, followed by each of the exact nine tracked
+Stage-3 `.aidl` files in unsigned bytewise repository-path order. Each entry is
+one unsigned big-endian 32-bit path length, the exact UTF-8 repository-relative
+path bytes, one unsigned big-endian 64-bit file length, and the exact file
+bytes. The documentation/build contract freezes the nine-path inventory and
+recomputes this stream. Rust and `BridgeCliMain` embed the same resulting
+digest; Rust sends it as `aidlDigest`, Java rejects any mismatch, Java returns
+it as `cliAidlDigest`, and Rust requires all three values to be byte-equal.
+Rust likewise sends its exact compiled-in Rust source-manifest digest as
+`rustBuildDigest`. `BridgeCliMain` embeds the same expected Rust digest and
+rejects byte inequality before producing any response; the byte-exact request
+echo then returns that already-validated value to Rust.
+
+Stage 3 also adds two strict checked-in source manifests: one for the closed
+Rust executor and one for the closed Java CLI/codec. Each manifest is ASCII
+with LF endings, starts with `TMCP-STAGE3-SOURCE-MANIFEST-V1\n`, and then has
+exactly one line per frozen source in unsigned bytewise path order:
+64 lowercase hexadecimal SHA-256 characters, two ASCII spaces, the
+repository-relative path, and LF. Blank lines, comments, duplicate or absolute
+paths, `..`, symlinks, unlisted sources, and missing sources are invalid. The
+contract freezes both exact path inventories and recomputes every entry.
+`rustBuildDigest` is raw SHA-256 of the exact Rust manifest bytes;
+`cliBuildDigest` is raw SHA-256 of the exact CLI manifest bytes. Generated
+identity-constant files are excluded from their own source manifests to avoid
+self-reference and may contain only these recomputed constants. The build
+generates identical closed Rust-manifest, CLI-manifest, and AIDL constants for
+the sides that compare them. Java holds the expected Rust digest; the Rust
+executor holds the expected CLI digest internally, with no operator,
+configuration, or MCP override. Java returns its embedded `cliBuildDigest`,
+and Rust requires exact byte equality before accepting the probe.
+
+The maximum accepted body is 204 bytes and the maximum accepted complete frame
+is 220 bytes. Each frame kind has only the exact length above; the Stage-3
+codec has no generic or caller-sized body. Wrong magic, version, kind, method,
+or length; a zero `requestId`; an all-zero nonce or required digest;
+a request-echo mismatch; an unexpected Rust build, CLI build, or AIDL digest;
+truncation;
+a second frame; any trailing byte; any stderr byte; a nonzero local exit; timeout;
+cancellation; child setup/exec failure; or incomplete cleanup fails closed and
+returns no accepted probe result.
+
+The Stage-3 `BridgeCliMain` is a plain public `main` class loaded only by the
+fixed `app_process64` argv. It is absent from the Android manifest and accepts
+zero argv entries. It must not obtain an Android `Context`, call Binder or
+PackageManager, link Shizuku, send a broadcast, or instantiate any Stage-4
+broker/bootstrap type. Its three authority fields above are always false.
+The digest fields are byte commitments for exact local correlation only. In
+particular, `manifestDigest` is opaque to Java and its echo is not
+signed-manifest parsing, signature verification, provenance, or authorization.
+
+Stage 3 remains an internal, default-disabled development boundary. Rust has
+no bridge configuration field, no MCP registration or tool, no status surface,
+and no runtime feature wiring for it. Stage-3 tests may invoke the closed
+executor directly; wiring configuration or MCP requires a later reviewed
+stage.
 
 The proposed public surface remains default-disabled and read-only:
 
@@ -602,8 +814,11 @@ tests/fixtures/shizuku_bridge/
 ```
 
 A future default-off Cargo feature such as `android-shizuku-bridge` may reuse
-the repository's existing `rustix`, `sha2`, Tokio process, and bounded-process
-infrastructure. It must not reuse `rish_backend` as a transport abstraction.
+the repository's existing `rustix`, `sha2`, Tokio synchronization/time, and
+reviewed bounded-limit/error utilities. The installed-APK executor must not
+reuse `BoundedProcess` or any standard/Tokio process-spawn, stdio, or exec
+setup; only the dedicated FD-aware supervisor creates its child. It must not
+reuse `rish_backend` as a transport abstraction.
 The only API initially visible to MCP wiring is a no-input status read; the
 first framework read is added in its own pull request. Neither accepts a path,
 descriptor, package, field name, Android service, opcode, or opaque payload.
@@ -648,12 +863,12 @@ record, and attempts to inherit evidence across APK or policy changes.
 
 | Threat | Required disposition |
 |---|---|
-| Termux replaces a loader file or path | No Termux loader file exists; execute only the pinned installed-APK descriptor. |
+| Termux replaces a loader file or path | In Stage 4 and later, no Termux loader file exists and production executes only the pinned installed-APK descriptor. The Stage-3 harness-created fixture is test-only and authority-free; its same-UID mutability is mechanics-test input, not installed-code provenance. |
 | PackageManager updates/removes the APK during a call | Descriptor/path/broker identity or death generation changes; discard the result and require reconfiguration. |
 | Another app invokes the exported bootstrap receiver | It receives no authority; every broker transaction verifies the Binder caller UID, package, and enrolled signer. |
 | A shell-domain process injects a Shizuku Binder | It is inside the stated runtime TCB; manager inventory checks do not authenticate the Binder, and public status reports only the two UID observations. |
 | Root/Sui Shizuku supplies more authority | Reject every server or UserService UID other than `2000`. |
-| Parent environment or descriptor injection changes ART | `env_clear`, exact signed ART allowlist, absolute executable, fixed `/`, and close-all-except FDs 0/1/2/3; no fallback. |
+| Parent environment or descriptor injection changes ART | A newly constructed empty `envp`, exact signed ART allowlist, absolute executable, fixed `/`, and the dedicated FD-aware supervisor normalize the child to stdio, the validated read-only APK on FD 3, and the private CLOEXEC status writer on FD 4; fail-closed `close_range` removes every higher descriptor, and successful exec retains only FDs 0/1/2/3. |
 | Same-version reinstall or retained old UserService | Rotate `installGeneration`, invalidate and re-sign the installation-enrollment record, use a fresh broker secret plus `UserServiceArgs.tag`/service version, and require one-time service initialization. An old service must refuse the new tuple and be removed/reaped; matching build IDs are insufficient. |
 | Stock RISH loses/splits output or exit status | RISH is not in the production path; use typed Binder plus one local supervised frame. |
 | Caller requests a raw Binder/system service/command | No such AIDL or Rust method exists. |
@@ -672,8 +887,10 @@ their own exit gates pass. Stage 9 is a protected post-merge release operation:
    hardened `bridge-app`, inert AIDL, manifest/R8/unit/instrumentation checks;
    no privileged method.
 3. **Installed-APK descriptor executor:** Rust descriptor admission,
-   `/proc/self/fd/3` ART launcher, bounded local frames, cancellation and
-   adversarial fixtures; no MCP tool.
+   `/proc/self/fd/3` ART launcher, the exact authority-free
+   `LOCAL_PROTOCOL_PROBE` frame above, cancellation and adversarial fixtures;
+   `BridgeCliMain` has no Android/Binder/Shizuku access and Rust has no
+   configuration or MCP wiring.
 4. **Typed UID observations:** bootstrap callback, caller/signer policy,
    `ShizukuProvider` lifecycle, signed install enrollment, one-time
    install/broker/service generations, non-daemon UserService, and
