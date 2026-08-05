@@ -30,6 +30,9 @@ android {
         abortOnError = true
         checkDependencies = true
         checkReleaseBuilds = true
+        // Toolchain versions and bytes are independently checksum-locked. Online update
+        // availability is temporal advice and dependency updates remain separate changes.
+        disable += "AndroidGradlePluginVersion"
         warningsAsErrors = true
     }
 }

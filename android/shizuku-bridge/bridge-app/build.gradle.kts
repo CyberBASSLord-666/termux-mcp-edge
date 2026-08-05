@@ -69,9 +69,11 @@ android {
         abortOnError = true
         checkDependencies = true
         checkReleaseBuilds = true
+        // Toolchain versions and bytes are independently checksum-locked. Online update
+        // availability is temporal advice and dependency updates remain separate changes.
         // Both Stage-2 target variants are intentionally nondebuggable. Runtime/APK contracts
         // independently assert the flag stays absent, so this advisory cannot mask a regression.
-        disable += "HardcodedDebugMode"
+        disable += setOf("AndroidGradlePluginVersion", "HardcodedDebugMode")
         warningsAsErrors = true
     }
 }

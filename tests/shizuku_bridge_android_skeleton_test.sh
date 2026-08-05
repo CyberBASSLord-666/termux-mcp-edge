@@ -94,7 +94,7 @@ for line_number, raw_line in enumerate(wrapper.splitlines(), start=1):
 require(actual_wrapper_properties == expected_wrapper_properties, "Gradle wrapper properties changed")
 
 expected_android_hashes = {
-    "bridge-app/build.gradle.kts": "0d00cae721e942ff03ef6b53d311ee7813f42b3e65a3775001a27be123d95636",
+    "bridge-app/build.gradle.kts": "23e3596eeb4106ed57957dcb2401973f0d67b2b3d94f974917a59d808a1ef468",
     "bridge-app/gradle.lockfile": "71e38e1751aab7388f3e605d9a647c28f67be6d7ccd7ff9f933b662c76e072d2",
     "bridge-app/proguard-rules.pro": "3d1ec1661309bf212e4528d4403b31b41a87c7b42f5f7e09a483c7c1c1b8236d",
     "bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeManifestInstrumentationTest.java":
@@ -114,7 +114,7 @@ expected_android_hashes = {
         "7a4e6defdcb7e21a8cdb4bb4cbdbbef15bcd4c6bae923372fbfa07f0642ac29a",
     "bridge-app/src/test/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeSkeletonTest.java":
         "99ef67a4fd3bfa3d2c7fc04bc552cde1f614d248af3969c7e18a41d6876c4ab7",
-    "bridge-contract/build.gradle.kts": "ba1fc730396b2358149cc8e96d4ce1c147b418595d2ea52a76e4415a9b72790f",
+    "bridge-contract/build.gradle.kts": "741a6b35b003c8ee0ade326dd417a24ca559ef02e88f6b57c2934ba10194b92c",
     "bridge-contract/consumer-rules.pro": "452d9d12e3edd7ed1597714095d94a94f3ad25cc372613e9f68e48f6799ce27a",
     "bridge-contract/gradle.lockfile": "2179186d5e235cef4e223b2dba66fc10a63eb10217156dfbc0170c9c9db99cb9",
     "bridge-contract/src/main/AndroidManifest.xml":
@@ -285,11 +285,15 @@ for fragment in (
 require(app_build.count("isDebuggable = false") == 2, "both target variants must remain nondebuggable")
 require(app_build.count("isJniDebuggable = false") == 2, "both target variants must disable JNI debugging")
 require(
-    app_build.count('disable += "HardcodedDebugMode"') == 1,
-    "the one intentional lint exception changed",
+    app_build.count('disable += setOf("AndroidGradlePluginVersion", "HardcodedDebugMode")') == 1,
+    "application lint exceptions changed",
 )
 require(
-    len(re.findall(r"\bdisable\b", combined_build)) == 1,
+    contract_build.count('disable += "AndroidGradlePluginVersion"') == 1,
+    "contract lint exception changed",
+)
+require(
+    len(re.findall(r"\bdisable\b", combined_build)) == 2,
     "an additional lint disable or suppression was added",
 )
 for forbidden in (
@@ -814,6 +818,7 @@ for fragment in (
     "be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35",
     "Both target variants are explicitly",
     "nondebuggable",
+    "`AndroidGradlePluginVersion`",
     "`HardcodedDebugMode`",
     "41-file Android subtree inventory",
     "exactly nine contract host-test methods",
@@ -1175,8 +1180,13 @@ expect_rejected_replace \
 expect_rejected_replace \
   lint_exception_broadened \
   android/shizuku-bridge/bridge-app/build.gradle.kts \
-  'disable += "HardcodedDebugMode"' \
-  'disable += setOf("HardcodedDebugMode", "UnsafeOptInUsageError")'
+  'disable += setOf("AndroidGradlePluginVersion", "HardcodedDebugMode")' \
+  'disable += setOf("AndroidGradlePluginVersion", "HardcodedDebugMode", "UnsafeOptInUsageError")'
+expect_rejected_replace \
+  contract_lint_exception_broadened \
+  android/shizuku-bridge/bridge-contract/build.gradle.kts \
+  'disable += "AndroidGradlePluginVersion"' \
+  'disable += setOf("AndroidGradlePluginVersion", "UnsafeOptInUsageError")'
 expect_rejected_append \
   lint_baseline_added \
   android/shizuku-bridge/bridge-app/build.gradle.kts \

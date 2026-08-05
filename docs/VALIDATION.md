@@ -30,9 +30,11 @@ compile/target API `36`, minimum API `30`, Android platform-36 revision `2`,
 build-tools `35.0.0`, and JUnit `4.13.2` for host unit tests. The custom
 test-APK-only instrumentation runner uses public platform APIs and adds no
 runtime or instrumentation dependency. Both target variants are explicitly
-nondebuggable. The one intentional lint exception is exactly
-`HardcodedDebugMode`; every other lint warning remains fatal, and merged-manifest,
-APK, and emulator PackageManager checks independently enforce the debug flag.
+nondebuggable. The only intentional lint exceptions are
+`AndroidGradlePluginVersion` in both modules because every toolchain version and
+byte is independently pinned, plus app-only `HardcodedDebugMode`; every other
+lint warning remains fatal, and merged-manifest, APK, and emulator PackageManager
+checks independently enforce the debug flag.
 Repository mode rejects project-defined dependency repositories, closes the two
 module dependency blocks, rejects local JAR/AAR inputs, and uses committed strict
 dependency locks plus artifact-specific SHA-256 verification metadata. CI never
