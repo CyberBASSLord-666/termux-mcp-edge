@@ -665,7 +665,7 @@ workflow_path = root / ".github/workflows/shizuku-bridge-skeleton.yml"
 workflow = text(".github/workflows/shizuku-bridge-skeleton.yml")
 require(
     hashlib.sha256(workflow_path.read_bytes()).hexdigest()
-    == "5b13d1a4c59819d50033e0af63ae47114b9d8841b1345c53dc48865ac94b452f",
+    == "1197eb554f440d30ceb34247c029b09ab517e0f1447a131b15b5cc943c787d0a",
     "closed Stage 2 workflow bytes changed",
 )
 for fragment in (
@@ -755,6 +755,8 @@ for fragment in (
     'bounded 10s "$emulator" -no-window -version',
     "validate_adb_install_transcript()",
     "validate_adb_uninstall_transcript()",
+    "validate_package_absent()",
+    "cleanup_package_if_needed()",
     "ulimit -f 8 || exit 70",
     'expected_stdout = b"Performing Push Install\\nSuccess\\n"',
     'expected_stdout = b"Success\\n"',
@@ -764,6 +766,7 @@ for fragment in (
     '+ r" MB/s \\("',
     "if ((install_status != 0)); then",
     "if ((uninstall_status != 0)); then",
+    "if ((path_status != 1)); then",
     "if re.fullmatch(expected_stderr, stderr) is None:",
     "if stderr != expected_stderr:",
     'target_cleanup_required=true',
@@ -802,10 +805,10 @@ require(
     "GUI-linked emulator version probe added",
 )
 require(workflow.count("install --no-streaming -r") == 1, "ADB install path changed")
-require(workflow.count("ulimit -f 8 || exit 70") == 2, "ADB output ceilings changed")
+require(workflow.count("ulimit -f 8 || exit 70") == 3, "ADB output ceilings changed")
 require(
-    workflow.count("<<'PY' || return 1") == 2,
-    "ADB transcript validator failure propagation changed",
+    workflow.count("<<'PY' || return 1") == 3,
+    "ADB transcript or absence validator failure propagation changed",
 )
 install_stdout_check = (
     '          expected_stdout = b"Performing Push Install\\nSuccess\\n"\n'
@@ -865,10 +868,32 @@ uninstall_status_capture = (
     '              return 1\n'
     '            fi'
 )
+absence_status_capture = (
+    '            if (\n'
+    '              ulimit -f 8 || exit 70\n'
+    '              adb_bounded 15s -s "$EMULATOR_SERIAL" \\\n'
+    '                shell pm path "$package_name"\n'
+    '            ) >"$stdout_path" 2>"$stderr_path"; then\n'
+    '              path_status=0\n'
+    '            else\n'
+    '              path_status=$?\n'
+    '            fi\n'
+    '            if ((path_status != 1)); then\n'
+    "              printf 'package absence probe failed for %s with status %d\\n' \\\n"
+    '                "$label" "$path_status" >&2\n'
+    '              cat "$stdout_path" >&2\n'
+    '              cat "$stderr_path" >&2\n'
+    '              return 1\n'
+    '            fi'
+)
 require(workflow.count(install_status_capture) == 1, "ADB install status capture changed")
 require(
     workflow.count(uninstall_status_capture) == 1,
     "ADB uninstall status capture changed",
+)
+require(
+    workflow.count(absence_status_capture) == 1,
+    "package absence status capture changed",
 )
 require(
     workflow.count("              install_status=$?\n") == 1,
@@ -877,6 +902,10 @@ require(
 require(
     workflow.count("              uninstall_status=$?\n") == 1,
     "ADB uninstall failure status capture changed",
+)
+require(
+    workflow.count("              path_status=$?\n") == 1,
+    "package absence failure status capture changed",
 )
 require("target_installed" not in workflow, "stale post-validation cleanup flag returned")
 require("test_installed" not in workflow, "stale test cleanup flag returned")
@@ -904,17 +933,19 @@ require(
     "test cleanup assignment inventory changed",
 )
 require(
-    workflow.count("validate_adb_uninstall_transcript") == 5,
+    workflow.count("validate_adb_uninstall_transcript") == 4,
     "ADB uninstall validator call inventory changed",
 )
+require(workflow.count("validate_package_absent") == 5, "package absence call inventory changed")
+require(workflow.count("cleanup_package_if_needed") == 3, "trap package cleanup inventory changed")
 cleanup_uninstall_sequence = (
     '            if [[ "$test_cleanup_required" == true ]]; then\n'
-    "              validate_adb_uninstall_transcript \\\n"
+    "              cleanup_package_if_needed \\\n"
     '                cleanup-test "$BRIDGE_TEST_APPLICATION_ID" \\\n'
     "                || cleanup_failed=true\n"
     "            fi\n"
     '            if [[ "$target_cleanup_required" == true ]]; then\n'
-    "              validate_adb_uninstall_transcript \\\n"
+    "              cleanup_package_if_needed \\\n"
     '                cleanup-target "$BRIDGE_APPLICATION_ID" \\\n'
     "                || cleanup_failed=true\n"
     "            fi"
@@ -923,23 +954,36 @@ require(
     workflow.count(cleanup_uninstall_sequence) == 1,
     "trap cleanup package bindings changed",
 )
-normal_test_uninstall = workflow.rindex('            test "$BRIDGE_TEST_APPLICATION_ID"')
-normal_target_uninstall = workflow.rindex('            target "$BRIDGE_APPLICATION_ID"')
-test_absence_check = workflow.index('test -z "$test_path_after_uninstall"')
-target_absence_check = workflow.index('test -z "$target_path_after_uninstall"')
-test_cleanup_disarm = workflow.rindex("test_cleanup_required=false")
-target_cleanup_disarm = workflow.rindex("target_cleanup_required=false")
-require(
-    normal_test_uninstall < normal_target_uninstall < test_absence_check,
-    "normal uninstall ordering changed",
+cleanup_helper = (
+    '          cleanup_package_if_needed() {\n'
+    '            local label="$1"\n'
+    '            local package_name="$2"\n\n'
+    '            if validate_package_absent \\\n'
+    '              "$label-already-absent" "$package_name" \\\n'
+    '              >/dev/null 2>&1; then\n'
+    '              return 0\n'
+    '            fi\n'
+    '            validate_adb_uninstall_transcript "$label" "$package_name" \\\n'
+    '              || return 1\n'
+    '            validate_package_absent "$label-post-uninstall" "$package_name"\n'
+    '          }'
+)
+require(workflow.count(cleanup_helper) == 1, "already-absent cleanup handling changed")
+normal_uninstall_and_absence = (
+    '          validate_adb_uninstall_transcript \\\n'
+    '            test "$BRIDGE_TEST_APPLICATION_ID"\n'
+    '          validate_adb_uninstall_transcript \\\n'
+    '            target "$BRIDGE_APPLICATION_ID"\n'
+    '          validate_package_absent \\\n'
+    '            test "$BRIDGE_TEST_APPLICATION_ID"\n'
+    '          validate_package_absent \\\n'
+    '            target "$BRIDGE_APPLICATION_ID"\n'
+    '          test_cleanup_required=false\n'
+    '          target_cleanup_required=false'
 )
 require(
-    test_absence_check < target_absence_check < test_cleanup_disarm,
-    "cleanup disarmed before package absence proof",
-)
-require(
-    test_cleanup_disarm < target_cleanup_disarm,
-    "cleanup disarm ordering changed",
+    workflow.count(normal_uninstall_and_absence) == 1,
+    "normal uninstall, absence, or cleanup-disarm ordering changed",
 )
 require("uninstall_output" not in workflow, "pipeline-masked uninstall status returned")
 for forbidden in (
@@ -1049,7 +1093,12 @@ for fragment in (
     "`Performing Push Install` followed by `Success`",
     "Unexpected framing cannot skip uninstall and emulator cleanup",
     "Every uninstall independently requires status zero, exact `Success` stdout, and empty stderr",
-    "Both cleanup flags remain armed until `pm path` proves both package IDs absent",
+    "absent-package `pm path` probe must return exact",
+    "status one with empty stdout and stderr",
+    "Both cleanup flags remain armed until that",
+    "closed probe proves both package IDs absent",
+    "EXIT trap first accepts the",
+    "same exact already-absent result",
     "`OK (3 tests)`",
     "final result code `-1`",
     "real API-30 `Parcel` test rejects truncation at every four-byte Parcel",
@@ -1547,13 +1596,43 @@ expect_rejected_replace \
 expect_rejected_replace \
   cleanup_disarmed_before_absence \
   .github/workflows/shizuku-bridge-skeleton.yml \
-  $'          test -z "$target_path_after_uninstall"\n          test_cleanup_required=false' \
-  $'          test_cleanup_required=false\n          test -z "$target_path_after_uninstall"'
+  $'          validate_package_absent \\\n            target "$BRIDGE_APPLICATION_ID"\n          test_cleanup_required=false' \
+  $'          test_cleanup_required=false\n          validate_package_absent \\\n            target "$BRIDGE_APPLICATION_ID"'
 expect_rejected_replace \
   trap_test_package_binding_changed \
   .github/workflows/shizuku-bridge-skeleton.yml \
   'cleanup-test "$BRIDGE_TEST_APPLICATION_ID"' \
   'cleanup-test "$BRIDGE_APPLICATION_ID"'
+expect_rejected_replace \
+  package_absence_status_zeroed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'path_status=$?' \
+  'path_status=0'
+expect_rejected_replace \
+  package_absence_status_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'if ((path_status != 1)); then' \
+  'if false; then'
+expect_rejected_replace \
+  package_absence_stdout_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'if stdout != b"":' \
+  'if False and stdout != b"":'
+expect_rejected_replace \
+  package_absence_stderr_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'if stderr != b"":' \
+  'if False and stderr != b"":'
+expect_rejected_replace \
+  already_absent_cleanup_rejected \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'              >/dev/null 2>&1; then\n              return 0' \
+  $'              >/dev/null 2>&1; then\n              return 1'
+expect_rejected_replace \
+  cleanup_post_uninstall_absence_removed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'validate_package_absent "$label-post-uninstall" "$package_name"' \
+  'true # package absence not proven'
 expect_rejected_append \
   extra_instrumentation_test_added \
   android/shizuku-bridge/bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeParcelInstrumentationTest.java \

@@ -936,6 +936,57 @@ jobs:
           PY
           }
 
+          validate_package_absent() {
+            local label="$1"
+            local package_name="$2"
+            local stdout_path="$RUNNER_TEMP/shizuku-bridge-$label-path.stdout"
+            local stderr_path="$RUNNER_TEMP/shizuku-bridge-$label-path.stderr"
+            local path_status
+
+            if (
+              ulimit -f 8 || exit 70
+              adb_bounded 15s -s "$EMULATOR_SERIAL" \
+                shell pm path "$package_name"
+            ) >"$stdout_path" 2>"$stderr_path"; then
+              path_status=0
+            else
+              path_status=$?
+            fi
+            if ((path_status != 1)); then
+              printf 'package absence probe failed for %s with status %d\n' \
+                "$label" "$path_status" >&2
+              cat "$stdout_path" >&2
+              cat "$stderr_path" >&2
+              return 1
+            fi
+
+            python3 - "$stdout_path" "$stderr_path" <<'PY' || return 1
+          import pathlib
+          import sys
+
+          stdout = pathlib.Path(sys.argv[1]).read_bytes()
+          stderr = pathlib.Path(sys.argv[2]).read_bytes()
+          if stdout != b"":
+              raise SystemExit(f"unexpected package-absence stdout: {stdout!r}")
+          if stderr != b"":
+              raise SystemExit(f"unexpected package-absence stderr: {stderr!r}")
+          PY
+          }
+
+          cleanup_package_if_needed() {
+            local label="$1"
+            local package_name="$2"
+
+            if validate_package_absent \
+              "$label-already-absent" "$package_name" \
+              >/dev/null 2>&1; then
+              return 0
+            fi
+            validate_adb_uninstall_transcript "$label" "$package_name" \
+              || return 1
+            validate_package_absent "$label-post-uninstall" "$package_name"
+          }
+
           group_exists() {
             [[ -n "$emulator_pgid" ]] && kill -0 -- "-$emulator_pgid" 2>/dev/null
           }
@@ -966,12 +1017,12 @@ jobs:
             trap - EXIT
             set +e
             if [[ "$test_cleanup_required" == true ]]; then
-              validate_adb_uninstall_transcript \
+              cleanup_package_if_needed \
                 cleanup-test "$BRIDGE_TEST_APPLICATION_ID" \
                 || cleanup_failed=true
             fi
             if [[ "$target_cleanup_required" == true ]]; then
-              validate_adb_uninstall_transcript \
+              cleanup_package_if_needed \
                 cleanup-target "$BRIDGE_APPLICATION_ID" \
                 || cleanup_failed=true
             fi
@@ -996,7 +1047,7 @@ jobs:
               tail -n 200 "$emulator_log" >&2
             fi
             if [[ "$cleanup_failed" == true ]]; then
-              printf '%s\n' 'bounded emulator cleanup did not complete' >&2
+              printf '%s\n' 'bounded Stage 2 cleanup did not complete' >&2
               if ((status == 0)); then
                 status=1
               fi
@@ -1171,16 +1222,10 @@ jobs:
             test "$BRIDGE_TEST_APPLICATION_ID"
           validate_adb_uninstall_transcript \
             target "$BRIDGE_APPLICATION_ID"
-          test_path_after_uninstall="$(
-            adb_bounded 15s -s "$EMULATOR_SERIAL" \
-              shell pm path "$BRIDGE_TEST_APPLICATION_ID" | tr -d '\r'
-          )"
-          target_path_after_uninstall="$(
-            adb_bounded 15s -s "$EMULATOR_SERIAL" \
-              shell pm path "$BRIDGE_APPLICATION_ID" | tr -d '\r'
-          )"
-          test -z "$test_path_after_uninstall"
-          test -z "$target_path_after_uninstall"
+          validate_package_absent \
+            test "$BRIDGE_TEST_APPLICATION_ID"
+          validate_package_absent \
+            target "$BRIDGE_APPLICATION_ID"
           test_cleanup_required=false
           target_cleanup_required=false
 

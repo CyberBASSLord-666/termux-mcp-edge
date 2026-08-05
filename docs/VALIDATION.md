@@ -121,9 +121,14 @@ stderr separately under a file-size ceiling, requires status zero, exact stdout
 progress line tied to the reviewed APK path and byte size.
 Unexpected framing cannot skip uninstall and emulator cleanup.
 Every uninstall independently requires status zero, exact `Success` stdout, and empty stderr.
-Both cleanup flags remain armed until `pm path` proves both package IDs absent,
-so a transcript, timeout, or absence-check failure cannot mask the status or
-disable the trap's retry.
+On the pinned API-30 image, an absent-package `pm path` probe must return exact
+status one with empty stdout and stderr; status zero, any other status, or any
+output is not absence evidence. Both cleanup flags remain armed until that
+closed probe proves both package IDs absent. The EXIT trap first accepts the
+same exact already-absent result and otherwise performs the bounded uninstall
+and repeats the absence proof, so a successful normal uninstall cannot be
+misclassified as a cleanup failure and a transcript, timeout, or probe failure
+cannot disable cleanup.
 A successful run must complete exactly the three closed-source inert manifest/parcel
 tests with only result keys `numtests`, `tests`, and `stream`, `OK (3 tests)`,
 final result code `-1`, and no unrecognized status, result, or trailing protocol
