@@ -122,11 +122,11 @@ The backend implements a private `attest_read_only` multi-probe suite that, unde
 6. `exec /system/bin/getprop ro.build.fingerprint` — bounded graphic fingerprint (hashed privately)
 7. `exec /system/bin/cat /proc/sys/kernel/random/boot_id` — canonical UUID (hashed privately)
 
-On full success it mints a private restart-sensitive backend epoch binding DEX digest, fingerprint hash, boot-id hash, SELinux context hash, SDK, GID, and groups. Epoch material, fingerprints, boot ids, SELinux strings, and group inventories never appear in MCP responses, logs, or `Debug` output. Failure invalidates any prior live epoch. Public `android_rish_status` remains S2.5 (`verified_shell_uid`) until physical S2.5 evidence is accepted; elevating the public tool to `attested_read_only` is a separate, reviewable step after that gate.
+On full success it mints a private restart-sensitive backend epoch binding DEX digest, fingerprint hash, boot-id hash, SELinux context hash, SDK, GID, and groups. Epoch material, fingerprints, boot ids, SELinux strings, and group inventories never appear in MCP responses, logs, or `Debug` output. Failure invalidates any prior live epoch.
 
 ### Public tool
 
-`android_rish_status` accepts no arguments. Its complete success payload is:
+`android_rish_status` accepts no arguments and runs the S3 multi-probe suite. Its complete success payload is:
 
 ```json
 {
@@ -134,12 +134,43 @@ On full success it mints a private restart-sensitive backend epoch binding DEX d
   "backend": "shizuku_rish",
   "principal": "android_shell",
   "uid": 2000,
-  "state": "verified_shell_uid",
+  "state": "attested_read_only",
   "rootAccepted": false,
   "arbitraryShell": false,
   "mutationReady": false
 }
 ```
+
+Sensitive S3 material (backend epoch, fingerprints, boot id, SELinux context, group inventory, digests) is never returned.
+
+### First typed read: `android_system_features`
+
+Separately default-disabled via `MCP__ANDROID__SYSTEM_FEATURES_ENABLED=true` (requires rish enabled). Accepts no arguments. After a live S3 epoch exists (establishes one if needed), runs only fixed `exec /system/bin/cmd package has-feature <allowlisted-name>` probes for ten compile-time feature names. Returns only those booleans plus:
+
+```json
+{
+  "available": true,
+  "backend": "shizuku_rish",
+  "state": "attested_read_only",
+  "controlAuthorityProven": false,
+  "arbitraryShell": false,
+  "mutationReady": false,
+  "features": {
+    "wifi": true,
+    "bluetooth": true,
+    "cameraAny": true,
+    "location": true,
+    "microphone": true,
+    "nfc": true,
+    "fingerprint": true,
+    "accelerometer": true,
+    "touchscreen": true,
+    "webview": true
+  }
+}
+```
+
+Never returns raw OEM lines, feature versions, or non-allowlisted names.
 
 When configured but unavailable, the tool returns an MCP tool error containing only `android_rish_status_unavailable` and one stable low-cardinality reason code. It never reflects raw stderr or configuration details. When the runtime gate is false, the tool is absent from discovery and direct invocation fails closed.
 

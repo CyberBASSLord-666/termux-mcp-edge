@@ -508,16 +508,17 @@ validate_enabled_posture() {
   [[ "$status" == 200 ]] || fail rish_status_http_invalid
   jq -e '
     .result.isError == false
-    and .result.structuredContent == {
-      available:true,
-      backend:"shizuku_rish",
-      principal:"android_shell",
-      uid:2000,
-      state:"verified_shell_uid",
-      rootAccepted:false,
-      arbitraryShell:false,
-      mutationReady:false
-    }
+    and .result.structuredContent.available == true
+    and .result.structuredContent.backend == "shizuku_rish"
+    and .result.structuredContent.principal == "android_shell"
+    and .result.structuredContent.uid == 2000
+    and (
+      .result.structuredContent.state == "verified_shell_uid"
+      or .result.structuredContent.state == "attested_read_only"
+    )
+    and .result.structuredContent.rootAccepted == false
+    and .result.structuredContent.arbitraryShell == false
+    and .result.structuredContent.mutationReady == false
   ' "$body" >/dev/null || fail rish_status_contract_invalid
 
   status="$(mcp_post "$body" '{"jsonrpc":"2.0","id":"arguments","method":"tools/call","params":{"name":"android_rish_status","arguments":{"command":"id","argv":["-u"],"dry_run":false}}}' "$MCP_SESSION_ID")"

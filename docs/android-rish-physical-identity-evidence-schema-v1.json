@@ -322,7 +322,7 @@
           "const": 2000
         },
         "state": {
-          "const": "verified_shell_uid"
+          "enum": ["verified_shell_uid", "attested_read_only"]
         },
         "rootAccepted": {
           "const": false

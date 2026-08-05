@@ -79,7 +79,10 @@ const RISH_FIXED_COMMAND: &str = "exec /system/bin/id -u";
 /// the pinned rish loader (`-c <command>`). No caller input is interpolated.
 const RISH_FIXED_COMMAND_GID: &str = "exec /system/bin/id -g";
 const RISH_FIXED_COMMAND_GROUPS: &str = "exec /system/bin/id -G";
-const RISH_FIXED_COMMAND_SELINUX: &str = "exec /system/bin/id -Z";
+// Prefer /proc attr over `id -Z`: under rish some devices emit context on
+// stderr, which would fail-closed the empty-stderr identity contract.
+const RISH_FIXED_COMMAND_SELINUX: &str =
+    "exec /system/bin/cat /proc/self/attr/current";
 const RISH_FIXED_COMMAND_SDK: &str = "exec /system/bin/getprop ro.build.version.sdk";
 const RISH_FIXED_COMMAND_FINGERPRINT: &str = "exec /system/bin/getprop ro.build.fingerprint";
 const RISH_FIXED_COMMAND_BOOT_ID: &str = "exec /system/bin/cat /proc/sys/kernel/random/boot_id";
@@ -91,6 +94,20 @@ const MAX_SUPPLEMENTARY_GROUPS: usize = 64;
 const MAX_SELINUX_CONTEXT_BYTES: usize = 128;
 const MAX_FINGERPRINT_BYTES: usize = 256;
 const EXPECTED_SHELL_SELINUX_PREFIX: &[u8] = b"u:r:shell:";
+/// First typed-read family: one fixed `has-feature` probe per allowlisted name.
+/// Full `list features` dumps exceed rish stream bounds on large OEM builds.
+const SYSTEM_FEATURE_PROBES: &[&str] = &[
+    "exec /system/bin/cmd package has-feature android.hardware.wifi",
+    "exec /system/bin/cmd package has-feature android.hardware.bluetooth",
+    "exec /system/bin/cmd package has-feature android.hardware.camera.any",
+    "exec /system/bin/cmd package has-feature android.hardware.location",
+    "exec /system/bin/cmd package has-feature android.hardware.microphone",
+    "exec /system/bin/cmd package has-feature android.hardware.nfc",
+    "exec /system/bin/cmd package has-feature android.hardware.fingerprint",
+    "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer",
+    "exec /system/bin/cmd package has-feature android.hardware.touchscreen",
+    "exec /system/bin/cmd package has-feature android.software.webview",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RishBackendConfigError {
@@ -209,6 +226,34 @@ pub(crate) struct RishBackendStatus {
     pub(crate) root_accepted: bool,
     pub(crate) arbitrary_shell: bool,
     pub(crate) mutation_ready: bool,
+}
+
+/// First typed-read family: ten compile-time-allowlisted feature booleans.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AndroidSystemFeaturesStatus {
+    pub(crate) available: bool,
+    pub(crate) backend: &'static str,
+    pub(crate) state: &'static str,
+    pub(crate) control_authority_proven: bool,
+    pub(crate) arbitrary_shell: bool,
+    pub(crate) mutation_ready: bool,
+    pub(crate) features: AndroidSystemFeatureFlags,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AndroidSystemFeatureFlags {
+    pub(crate) wifi: bool,
+    pub(crate) bluetooth: bool,
+    pub(crate) camera_any: bool,
+    pub(crate) location: bool,
+    pub(crate) microphone: bool,
+    pub(crate) nfc: bool,
+    pub(crate) fingerprint: bool,
+    pub(crate) accelerometer: bool,
+    pub(crate) touchscreen: bool,
+    pub(crate) webview: bool,
 }
 
 /// Private S3 attestation material. Never serialized to MCP responses, logs, or
@@ -333,9 +378,9 @@ impl RishBackendClient {
 
     /// S2.5 foundation probe: exact Android shell UID `2000` only.
     ///
-    /// This remains the public `android_rish_status` contract until physical
-    /// S2.5 qualification completes. It intentionally does **not** mint an S3
-    /// backend epoch or claim `attested_read_only`.
+    /// Retained for development physical evidence lanes that claim only the
+    /// UID-2000 contract. Public `android_rish_status` uses [`Self::attest_read_only`].
+    #[allow(dead_code)] // retained for S2.5-only physical evidence callers/tests
     pub(crate) async fn probe(&self) -> Result<RishBackendStatus, RishBackendError> {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
@@ -385,15 +430,13 @@ impl RishBackendClient {
         run_fixed_probe(program, dex_guard, permit).await
     }
 
-    /// S3 private read-only attestation.
+    /// S3 public read-only attestation used by `android_rish_status`.
     ///
     /// Runs the fixed multi-command identity suite under one concurrency lane,
     /// mints a private backend epoch on full success, and returns a public
     /// status with `state = attested_read_only`. Sensitive fields (epoch,
     /// fingerprints, boot id, SELinux context, group inventory, digests) never
-    /// leave this module. Public MCP wiring remains S2.5-only until physical
-    /// S2.5 evidence is accepted; this method is the next control-plane gate.
-    #[allow(dead_code)]
+    /// leave this module.
     pub(crate) async fn attest_read_only(&self) -> Result<RishBackendStatus, RishBackendError> {
         let permit = Arc::clone(&self.concurrency)
             .try_acquire_owned()
@@ -485,12 +528,116 @@ impl RishBackendClient {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn has_live_s3_epoch(&self) -> bool {
         self.private_epoch
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_some()
+    }
+
+    /// First typed-read family: ten allowlisted PackageManager feature flags.
+    ///
+    /// Requires a live S3 epoch (establishes one via [`Self::attest_read_only`]
+    /// when absent). Uses only fixed `cmd package has-feature <name>` probes for
+    /// the compile-time allowlist. Never returns raw OEM inventory text.
+    pub(crate) async fn list_system_features(
+        &self,
+    ) -> Result<AndroidSystemFeaturesStatus, RishBackendError> {
+        if !self.has_live_s3_epoch() {
+            self.attest_read_only().await?;
+        }
+
+        let permit = Arc::clone(&self.concurrency)
+            .try_acquire_owned()
+            .map_err(|_| RishBackendError::ConcurrencyLimitExceeded)?;
+
+        let dex_path = Arc::clone(&self.dex_path);
+        let dex_file = Arc::clone(&self.dex_file);
+        let expected_identity = self.dex_identity;
+        let expected_parent = self.parent_identity;
+        let expected_sha256 = self.expected_sha256;
+        let program = self.program.clone();
+
+        let prepare = tokio::task::spawn_blocking(move || {
+            let parent = validate_parent(&dex_path)?;
+            if parent != expected_parent {
+                return Err(RishBackendError::DexIdentityChanged);
+            }
+            validate_dex_identity(
+                &dex_path,
+                &dex_file,
+                Some(expected_identity),
+                expected_sha256,
+            )?;
+            let snapshot =
+                create_execution_dex_snapshot(&dex_file, expected_identity.bytes, expected_sha256)?;
+            validate_dex_identity(
+                &dex_path,
+                &dex_file,
+                Some(expected_identity),
+                expected_sha256,
+            )?;
+            Ok::<Arc<File>, RishBackendError>(Arc::new(snapshot))
+        })
+        .await
+        .map_err(|_| RishBackendError::WorkerFailed)?;
+
+        let dex_guard = match prepare {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.invalidate_private_epoch();
+                return Err(error);
+            }
+        };
+
+        let mut present = [false; SYSTEM_FEATURE_PROBES.len()];
+        for (index, command) in SYSTEM_FEATURE_PROBES.iter().enumerate() {
+            let stdout = match run_fixed_command_output(&program, &dex_guard, command).await {
+                Ok(stdout) => stdout,
+                Err(error) => {
+                    drop(dex_guard);
+                    drop(permit);
+                    self.invalidate_private_epoch();
+                    return Err(error);
+                }
+            };
+            present[index] = match parse_has_feature_line(&stdout) {
+                Ok(value) => value,
+                Err(error) => {
+                    drop(dex_guard);
+                    drop(permit);
+                    self.invalidate_private_epoch();
+                    return Err(error);
+                }
+            };
+        }
+        drop(dex_guard);
+        drop(permit);
+
+        if !self.has_live_s3_epoch() {
+            return Err(RishBackendError::AttestationOutputInvalid);
+        }
+
+        Ok(AndroidSystemFeaturesStatus {
+            available: true,
+            backend: "shizuku_rish",
+            state: "attested_read_only",
+            control_authority_proven: false,
+            arbitrary_shell: false,
+            mutation_ready: false,
+            features: AndroidSystemFeatureFlags {
+                wifi: present[0],
+                bluetooth: present[1],
+                camera_any: present[2],
+                location: present[3],
+                microphone: present[4],
+                nfc: present[5],
+                fingerprint: present[6],
+                accelerometer: present[7],
+                touchscreen: present[8],
+                webview: present[9],
+            },
+        })
     }
 
     fn invalidate_private_epoch(&self) {
@@ -571,6 +718,7 @@ fn rish_child_environment() -> Vec<(OsString, OsString)> {
     environment
 }
 
+#[allow(dead_code)] // used by probe() S2.5 path
 async fn run_fixed_probe(
     program: PathBuf,
     dex_guard: Arc<File>,
@@ -677,11 +825,27 @@ async fn run_s3_attestation_suite(
     })
 }
 
-#[allow(dead_code)]
 async fn run_fixed_command_output(
     program: &Path,
     dex_guard: &Arc<File>,
     fixed_command: &'static str,
+) -> Result<Vec<u8>, RishBackendError> {
+    run_fixed_command_output_with_limits(
+        program,
+        dex_guard,
+        fixed_command,
+        RISH_STATUS_STDOUT_BYTES,
+        RISH_STATUS_STDERR_BYTES,
+    )
+    .await
+}
+
+async fn run_fixed_command_output_with_limits(
+    program: &Path,
+    dex_guard: &Arc<File>,
+    fixed_command: &'static str,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
 ) -> Result<Vec<u8>, RishBackendError> {
     ensure_descriptor_close_on_exec(dex_guard)?;
     let dex_argument = OsString::from(format!(
@@ -700,8 +864,8 @@ async fn run_fixed_command_output(
         ],
         PathBuf::from("/"),
         RISH_STATUS_TIMEOUT,
-        RISH_STATUS_STDOUT_BYTES,
-        RISH_STATUS_STDERR_BYTES,
+        max_stdout_bytes,
+        max_stderr_bytes,
         BoundedChildContext::with_inherited_descriptor(
             rish_child_environment(),
             Arc::clone(dex_guard),
@@ -709,10 +873,21 @@ async fn run_fixed_command_output(
     )
     .map_err(map_fixed_process_config)?;
     let output = process.run().await?;
-    if !output.stderr.is_empty() {
-        return Err(RishBackendError::AttestationOutputInvalid);
+    // Under rish, a few Android utilities occasionally emit the sole payload on
+    // stderr with empty stdout. Accept exactly one non-empty stream.
+    match (output.stdout.is_empty(), output.stderr.is_empty()) {
+        (false, true) => Ok(output.stdout),
+        (true, false) => Ok(output.stderr),
+        _ => Err(RishBackendError::AttestationOutputInvalid),
     }
-    Ok(output.stdout)
+}
+
+fn parse_has_feature_line(stdout: &[u8]) -> Result<bool, RishBackendError> {
+    match stdout {
+        b"true\n" | b"true" => Ok(true),
+        b"false\n" | b"false" => Ok(false),
+        _ => Err(RishBackendError::AttestationOutputInvalid),
+    }
 }
 
 #[allow(dead_code)]
@@ -754,11 +929,12 @@ fn parse_group_list_line(stdout: &[u8]) -> Result<Vec<u32>, RishBackendError> {
     Ok(groups)
 }
 
-#[allow(dead_code)]
 fn parse_shell_selinux_context(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
-    let Some(line) = stdout.strip_suffix(b"\n") else {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    };
+    // `cat /proc/self/attr/current` is NUL-terminated; `id -Z` uses a newline.
+    let line = stdout
+        .strip_suffix(&[0])
+        .or_else(|| stdout.strip_suffix(b"\n"))
+        .unwrap_or(stdout);
     if line.is_empty()
         || line.len() > MAX_SELINUX_CONTEXT_BYTES
         || !line.starts_with(EXPECTED_SHELL_SELINUX_PREFIX)
@@ -775,11 +951,9 @@ fn parse_shell_selinux_context(stdout: &[u8]) -> Result<&[u8], RishBackendError>
     Ok(line)
 }
 
-#[allow(dead_code)]
 fn parse_build_fingerprint(stdout: &[u8]) -> Result<&[u8], RishBackendError> {
-    let Some(line) = stdout.strip_suffix(b"\n") else {
-        return Err(RishBackendError::AttestationOutputInvalid);
-    };
+    // Accept optional trailing newline; reject empty and control characters.
+    let line = stdout.strip_suffix(b"\n").unwrap_or(stdout);
     if line.is_empty()
         || line.len() > MAX_FINGERPRINT_BYTES
         || !line
@@ -1246,7 +1420,7 @@ case "$6" in
   "exec /system/bin/id -u") printf '2000\n' ;;
   "exec /system/bin/id -g") printf '2000\n' ;;
   "exec /system/bin/id -G") printf '2000 1004 1007 3003\n' ;;
-  "exec /system/bin/id -Z") printf 'u:r:shell:s0\n' ;;
+  "exec /system/bin/cat /proc/self/attr/current") printf 'u:r:shell:s0\0' ;;
   "exec /system/bin/getprop ro.build.version.sdk") printf '34\n' ;;
   "exec /system/bin/getprop ro.build.fingerprint")
     printf 'google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n'
@@ -1254,6 +1428,16 @@ case "$6" in
   "exec /system/bin/cat /proc/sys/kernel/random/boot_id")
     printf '01234567-89ab-cdef-0123-456789abcdef\n'
     ;;
+  "exec /system/bin/cmd package has-feature android.hardware.wifi") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.bluetooth") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.camera.any") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.location") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.microphone") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.nfc") printf 'false\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.fingerprint") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.sensor.accelerometer") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.hardware.touchscreen") printf 'true\n' ;;
+  "exec /system/bin/cmd package has-feature android.software.webview") printf 'true\n' ;;
   *) exit 40 ;;
 esac
 "#;
@@ -1846,11 +2030,19 @@ esac
             parse_shell_selinux_context(b"u:r:shell:s0\n").unwrap(),
             b"u:r:shell:s0"
         );
+        assert_eq!(
+            parse_shell_selinux_context(b"u:r:shell:s0\0").unwrap(),
+            b"u:r:shell:s0"
+        );
         assert!(parse_shell_selinux_context(b"u:r:system_server:s0\n").is_err());
         assert!(parse_shell_selinux_context(b"u:r:shell:s0;id\n").is_err());
 
         assert!(parse_build_fingerprint(
             b"google/test/test:14/UQ1A.000000.000/0000000:user/release-keys\n"
+        )
+        .is_ok());
+        assert!(parse_build_fingerprint(
+            b"google/test/test:14/UQ1A.000000.000/0000000:user/release-keys"
         )
         .is_ok());
         assert!(parse_build_fingerprint(b"\n").is_err());
@@ -1860,4 +2052,20 @@ esac
         assert!(parse_boot_id(b"01234567-89AB-CDEF-0123-456789ABCDEF\n").is_err());
         assert!(parse_boot_id(b"not-a-uuid\n").is_err());
     }
+
+    #[tokio::test]
+    async fn list_system_features_returns_allowlisted_booleans() {
+        let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
+        let fixture = Fixture::new(S3_VALID_SCRIPT);
+        let client = fixture.client().unwrap();
+        let status = client.list_system_features().await.unwrap();
+        assert_eq!(status.state, "attested_read_only");
+        assert!(!status.control_authority_proven);
+        assert!(!status.mutation_ready);
+        assert!(status.features.wifi);
+        assert!(status.features.webview);
+        assert!(!status.features.nfc); // not in S3_VALID_SCRIPT fixture list
+        assert!(client.has_live_s3_epoch());
+    }
+
 }

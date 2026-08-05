@@ -294,6 +294,7 @@ The isolated rish posture requires a separate build, static bearer authenticatio
 ```bash
 cargo build --release --locked --features android-rish
 export MCP__ANDROID__RISH_ENABLED=true
+export MCP__ANDROID__SYSTEM_FEATURES_ENABLED=true
 export MCP__ANDROID__RISH_DEX_PATH=/absolute/private/path/rish_shizuku.dex
 export MCP__ANDROID__RISH_DEX_SHA256=<64-lowercase-hex-sha256>
 ```
