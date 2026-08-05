@@ -233,7 +233,7 @@ const PLATFORM_INFO_ARGUMENTS_DENIED: &str = "arguments_not_supported";
 const ANDROID_STATUS_ALLOWED: &str = "allowlisted_status_metadata";
 const ANDROID_STATUS_ARGUMENTS_DENIED: &str = "arguments_not_empty_or_not_object";
 #[cfg(feature = "android-rish")]
-const ANDROID_RISH_STATUS_ALLOWED: &str = "rish_identity_verified";
+const ANDROID_RISH_STATUS_ALLOWED: &str = "rish_uid_predicate_observed";
 const ANDROID_RISH_STATUS_ARGUMENTS_DENIED: &str = "rish_arguments_invalid";
 #[cfg(not(feature = "android-rish"))]
 const ANDROID_RISH_STATUS_FEATURE_DISABLED: &str = "rish_feature_not_compiled";
@@ -4148,7 +4148,7 @@ fn tools_list_response(id: Option<Value>, state: &McpTransportState) -> Response
             .expect("tools/list response owns an array")
             .push(json!({
                 "name": ANDROID_RISH_STATUS_TOOL,
-                "description": "Probe the statically attested Shizuku/rish bridge and verify only the non-root Android ADB-shell identity (UID 2000). This tool exposes no shell, arguments, output, or mutation.",
+                "description": "Run the fixed Shizuku/rish UID predicate and report only an exact UID-2000 token observed in one local capture. This does not qualify remote exit status, stream separation, typed Binder identity or lifecycle, or S3 authority, and exposes no shell, arguments, raw output, or mutation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -4650,7 +4650,7 @@ async fn handle_android_rish_status_call(
                 );
                 ok_result(
                     id,
-                    "android_rish_status: attested Shizuku/rish bridge verified Android ADB-shell UID 2000; no shell or mutation is exposed."
+                    "android_rish_status: exact UID-2000 predicate token observed in one local capture; remote exit status, stream separation, typed Binder identity/lifecycle, and S3 authority remain unqualified, and no shell or mutation is exposed."
                         .to_owned(),
                     json!(status),
                 )
@@ -10818,6 +10818,11 @@ mod tests {
             .iter()
             .find(|tool| tool["name"] == ANDROID_RISH_STATUS_TOOL)
             .expect("enabled rish status must be discoverable");
+        let description = rish_tool["description"].as_str().unwrap();
+        assert!(description.contains("one local capture"));
+        assert!(description.contains("remote exit status"));
+        assert!(description.contains("typed Binder"));
+        assert!(description.contains("S3 authority"));
         assert_eq!(rish_tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(rish_tool["inputSchema"]["properties"], json!({}));
 
@@ -10854,6 +10859,11 @@ mod tests {
             serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
                 .unwrap();
         assert_eq!(payload["result"]["isError"], false);
+        let success_text = payload["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(success_text.contains("one local capture"));
+        assert!(success_text.contains("remote exit status"));
+        assert!(success_text.contains("typed Binder"));
+        assert!(success_text.contains("S3 authority"));
         assert_eq!(
             payload["result"]["structuredContent"],
             json!({

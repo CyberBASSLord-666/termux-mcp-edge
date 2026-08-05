@@ -4,9 +4,9 @@
 
 The default compiled runtime is an Axum HTTP health/readiness service. The optional `mcp-runtime` feature compiles stable MCP 2025-11-25 Streamable HTTP handling at `/mcp` and its current limited tool surface.
 
-The 17 baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`. Separately built and runtime-enabled governed postures may add bounded read-only `android_battery_status`, `android_volume_status`, the fixed server-diagnostic `run_command_profile`, or preview-first request-authorized `set_android_volume`. The isolated development-only `android-rish` posture may add only the fixed, no-argument `android_rish_status` UID-2000 probe. Directory, file-copy, file-trash, and file-write previews are baseline, but their live mutations are independently default-disabled and each requires its own request-scoped grant. Android controls beyond exact-stream volume, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and unrelated high-impact tools remain out of scope for the live runtime.
+The 17 baseline staged MCP tools are `runtime_status`, `platform_info`, `android_status`, `project_service_status`, `create_directory`, `copy_file`, `trash_file`, `find_paths`, `hash_file`, `list_directory`, `path_metadata`, `read_binary_file`, `read_binary_range`, `read_file`, `read_text_range`, `search_text`, and `write_file`. Separately built and runtime-enabled governed postures may add bounded read-only `android_battery_status`, `android_volume_status`, the fixed server-diagnostic `run_command_profile`, or preview-first request-authorized `set_android_volume`. The isolated development-only `android-rish` posture may add only the fixed, no-argument `android_rish_status` exact-token diagnostic; it proves no remote exit, stream-separation, typed-Binder-identity, or lifecycle property. Directory, file-copy, file-trash, and file-write previews are baseline, but their live mutations are independently default-disabled and each requires its own request-scoped grant. Android controls beyond exact-stream volume, shell fallback, arbitrary command execution, process inventory, arbitrary service inspection, service mutation/control, and unrelated high-impact tools remain out of scope for the live runtime.
 
-The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling. The named `full-suite` build composes the four governed optional providers but keeps exactly 17 tools with their runtime flags off and exactly 21 with all four on. `android-rish` is excluded pending physical Shizuku qualification. Raw Cargo `--all-features` remains a separate development compatibility lane.
+The optional MCP transport enforces authentication before mobile-conscious concurrency, timeout, body-size, Host, Origin, JSON-RPC, discovery, and invocation handling. The named `full-suite` build composes the four governed optional providers but keeps exactly 17 tools with their runtime flags off and exactly 21 with all four on. `android-rish` is excluded pending a typed lifecycle-authoritative bridge, a new reviewed evidence-schema/inventory revision, and exact physical Shizuku qualification; existing physical v1 evidence alone cannot elevate it. Raw Cargo `--all-features` remains a separate development compatibility lane.
 
 ## Required Repository Gates
 
@@ -42,7 +42,7 @@ cargo build --release --locked --features command-execution
 cargo build --release --locked --features full-suite
 ```
 
-Build and validate `--features android-rish` as a separate development posture, not as an eighth release artifact. Its host checks establish compilation, fixed invocation, tamper rejection, bounded failures, discovery, and privacy. Only the physical-device matrix in [`SHIZUKU_RISH_CONTROL_PLANE.md`](SHIZUKU_RISH_CONTROL_PLANE.md) can establish real Shizuku availability and permit a future evidence-inventory revision.
+Build and validate `--features android-rish` as a separate development posture, not as an eighth release artifact. Its host checks establish compilation, fixed invocation, tamper rejection, bounded failures, discovery, and privacy. A future release posture requires a typed lifecycle-authoritative bridge, a new reviewed evidence-schema/inventory revision, and the physical-device matrix in [`SHIZUKU_RISH_CONTROL_PLANE.md`](SHIZUKU_RISH_CONTROL_PLANE.md) together. Neither host checks nor existing physical v1 evidence can establish that authority alone.
 
 Ordinary release authority comes from the exact-candidate automated native-Termux chain in [`AUTOMATED_RELEASE_QUALIFICATION.md`](AUTOMATED_RELEASE_QUALIFICATION.md). Run the AArch64 no-clone harness in [`DEVICE_PRODUCTION_GATE.md`](DEVICE_PRODUCTION_GATE.md) only when requesting the separate optional physical-certification tier. Its companion contract test runs in CI as `tests/termux_device_smoke_test.sh`; CI validates the harness interface and required coverage markers, while physical certification itself requires a real Termux/runit device.
 
@@ -420,16 +420,19 @@ The `Android Cross Compile` workflow validates all seven governed postures on re
 
 The independent, manual
 [`Android Rish Physical Identity`](SHIZUKU_RISH_PHYSICAL_WORKFLOW.md)
-workflow validates only the development S2.5 Shizuku/rish UID-2000 identity
-probe for an exact same-repository pull-request head. It builds the candidate
+workflow validates only the development S2.5 Shizuku/rish exact UID-predicate
+token observation for an exact same-repository pull-request head. It builds the candidate
 only on a hosted runner, executes only default-branch controller and gate code
 on the protected physical runner, and repeats closed evidence validation on
 hosted runners before and after a separate protected final review. Its
 evidence always records `releaseEligible:false`,
 `productionControlQualified:false`,
 `qualificationClass:"physical_shizuku_rish_identity_development_v1"`, and
-`scope:"s2_5_uid_probe_only"`. It does not add an eighth release posture or
-alter any release artifact, staging, or publication inventory.
+`scope:"s2_5_uid_probe_only"`. It proves no remote exit, stream separation,
+typed Binder identity/lifecycle, or S3 authority. It does not add an eighth
+release posture or alter any release artifact, staging, or publication inventory,
+and it cannot satisfy future elevation without a typed lifecycle-authoritative
+bridge plus a new reviewed evidence-schema/inventory revision.
 
 Publication validation starts from the raw staged tar, never a rebuild. Require a protected annotated tag and pre-created empty draft; exact staging run/artifact ID and server digest; protected attachment of exactly seven binaries, seven `.sha256` sidecars, `SHA256SUMS`, and that unchanged raw tar; fresh read-only re-download and byte verification of all sixteen assets; disjoint final approval; complete post-approval revalidation; `immutable:true`; and a public re-download proof. A workflow bundle, stage, tag, or draft is never a validation substitute or installation source.
 

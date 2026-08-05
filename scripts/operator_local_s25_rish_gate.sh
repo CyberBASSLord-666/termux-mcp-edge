@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
 # On-device S2.5 operator gate for Termux on physical AArch64 Android.
-# Does not replace the protected GitHub physical workflow; it proves the same
-# identity claim locally when Shizuku is running so solo operators can unblock
-# the foundation without an x64 controller host.
+# Does not replace the protected GitHub physical workflow. It records the same
+# narrow exact-token diagnostic locally, without claiming trustworthy remote
+# exit/stream separation or Binder identity/lifecycle.
 set -Eeuo pipefail
 IFS=$'\n\t'
 export LC_ALL=C
 umask 077
 set +x
+
+readonly ENABLED_TOOLS='["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","android_rish_status"]'
+readonly -a ART_RUNTIME_ENV_KEYS=(
+  ANDROID_ART_ROOT
+  ANDROID_ASSETS
+  ANDROID_DATA
+  ANDROID_I18N_ROOT
+  ANDROID_ROOT
+  ANDROID_RUNTIME_ROOT
+  ANDROID_STORAGE
+  ANDROID_TZDATA_ROOT
+  ANDROID__BUILD_VERSION_SDK
+  BOOTCLASSPATH
+  DEX2OATBOOTCLASSPATH
+  SYSTEMSERVERCLASSPATH
+)
 
 fail() {
   printf '[operator-local-s25] FAIL reason=%s\n' "$1" >&2
@@ -16,27 +32,90 @@ fail() {
 log() { printf '[operator-local-s25] %s\n' "$*"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-ARTIFACT="${1:-}"
+ARTIFACT=""
 DEX_PATH="${MCP__ANDROID__RISH_DEX_PATH:-$HOME/.local/share/termux-mcp-edge/rish/rish_shizuku.dex}"
-TOKEN="${MCP__AUTH__STATIC_TOKEN:-operator-local-s25-token}"
+TOKEN=""
 HOST="127.0.0.1"
 PORT="${OPERATOR_LOCAL_S25_PORT:-19177}"
 WORKDIR=""
 SERVER_PID=""
+ART_RUNTIME_ENV=()
+
+capture_art_runtime_environment() {
+  local key
+  ART_RUNTIME_ENV=()
+  for key in "${ART_RUNTIME_ENV_KEYS[@]}"; do
+    if [[ -v "$key" && -n "${!key}" ]]; then
+      ART_RUNTIME_ENV+=("$key=${!key}")
+    fi
+  done
+}
+
+is_sha256() {
+  [[ "$1" =~ ^[0-9a-f]{64}$ ]]
+}
+
+stop_server_bounded() {
+  local pid="${SERVER_PID:-}"
+  [[ -z "$pid" ]] && return 0
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    if ! kill -0 -- "-$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      SERVER_PID=""
+      return 0
+    fi
+    sleep 0.1
+  done
+  kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    if ! kill -0 -- "-$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      SERVER_PID=""
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+cleanup_runtime() {
+  local cleanup_status=0
+  stop_server_bounded || cleanup_status=1
+  if [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]]; then
+    rm -rf -- "$WORKDIR" 2>/dev/null || cleanup_status=1
+  fi
+  if [[ -n "${WORKDIR:-}" && (-e "$WORKDIR" || -L "$WORKDIR") ]]; then
+    cleanup_status=1
+  else
+    WORKDIR=""
+  fi
+  return "$cleanup_status"
+}
 
 cleanup() {
   local status=$?
   trap - EXIT INT TERM HUP
-  if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-  fi
-  if [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]]; then
-    rm -rf -- "$WORKDIR" 2>/dev/null || true
-  fi
+  cleanup_runtime || status=1
   exit "$status"
 }
-trap cleanup EXIT INT TERM HUP
+
+uid_predicate_observed_in_one_bounded_capture() {
+  local expected="$1" stdout="$2" stderr="$3" stdout_bytes stderr_bytes
+  stdout_bytes="$(stat -c '%s' -- "$stdout" 2>/dev/null)" || return 1
+  stderr_bytes="$(stat -c '%s' -- "$stderr" 2>/dev/null)" || return 1
+  [[ "$stdout_bytes" =~ ^[0-9]+$ && "$stderr_bytes" =~ ^[0-9]+$ ]] || return 1
+  ((stdout_bytes <= 1024 && stderr_bytes <= 4096)) || return 1
+  if cmp -s -- "$expected" "$stdout" && [[ ! -s "$stderr" ]]; then
+    return 0
+  fi
+  cmp -s -- "$expected" "$stderr" && [[ ! -s "$stdout" ]]
+}
+
+main() {
+  ARTIFACT="${1:-}"
+  trap cleanup EXIT INT TERM HUP
 
 [[ "$(uname -m)" == "aarch64" ]] || fail architecture_not_aarch64
 [[ -f /system/bin/app_process64 && -x /system/bin/app_process64 ]] \
@@ -44,6 +123,24 @@ trap cleanup EXIT INT TERM HUP
 command -v curl >/dev/null 2>&1 || fail curl_missing
 command -v sha256sum >/dev/null 2>&1 || fail sha256sum_missing
 command -v jq >/dev/null 2>&1 || fail jq_missing
+command -v dd >/dev/null 2>&1 || fail dd_missing
+command -v timeout >/dev/null 2>&1 || fail timeout_missing
+command -v env >/dev/null 2>&1 || fail env_missing
+[[ "${HOME:-}" == /data/data/com.termux/files/home ]] || fail termux_home_invalid
+[[ "${PREFIX:-}" == /data/data/com.termux/files/usr ]] || fail termux_prefix_invalid
+[[ -x "$PREFIX/bin/setsid" && -f "$PREFIX/bin/setsid" \
+  && ! -L "$PREFIX/bin/setsid" \
+  && "$(realpath -e -- "$PREFIX/bin/setsid" 2>/dev/null)" == "$PREFIX/bin/setsid" \
+  && "$(stat -c '%u:%h' -- "$PREFIX/bin/setsid" 2>/dev/null)" == "$(id -u):1" ]] \
+  || fail setsid_invalid
+
+TOKEN="${MCP__AUTH__STATIC_TOKEN:-}"
+if [[ -z "$TOKEN" ]]; then
+  TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none \
+    | sha256sum | awk '{print $1}')"
+fi
+is_sha256 "$TOKEN" || fail token_invalid
+capture_art_runtime_environment
 
 if [[ -z "$ARTIFACT" ]]; then
   if [[ -x "$REPO_ROOT/target/release/termux-mcp-server" ]]; then
@@ -65,9 +162,7 @@ DEX_PARENT="$(dirname -- "$DEX_PATH")"
 DEX_SHA="$(sha256sum -- "$DEX_PATH" | awk '{print $1}')"
 [[ "$DEX_SHA" =~ ^[0-9a-f]{64}$ ]] || fail dex_digest_invalid
 
-# Live rish probe before starting the candidate.
-export RISH_APPLICATION_ID="${RISH_APPLICATION_ID:-com.termux}"
-export RISH_PRESERVE_ENV=0
+# Live rish diagnostic before starting the candidate.
 RISH_BIN=""
 for candidate in "$HOME/.local/bin/rish" "$PREFIX/bin/rish" rish; do
   if command -v "$candidate" >/dev/null 2>&1 || [[ -x "$candidate" ]]; then
@@ -77,33 +172,83 @@ for candidate in "$HOME/.local/bin/rish" "$PREFIX/bin/rish" rish; do
 done
 [[ -n "$RISH_BIN" ]] || fail rish_launcher_missing
 
-RISH_OUT="$(
-  timeout 8 "$RISH_BIN" -c 'id -u' 2>/dev/null || true
-)"
-if [[ "$RISH_OUT" != $'2000\n' && "$RISH_OUT" != "2000" ]]; then
-  log "Shizuku/rish is not providing shell UID 2000."
-  log "Open the Shizuku app and start it via Wireless debugging / ADB, then re-run."
-  fail shizuku_server_not_shell_uid
-fi
-log "trusted direct rish probe: uid=2000"
-
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/operator-local-s25.XXXXXX")"
 chmod 700 "$WORKDIR"
 SAFE_ROOT="$WORKDIR/safe-root"
 mkdir -m 700 "$SAFE_ROOT"
 LOG="$WORKDIR/server.log"
-export MCP__AUTH__STATIC_TOKEN="$TOKEN"
-export MCP__SERVER__HOST="$HOST"
-export MCP__SERVER__PORT="$PORT"
-export MCP__TRANSPORT__ALLOWED_HOSTS="localhost:$PORT,127.0.0.1:$PORT"
-export MCP__TRANSPORT__ALLOWED_ORIGINS="http://localhost:$PORT,http://127.0.0.1:$PORT"
-export MCP__FILE__SAFE_ROOTS="$SAFE_ROOT"
-export MCP__ANDROID__RISH_ENABLED=true
-export MCP__ANDROID__RISH_DEX_PATH="$DEX_PATH"
-export MCP__ANDROID__RISH_DEX_SHA256="$DEX_SHA"
-export RUST_LOG=termux_mcp_server=info
 
-setsid "$ARTIFACT" >"$LOG" 2>&1 &
+RISH_STDOUT="$WORKDIR/direct-rish.stdout"
+RISH_STDERR="$WORKDIR/direct-rish.stderr"
+RISH_EXPECTED="$WORKDIR/direct-rish.expected"
+printf '2000\n' >"$RISH_EXPECTED"
+set +e
+(
+  # Bound capture growth before the exact post-run byte checks below.
+  ulimit -f 8
+  exec timeout --signal=TERM --kill-after=2s 8s \
+    env -i \
+      "${ART_RUNTIME_ENV[@]}" \
+      "HOME=$HOME" \
+      "PREFIX=$PREFIX" \
+      "PATH=$PREFIX/bin:/system/bin" \
+      RISH_APPLICATION_ID=com.termux \
+      RISH_PRESERVE_ENV=0 \
+      "$RISH_BIN" -c 'id -u'
+) >"$RISH_STDOUT" 2>"$RISH_STDERR"
+RISH_LOCAL_STATUS=$?
+set -e
+((RISH_LOCAL_STATUS == 0)) || fail rish_launcher_failed
+if ! uid_predicate_observed_in_one_bounded_capture \
+  "$RISH_EXPECTED" "$RISH_STDOUT" "$RISH_STDERR"
+then
+  log "Shizuku/rish did not produce the exact UID-2000 predicate token in one local capture."
+  log "Open the Shizuku app and start it via Wireless debugging / ADB, then re-run."
+  fail shizuku_uid_predicate_not_observed
+fi
+log "direct rish diagnostic: exact UID-2000 predicate token observed; remote transport remains unqualified"
+local -a server_environment
+server_environment=(
+  "${ART_RUNTIME_ENV[@]}"
+  "HOME=$HOME"
+  "PREFIX=$PREFIX"
+  "PATH=$PREFIX/bin:/system/bin"
+  "MCP__AUTH__STATIC_TOKEN=$TOKEN"
+  "MCP__AUTH__ALLOW_UNAUTHENTICATED_LOCALHOST_ONLY=false"
+  "MCP__SERVER__HOST=$HOST"
+  "MCP__SERVER__PORT=$PORT"
+  "MCP__TRANSPORT__ALLOWED_HOSTS=localhost:$PORT,127.0.0.1:$PORT"
+  "MCP__TRANSPORT__ALLOWED_ORIGINS=http://localhost:$PORT,http://127.0.0.1:$PORT"
+  "MCP__TRANSPORT__ALLOW_MISSING_ORIGIN=false"
+  "MCP__TRANSPORT__SSE_ENABLED=false"
+  "MCP__TRANSPORT__STATELESS_2026_07_28_ENABLED=false"
+  "MCP__TRANSPORT__MAX_CONCURRENT_REQUESTS=4"
+  "MCP__TRANSPORT__REQUEST_TIMEOUT_SECONDS=15"
+  "MCP__TRANSPORT__MAX_BODY_BYTES=1048576"
+  "MCP__FILE__SAFE_ROOTS=$SAFE_ROOT"
+  "MCP__FILE__CREATE_DIRECTORY_MUTATION_ENABLED=false"
+  "MCP__FILE__COPY_FILE_MUTATION_ENABLED=false"
+  "MCP__FILE__TRASH_FILE_MUTATION_ENABLED=false"
+  "MCP__FILE__WRITE_MUTATION_ENABLED=false"
+  "MCP__ANDROID__BATTERY_STATUS_ENABLED=false"
+  "MCP__ANDROID__VOLUME_STATUS_ENABLED=false"
+  "MCP__ANDROID__VOLUME_CONTROL_ENABLED=false"
+  "MCP__COMMAND__ENABLED=false"
+  "MCP__ANDROID__RISH_ENABLED=true"
+  "MCP__ANDROID__RISH_DEX_PATH=$DEX_PATH"
+  "MCP__ANDROID__RISH_DEX_SHA256=$DEX_SHA"
+  "RUST_LOG=termux_mcp_server=info"
+)
+
+# Monitor mode can make an asynchronous child a process-group leader, which
+# forces util-linux setsid to fork and makes `$!` cease to identify the group.
+set +m
+(
+  cd /
+  ulimit -f 32768
+  exec env -i "${server_environment[@]}" \
+    "$PREFIX/bin/setsid" --wait -- "$ARTIFACT"
+) >"$LOG" 2>&1 &
 SERVER_PID=$!
 HOST_HEADER="127.0.0.1:$PORT"
 ORIGIN_HEADER="http://127.0.0.1:$PORT"
@@ -159,11 +304,55 @@ mcp_curl \
   "http://127.0.0.1:$PORT/mcp" >/dev/null \
   || fail mcp_initialized_notification_failed
 
+TOOLS_JSON="$(
+  mcp_curl \
+    -H "Mcp-Session-Id: $SESSION" \
+    -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+    "http://127.0.0.1:$PORT/mcp"
+)"
+printf '%s\n' "$TOOLS_JSON" | jq -e --argjson expected "$ENABLED_TOOLS" '
+  [.result.tools[].name] == $expected
+  and (.result.tools | map(select(.name == "android_rish_status")) | length) == 1
+  and (.result.tools | map(select(.name == "android_rish_status"))[0].inputSchema
+    | .type == "object"
+    and .properties == {}
+    and (has("required") | not)
+    and .additionalProperties == false)
+  and all(.result.tools[]
+    | select(.name == "create_directory" or .name == "copy_file"
+      or .name == "trash_file" or .name == "write_file");
+    .inputSchema.properties.dry_run.const == true)
+' >/dev/null || fail enabled_tool_posture_invalid
+
+RUNTIME_JSON="$(
+  mcp_curl \
+    -H "Mcp-Session-Id: $SESSION" \
+    -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"runtime_status","arguments":{}}}' \
+    "http://127.0.0.1:$PORT/mcp"
+)"
+printf '%s\n' "$RUNTIME_JSON" | jq -e --argjson expected "$ENABLED_TOOLS" '
+  .result.isError == false
+  and .result.structuredContent.availableTools == $expected
+  and .result.structuredContent.androidRishCompiled == true
+  and .result.structuredContent.androidRishEnabled == true
+  and .result.structuredContent.androidRishMode == "configured_probe_on_call_adb_shell_uid_2000"
+  and .result.structuredContent.androidRishArbitraryShell == false
+  and .result.structuredContent.androidRishMutations == false
+  and .result.structuredContent.createDirectoryMutationEnabled == false
+  and .result.structuredContent.copyFileMutationEnabled == false
+  and .result.structuredContent.trashFileMutationEnabled == false
+  and .result.structuredContent.fileWriteMutationEnabled == false
+  and .result.structuredContent.androidVolumeControlEnabled == false
+  and .result.structuredContent.commandExecution == false
+' >/dev/null || fail runtime_status_contract_invalid
+
 STATUS_JSON="$(
   mcp_curl \
     -H "Mcp-Session-Id: $SESSION" \
     -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
-    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"android_rish_status","arguments":{}}}' \
+    -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"android_rish_status","arguments":{}}}' \
     "http://127.0.0.1:$PORT/mcp"
 )"
 printf '%s\n' "$STATUS_JSON" >"$WORKDIR/status.json"
@@ -199,7 +388,7 @@ EXTRA_OUT="$(
     -H "MCP-Protocol-Version: $PROTOCOL_VERSION" \
     -H 'Content-Type: application/json' \
     -H "Accept: $ACCEPT_HEADER" \
-    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"android_rish_status","arguments":{"shell":"id"}}}' \
+    -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"android_rish_status","arguments":{"shell":"id"}}}' \
     "http://127.0.0.1:$PORT/mcp" || true
 )"
 printf '%s\n' "$EXTRA_OUT" | jq -e '
@@ -246,13 +435,22 @@ jq -cn \
 ' >"$EVIDENCE"
 chmod 600 "$EVIDENCE"
 
-log "PASS android_rish_status verified_shell_uid uid=2000"
-log "evidence=$EVIDENCE"
-printf 'OPERATOR_LOCAL_S25_RESULT=PASS evidence=%s\n' "$EVIDENCE"
 # Keep evidence outside workdir cleanup by copying to a stable path
 STABLE="${OPERATOR_LOCAL_S25_EVIDENCE:-$HOME/.local/share/termux-mcp-edge/evidence/operator-local-s25-evidence.json}"
 mkdir -p "$(dirname -- "$STABLE")"
 chmod 700 "$(dirname -- "$STABLE")"
 cp -f -- "$EVIDENCE" "$STABLE"
 chmod 600 "$STABLE"
+if ! cleanup_runtime; then
+  rm -f -- "$STABLE" 2>/dev/null || true
+  fail cleanup_unconfirmed
+fi
+trap - EXIT INT TERM HUP
+log "PASS android_rish_status exact UID-2000 predicate token observed; remote exit/stream/Binder lifecycle unqualified"
 log "stable_evidence=$STABLE"
+printf 'OPERATOR_LOCAL_S25_RESULT=PASS evidence=%s\n' "$STABLE"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

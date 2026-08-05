@@ -1,10 +1,11 @@
 # Shizuku/rish physical identity workflow
 
 The `Android Rish Physical Identity` workflow is the protected, manual
-development gate for the S2.5 Shizuku/rish identity probe. It proves only that
-one exact same-repository pull-request commit can run the closed
-`android_rish_status` probe through a pinned private `rish` DEX as Android
-shell UID 2000 on a configured physical AArch64 device.
+development gate for the S2.5 Shizuku/rish diagnostic. It binds one exact
+same-repository pull-request commit to the closed `android_rish_status`
+UID-2000 predicate-token observation through a pinned private `rish` DEX on a
+configured physical AArch64 device. Stock rish does not make that observation
+a remote-exit, stream-separation, Binder-identity, or lifecycle proof.
 
 This is reviewed-code physical compatibility evidence. It is not an
 adversarial-code sandbox, security attestation, same-UID persistence proof,
@@ -21,6 +22,10 @@ The evidence is deliberately narrow:
 - `qualificationClass` is
   `physical_shizuku_rish_identity_development_v1`.
 - `scope` is `s2_5_uid_probe_only`.
+- The public state string `verified_shell_uid` is retained unchanged for the
+  v1 evidence contract. It records the exact-token diagnostic only; it does
+  not establish trustworthy remote exit status, remote stdout/stderr
+  separation, Binder lifecycle, permission continuity, restart, or revocation.
 - S3 attestation, typed Android reads, capability grants, device mutation,
   arbitrary shell execution, and production control are all outside this
   gate.
@@ -146,7 +151,6 @@ labels:
 
 - `self-hosted`
 - `linux`
-- `x64`
 - `termux-rish-controller`
 
 Never use a personal workstation or a general-purpose self-hosted runner.
@@ -228,8 +232,8 @@ The configured device must be:
   airplane mode on; Wi-Fi, mobile data, and Bluetooth settings off; and no
   default route reported by the fixed `/system/bin/ip route show default`
   query;
-- returning Android shell UID 2000 through trusted direct `rish` probes both
-  before and after the candidate process executes;
+- returning the exact UID-2000 predicate token in exactly one local capture of
+  each trusted direct `rish` probe before and after the candidate executes;
 - reprovisioned or reset after every candidate execution, then manually
   inspected before any later use.
 
@@ -238,7 +242,8 @@ digest and compares them with its private inventory. It does not compare those
 digests with an embedded publisher allowlist or prove store/source provenance;
 publisher authenticity must be reviewed out of band before enrollment. The
 closed policy records `requiredShizukuStartMode:"adb"`, but the direct rish
-probes prove shell UID `2000`, not the historical Shizuku launch path. Public
+probes observe the exact UID-2000 token; they prove neither the historical
+Shizuku launch path nor remote exit/stream/lifecycle integrity. Public
 evidence therefore records `shizukuStartModeObserved:false`; the workflow does
 not turn the operator-enforced ADB-start prerequisite into an observed claim.
 
@@ -286,8 +291,10 @@ read.
 
 The public candidate and evidence artifacts are integrity records, not secret
 containers. They must contain only their closed inventories. A successful
-run is development evidence for the S2.5 identity probe and cannot be cited
-as release evidence or as authorization for broader Android control.
+run is development evidence for the S2.5 exact-token diagnostic and cannot be
+cited as release evidence or as authorization for broader Android control. It
+does not establish remote exit, stream separation, typed Binder identity or
+lifecycle, or satisfy a future production-elevation gate by itself.
 It also cannot establish persistence isolation between processes sharing the
 Termux UID; that remains outside this gate's claim boundary.
 
@@ -307,8 +314,8 @@ not change release inventory or production-control claims.
 
 ## On-device operator local S2.5 gate
 
-For a physical AArch64 Termux device with Shizuku already providing shell UID
-`2000`, without an x64 GitHub controller host:
+For a physical AArch64 Termux device with Shizuku expected to provide shell UID
+`2000`, without the dedicated protected GitHub controller workflow:
 
 ```bash
 cargo build --release --locked --features android-rish

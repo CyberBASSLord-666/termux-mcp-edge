@@ -285,9 +285,10 @@ jobs:
             [
               .packages[]
               | select(.name == "termux-mcp-server")
-              | .features["android-rish"]
+              | (.features["android-rish"] | sort)
             ]
-            | length == 1 and .[0] == ["mcp-runtime"]
+            | length == 1
+              and .[0] == ["mcp-runtime", "rustix/process", "tokio/process"]
           ' <<<"$metadata" >/dev/null
           git diff --exit-code -- Cargo.toml Cargo.lock
           env \

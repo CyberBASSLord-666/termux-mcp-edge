@@ -12,6 +12,20 @@ readonly QUALIFICATION_SCOPE="s2_5_uid_probe_only"
 readonly ARTIFACT_NAME="termux-mcp-server-aarch64-linux-android-android-rish-development"
 readonly BASELINE_TOOLS='["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file"]'
 readonly ENABLED_TOOLS='["runtime_status","platform_info","android_status","project_service_status","create_directory","copy_file","trash_file","find_paths","hash_file","list_directory","path_metadata","read_binary_file","read_binary_range","read_file","read_text_range","search_text","write_file","android_rish_status"]'
+readonly -a ART_RUNTIME_ENV_KEYS=(
+  ANDROID_ART_ROOT
+  ANDROID_ASSETS
+  ANDROID_DATA
+  ANDROID_I18N_ROOT
+  ANDROID_ROOT
+  ANDROID_RUNTIME_ROOT
+  ANDROID_STORAGE
+  ANDROID_TZDATA_ROOT
+  ANDROID__BUILD_VERSION_SDK
+  BOOTCLASSPATH
+  DEX2OATBOOTCLASSPATH
+  SYSTEMSERVERCLASSPATH
+)
 
 ARTIFACT=""
 ARTIFACT_SHA256=""
@@ -56,6 +70,7 @@ RAW_REPORT_NEXT=""
 CLEANUP_CONFIRMED=1
 STARTED_AT=""
 COMPLETED_AT=""
+ART_RUNTIME_ENV=()
 
 usage() {
   cat <<'EOF'
@@ -132,6 +147,24 @@ validate_private_parent() {
   mode="$(stat -c '%a' -- "$parent" 2>/dev/null)" || return 1
   owner="$(stat -c '%u' -- "$parent" 2>/dev/null)" || return 1
   [[ "$mode" == 700 && "$owner" == "$(id -u)" ]]
+}
+
+capture_art_runtime_environment() {
+  local key
+  ART_RUNTIME_ENV=()
+  for key in "${ART_RUNTIME_ENV_KEYS[@]}"; do
+    if [[ -v "$key" && -n "${!key}" ]]; then
+      ART_RUNTIME_ENV+=("$key=${!key}")
+    fi
+  done
+}
+
+exact_uid_token_in_one_capture() {
+  local expected="$1" stdout="$2" stderr="$3"
+  if cmp -s -- "$expected" "$stdout" && [[ ! -s "$stderr" ]]; then
+    return 0
+  fi
+  cmp -s -- "$expected" "$stderr" && [[ ! -s "$stdout" ]]
 }
 
 port_is_free() {
@@ -244,6 +277,7 @@ trusted_direct_rish_probe() {
     ulimit -f 8
     exec timeout --signal=TERM --kill-after=2s 5s \
       env -i \
+        "${ART_RUNTIME_ENV[@]}" \
         RISH_APPLICATION_ID=com.termux \
         RISH_PRESERVE_ENV=0 \
         /system/bin/app_process64 \
@@ -257,9 +291,8 @@ trusted_direct_rish_probe() {
     return 1
   fi
   [[ "$(stat -c '%s' "$stdout")" -le 1024 \
-    && "$(stat -c '%s' "$stderr")" -le 4096 \
-    && ! -s "$stderr" ]] || return 1
-  cmp -s -- "$expected" "$stdout"
+    && "$(stat -c '%s' "$stderr")" -le 4096 ]] || return 1
+  exact_uid_token_in_one_capture "$expected" "$stdout" "$stderr"
 }
 
 cleanup() {
@@ -325,6 +358,7 @@ wait_for_ready() {
 launch_server() {
   local rish_enabled="$1" dex_path="${2:-}" dex_sha="${3:-}"
   local -a environment=(
+    "${ART_RUNTIME_ENV[@]}"
     "HOME=$HOME"
     "PREFIX=$PREFIX"
     "PATH=$PREFIX/bin:/system/bin"
@@ -355,6 +389,10 @@ launch_server() {
       "MCP__ANDROID__RISH_DEX_SHA256=$dex_sha"
     )
   fi
+  # With monitor mode enabled Bash makes an asynchronous child a process-group
+  # leader; util-linux setsid must then fork and `$!` no longer identifies the
+  # candidate group. Force monitor mode off so PID == PGID remains authoritative.
+  set +m
   (
     ulimit -f 32768
     exec env -i "${environment[@]}" \
@@ -482,7 +520,7 @@ validate_enabled_posture() {
     and (.result.tools | map(select(.name == "android_rish_status"))[0].inputSchema
       | .type == "object"
       and .properties == {}
-      and .required == []
+      and (has("required") | not)
       and .additionalProperties == false)
     and all(.result.tools[] | select(.name == "create_directory" or .name == "copy_file" or .name == "trash_file" or .name == "write_file");
       .inputSchema.properties.dry_run.const == true)
@@ -871,6 +909,7 @@ main() {
   MCP_TOKEN="$(dd if=/dev/urandom bs=32 count=1 status=none | sha256sum | awk '{print $1}')"
   is_sha256 "$MCP_TOKEN" || fail token_generation_failed
   PORT="$(choose_port)" || fail port_unavailable
+  capture_art_runtime_environment
   trap cleanup EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM HUP

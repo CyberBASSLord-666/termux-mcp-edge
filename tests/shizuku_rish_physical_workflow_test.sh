@@ -17,6 +17,7 @@ RUN_SELECTOR="$ROOT/scripts/latest_workflow_run.jq"
 CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
 SECURITY_WORKFLOW="$ROOT/.github/workflows/security.yml"
 ANDROID_WORKFLOW="$ROOT/.github/workflows/android-cross-compile.yml"
+ACTIONLINT_CONFIG="$ROOT/.github/actionlint.yaml"
 
 fail() {
   printf 'Shizuku/rish physical workflow contract failed: %s\n' "$1" >&2
@@ -26,7 +27,7 @@ fail() {
 for file in \
   "$WORKFLOW" "$RESOLVER" "$PACKAGER" "$CONTROLLER" "$DEVICE_GATE" \
   "$VALIDATOR" "$ARTIFACT_SCHEMA" "$EVIDENCE_SCHEMA" "$POLICY_SCHEMA" \
-  "$POLICY" "$RUN_SELECTOR"
+  "$POLICY" "$RUN_SELECTOR" "$ACTIONLINT_CONFIG"
 do
   [[ -f "$file" && ! -L "$file" ]] || fail "required file missing or linked: $file"
 done
@@ -75,7 +76,7 @@ path = pathlib.Path(sys.argv[1])
 compile(path.read_text(encoding="utf-8"), str(path), "exec")
 PY
 
-python3 - "$WORKFLOW" "$RESOLVER" <<'PY'
+python3 - "$WORKFLOW" "$RESOLVER" "$ACTIONLINT_CONFIG" <<'PY'
 import pathlib
 import subprocess
 import sys
@@ -87,12 +88,21 @@ except ImportError as error:
 
 workflow_path = pathlib.Path(sys.argv[1])
 resolver_path = pathlib.Path(sys.argv[2])
+actionlint_path = pathlib.Path(sys.argv[3])
 try:
     workflow_text = workflow_path.read_text(encoding="utf-8")
     resolver_text = resolver_path.read_text(encoding="utf-8")
     document = yaml.safe_load(workflow_text)
+    actionlint_document = yaml.safe_load(actionlint_path.read_text(encoding="utf-8"))
 except (OSError, UnicodeError, yaml.YAMLError) as error:
     raise SystemExit(f"workflow contract input did not parse: {error}")
+
+if actionlint_document != {
+    "self-hosted-runner": {
+        "labels": ["self-hosted", "linux", "termux-rish-controller"]
+    }
+}:
+    raise SystemExit("actionlint controller labels do not match physical-gate runs-on")
 
 if not isinstance(document, dict):
     raise SystemExit("workflow root is not a mapping")
@@ -436,6 +446,12 @@ for marker in (
         raise SystemExit(f"permissionless candidate boundary marker missing: {marker}")
 if "resolve_shizuku_rish_candidate.sh" in candidate_text:
     raise SystemExit("candidate build may not resolve PR state or receive its token")
+for marker in (
+    '(.features["android-rish"] | sort)',
+    '["mcp-runtime", "rustix/process", "tokio/process"]',
+):
+    if marker not in candidate_text:
+        raise SystemExit(f"candidate android-rish feature contract missing: {marker}")
 
 for trusted_job_name in ("preflight-resolve", "candidate-review"):
     trusted_text = "\n".join(
@@ -519,6 +535,12 @@ for marker in (
     if marker not in resolver_text:
         raise SystemExit(f"candidate resolver marker missing: {marker}")
 PY
+
+grep -Fq -- '- `termux-rish-controller`' "$ROOT/docs/SHIZUKU_RISH_PHYSICAL_WORKFLOW.md" \
+  || fail physical_controller_label_documentation_missing
+if grep -Fq -- '- `x64`' "$ROOT/docs/SHIZUKU_RISH_PHYSICAL_WORKFLOW.md"; then
+  fail physical_controller_documentation_retains_x64_label
+fi
 
 jq -e '
   .type == "object"

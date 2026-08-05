@@ -1,6 +1,6 @@
 # Shizuku/rish device-control plane
 
-Status: implementation and release contract. The repository implements only the isolated, default-disabled `android-rish` backend foundation and the no-argument `android_rish_status` identity probe described below. Every typed control family and every rish-backed mutation remains a blocked roadmap item.
+Status: implementation and release contract. The repository implements only the isolated, default-disabled `android-rish` backend foundation and the no-argument `android_rish_status` exact-token diagnostic described below. Every typed control family and every rish-backed mutation remains a blocked roadmap item.
 
 This document defines the maximum production target for local Android control when Termux MCP Edge uses an adb-started Shizuku/rish backend. The target identity is the Android shell user, UID `2000`. Root, Sui, device-owner enrollment, silent accessibility enablement, and a caller-programmable shell are outside this target.
 
@@ -32,63 +32,83 @@ The control plane must preserve all of these properties:
 
 ## Runtime state model
 
-The effective backend has exactly one state. State transitions are monotonic only within an individual request; any failed check can immediately return the process to a less-authoritative state.
+The implemented backend has only the S0 through S2.5 postures below. A request
+does not mint or cache an authority epoch, and failure never falls back to a
+more permissive operation.
 
 | State | Stable name | Meaning | Public authority |
 |---|---|---|---|
 | S0 | `not_compiled` | The rish backend feature is absent. A runtime request to enable it is a startup error. | None; only existing non-rish tools remain. |
 | S1 | `compiled_disabled` | The feature exists, but the explicit runtime gate is false or absent. No rish asset is opened and no backend process is started. | None. |
-| S2 | `enabled_unavailable` | The runtime gate is true, but configuration, asset attestation, rish connectivity, effective identity, API support, or a health probe failed. | Bounded backend status only; no family tools. |
-| S2.5 | `verified_shell_uid` | The implemented foundation has pinned the configured DEX and one live fixed probe returned exactly UID `2000`. It has not yet established the extended device/build/backend epoch required for S3. | The bounded `android_rish_status` result only. No Android action family and no mutation. |
-| S3 | `attested_read_only` | The exact backend assets are pinned, a fresh probe proves UID/GID `2000`, and the current backend epoch is healthy. | Qualified status, bounded reads, and deterministic previews for independently enabled families. |
+| S2 | `enabled_unavailable` | The runtime gate is true, but configuration, private asset validation, local rish launch, exact-token observation, or local supervision failed. | Bounded backend status only; no family tools. |
+| S2.5 | `verified_shell_uid` | Compatibility label for the implemented diagnostic: the configured DEX was pinned and exact `2000\n` bytes appeared intact in exactly one local rish capture. Stock rish does not make this a remote-exit, stream-separation, Binder-identity, or lifecycle proof. | The bounded `android_rish_status` result only. No Android action family and no mutation. |
+
+S3 and S4 are future roadmap states, not live code paths or transitions:
+
+| Roadmap state | Stable name | Required future meaning | Possible authority only after separate qualification |
+|---|---|---|---|
+| S3 | `attested_read_only` | A signed typed Binder companion is pinned, fresh typed replies establish the required UID/GID and lifecycle measurements, and the current private backend epoch is healthy. | Qualified status, bounded reads, and deterministic previews for independently enabled families. |
 | S4 | `mutation_ready` | S3 holds and grant v2, the durable audit/replay store, emergency stop, protected-target resolution, and at least one independently qualified mutation family are ready. | Only the specifically enabled family/action/target authorized by one fresh grant. S4 is not global mutation authority. |
 
-`runtime_status` may expose the stable state and non-sensitive booleans. It must not expose the rish path, DEX path or digest, Shizuku application ID, backend epoch, boot identifier, build fingerprint, package inventory, raw probe output, OS error, or grant/audit material.
+The current `runtime_status` exposes only the configured S2.5 posture and non-sensitive booleans; it does not expose or imply S3/S4. A future version may expose a separately versioned stable state only after the corresponding implementation and evidence revision. Neither version may expose the rish path, DEX path or digest, Shizuku application ID, backend epoch, boot identifier, build fingerprint, package inventory, raw probe output, OS error, or grant/audit material.
 
-An S3 or S4 process must transition to S2 and rotate its backend epoch when any of the following occurs:
+Any future S3 or S4 implementation would have to transition to S2 and rotate
+its backend epoch when any of the following occurs:
 
-- rish exits unexpectedly, times out, or produces malformed output;
+- the typed companion attachment or transaction fails, times out, or returns a malformed typed reply;
 - the Shizuku binder dies or permission is revoked;
 - an effective-identity, boot, SDK, asset identity, or asset digest check changes;
-- an operation reports an authority failure inconsistent with its qualified probe;
+- an operation reports an authority failure inconsistent with its qualified typed measurements;
 - the audit/replay store becomes unavailable, inconsistent, full, or tampered with;
 - emergency stop is activated;
 - the server restarts.
 
-Read operations can resume at S3 only after a complete successful re-attestation. Mutation readiness can resume only after recovery reconciliation and a new S4 transition. Old grants never survive an epoch change.
+Those transition rules are roadmap requirements only. No private epoch, S3
+read operation, S4 grant, or mutation readiness exists in the current
+`android-rish` code. A future read operation could resume at S3 only after a
+complete successful re-attestation; mutation readiness could resume only after
+recovery reconciliation and a new S4 transition. Old grants could never
+survive an epoch change.
 
-## Backend architecture: typed operations, never an MCP shell
+## Current S2.5 architecture: fixed diagnostic only
 
-The native Termux server uses rish because it is not itself a conventional Android APK capable of hosting `ShizukuProvider`. The long-term backend interface is an internal typed adapter:
+The live backend uses fixed `app_process64` plus the pinned rish DEX for one
+server-owned `id -u` predicate. That mechanism is not the long-term typed
+adapter and must never be generalized into an MCP operation registry. Stock
+rish provides neither a trustworthy remote completion channel nor independent
+remote streams or Binder lifecycle authority.
+
+The current diagnostic therefore has only this fixed path:
 
 ```text
-MCP typed request
-  -> closed schema and policy
-  -> typed Android operation enum
-  -> fixed operation registry
-  -> fixed app_process runtime and pinned rish DEX
-  -> rish "exec"
-  -> fixed absolute Android program and fixed subcommand
+no-argument status call
+  -> private DEX validation and sealed memfd snapshot
+  -> fixed app_process/rish loader
+  -> fixed UID predicate
+  -> exact token in one bounded local capture
 ```
 
-The registry must be compile-time/static data. Variable fields are parsed into bounded types and passed as individual argv entries only where the reviewed operation permits them. They are never interpolated into a command string. The registry must not expose `/system/bin/sh`, `su`, `app_process`, `dalvikvm`, an interpreter, a multi-call escape, raw `service call`, an unrestricted `cmd`, or an operator-configurable executable.
+The current implementation exposes no variable backend argv, typed Android
+operation enum, general parser registry, or Android action. It must not expose
+`/system/bin/sh`, `su`, `app_process`, `dalvikvm`, an interpreter, a multi-call
+escape, raw `service call`, unrestricted `cmd`, or an operator-configurable
+executable.
 
-It is acceptable for the pinned rish loader to use its own implementation machinery. It is not acceptable for an MCP caller to select that machinery. Every backend invocation must:
+Future typed operations are blocked on a separately signed and validated typed
+Binder companion with lifecycle-authoritative replies. A dedicated
+`SHIZUKU_TYPED_BRIDGE_ARCHITECTURE.md` contract must land with that companion;
+it is planned but is not present in this S2.5 tree. No production design may
+reinterpret the current rish command/output path as that bridge.
 
-- use the explicit absolute Android `app_process64` runtime and a pinned DEX bundle installed in the Termux application’s private storage;
-- reject missing, relative, symlinked, non-regular, unexpectedly writable, or digest-mismatched assets;
-- pin parent directories and exact asset identities, and verify configured SHA-256 digests;
-- require the Android 14+ rish DEX to be non-writable, consistent with the [rish launcher’s documented Android 14 constraint](https://github.com/RikkaApps/Shizuku-API/blob/master/rish/README.md);
-- clear inherited environment and set only the minimum fixed rish variables plus a closed Android ART runtime allowlist copied from the server process (`BOOTCLASSPATH`, ART apex roots, and related keys), with `RISH_PRESERVE_ENV=0`;
-- use null stdin, bounded independent stdout/stderr, a hard deadline, a dedicated non-queueing semaphore, process-group cleanup, and authoritative child reaping;
-- accept only exact UTF-8 output for that operation’s versioned parser and suppress raw output on every failure;
-- remeasure the backend before a mutation grant is consumed.
-
-The same-UID residual boundary must be documented: another untrusted Termux process under the same application UID can interfere with application-private files and processes. Production mutation posture therefore requires exclusive operator control of the Termux app UID and no untrusted plugins, sessions, or same-UID processes.
+The same-UID residual boundary also remains: another untrusted Termux process
+under the same application UID can interfere with application-private files
+and processes. Any future production mutation posture requires exclusive
+operator control of the Termux app UID and no untrusted plugins, sessions, or
+same-UID processes.
 
 ## Implemented foundation: exact status probe
 
-The implemented rish foundation adds only backend construction, DEX attestation, and one read-only status tool. It does not add package, settings, intent, process, input, capture, storage, network, or other control operations.
+The implemented rish foundation adds only backend construction, private DEX validation, and one diagnostic status tool. It does not add package, settings, intent, process, input, capture, storage, network, or other control operations.
 
 ### Gates
 
@@ -97,32 +117,35 @@ The implemented rish foundation adds only backend construction, DEX attestation,
 - A runtime true value without the compile feature aborts startup.
 - Enabling configuration must include `MCP__ANDROID__RISH_DEX_PATH`, `MCP__ANDROID__RISH_DEX_SHA256`, and a valid static bearer token. The DEX path and digest must also be configured together when the runtime gate is false. Invalid, empty, ambiguous, or partial configuration aborts startup before an MCP router can serve.
 - The DEX path must be canonical and absolute, outside every MCP filesystem safe root, inside an owner-only directory, and identify one current-UID-owned, single-link, exact-mode `0400` regular file between 1 byte and 16 MiB. The configured digest is exactly 64 lowercase hexadecimal characters.
-- The implementation bypasses the mutable launcher script. It invokes the fixed Android system runtime `/system/bin/app_process64`, the fixed loader class `rikka.shizuku.shell.ShizukuShellLoader`, the fixed Termux application identity `com.termux`, and a private execution snapshot of the pinned DEX through its inherited `/proc/self/fd` descriptor. When the kernel allows ART to reopen a sealed memfd path, that snapshot is sealed; otherwise the server falls back to a private `O_TMPFILE` or exclusive named read-only copy that still isolates the operator source.
+- The implementation bypasses the mutable launcher script. It invokes the fixed Android system runtime `/system/bin/app_process64`, the fixed loader class `rikka.shizuku.shell.ShizukuShellLoader`, the fixed Termux application identity `com.termux`, and a fully sealed memfd snapshot of the pinned DEX through its inherited `/proc/self/fd` descriptor. ART must reopen that exact sealed classpath. If the kernel denies the reopen, the operation fails closed; owner-mutable tmpfiles and named-file snapshots are not execution fallbacks.
 - Root/Sui mode is rejected even if it would provide more authority.
 
 ### Fixed probe
 
 The adapter invokes exactly one server-owned command through the rish loader: `exec /system/bin/id -u`. An MCP caller cannot change the executable, command, arguments, environment, stdin, working directory, timeout, or output limits.
 
-Each invocation has a five-second total deadline, 1 KiB stdout ceiling, 4 KiB stderr ceiling, null stdin, a cleared environment containing only fixed rish variables, process-group cleanup, and one non-queueing probe permit. Success requires stdout to be the exact bytes `2000\n` and stderr to be empty. Root (`0`), system (`1000`), every other UID, extra whitespace, extra lines, missing newline, warnings, invalid UTF-8, timeout, overflow, abnormal exit, and process-supervision failure all fail closed. The permit is acquired before blocking validation and moves into the independently owned process supervisor; request cancellation terminates the process group promptly, and the permit is not released until direct-child reaping is authoritatively complete.
+Each invocation has a five-second total deadline, 1 KiB first-capture ceiling, 4 KiB second-capture ceiling, null stdin, an environment containing only fixed rish variables plus the closed inherited Android ART runtime allowlist, process-group cleanup, and one non-queueing probe permit. Success requires exact bytes `2000\n` in exactly one local capture and zero bytes in the other. Split, duplicated, malformed, injected, or extra bytes; root (`0`); every other UID token; timeout; overflow; local launcher failure; and process-supervision failure all fail closed. Stock rish races two local readers over one remote output pipe and discards the authoritative remote status reply, so this rule is only a diagnostic UID-predicate observation. It does not prove remote stdout/stderr separation, orderly remote exit, Binder identity, permission continuity, death notification, restart, or revocation. The permit is acquired before blocking validation and moves into the independently owned local process supervisor; request cancellation terminates the local process group promptly, and the permit is not released until direct-child reaping is authoritatively complete.
 
-Before every probe the server rechecks the pinned descriptor and pathname identity, parent identity, ownership, mode, link count, size, timestamps, and configured SHA-256. It copies exactly the bounded, digest-matched bytes into a `CLOEXEC` execution snapshot and verifies that a fresh open of `/proc/self/fd/N` returns those bytes—the same open path ART uses for the classpath. Prefer a sealed memfd when that path reopen works. On Android kernels that create sealed memfds but deny memfd path reopen, fall back to a private `O_TMPFILE` or exclusive named file at mode `0400`; that fallback still isolates the operator source from pathname replacement, but it cannot claim sealed same-UID immutability. The source is revalidated after the copy and before launch. Only the intended rish child clears `CLOEXEC` on the snapshot. Path replacement, a race during copying, permission change, or digest drift blocks execution. Raw process output, the DEX path, digest, and file descriptor are never returned or logged.
+Before every probe the server rechecks the pinned descriptor and pathname identity, parent identity, ownership, mode, link count, size, timestamps, and configured SHA-256. It copies exactly the bounded, digest-matched bytes into a `CLOEXEC` memfd, applies and verifies the shrink/grow/write/seal set, and verifies that a fresh open of `/proc/self/fd/N` returns those bytes—the same open path ART uses for the classpath. Both the complete seal set and that ART-style reopen are mandatory. Android kernels that deny the sealed memfd path reopen fail with reason `rish_dex_snapshot_failed`; no mutable snapshot is executed. The source is revalidated after the copy and before launch. Only the intended rish child clears `CLOEXEC` on the snapshot. Path replacement, a race during copying, permission change, digest drift, incomplete sealing, or path-reopen failure blocks execution. Raw process output, the DEX path, digest, and file descriptor are never returned or logged.
 
 The extended UID/GID/group/SELinux/SDK/boot attestation and private backend epoch described by S3 are still required before the first typed read family. They are intentionally not inferred from the public UID-only foundation.
 
-### S3 private attestation (development)
+### S3 private attestation (roadmap; not implemented)
 
-The backend implements a private `attest_read_only` multi-probe suite that, under one concurrency lane and one DEX execution snapshot, runs only these fixed loader commands (never caller-selected):
+S3 still requires a signed typed, lifecycle-authoritative Binder companion that
+does not infer identity or liveness from stock rish output or launcher status.
+A future reviewed implementation would need closed typed replies for at least:
 
-1. `exec /system/bin/id -u` — exact `2000`
-2. `exec /system/bin/id -g` — exact `2000`
-3. `exec /system/bin/id -G` — space-separated GIDs including `2000`
-4. `exec /system/bin/id -Z` — shell SELinux domain prefix `u:r:shell:`
-5. `exec /system/bin/getprop ro.build.version.sdk` — integer in the supported API band
-6. `exec /system/bin/getprop ro.build.fingerprint` — bounded graphic fingerprint (hashed privately)
-7. `exec /system/bin/cat /proc/sys/kernel/random/boot_id` — canonical UUID (hashed privately)
+1. effective UID — exact `2000`;
+2. effective GID — exact `2000`;
+3. supplementary GIDs — bounded set including `2000`;
+4. SELinux context — shell-domain classification;
+5. Android SDK — integer in the supported API band;
+6. build identity — bounded value committed privately by digest;
+7. boot identity — canonical value committed privately by digest;
+8. Binder attachment, death, permission-revocation, and server-restart lifecycle.
 
-On full success it mints a private restart-sensitive backend epoch binding DEX digest, fingerprint hash, boot-id hash, SELinux context hash, SDK, GID, and groups. Epoch material, fingerprints, boot ids, SELinux strings, and group inventories never appear in MCP responses, logs, or `Debug` output. Failure invalidates any prior live epoch. Public `android_rish_status` remains S2.5 (`verified_shell_uid`) until physical S2.5 evidence is accepted; elevating the public tool to `attested_read_only` is a separate, reviewable step after that gate.
+No S3 commands, parsers, private epoch, or typed-read family are present in the live S2.5 diagnostic code. Adding them requires a separate reviewed implementation, schema version, lifecycle and revocation design, physical qualification, and public-state transition. They are never inferred from `verified_shell_uid`.
 
 ### Public tool
 
@@ -143,9 +166,16 @@ On full success it mints a private restart-sensitive backend epoch binding DEX d
 
 When configured but unavailable, the tool returns an MCP tool error containing only `android_rish_status_unavailable` and one stable low-cardinality reason code. It never reflects raw stderr or configuration details. When the runtime gate is false, the tool is absent from discovery and direct invocation fails closed.
 
-The feature has dedicated host Clippy, tests, and release-build checks, and raw `--all-features` validation. It is intentionally excluded from the governed `full-suite` alias and existing Android release-artifact inventory: the official Termux container reports no Android framework and cannot qualify a real Shizuku Binder lifecycle. Physical-device evidence remains mandatory before this feature can join release qualification or support any broader production claim.
+The `verified_shell_uid` string is retained to preserve the public S2.5 and v1 evidence contract. It must be interpreted only with the diagnostic limitation above; it is not a production attestation claim.
 
-## Capability classification
+The feature has dedicated host Clippy, tests, and release-build checks, and raw `--all-features` validation. It is intentionally excluded from the governed `full-suite` alias and existing Android release-artifact inventory: the official Termux container reports no Android framework and cannot qualify a real Shizuku Binder lifecycle. A typed lifecycle-authoritative bridge, a new reviewed evidence-schema/inventory revision, and exact physical-device qualification are all mandatory before this feature can join release qualification or support any broader production claim. Existing physical v1 evidence cannot satisfy that elevation.
+
+## Future typed capability classification (not implemented)
+
+Every entry below is a candidate backlog item. None is implemented or
+authorized by `verified_shell_uid`; each requires the signed typed Binder bridge,
+a closed family contract, a new evidence/inventory version, and physical
+qualification before it can enter discovery.
 
 The matrix uses these types:
 
@@ -158,7 +188,7 @@ The matrix uses these types:
 
 An operation marked M is not promised to work on every device. It means a typed implementation can be considered after a direct authority probe and physical qualification. A denied service call, SELinux denial, missing command, unsupported option, user restriction, locked-user state, or OEM divergence makes that operation unavailable without fallback.
 
-## Typed capability matrix
+### Candidate typed capability matrix
 
 | Family | R / P surface | M surface at the shell-UID ceiling | Required limits and hard boundary |
 |---|---|---|---|
@@ -198,7 +228,13 @@ The following must remain explicit in discovery, runtime status, operator docume
 | OEM drift | AOSP source describes a reference implementation. An OEM can remove commands, change options/output, add service checks, or deny an operation. Unsupported devices fail closed. |
 | Reboot lifecycle | On non-root devices Shizuku normally must be restarted after boot; Android 11+ can use wireless debugging, while older devices require adb from a computer, as documented by the [Shizuku API guide](https://github.com/RikkaApps/Shizuku-API/blob/master/README.md). No control plane may claim unattended boot persistence unless physical evidence proves the operator’s separate startup procedure. |
 
-## Grant v2: required before any device mutation
+## Future production-control roadmap (not implemented)
+
+Everything from grant v2 through production blockers below is a future design
+contract, not a live state transition or authority exposed by S2.5. It requires
+separate reviewed implementation, public-versioning, and qualification work.
+
+### Grant v2: required before any device mutation
 
 The existing narrow grant families are not sufficient for general Android state. Grant v2 must land as a focused authorization foundation before the first S4 family.
 
@@ -225,7 +261,7 @@ Replay state must be durable and process-independent for device mutation. Atomic
 
 Modern stateless support requires its own explicit transport change. It must not reinterpret a legacy session grant, invent a session, or accept v1. Legacy and modern evaluators remain distinct even if they share the v2 envelope.
 
-## Duplicate-key and ambiguity rejection
+### Duplicate-key and ambiguity rejection
 
 High-impact authorization cannot use last-value-wins parsing.
 
@@ -238,7 +274,7 @@ High-impact authorization cannot use last-value-wins parsing.
 
 The duplicate-key preflight must happen before concurrency admission, audit correlation allocation, preview calculation, grant evaluation, backend access, or state inspection.
 
-## Durable fail-closed audit
+### Durable fail-closed audit
 
 In-memory counters remain useful for public low-cardinality status, but they are not sufficient for S4. Device mutation requires a local, operator-private, durable audit journal.
 
@@ -257,7 +293,7 @@ The journal must:
 
 The MCP surface exposes only aggregate counters and whether the durable journal is healthy. Journal export, verification, repair, acknowledgement, and retention are local CLI operations with the server stopped. They are not MCP tools.
 
-## Mutation transaction
+### Mutation transaction
 
 Every live operation follows the same fail-closed order:
 
@@ -279,7 +315,7 @@ Every live operation follows the same fail-closed order:
 
 Cancellation, HTTP timeout, disconnect, or waiter loss after worker ownership does not cancel cleanup, verification, recovery, replay consumption, or terminal audit. A crash can leave an uncertain device state; it must never leave the grant reusable or silently report success.
 
-## Emergency stop
+### Emergency stop
 
 Emergency stop is a local authority above every MCP grant.
 
@@ -293,7 +329,7 @@ Emergency stop is a local authority above every MCP grant.
 
 Emergency activation is best effort for a backend operation already committed inside Android system_server. The production claim is bounded admission, process termination, grant invalidation, and reconciliation—not transactional rollback of Android itself.
 
-## Protected targets
+### Protected targets
 
 Protected-target policy is deny-first and generation-bound. It combines immutable built-ins, dynamically resolved safety roles, and operator additions.
 
@@ -309,11 +345,11 @@ Protected targets cannot be mutated, force-stopped, uninstalled, disabled, suspe
 
 Dynamic target resolution is refreshed before every preview and mutation. Any ambiguity, package replacement, shared UID, role change, signer change, user change, or resolution failure denies the action. Operator additions are append-only while the service runs. Removing protection requires a stopped-service local policy update and generation rotation.
 
-## Rollout families
+### Rollout families
 
 Development must remain reviewable and reversible. The minimum order is:
 
-1. **R0 — attested backend status:** S0–S3, fixed UID/GID/SDK probe, lifecycle/epoch handling, no Android action.
+1. **R0 — future typed backend status:** implement S0–S3 with a lifecycle-authoritative typed bridge, fixed UID/GID/SDK measurements, and private epoch handling; no Android action. The live S2.5 exact-token diagnostic is not R0.
 2. **R1 — S4 safety foundation:** grant v2, durable replay/audit, emergency stop, protected targets, duplicate-key rejection, local reconciliation commands; still no device mutation.
 3. **R2 — read-only inventory:** qualified package, permission/app-op, settings, power, connectivity, user, and diagnostics subsets. No broad dumps.
 4. **R3 — package lifecycle:** split install/update, uninstall, enable/disable/suspend, and clear-data into independently gated actions.
@@ -326,7 +362,7 @@ Development must remain reviewable and reversible. The minimum order is:
 
 Each rollout item can require several PRs. No PR should introduce more than one independently mutating family or combine a capability change with unrelated dependency, transport, release, or workflow work.
 
-## Physical-device qualification matrix
+### Physical-device qualification matrix
 
 Emulators, AOSP source review, cross-compilation, and an official Termux container remain necessary but cannot certify Shizuku lifecycle, OEM service policy, UI, radio, user, capture, or storage behavior.
 
@@ -367,7 +403,7 @@ The automated physical suite must cover:
 
 Evidence must bind the exact commit, source version, Cargo lockfile, Android artifacts, asset digests, device model, OS build fingerprint digest, API level, security patch level, Shizuku version/start mode, rish asset digests, backend UID, family/action/schema version, and sanitized result. Raw identifiers, content, settings, package inventory, notification/clipboard/screen data, command output, tokens, grants, or keys must not enter public CI artifacts.
 
-## Production release blockers
+### Production release blockers
 
 A device-control family cannot be called production-ready until all of these are true:
 
