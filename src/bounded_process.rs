@@ -212,6 +212,7 @@ impl BoundedProcess {
     #[cfg(any(
         feature = "android-battery-status",
         feature = "android-volume-status",
+        feature = "android-rish",
         feature = "command-execution",
         test
     ))]
