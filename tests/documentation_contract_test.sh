@@ -13,6 +13,143 @@ fail() {
 mapfile -t markdown_files < <(git ls-files '*.md')
 ((${#markdown_files[@]} > 0)) || fail no_markdown_files
 
+bridge_architecture=docs/SHIZUKU_TYPED_BRIDGE_ARCHITECTURE.md
+[[ -f "$bridge_architecture" ]] || fail shizuku_typed_bridge_architecture_missing
+bridge_architecture_listed=false
+for markdown_file in "${markdown_files[@]}"; do
+  if [[ "$markdown_file" == "$bridge_architecture" ]]; then
+    bridge_architecture_listed=true
+    break
+  fi
+done
+if [[ "$bridge_architecture_listed" == false ]]; then
+  markdown_files+=("$bridge_architecture")
+fi
+
+grep -Fq 'io.github.cyberbasslord666.termuxmcpedge.bridge' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_application_id_not_frozen
+grep -Fq 'The first implementation is read-only.' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_read_only_scope_missing
+grep -Fq 'PackageManager-installed, non-Termux-owned `base.apk`' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_installed_apk_boundary_missing
+grep -Fq -- '-cp /proc/self/fd/3' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_descriptor_classpath_missing
+grep -Fq 'bridge_installed_apk_descriptor_unavailable' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_physical_fail_closed_outcome_missing
+grep -Fq 'There is no copy-to-Termux' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_unsafe_fallback_reintroduced
+grep -Fq 'localhost fallback in the initial architecture.' "$bridge_architecture" \
+  || fail shizuku_typed_bridge_network_fallback_reintroduced
+
+python3 - "$bridge_architecture" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+raw = path.read_text(encoding="utf-8")
+text = re.sub(r"\s+", " ", raw)
+
+required = {
+    "binder_not_cryptographically_bound":
+        "The stock Shizuku provider transport does not cryptographically bind",
+    "shell_injectors_in_tcb":
+        "all UID-`2000`/shell-domain processes that can inject or replace that Binder are in the runtime trusted computing base",
+    "manager_checks_inventory_only":
+        "PackageManager checks on the manager are compatibility and inventory checks only",
+    "binder_provenance_evidence_false":
+        "`managerBinderCryptographicallyBound:false`, `uidObservationOnly:true`, and `shellDomainBinderInjectorsInTcb:true`",
+    "server_api_major_exact": "`Shizuku.getVersion() == 13`",
+    "server_api_patch_exact": "`Shizuku.getServerPatchVersion() == 6`",
+    "manager_install_exact":
+        "exact manager package, version code/name, installed base-APK SHA-256, current signer SHA-256",
+    "environment_cleared": "Rust must call `env_clear()`",
+    "art_environment_allowlist": "signed, versioned ART environment allowlist",
+    "loader_environment_forbidden":
+        "`LD_*`, `CLASSPATH`, `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS`, and `JDK_JAVA_OPTIONS` are forbidden",
+    "path_resolution_forbidden":
+        "`PATH` is unset and no executable or library is resolved through it",
+    "fixed_working_directory": "The working directory is exactly `/`",
+    "closed_descriptor_set":
+        "Close every other descriptor except stdin, stdout, stderr, and FD 3 before `execve`",
+    "bounded_stdio":
+        "Stdout accepts exactly one bounded protocol frame, stderr is bounded and must be empty",
+    "pinned_app_process_source":
+        "aosp-mirror/platform_frameworks_base/blob/android-16.0.0_r1/cmds/app_process/app_main.cpp",
+    "pinned_android_uid_source":
+        "aosp-mirror/platform_system_core/blob/android-16.0.0_r1/libcutils/include/private/android_filesystem_config.h",
+    "cli_build_identity": "`bridgeBuildId`",
+    "rust_build_identity": "`rustBuildId`",
+    "protocol_identity": "`protocolVersion`",
+    "aidl_contract_identity": "`aidlContractSha256`",
+    "manager_policy_identity": "`managerPolicySha256`",
+    "signed_manifest_identity": "external release manifest signed by the protected/offline release authority",
+    "rust_only_manifest_verifier":
+        "Rust alone verifies and enforces the external signed manifest",
+    "java_manifest_non_verifier":
+        "Java does not receive the external manifest, does not verify its signature",
+    "manifest_digest_only_correlation":
+        "The manifest digest in `BridgeCallContext` is an opaque correlation value to the Java layers",
+    "nonce_manifest_binding":
+        "`BridgeCallContext` carries a fresh Rust-CSPRNG 32-byte request nonce that the MCP caller cannot supply, plus the signed manifest digest",
+    "same_version_identical_byte_reinstall":
+        "same-version, identical-byte `adb install -r`",
+    "install_generation": "`installGeneration`",
+    "signed_install_enrollment": "signed installation-enrollment record",
+    "broker_generation_secret": "`brokerGenerationSecret`",
+    "fresh_user_service_tag": "cryptographically fresh `UserServiceArgs.tag`",
+    "one_time_service_init": "permanently refuses a second initialization",
+    "service_instance_nonce": "`serviceInstanceNonce`",
+    "retained_service": "retained old UserService",
+    "user_service_caller_uid":
+        "`Binder.getCallingUid()` to equal the current installed bridge-app UID",
+    "update_invalidation_future":
+        "This update invalidation is a future implementation and physical-evidence requirement",
+    "post_merge_requalification":
+        "freeze the exact current `main` commit after release integration merges; rebuild and repeat protected signing",
+    "main_frozen_through_publication":
+        "Keep `main` frozen through staging, annotated tag creation, draft upload, final checks, and immutable publication",
+    "unqualified_memfd_observation":
+        "A prior operator-local, non-qualification observation reported `EACCES`",
+    "historical_counts_unchanged":
+        "exactly seven governed Android postures, exactly nine workflow artifacts, exactly twelve staged qualification members, and exactly sixteen public assets unchanged",
+    "every_versioned_document_preserved":
+        "preserve every existing versioned document and must not reinterpret or loosen any of them",
+}
+
+missing = [name for name, fragment in required.items() if fragment not in text]
+if missing:
+    raise SystemExit("missing typed-bridge ADR invariants: " + ", ".join(missing))
+
+forbidden = {
+    "overqualified_memfd_claim": "Physical testing already showed",
+    "mutable_aosp_source_ref": "/+/master/",
+}
+present = [name for name, fragment in forbidden.items() if fragment in raw]
+if re.search(r"\bAPI\s+`?13`?\s+or\s+newer\b", raw, re.IGNORECASE):
+    present.append("wildcard_server_api")
+if "old compile-time build identity" in raw:
+    present.append("compile_identity_claimed_to_detect_identical_reinstall")
+if present:
+    raise SystemExit("forbidden typed-bridge ADR claims: " + ", ".join(present))
+
+counts_match = re.search(
+    r"exactly seven governed Android postures, exactly nine workflow "
+    r"artifacts, exactly twelve staged qualification members, and exactly "
+    r"sixteen public assets unchanged",
+    text,
+)
+if counts_match is None or text.count(counts_match.group(0)) != 1:
+    raise SystemExit("typed-bridge ADR must preserve the 7/9/12/16 counts exactly once")
+
+preservation = (
+    "preserve every existing versioned document and must not reinterpret or "
+    "loosen any of them"
+)
+if text.count(preservation) != 1:
+    raise SystemExit("typed-bridge ADR must preserve every existing versioned document exactly once")
+PY
+
 if grep -Fn 'current/bin/termux-mcp-server' "${markdown_files[@]}"; then
   fail obsolete_deployed_binary_path
 fi
