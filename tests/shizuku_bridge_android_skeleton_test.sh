@@ -646,7 +646,7 @@ for fragment in (
     "ANDROID_BUILD_TOOLS_URL: https://dl.google.com/android/repository/build-tools_r35_linux.zip",
     "ANDROID_SYSTEM_IMAGE: system-images;android-30;google_apis;x86_64",
     'ANDROID_SYSTEM_IMAGE_REVISION: "16"',
-    "ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/x86_64-30_r16.zip",
+    "ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/sys-img/google_apis/x86_64-30_r16.zip",
     "ANDROID_CMDLINE_TOOLS_LINUX_SHA1: 040d3996a65543d22ec4bf73e4c37aa37a8d4af4",
     "ANDROID_CMDLINE_TOOLS_LINUX_SHA256: 4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583",
     "ANDROID_PLATFORM_TOOLS_LINUX_SHA1: 477254aa5f903c15cf51001717bdf347fb6b53e0",
@@ -661,6 +661,9 @@ for fragment in (
     "ANDROID_SYSTEM_IMAGE_SHA256: daae27654be74ae83a484daea4db2c0c77b4f4ad661a645bd5f36d96ce03e4d5",
     "https://dl.google.com/android/repository/repository2-3.xml",
     "https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml",
+    'repository_archive_base = "https://dl.google.com/android/repository/"',
+    '"https://dl.google.com/android/repository/sys-img/google_apis/"',
+    'actual_url = f"{archive_base}{relative_url}"',
     '"platforms;android-36"',
     'f"build-tools;{os.environ[\'ANDROID_BUILD_TOOLS_REVISION\']}"',
     'test ! -e "$ANDROID_SDK_ROOT"',
@@ -1197,6 +1200,11 @@ expect_rejected_replace \
   .github/workflows/shizuku-bridge-skeleton.yml \
   'ANDROID_SYSTEM_IMAGE_SHA1: 6ae21030eaadc041078444d3798e4b399f3e787d' \
   'ANDROID_SYSTEM_IMAGE_SHA1: 0000000000000000000000000000000000000000'
+expect_rejected_replace \
+  system_image_archive_base_drift \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/sys-img/google_apis/x86_64-30_r16.zip' \
+  'ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/x86_64-30_r16.zip'
 expect_rejected_replace \
   emulator_archive_sha256_drift \
   .github/workflows/shizuku-bridge-skeleton.yml \

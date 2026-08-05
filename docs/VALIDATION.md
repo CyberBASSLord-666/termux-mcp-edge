@@ -68,7 +68,7 @@ the workflow never asks `sdkmanager` to refetch or reuse a package.
 | Stable emulator | `37.1.11` | `emulator-linux_x64-15917651.zip` | `1b1f78891abf8ec268264356e1365c25519e8379` | `95771e0ae431897b2a4bd2d97fa095f29a8b0624a7b216baf529f9306161c266` |
 | Android platform 36 | `2` | `platform-36_r02.zip` | `2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576` | `37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e` |
 | Build tools | `35.0.0` | `build-tools_r35_linux.zip` | `2cfaa0bbb2336e9ec18ed3ecea84fa2e2af607bc` | `bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88` |
-| `system-images;android-30;google_apis;x86_64` | `16` | `x86_64-30_r16.zip` | `6ae21030eaadc041078444d3798e4b399f3e787d` | `daae27654be74ae83a484daea4db2c0c77b4f4ad661a645bd5f36d96ce03e4d5` |
+| `system-images;android-30;google_apis;x86_64` | `16` | `sys-img/google_apis/x86_64-30_r16.zip` | `6ae21030eaadc041078444d3798e4b399f3e787d` | `daae27654be74ae83a484daea4db2c0c77b4f4ad661a645bd5f36d96ce03e4d5` |
 
 Archive entry paths, installed `source.properties` keys, package executables,
 the exact derived emulator package-registration XML (SHA-256

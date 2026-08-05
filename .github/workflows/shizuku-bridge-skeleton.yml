@@ -82,7 +82,7 @@ jobs:
       ANDROID_BUILD_TOOLS_LINUX_SHA256: bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88
       ANDROID_SYSTEM_IMAGE: system-images;android-30;google_apis;x86_64
       ANDROID_SYSTEM_IMAGE_REVISION: "16"
-      ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/x86_64-30_r16.zip
+      ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/sys-img/google_apis/x86_64-30_r16.zip
       ANDROID_SYSTEM_IMAGE_SHA1: 6ae21030eaadc041078444d3798e4b399f3e787d
       ANDROID_SYSTEM_IMAGE_SHA256: daae27654be74ae83a484daea4db2c0c77b4f4ad661a645bd5f36d96ce03e4d5
     steps:
@@ -272,6 +272,10 @@ jobs:
 
           repository = ET.parse(repository_path).getroot()
           system_images = ET.parse(system_image_path).getroot()
+          repository_archive_base = "https://dl.google.com/android/repository/"
+          system_image_archive_base = (
+              "https://dl.google.com/android/repository/sys-img/google_apis/"
+          )
           expected = (
               (
                   repository,
@@ -279,6 +283,7 @@ jobs:
                   os.environ["ANDROID_CMDLINE_TOOLS_REVISION"],
                   os.environ["ANDROID_CMDLINE_TOOLS_LINUX_SHA1"],
                   os.environ["ANDROID_CMDLINE_TOOLS_URL"],
+                  repository_archive_base,
               ),
               (
                   repository,
@@ -286,6 +291,7 @@ jobs:
                   os.environ["ANDROID_PLATFORM_TOOLS_REVISION"],
                   os.environ["ANDROID_PLATFORM_TOOLS_LINUX_SHA1"],
                   os.environ["ANDROID_PLATFORM_TOOLS_URL"],
+                  repository_archive_base,
               ),
               (
                   repository,
@@ -293,6 +299,7 @@ jobs:
                   os.environ["ANDROID_EMULATOR_REVISION"],
                   os.environ["ANDROID_EMULATOR_LINUX_SHA1"],
                   os.environ["ANDROID_EMULATOR_URL"],
+                  repository_archive_base,
               ),
               (
                   repository,
@@ -300,6 +307,7 @@ jobs:
                   os.environ["ANDROID_PLATFORM_REVISION"],
                   os.environ["ANDROID_PLATFORM_LINUX_SHA1"],
                   os.environ["ANDROID_PLATFORM_URL"],
+                  repository_archive_base,
               ),
               (
                   repository,
@@ -307,6 +315,7 @@ jobs:
                   os.environ["ANDROID_BUILD_TOOLS_REVISION"],
                   os.environ["ANDROID_BUILD_TOOLS_LINUX_SHA1"],
                   os.environ["ANDROID_BUILD_TOOLS_URL"],
+                  repository_archive_base,
               ),
               (
                   system_images,
@@ -314,13 +323,21 @@ jobs:
                   os.environ["ANDROID_SYSTEM_IMAGE_REVISION"],
                   os.environ["ANDROID_SYSTEM_IMAGE_SHA1"],
                   os.environ["ANDROID_SYSTEM_IMAGE_URL"],
+                  system_image_archive_base,
               ),
           )
-          for document, path, expected_revision, expected_sha1, expected_url in expected:
+          for (
+              document,
+              path,
+              expected_revision,
+              expected_sha1,
+              expected_url,
+              archive_base,
+          ) in expected:
               selected = package(document, path)
               actual_revision = revision(selected)
               actual_sha1, relative_url = linux_archive(selected)
-              actual_url = f"https://dl.google.com/android/repository/{relative_url}"
+              actual_url = f"{archive_base}{relative_url}"
               if (
                   actual_revision != expected_revision
                   or actual_sha1 != expected_sha1
