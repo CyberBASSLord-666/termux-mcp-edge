@@ -290,3 +290,35 @@ run is development evidence for the S2.5 identity probe and cannot be cited
 as release evidence or as authorization for broader Android control.
 It also cannot establish persistence isolation between processes sharing the
 Termux UID; that remains outside this gate's claim boundary.
+
+## Solo-operator development mode
+
+When the repository has a single OWNER and cannot collect two non-author
+approvals, set the repository/environment variable:
+
+```text
+ANDROID_RISH_PHYSICAL_SOLO_OPERATOR=reviewed-v1
+```
+
+The candidate resolver then accepts **one** exact-head `APPROVED` review from an
+`OWNER` (author self-approval is allowed). This mode is restricted to the
+development-only `physical_shizuku_rish_identity_development_v1` lane and does
+not change release inventory or production-control claims.
+
+## On-device operator local S2.5 gate
+
+For a physical AArch64 Termux device with Shizuku already providing shell UID
+`2000`, without an x64 GitHub controller host:
+
+```bash
+cargo build --release --locked --features android-rish
+./scripts/operator_local_s25_rish_gate.sh ./target/release/termux-mcp-server
+```
+
+Requires a pinned mode-`0400` DEX under an owner-only parent (default
+`~/.local/share/termux-mcp-edge/rish/rish_shizuku.dex`). Evidence is written to
+`~/.local/share/termux-mcp-edge/evidence/operator-local-s25-evidence.json` with
+`releaseEligible: false` and `productionControlQualified: false`.
+
+If Shizuku is not running, start it from the Shizuku app via Wireless debugging
+or ADB, then re-run the gate.

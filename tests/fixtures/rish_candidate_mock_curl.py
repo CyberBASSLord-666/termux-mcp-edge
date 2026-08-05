@@ -85,6 +85,10 @@ def reviews_for(case: str) -> list[dict[str, Any]]:
             review(1, "candidate-author", "APPROVED", association="OWNER"),
             review(2, "reviewer-one", "APPROVED", association="MEMBER"),
         ]
+    if case == "solo_owner_self_approval":
+        return [
+            review(1, "candidate-author", "APPROVED", association="OWNER"),
+        ]
     if case == "untrusted_approval":
         return [
             review(1, "reviewer-one", "APPROVED", association="CONTRIBUTOR"),

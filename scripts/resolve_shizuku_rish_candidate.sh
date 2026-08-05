@@ -11,9 +11,16 @@ Usage: resolve_shizuku_rish_candidate.sh \
   --repository OWNER/REPO --commit SHA --pull-request NUMBER --output FILE
 
 Requires GH_TOKEN. Resolves the current open same-repository pull-request head
-with two current trusted exact-head approvals and the latest exact-head,
+with current trusted exact-head approval(s) and the latest exact-head,
 first-attempt, successful CI, Security, and Android Cross Compile pull-request
 runs. Writes one private closed JSON identity file.
+
+Approval policy (development physical lane only):
+  Default: two distinct non-author MEMBER/OWNER/COLLABORATOR exact-head
+  APPROVED reviews.
+  Solo-operator: set ANDROID_RISH_PHYSICAL_SOLO_OPERATOR=reviewed-v1 to accept
+  one OWNER exact-head APPROVED review (author may self-approve). This mode is
+  for the non-release physical_shizuku_rish_identity_development_v1 lane only.
 EOF
 }
 
@@ -129,18 +136,58 @@ HEAD_BRANCH="$(jq -er '.head.ref' "$TEMP_ROOT/pull-request.json")" \
 PR_AUTHOR="$(jq -er '.user.login | ascii_downcase' "$TEMP_ROOT/pull-request.json")" \
   || fail pull_request_identity_invalid
 
+# Solo-operator mode unblocks the development-only physical lane when the
+# repository has a single OWNER and cannot collect two non-author approvals.
+SOLO_OPERATOR=0
+if [[ "${ANDROID_RISH_PHYSICAL_SOLO_OPERATOR:-}" == "reviewed-v1" ]]; then
+  SOLO_OPERATOR=1
+fi
+
 api_get "$API_ROOT/pulls/$PULL_REQUEST/reviews?per_page=100" \
   >"$TEMP_ROOT/reviews.json" || fail pull_request_reviews_query_failed
 jq -e \
   --arg author "$PR_AUTHOR" \
-  --arg commit "$COMMIT" '
+  --arg commit "$COMMIT" \
+  --argjson solo "$SOLO_OPERATOR" '
   def timestamp:
     type == "string"
     and test(
       "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     );
+  def trusted_approvals($allow_author):
+    [
+      (
+        sort_by(.user.login | ascii_downcase)
+        | group_by(.user.login | ascii_downcase)[]
+        | sort_by(
+            (.submitted_at // "9999-12-31T23:59:59Z"),
+            .id
+          )
+        | last
+        | select(
+            .state == "APPROVED"
+            and .commit_id == $commit
+            and (
+              $allow_author
+              or (.user.login | ascii_downcase) != $author
+            )
+            and (.author_association | IN(
+              "MEMBER",
+              "OWNER",
+              "COLLABORATOR"
+            ))
+            and (
+              ($allow_author | not)
+              or .author_association == "OWNER"
+            )
+          )
+        | .user.login
+        | ascii_downcase
+      )
+    ]
+    | unique;
   type == "array"
-  and length >= 2
+  and length >= (if $solo == 1 then 1 else 2 end)
   and length < 100
   and all(.[];
     (.id | type == "number" and . >= 1 and floor == .)
@@ -167,31 +214,11 @@ jq -e \
   )
   and ([.[].id] | unique | length) == length
   and (
-    [
-      (
-        sort_by(.user.login | ascii_downcase)
-        | group_by(.user.login | ascii_downcase)[]
-        | sort_by(
-            (.submitted_at // "9999-12-31T23:59:59Z"),
-            .id
-          )
-        | last
-        | select(
-            .state == "APPROVED"
-            and .commit_id == $commit
-            and (.user.login | ascii_downcase) != $author
-            and (.author_association | IN(
-              "MEMBER",
-              "OWNER",
-              "COLLABORATOR"
-            ))
-          )
-        | .user.login
-        | ascii_downcase
-      )
-    ]
-    | unique
-    | length >= 2
+    if $solo == 1 then
+      (trusted_approvals(true) | length) >= 1
+    else
+      (trusted_approvals(false) | length) >= 2
+    end
   )
   ' "$TEMP_ROOT/reviews.json" >/dev/null \
   || fail pull_request_reviews_invalid

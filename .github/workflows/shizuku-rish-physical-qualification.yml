@@ -14,6 +14,9 @@ on:
 
 permissions: {}
 
+env:
+  ANDROID_RISH_PHYSICAL_SOLO_OPERATOR: ${{ vars.ANDROID_RISH_PHYSICAL_SOLO_OPERATOR }}
+
 concurrency:
   group: android-rish-physical-controller-v1
   cancel-in-progress: false
@@ -479,7 +482,7 @@ jobs:
   physical-gate:
     name: Protected physical device gate
     needs: candidate-review
-    runs-on: [self-hosted, linux, x64, termux-rish-controller]
+    runs-on: [self-hosted, linux, termux-rish-controller]
     timeout-minutes: 30
     environment:
       name: android-rish-physical-development
@@ -509,6 +512,7 @@ jobs:
           DEVICE_SLOT: ${{ vars.ANDROID_RISH_PHYSICAL_DEVICE_SLOT }}
           DISPATCH_REF: ${{ github.ref }}
           DEVELOPMENT_GUARD: ${{ vars.ANDROID_RISH_PHYSICAL_DEVELOPMENT_PROTECTED }}
+          ANDROID_RISH_PHYSICAL_SOLO_OPERATOR: ${{ vars.ANDROID_RISH_PHYSICAL_SOLO_OPERATOR }}
           EVENT_NAME: ${{ github.event_name }}
           EXPECTED_COMMIT: ${{ needs.candidate-review.outputs.expected_commit }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}

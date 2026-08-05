@@ -104,6 +104,40 @@ assert_case_fails stale_latest_failure workflow_run_identity_invalid
 assert_case_fails rerun workflow_run_identity_invalid
 assert_case_fails incomplete_run_page workflow_run_selection_failed
 
+# Solo-operator development lane: one OWNER exact-head approval (author OK).
+SOLO_OUTPUT="$ROOT/solo-pass.json"
+if ! ANDROID_RISH_PHYSICAL_SOLO_OPERATOR=reviewed-v1 \
+  run_resolver solo_owner_self_approval "$SOLO_OUTPUT" \
+  >"$ROOT/solo.stdout" 2>"$ROOT/solo.stderr"
+then
+  cat "$ROOT/solo.stderr" >&2
+  fail_test solo_operator_owner_self_approval_rejected
+fi
+[[ "$(<"$ROOT/solo.stdout")" == '[android-rish-candidate] result=PASS' ]] \
+  || fail_test solo_operator_success_output_contract_changed
+jq -e '.pullRequestNumber == 328 and .ciRunId == 101' "$SOLO_OUTPUT" >/dev/null \
+  || fail_test solo_operator_identity_invalid
+
+# Solo-operator must not accept untrusted associations.
+if ANDROID_RISH_PHYSICAL_SOLO_OPERATOR=reviewed-v1 \
+  run_resolver untrusted_approval "$ROOT/solo-untrusted.json" \
+  >"$ROOT/solo-untrusted.stdout" 2>"$ROOT/solo-untrusted.stderr"
+then
+  fail_test solo_operator_accepted_untrusted_approval
+fi
+grep -Fq pull_request_reviews_invalid "$ROOT/solo-untrusted.stderr" \
+  || fail_test solo_operator_untrusted_failure_changed
+
+# Without the exact reviewed-v1 token, solo mode stays closed.
+if ANDROID_RISH_PHYSICAL_SOLO_OPERATOR=1 \
+  run_resolver solo_owner_self_approval "$ROOT/solo-token-invalid.json" \
+  >"$ROOT/solo-token.stdout" 2>"$ROOT/solo-token.stderr"
+then
+  fail_test solo_operator_accepted_invalid_token
+fi
+grep -Fq pull_request_reviews_invalid "$ROOT/solo-token.stderr" \
+  || fail_test solo_operator_invalid_token_failure_changed
+
 EXISTING="$ROOT/existing.json"
 printf '%s\n' preserve >"$EXISTING"
 if run_resolver pass "$EXISTING" >"$ROOT/existing.stdout" 2>"$ROOT/existing.stderr"; then

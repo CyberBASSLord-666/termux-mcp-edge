@@ -1,3 +1,8 @@
 self-hosted-runner:
   labels:
+    - self-hosted
+    - linux
+    - x64
+    - aarch64
+    - arm64
     - termux-rish-controller
