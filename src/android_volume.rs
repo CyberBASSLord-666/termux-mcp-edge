@@ -195,13 +195,14 @@ fn parse_volume_status(input: &str) -> Result<AndroidVolumeStatus, AndroidVolume
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
+    use rustix::process::{test_kill_process, Pid};
     use serde_json::json;
     use tempfile::TempDir;
 
     use super::*;
-    use crate::android_provider::ANDROID_PROVIDER_TEST_LOCK;
+    use crate::android_provider::{active_supervisor_count, ANDROID_PROVIDER_TEST_LOCK};
 
     fn valid_status() -> Value {
         json!([
@@ -214,18 +215,71 @@ mod tests {
         ])
     }
 
-    fn executable_script(script: &str, timeout: Duration) -> (TempDir, AndroidVolumeClient) {
-        let directory = tempfile::tempdir().unwrap();
+    fn executable_script_in(
+        directory: &TempDir,
+        script: &str,
+        timeout: Duration,
+    ) -> AndroidVolumeClient {
         let program = directory.path().join("volume-status");
         fs::write(&program, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let client = AndroidVolumeClient::with_program_and_limits(
+        AndroidVolumeClient::with_program_and_limits(
             program,
             timeout,
             MAX_VOLUME_STDOUT_BYTES,
             MAX_VOLUME_STDERR_BYTES,
-        );
+        )
+    }
+
+    fn executable_script(script: &str, timeout: Duration) -> (TempDir, AndroidVolumeClient) {
+        let directory = tempfile::tempdir().unwrap();
+        let client = executable_script_in(&directory, script, timeout);
         (directory, client)
+    }
+
+    async fn read_pid_file(path: &Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(value) = fs::read_to_string(path) {
+                    if let Ok(pid) = value.trim().parse() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("volume provider did not publish its process identifier")
+    }
+
+    fn process_exists(pid: u32) -> bool {
+        let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+            return false;
+        };
+        match test_kill_process(pid) {
+            Ok(()) => true,
+            Err(error) => error != rustix::io::Errno::SRCH,
+        }
+    }
+
+    async fn assert_process_gone(pid: u32) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while process_exists(pid) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("volume provider process {pid} survived bounded cleanup"));
+    }
+
+    async fn assert_no_active_supervisors() {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while active_supervisor_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("volume supervisor task did not finish bounded cleanup");
     }
 
     #[test]
@@ -337,12 +391,29 @@ mod tests {
             AndroidVolumeError::StderrLimitExceeded
         );
 
-        let (_directory, client) =
-            executable_script("exec /bin/sleep 30", Duration::from_millis(30));
+        let directory = tempfile::tempdir().unwrap();
+        let direct_pid_path = directory.path().join("direct-pid");
+        let descendant_pid_path = directory.path().join("descendant-pid");
+        let direct_pid_text = direct_pid_path.to_string_lossy();
+        let descendant_pid_text = descendant_pid_path.to_string_lossy();
+        assert!(!direct_pid_text.contains('\''));
+        assert!(!descendant_pid_text.contains('\''));
+        let script = format!(
+            "printf '%s\\n' \"$$\" >'{direct_pid_text}'\n\
+             /bin/sleep 30 >/dev/null 2>&1 &\n\
+             printf '%s\\n' \"$!\" >'{descendant_pid_text}'\n\
+             wait"
+        );
+        let client = executable_script_in(&directory, &script, Duration::from_secs(1));
         assert_eq!(
             client.collect().await.unwrap_err(),
             AndroidVolumeError::TimedOut
         );
+        let direct_pid = read_pid_file(&direct_pid_path).await;
+        let descendant_pid = read_pid_file(&descendant_pid_path).await;
+        assert_process_gone(direct_pid).await;
+        assert_process_gone(descendant_pid).await;
+        assert_no_active_supervisors().await;
 
         let (_directory, client) = executable_script("exit 7", Duration::from_secs(1));
         assert_eq!(

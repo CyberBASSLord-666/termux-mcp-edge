@@ -843,6 +843,22 @@ printf '2000\n'
         }
     }
 
+    async fn wait_for_valid_pid(path: &Path) -> u32 {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match fs::read_to_string(path)
+                    .ok()
+                    .and_then(|contents| contents.trim().parse::<u32>().ok())
+                {
+                    Some(pid) if pid > 0 => return pid,
+                    _ => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("PID fixture did not become valid: {}", path.display()))
+    }
+
     #[tokio::test]
     async fn fixed_probe_observes_environment_arguments_descriptor_and_uid_token() {
         let _test_lock = BOUNDED_PROCESS_TEST_LOCK.lock().await;
@@ -1263,25 +1279,18 @@ printf '2000\n'
         let active = client.clone();
         let waiter = tokio::spawn(async move { active.probe().await });
         tokio::time::timeout(Duration::from_secs(2), async {
-            while active_supervisor_count() != 1
-                || !fixture._directory.path().join("direct.pid").is_file()
-                || !fixture._directory.path().join("descendant.pid").is_file()
-            {
+            while active_supervisor_count() != 1 {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("rish child supervisor did not start");
-        let direct_pid = fs::read_to_string(fixture._directory.path().join("direct.pid"))
-            .unwrap()
-            .trim()
-            .parse::<u32>()
-            .unwrap();
-        let descendant_pid = fs::read_to_string(fixture._directory.path().join("descendant.pid"))
-            .unwrap()
-            .trim()
-            .parse::<u32>()
-            .unwrap();
+        let direct_pid_path = fixture._directory.path().join("direct.pid");
+        let descendant_pid_path = fixture._directory.path().join("descendant.pid");
+        let (direct_pid, descendant_pid) = tokio::join!(
+            wait_for_valid_pid(&direct_pid_path),
+            wait_for_valid_pid(&descendant_pid_path),
+        );
 
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());

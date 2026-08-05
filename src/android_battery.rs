@@ -697,29 +697,28 @@ mod tests {
     async fn timeout_nonzero_invalid_utf8_and_missing_program_are_stable() {
         let _test_guard = ANDROID_BATTERY_TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
-        let program = directory.path().join("battery-status");
-        let late_marker = directory.path().join("must-not-exist");
-        fs::write(
-            &program,
-            format!(
-                "#!/bin/sh\nset -eu\n/bin/sleep 1\nprintf late >'{}'\n",
-                late_marker.display()
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let client = AndroidBatteryClient::with_program_and_limits(
-            program,
-            Duration::from_millis(25),
-            MAX_BATTERY_STDOUT_BYTES,
-            MAX_BATTERY_STDERR_BYTES,
+        let direct_pid_path = directory.path().join("direct-pid");
+        let descendant_pid_path = directory.path().join("descendant-pid");
+        let direct_pid_text = direct_pid_path.to_string_lossy();
+        let descendant_pid_text = descendant_pid_path.to_string_lossy();
+        assert!(!direct_pid_text.contains('\''));
+        assert!(!descendant_pid_text.contains('\''));
+        let script = format!(
+            "printf '%s\\n' \"$$\" >'{direct_pid_text}'\n\
+             /bin/sleep 30 >/dev/null 2>&1 &\n\
+             printf '%s\\n' \"$!\" >'{descendant_pid_text}'\n\
+             wait"
         );
+        let client = executable_script_in(&directory, &script, Duration::from_secs(1));
         assert_eq!(
             client.collect().await.unwrap_err(),
             AndroidBatteryError::TimedOut
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!late_marker.exists());
+        let direct_pid = read_pid_file(&direct_pid_path).await;
+        let descendant_pid = read_pid_file(&descendant_pid_path).await;
+        assert_process_gone(direct_pid).await;
+        assert_process_gone(descendant_pid).await;
+        assert_no_active_supervisors().await;
 
         let (_directory, client) = executable_script("exit 7", Duration::from_secs(1));
         assert_eq!(

@@ -84,6 +84,8 @@ const MAX_FIND_STRUCTURED_BYTES: usize = MAX_FIND_RESPONSE_BYTES - 1_024;
 const MAX_SEARCH_STRUCTURED_BYTES: usize = MAX_SEARCH_RESPONSE_BYTES - 1_024;
 const WRITE_FILE_ARTIFACT_PREFIX: &str = ".termux-mcp-write-artifact-";
 const TRASH_FILE_ARTIFACT_PREFIX: &str = ".termux-mcp-trash-artifact-";
+const QUARANTINE_LOCK_RETRY_BUDGET: Duration = Duration::from_millis(50);
+const QUARANTINE_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 pub const MAX_WRITE_FILE_QUARANTINE_ARTIFACTS: usize = 32;
 pub const MAX_WRITE_FILE_QUARANTINE_BYTES: u64 =
     MAX_WRITE_FILE_QUARANTINE_ARTIFACTS as u64 * 1_048_576;
@@ -3113,14 +3115,49 @@ fn write_quarantine_capacity_error() -> AppError {
     AppError::WriteQuarantineCapacityExceeded
 }
 
-fn lock_write_quarantine(quarantine: &OwnedFd) -> Result<(), AppError> {
-    descriptor_fs::flock(quarantine, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
+fn lock_quarantine_with_bounded_retry(
+    quarantine: &OwnedFd,
+    mut on_contention: impl FnMut(),
+) -> Result<(), rustix::io::Errno> {
+    // CLOEXEC closes the lock descriptor at exec, not at fork. A concurrent
+    // fixed child can therefore retain the parent's flock for the short
+    // fork-to-exec window after the mutation itself released it. Retry only
+    // EAGAIN and only for this 50 ms budget; a persistent cross-process holder
+    // still fails closed with the family-specific Busy error.
+    let started = Instant::now();
+    loop {
+        match descriptor_fs::flock(quarantine, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => return Ok(()),
+            Err(error) if error == rustix::io::Errno::AGAIN => {
+                on_contention();
+                let elapsed = started.elapsed();
+                if elapsed >= QUARANTINE_LOCK_RETRY_BUDGET {
+                    return Err(error);
+                }
+                std::thread::sleep(
+                    QUARANTINE_LOCK_RETRY_INTERVAL.min(QUARANTINE_LOCK_RETRY_BUDGET - elapsed),
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn lock_write_quarantine_with_contention_hook(
+    quarantine: &OwnedFd,
+    on_contention: impl FnMut(),
+) -> Result<(), AppError> {
+    lock_quarantine_with_bounded_retry(quarantine, on_contention).map_err(|error| {
         if error == rustix::io::Errno::AGAIN {
             AppError::WriteQuarantineBusy
         } else {
             descriptor_error(error)
         }
     })
+}
+
+fn lock_write_quarantine(quarantine: &OwnedFd) -> Result<(), AppError> {
+    lock_write_quarantine_with_contention_hook(quarantine, || {})
 }
 
 fn ensure_write_quarantine_capacity(
@@ -3307,14 +3344,21 @@ fn open_existing_trash_file_quarantine(parent: &OwnedFd) -> Result<Option<OwnedF
     Ok(Some(quarantine))
 }
 
-fn lock_trash_quarantine(quarantine: &OwnedFd) -> Result<(), AppError> {
-    descriptor_fs::flock(quarantine, FlockOperation::NonBlockingLockExclusive).map_err(|error| {
+fn lock_trash_quarantine_with_contention_hook(
+    quarantine: &OwnedFd,
+    on_contention: impl FnMut(),
+) -> Result<(), AppError> {
+    lock_quarantine_with_bounded_retry(quarantine, on_contention).map_err(|error| {
         if error == rustix::io::Errno::AGAIN {
             AppError::TrashQuarantineBusy
         } else {
             descriptor_error(error)
         }
     })
+}
+
+fn lock_trash_quarantine(quarantine: &OwnedFd) -> Result<(), AppError> {
+    lock_trash_quarantine_with_contention_hook(quarantine, || {})
 }
 
 fn trash_quarantine_usage(quarantine: &OwnedFd) -> Result<(usize, u64), AppError> {
@@ -4268,9 +4312,90 @@ mod tests {
     use std::cell::Cell;
     use std::io::Write;
     use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
 
     use crate::audit::{AuditDecision, AuditMode};
     use crate::write_policy::DEFAULT_MAX_WRITE_BYTES;
+
+    fn write_quarantine_lock_with_test_hook(
+        quarantine: &OwnedFd,
+        on_contention: &mut dyn FnMut(),
+    ) -> Result<(), AppError> {
+        lock_write_quarantine_with_contention_hook(quarantine, on_contention)
+    }
+
+    fn trash_quarantine_lock_with_test_hook(
+        quarantine: &OwnedFd,
+        on_contention: &mut dyn FnMut(),
+    ) -> Result<(), AppError> {
+        lock_trash_quarantine_with_contention_hook(quarantine, on_contention)
+    }
+
+    fn assert_inherited_cloexec_lock_window_is_retried(
+        lock_with_hook: fn(&OwnedFd, &mut dyn FnMut()) -> Result<(), AppError>,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let inherited_lock = open_root_directory(root.path()).unwrap();
+        descriptor_fs::flock(&inherited_lock, FlockOperation::LockExclusive).unwrap();
+        let (parent_control, child_control) = UnixStream::pair().unwrap();
+
+        let child = std::thread::spawn(move || {
+            let mut command = Command::new("/bin/true");
+            // SAFETY: the child hook performs only async-signal-safe writes and
+            // reads on already-open fixed descriptors. It allocates nothing and
+            // touches no shared lock state after fork.
+            unsafe {
+                command.pre_exec(move || {
+                    let written =
+                        rustix::io::write(&child_control, &[1]).map_err(std::io::Error::from)?;
+                    if written != 1 {
+                        return Err(std::io::Error::from_raw_os_error(
+                            rustix::io::Errno::IO.raw_os_error(),
+                        ));
+                    }
+                    let mut release = [0_u8; 1];
+                    let read = rustix::io::read(&child_control, &mut release)
+                        .map_err(std::io::Error::from)?;
+                    if read != 1 || release != [1] {
+                        return Err(std::io::Error::from_raw_os_error(
+                            rustix::io::Errno::IO.raw_os_error(),
+                        ));
+                    }
+                    Ok(())
+                });
+            }
+            command.status().unwrap()
+        });
+
+        let mut ready = [0_u8; 1];
+        assert_eq!(rustix::io::read(&parent_control, &mut ready).unwrap(), 1);
+        assert_eq!(ready, [1]);
+        drop(inherited_lock);
+
+        let probe = open_root_directory(root.path()).unwrap();
+        assert_eq!(
+            descriptor_fs::flock(&probe, FlockOperation::NonBlockingLockExclusive),
+            Err(rustix::io::Errno::AGAIN),
+            "the pre-exec child must retain the inherited CLOEXEC lock"
+        );
+
+        let mut released = false;
+        let mut release_child = || {
+            if !released {
+                assert_eq!(rustix::io::write(&parent_control, &[1]).unwrap(), 1);
+                released = true;
+            }
+        };
+        lock_with_hook(&probe, &mut release_child)
+            .expect("the bounded retry must survive one inherited CLOEXEC window");
+        assert!(
+            released,
+            "the lock path did not observe the inherited holder"
+        );
+        assert!(child.join().unwrap().success());
+    }
 
     fn assert_rejected(result: Result<PathBuf, AppError>) {
         assert!(
@@ -6349,6 +6474,11 @@ mod tests {
         );
     }
 
+    #[test]
+    fn write_quarantine_lock_retries_one_inherited_cloexec_window() {
+        assert_inherited_cloexec_lock_window_is_retried(write_quarantine_lock_with_test_hook);
+    }
+
     #[tokio::test]
     async fn quarantine_lock_contention_fails_before_authorization_without_blocking() {
         let root = tempfile::tempdir().unwrap();
@@ -6386,7 +6516,9 @@ mod tests {
                 AppError::WriteQuarantineBusy
             ))
         ));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        assert!(elapsed >= QUARANTINE_LOCK_RETRY_BUDGET);
+        assert!(elapsed < Duration::from_secs(1));
         assert!(!authorization_called.get());
         assert!(!target.exists());
         assert_eq!(std::fs::read_dir(quarantine).unwrap().count(), 0);
@@ -7180,6 +7312,11 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trash_quarantine_lock_retries_one_inherited_cloexec_window() {
+        assert_inherited_cloexec_lock_window_is_retried(trash_quarantine_lock_with_test_hook);
+    }
+
     #[tokio::test]
     async fn trash_quarantine_lock_contention_is_fail_fast_and_pre_authorization() {
         let root = tempfile::tempdir().unwrap();
@@ -7217,7 +7354,9 @@ mod tests {
                 AppError::TrashQuarantineBusy
             ))
         ));
-        assert!(started.elapsed() < Duration::from_secs(1));
+        let elapsed = started.elapsed();
+        assert!(elapsed >= QUARANTINE_LOCK_RETRY_BUDGET);
+        assert!(elapsed < Duration::from_secs(1));
         assert!(!authorization_called.get());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "target-content");
         assert_eq!(std::fs::read_dir(&quarantine).unwrap().count(), 0);
