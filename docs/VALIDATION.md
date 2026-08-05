@@ -115,6 +115,15 @@ hardware-accelerated
 API-30 AVD, installs the exact debug and androidTest APKs in the same job, and
 runs
 `io.github.cyberbasslord666.termuxmcpedge.bridge.test/io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation`.
+Each no-streaming install arms cleanup before the attempt, captures stdout and
+stderr separately under a file-size ceiling, requires status zero, exact stdout
+`Performing Push Install` followed by `Success`, and exactly one bounded push
+progress line tied to the reviewed APK path and byte size.
+Unexpected framing cannot skip uninstall and emulator cleanup.
+Every uninstall independently requires status zero, exact `Success` stdout, and empty stderr.
+Both cleanup flags remain armed until `pm path` proves both package IDs absent,
+so a transcript, timeout, or absence-check failure cannot mask the status or
+disable the trap's retry.
 The run must complete exactly the three closed-source inert manifest/parcel
 tests with only result keys `numtests`, `tests`, and `stream`, `OK (3 tests)`,
 final result code `-1`, and no unrecognized status, result, or trailing protocol

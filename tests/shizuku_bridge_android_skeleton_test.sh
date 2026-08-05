@@ -621,7 +621,13 @@ require("".join(inventory_literals) == expected_runtime_inventory, "custom instr
 for forbidden in ("Class.forName", "getDeclaredMethods", "androidx.", "org.junit"):
     require(forbidden not in runner_source, f"dynamic or external instrumentation authority added: {forbidden}")
 
+workflow_path = root / ".github/workflows/shizuku-bridge-skeleton.yml"
 workflow = text(".github/workflows/shizuku-bridge-skeleton.yml")
+require(
+    hashlib.sha256(workflow_path.read_bytes()).hexdigest()
+    == "5b13d1a4c59819d50033e0af63ae47114b9d8841b1345c53dc48865ac94b452f",
+    "closed Stage 2 workflow bytes changed",
+)
 for fragment in (
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961",
@@ -707,6 +713,23 @@ for fragment in (
     "BRIDGE_TEST_APPLICATION_ID: io.github.cyberbasslord666.termuxmcpedge.bridge.test",
     "BRIDGE_TEST_RUNNER: io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation",
     'bounded 10s "$emulator" -no-window -version',
+    "validate_adb_install_transcript()",
+    "validate_adb_uninstall_transcript()",
+    "ulimit -f 8 || exit 70",
+    'expected_stdout = b"Performing Push Install\\nSuccess\\n"',
+    'expected_stdout = b"Success\\n"',
+    'expected_stderr = b""',
+    'megabytes_per_second = r"(?:0|[1-9][0-9]*)\\.[0-9]"',
+    'seconds = r"(?:0|[1-9][0-9]*)\\.[0-9]{3}"',
+    '+ r" MB/s \\("',
+    "if ((install_status != 0)); then",
+    "if ((uninstall_status != 0)); then",
+    "if re.fullmatch(expected_stderr, stderr) is None:",
+    "if stderr != expected_stderr:",
+    'target_cleanup_required=true',
+    'validate_adb_install_transcript target "$debug_apk"',
+    'test_cleanup_required=true',
+    'validate_adb_install_transcript test "$android_test_apk" -t',
     "-avd \"$avd_name\"",
     "ro.build.version.sdk",
     "OK (3 tests)",
@@ -720,8 +743,6 @@ for fragment in (
     "adb_bounded()",
     "kill -TERM -- \"-$emulator_pgid\"",
     "kill -KILL -- \"-$emulator_pgid\"",
-    "uninstall \"$BRIDGE_TEST_APPLICATION_ID\"",
-    "uninstall \"$BRIDGE_APPLICATION_ID\"",
     "setsid --wait \"$emulator\"",
     "git diff --exit-code",
 ):
@@ -740,6 +761,147 @@ require(
     'bounded 10s "$emulator" -version' not in workflow,
     "GUI-linked emulator version probe added",
 )
+require(workflow.count("install --no-streaming -r") == 1, "ADB install path changed")
+require(workflow.count("ulimit -f 8 || exit 70") == 2, "ADB output ceilings changed")
+require(
+    workflow.count("<<'PY' || return 1") == 2,
+    "ADB transcript validator failure propagation changed",
+)
+install_stdout_check = (
+    '          expected_stdout = b"Performing Push Install\\nSuccess\\n"\n'
+    "          stdout = stdout_path.read_bytes()\n"
+    "          if stdout != expected_stdout:"
+)
+uninstall_stdout_check = (
+    '          expected_stdout = b"Success\\n"\n'
+    '          expected_stderr = b""\n'
+    "          if stdout != expected_stdout:"
+)
+require(workflow.count("if stdout != expected_stdout:") == 2, "ADB stdout checks changed")
+require(workflow.count(install_stdout_check) == 1, "ADB install stdout check changed")
+require(workflow.count(uninstall_stdout_check) == 1, "ADB uninstall stdout check changed")
+require_fragment(
+    workflow,
+    '"$(stat -c \'%s\' "$apk_path")" <<\'PY\' || return 1',
+    "ADB install transcript validator can be ignored",
+)
+require_fragment(
+    workflow,
+    'python3 - "$stdout_path" "$stderr_path" <<\'PY\' || return 1',
+    "ADB uninstall transcript validator can be ignored",
+)
+install_status_capture = (
+    '            if (\n'
+    '              ulimit -f 8 || exit 70\n'
+    '              adb_bounded 2m -s "$EMULATOR_SERIAL" \\\n'
+    '                install --no-streaming -r "$@" "$apk_path"\n'
+    '            ) >"$stdout_path" 2>"$stderr_path"; then\n'
+    '              install_status=0\n'
+    '            else\n'
+    '              install_status=$?\n'
+    '            fi\n'
+    '            if ((install_status != 0)); then\n'
+    "              printf 'adb install failed for %s with status %d\\n' \\\n"
+    '                "$label" "$install_status" >&2\n'
+    '              cat "$stdout_path" >&2\n'
+    '              cat "$stderr_path" >&2\n'
+    '              return 1\n'
+    '            fi'
+)
+uninstall_status_capture = (
+    '            if (\n'
+    '              ulimit -f 8 || exit 70\n'
+    '              adb_bounded 20s -s "$EMULATOR_SERIAL" uninstall "$package_name"\n'
+    '            ) >"$stdout_path" 2>"$stderr_path"; then\n'
+    '              uninstall_status=0\n'
+    '            else\n'
+    '              uninstall_status=$?\n'
+    '            fi\n'
+    '            if ((uninstall_status != 0)); then\n'
+    "              printf 'adb uninstall failed for %s with status %d\\n' \\\n"
+    '                "$label" "$uninstall_status" >&2\n'
+    '              cat "$stdout_path" >&2\n'
+    '              cat "$stderr_path" >&2\n'
+    '              return 1\n'
+    '            fi'
+)
+require(workflow.count(install_status_capture) == 1, "ADB install status capture changed")
+require(
+    workflow.count(uninstall_status_capture) == 1,
+    "ADB uninstall status capture changed",
+)
+require(
+    workflow.count("              install_status=$?\n") == 1,
+    "ADB install failure status capture changed",
+)
+require(
+    workflow.count("              uninstall_status=$?\n") == 1,
+    "ADB uninstall failure status capture changed",
+)
+require("target_installed" not in workflow, "stale post-validation cleanup flag returned")
+require("test_installed" not in workflow, "stale test cleanup flag returned")
+target_cleanup_arm = workflow.index("target_cleanup_required=true")
+target_install_call = workflow.index('validate_adb_install_transcript target "$debug_apk"')
+test_cleanup_arm = workflow.index("test_cleanup_required=true")
+test_install_call = workflow.index(
+    'validate_adb_install_transcript test "$android_test_apk" -t'
+)
+require(target_cleanup_arm < target_install_call, "target cleanup is not armed before install")
+require(test_cleanup_arm < test_install_call, "test cleanup is not armed before install")
+install_sequence = (
+    "          target_cleanup_required=true\n"
+    '          validate_adb_install_transcript target "$debug_apk"\n'
+    "          test_cleanup_required=true\n"
+    '          validate_adb_install_transcript test "$android_test_apk" -t'
+)
+require(workflow.count(install_sequence) == 1, "cleanup-armed APK install sequence changed")
+require(
+    workflow.count("target_cleanup_required=") == 3,
+    "target cleanup assignment inventory changed",
+)
+require(
+    workflow.count("test_cleanup_required=") == 3,
+    "test cleanup assignment inventory changed",
+)
+require(
+    workflow.count("validate_adb_uninstall_transcript") == 5,
+    "ADB uninstall validator call inventory changed",
+)
+cleanup_uninstall_sequence = (
+    '            if [[ "$test_cleanup_required" == true ]]; then\n'
+    "              validate_adb_uninstall_transcript \\\n"
+    '                cleanup-test "$BRIDGE_TEST_APPLICATION_ID" \\\n'
+    "                || cleanup_failed=true\n"
+    "            fi\n"
+    '            if [[ "$target_cleanup_required" == true ]]; then\n'
+    "              validate_adb_uninstall_transcript \\\n"
+    '                cleanup-target "$BRIDGE_APPLICATION_ID" \\\n'
+    "                || cleanup_failed=true\n"
+    "            fi"
+)
+require(
+    workflow.count(cleanup_uninstall_sequence) == 1,
+    "trap cleanup package bindings changed",
+)
+normal_test_uninstall = workflow.rindex('            test "$BRIDGE_TEST_APPLICATION_ID"')
+normal_target_uninstall = workflow.rindex('            target "$BRIDGE_APPLICATION_ID"')
+test_absence_check = workflow.index('test -z "$test_path_after_uninstall"')
+target_absence_check = workflow.index('test -z "$target_path_after_uninstall"')
+test_cleanup_disarm = workflow.rindex("test_cleanup_required=false")
+target_cleanup_disarm = workflow.rindex("target_cleanup_required=false")
+require(
+    normal_test_uninstall < normal_target_uninstall < test_absence_check,
+    "normal uninstall ordering changed",
+)
+require(
+    test_absence_check < target_absence_check < test_cleanup_disarm,
+    "cleanup disarmed before package absence proof",
+)
+require(
+    test_cleanup_disarm < target_cleanup_disarm,
+    "cleanup disarm ordering changed",
+)
+require("uninstall_output" not in workflow, "pipeline-masked uninstall status returned")
 for forbidden in (
     "actions/upload-artifact@",
     "actions/download-artifact@",
@@ -843,6 +1005,11 @@ for fragment in (
     "`sharedUserId` or `sharedUserMaxSdkVersion`",
     "runs",
     "`io.github.cyberbasslord666.termuxmcpedge.bridge.test/io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation`",
+    "Each no-streaming install arms cleanup before the attempt",
+    "`Performing Push Install` followed by `Success`",
+    "Unexpected framing cannot skip uninstall and emulator cleanup",
+    "Every uninstall independently requires status zero, exact `Success` stdout, and empty stderr",
+    "Both cleanup flags remain armed until `pm path` proves both package IDs absent",
     "`OK (3 tests)`",
     "final result code `-1`",
     "real API-30 `Parcel` test rejects every byte truncation",
@@ -1255,6 +1422,86 @@ expect_rejected_append \
   commented_headless_emulator_probe_added \
   .github/workflows/shizuku-bridge-skeleton.yml \
   $'\n# bounded 10s "$emulator" -no-window -version\n'
+expect_rejected_replace \
+  adb_install_stdout_contract_loosened \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'expected_stdout = b"Performing Push Install\nSuccess\n"' \
+  'expected_stdout = b"Success\n"'
+expect_rejected_replace \
+  adb_install_stderr_contract_loosened \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'if re.fullmatch(expected_stderr, stderr) is None:' \
+  'if re.search(expected_stderr, stderr) is None:'
+expect_rejected_replace \
+  adb_install_output_limit_removed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'ulimit -f 8' \
+  'ulimit -f unlimited'
+expect_rejected_replace \
+  target_cleanup_arm_removed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'target_cleanup_required=true' \
+  'target_cleanup_required=false'
+expect_rejected_replace \
+  adb_uninstall_status_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'if ((uninstall_status != 0)); then' \
+  'if false; then'
+expect_rejected_replace \
+  adb_install_failure_status_zeroed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'install_status=$?' \
+  'install_status=0'
+expect_rejected_replace \
+  adb_uninstall_failure_status_zeroed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'uninstall_status=$?' \
+  'uninstall_status=0'
+expect_rejected_replace \
+  adb_install_failure_return_zeroed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'adb install failed for %s with status %d\\n\' \\\n                "$label" "$install_status" >&2\n              cat "$stdout_path" >&2\n              cat "$stderr_path" >&2\n              return 1' \
+  $'adb install failed for %s with status %d\\n\' \\\n                "$label" "$install_status" >&2\n              cat "$stdout_path" >&2\n              cat "$stderr_path" >&2\n              return 0'
+expect_rejected_replace \
+  adb_uninstall_failure_return_zeroed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'adb uninstall failed for %s with status %d\\n\' \\\n                "$label" "$uninstall_status" >&2\n              cat "$stdout_path" >&2\n              cat "$stderr_path" >&2\n              return 1' \
+  $'adb uninstall failed for %s with status %d\\n\' \\\n                "$label" "$uninstall_status" >&2\n              cat "$stdout_path" >&2\n              cat "$stderr_path" >&2\n              return 0'
+expect_rejected_replace \
+  adb_install_transcript_failure_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'"$(stat -c \'%s\' "$apk_path")" <<\'PY\' || return 1' \
+  $'"$(stat -c \'%s\' "$apk_path")" <<\'PY\' || true'
+expect_rejected_replace \
+  adb_uninstall_transcript_failure_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'python3 - "$stdout_path" "$stderr_path" <<\'PY\' || return 1' \
+  $'python3 - "$stdout_path" "$stderr_path" <<\'PY\' || true'
+expect_rejected_replace \
+  adb_install_stdout_check_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'expected_stdout = b"Performing Push Install\\nSuccess\\n"\n          stdout = stdout_path.read_bytes()\n          if stdout != expected_stdout:' \
+  $'expected_stdout = b"Performing Push Install\\nSuccess\\n"\n          stdout = stdout_path.read_bytes()\n          if False and stdout != expected_stdout:'
+expect_rejected_replace \
+  adb_uninstall_stdout_check_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'expected_stdout = b"Success\\n"\n          expected_stderr = b""\n          if stdout != expected_stdout:' \
+  $'expected_stdout = b"Success\\n"\n          expected_stderr = b""\n          if False and stdout != expected_stdout:'
+expect_rejected_replace \
+  adb_uninstall_stderr_ignored \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'if stderr != expected_stderr:' \
+  'if False and stderr != expected_stderr:'
+expect_rejected_replace \
+  cleanup_disarmed_before_absence \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  $'          test -z "$target_path_after_uninstall"\n          test_cleanup_required=false' \
+  $'          test_cleanup_required=false\n          test -z "$target_path_after_uninstall"'
+expect_rejected_replace \
+  trap_test_package_binding_changed \
+  .github/workflows/shizuku-bridge-skeleton.yml \
+  'cleanup-test "$BRIDGE_TEST_APPLICATION_ID"' \
+  'cleanup-test "$BRIDGE_APPLICATION_ID"'
 expect_rejected_append \
   extra_instrumentation_test_added \
   android/shizuku-bridge/bridge-app/src/androidTest/java/io/github/cyberbasslord666/termuxmcpedge/bridge/BridgeParcelInstrumentationTest.java \

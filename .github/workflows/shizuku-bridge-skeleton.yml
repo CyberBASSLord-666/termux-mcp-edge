@@ -820,8 +820,8 @@ jobs:
           instrumentation_log="$RUNNER_TEMP/shizuku-bridge-instrumentation.log"
           emulator_pid=''
           emulator_pgid=''
-          target_installed=false
-          test_installed=false
+          target_cleanup_required=false
+          test_cleanup_required=false
 
           bounded() {
             local duration="$1"
@@ -833,6 +833,107 @@ jobs:
             local duration="$1"
             shift
             bounded "$duration" "$adb" "$@"
+          }
+
+          validate_adb_install_transcript() {
+            local label="$1"
+            local apk_path="$2"
+            local stdout_path="$RUNNER_TEMP/shizuku-bridge-$label-install.stdout"
+            local stderr_path="$RUNNER_TEMP/shizuku-bridge-$label-install.stderr"
+            local install_status
+            shift 2
+
+            if (
+              ulimit -f 8 || exit 70
+              adb_bounded 2m -s "$EMULATOR_SERIAL" \
+                install --no-streaming -r "$@" "$apk_path"
+            ) >"$stdout_path" 2>"$stderr_path"; then
+              install_status=0
+            else
+              install_status=$?
+            fi
+            if ((install_status != 0)); then
+              printf 'adb install failed for %s with status %d\n' \
+                "$label" "$install_status" >&2
+              cat "$stdout_path" >&2
+              cat "$stderr_path" >&2
+              return 1
+            fi
+
+            python3 - \
+              "$stdout_path" \
+              "$stderr_path" \
+              "$apk_path" \
+              "$(stat -c '%s' "$apk_path")" <<'PY' || return 1
+          import pathlib
+          import re
+          import sys
+
+          stdout_path = pathlib.Path(sys.argv[1])
+          stderr_path = pathlib.Path(sys.argv[2])
+          apk_path = sys.argv[3]
+          apk_size = int(sys.argv[4])
+          expected_stdout = b"Performing Push Install\nSuccess\n"
+          stdout = stdout_path.read_bytes()
+          if stdout != expected_stdout:
+              raise SystemExit(f"unexpected adb install stdout: {stdout!r}")
+          try:
+              stderr = stderr_path.read_bytes().decode("ascii")
+          except UnicodeDecodeError as error:
+              raise SystemExit(f"non-ASCII adb install stderr: {error}") from error
+          megabytes_per_second = r"(?:0|[1-9][0-9]*)\.[0-9]"
+          seconds = r"(?:0|[1-9][0-9]*)\.[0-9]{3}"
+          expected_stderr = (
+              re.escape(apk_path)
+              + r": 1 file pushed, 0 skipped\. "
+              + megabytes_per_second
+              + r" MB/s \("
+              + str(apk_size)
+              + r" bytes in "
+              + seconds
+              + r"s\)\n"
+          )
+          if re.fullmatch(expected_stderr, stderr) is None:
+              raise SystemExit(f"unexpected adb install stderr: {stderr!r}")
+          PY
+          }
+
+          validate_adb_uninstall_transcript() {
+            local label="$1"
+            local package_name="$2"
+            local stdout_path="$RUNNER_TEMP/shizuku-bridge-$label-uninstall.stdout"
+            local stderr_path="$RUNNER_TEMP/shizuku-bridge-$label-uninstall.stderr"
+            local uninstall_status
+
+            if (
+              ulimit -f 8 || exit 70
+              adb_bounded 20s -s "$EMULATOR_SERIAL" uninstall "$package_name"
+            ) >"$stdout_path" 2>"$stderr_path"; then
+              uninstall_status=0
+            else
+              uninstall_status=$?
+            fi
+            if ((uninstall_status != 0)); then
+              printf 'adb uninstall failed for %s with status %d\n' \
+                "$label" "$uninstall_status" >&2
+              cat "$stdout_path" >&2
+              cat "$stderr_path" >&2
+              return 1
+            fi
+
+            python3 - "$stdout_path" "$stderr_path" <<'PY' || return 1
+          import pathlib
+          import sys
+
+          stdout = pathlib.Path(sys.argv[1]).read_bytes()
+          stderr = pathlib.Path(sys.argv[2]).read_bytes()
+          expected_stdout = b"Success\n"
+          expected_stderr = b""
+          if stdout != expected_stdout:
+              raise SystemExit(f"unexpected adb uninstall stdout: {stdout!r}")
+          if stderr != expected_stderr:
+              raise SystemExit(f"unexpected adb uninstall stderr: {stderr!r}")
+          PY
           }
 
           group_exists() {
@@ -862,22 +963,17 @@ jobs:
           cleanup() {
             local status="$1"
             local cleanup_failed=false
-            local uninstall_output
             trap - EXIT
             set +e
-            if [[ "$test_installed" == true ]]; then
-              uninstall_output="$(
-                adb_bounded 20s -s "$EMULATOR_SERIAL" \
-                  uninstall "$BRIDGE_TEST_APPLICATION_ID" 2>/dev/null | tr -d '\r'
-              )"
-              [[ "$uninstall_output" == Success ]] || cleanup_failed=true
+            if [[ "$test_cleanup_required" == true ]]; then
+              validate_adb_uninstall_transcript \
+                cleanup-test "$BRIDGE_TEST_APPLICATION_ID" \
+                || cleanup_failed=true
             fi
-            if [[ "$target_installed" == true ]]; then
-              uninstall_output="$(
-                adb_bounded 20s -s "$EMULATOR_SERIAL" \
-                  uninstall "$BRIDGE_APPLICATION_ID" 2>/dev/null | tr -d '\r'
-              )"
-              [[ "$uninstall_output" == Success ]] || cleanup_failed=true
+            if [[ "$target_cleanup_required" == true ]]; then
+              validate_adb_uninstall_transcript \
+                cleanup-target "$BRIDGE_APPLICATION_ID" \
+                || cleanup_failed=true
             fi
             adb_bounded 10s -s "$EMULATOR_SERIAL" emu kill >/dev/null 2>&1 || true
             if [[ -n "$emulator_pgid" ]]; then
@@ -984,16 +1080,10 @@ jobs:
               shell getprop ro.product.cpu.abi | tr -d '\r'
           )" = x86_64
 
-          test "$(
-            adb_bounded 2m -s "$EMULATOR_SERIAL" \
-              install --no-streaming -r "$debug_apk" | tr -d '\r'
-          )" = Success
-          target_installed=true
-          test "$(
-            adb_bounded 2m -s "$EMULATOR_SERIAL" \
-              install --no-streaming -r -t "$android_test_apk" | tr -d '\r'
-          )" = Success
-          test_installed=true
+          target_cleanup_required=true
+          validate_adb_install_transcript target "$debug_apk"
+          test_cleanup_required=true
+          validate_adb_install_transcript test "$android_test_apk" -t
           target_paths_output="$(
             adb_bounded 15s -s "$EMULATOR_SERIAL" \
               shell pm path "$BRIDGE_APPLICATION_ID" | tr -d '\r'
@@ -1077,16 +1167,10 @@ jobs:
               raise SystemExit(f"unexpected instrumentation output: {unexpected!r}")
           PY
 
-          test "$(
-            adb_bounded 30s -s "$EMULATOR_SERIAL" \
-              uninstall "$BRIDGE_TEST_APPLICATION_ID" | tr -d '\r'
-          )" = Success
-          test_installed=false
-          test "$(
-            adb_bounded 30s -s "$EMULATOR_SERIAL" \
-              uninstall "$BRIDGE_APPLICATION_ID" | tr -d '\r'
-          )" = Success
-          target_installed=false
+          validate_adb_uninstall_transcript \
+            test "$BRIDGE_TEST_APPLICATION_ID"
+          validate_adb_uninstall_transcript \
+            target "$BRIDGE_APPLICATION_ID"
           test_path_after_uninstall="$(
             adb_bounded 15s -s "$EMULATOR_SERIAL" \
               shell pm path "$BRIDGE_TEST_APPLICATION_ID" | tr -d '\r'
@@ -1097,6 +1181,8 @@ jobs:
           )"
           test -z "$test_path_after_uninstall"
           test -z "$target_path_after_uninstall"
+          test_cleanup_required=false
+          target_cleanup_required=false
 
       - name: Confirm this workflow produced no governed output
         run: |
