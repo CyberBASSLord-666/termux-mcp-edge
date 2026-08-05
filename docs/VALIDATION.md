@@ -10,6 +10,157 @@ The optional MCP transport enforces authentication before mobile-conscious concu
 
 ## Required Repository Gates
 
+### Stage 2 Android bridge skeleton
+
+The Stage 2 project at `android/shizuku-bridge` is an inert build and protocol
+skeleton. It grants no Android or Shizuku authority, has no Shizuku runtime
+dependency, and contains no manifest permission, component, dynamic feature,
+native library, or callable privileged operation. Its debug APK is only a
+short-lived CI input. Its minified release APK is deliberately unsigned and is
+not installable release evidence.
+
+The skeleton freezes Gradle `8.13` with distribution SHA-256
+`20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78`,
+wrapper JAR SHA-256
+`81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f`,
+POSIX wrapper SHA-256
+`2f1c4d0d61790cfa72630eb34a30eca29eda4fab0069d0e2716f4f4f5869e21c`,
+Android Gradle Plugin `8.13.2`, Temurin JDK `17.0.20+8`, Java 11 bytecode,
+compile/target API `36`, minimum API `30`, Android platform-36 revision `2`,
+build-tools `35.0.0`, and JUnit `4.13.2` for host unit tests. The custom
+test-APK-only instrumentation runner uses public platform APIs and adds no
+runtime or instrumentation dependency. Both target variants are explicitly
+nondebuggable. The only intentional lint exceptions are
+`AndroidGradlePluginVersion` in both modules because every toolchain version and
+byte is independently pinned, plus app-only `HardcodedDebugMode`; every other
+lint warning remains fatal, and merged-manifest, APK, and emulator PackageManager
+checks independently enforce the debug flag.
+Repository mode rejects project-defined dependency repositories, closes the two
+module dependency blocks, rejects local JAR/AAR inputs, and uses committed strict
+dependency locks plus artifact-specific SHA-256 verification metadata. CI never
+generates or repairs those inputs, and it requires a newly created empty
+task-scoped Gradle home so a warm dependency-resolution cache cannot hide a
+missing metadata checksum. The repository contract closes the exact
+41-file Android subtree inventory and SHA-256 of every reviewed source, manifest,
+resource, host test, build input, lock, verification, and wrapper byte. It also
+requires exactly nine contract host-test methods and one application host-test
+method with their reviewed inert-authority and bounded-data semantics. Any new,
+removed, renamed, mode-changed, symlinked, or byte-modified Android input needs an
+explicit contract update and review.
+
+CI downloads the official Adoptium Temurin `17.0.20+8` Linux x64 archive from
+`jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz`, requires
+exactly `193273593` bytes and SHA-256
+`be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35`,
+then passes only that file to the commit-pinned JDK installer in `jdkfile` mode.
+The workflow first requires the dedicated `Java_jdkfile_jdk` toolcache namespace
+to be absent, so this job cannot resolve a pre-existing entry instead of the
+reviewed file. It independently requires installer output `jdkfile`,
+`java.runtime.version` `17.0.20+8`, Eclipse Adoptium vendor, and matching `javac`
+version before Gradle executes.
+
+The API-30 lane installs a fresh isolated SDK only from the following official
+Google archives. The mutable Google repository metadata must still name each
+exact stable revision, relative URL, and SHA-1. The downloaded bytes must then
+match both that SHA-1 and the independently reviewed SHA-256 before extraction;
+the workflow never asks `sdkmanager` to refetch or reuse a package.
+
+| Package | Revision | Official archive | SHA-1 | SHA-256 |
+| --- | --- | --- | --- | --- |
+| Command-line tools | `22.0` | `commandlinetools-linux-15859902_latest.zip` | `040d3996a65543d22ec4bf73e4c37aa37a8d4af4` | `4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583` |
+| Platform tools | `37.0.1` | `platform-tools_r37.0.1-linux.zip` | `477254aa5f903c15cf51001717bdf347fb6b53e0` | `d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1` |
+| Stable emulator | `37.1.11` | `emulator-linux_x64-15917651.zip` | `1b1f78891abf8ec268264356e1365c25519e8379` | `95771e0ae431897b2a4bd2d97fa095f29a8b0624a7b216baf529f9306161c266` |
+| Android platform 36 | `2` | `platform-36_r02.zip` | `2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576` | `37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e` |
+| Build tools | `35.0.0` | `build-tools_r35_linux.zip` | `2cfaa0bbb2336e9ec18ed3ecea84fa2e2af607bc` | `bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88` |
+| `system-images;android-30;google_apis;x86_64` | `16` | `sys-img/google_apis/x86_64-30_r16.zip` | `6ae21030eaadc041078444d3798e4b399f3e787d` | `daae27654be74ae83a484daea4db2c0c77b4f4ad661a645bd5f36d96ce03e4d5` |
+
+Archive entry paths, installed `source.properties` keys, package executables,
+the exact derived emulator package-registration XML (SHA-256
+`96f51acc01cabbcc32e158817daef7302add78b77365bf18b189cc3941ddea30`),
+and the exact JDK runtime build are independently checked before any Android
+tool or Gradle wrapper executes. Any selected-package metadata, URL, archive,
+or installed-package drift fails closed and requires an explicit reviewed pin
+update. The emulator identity probe and the device boot both pass `-no-window`,
+selecting the pinned archive's headless QEMU path instead of its optional
+GUI/audio-linked binary; the boot also passes `-no-audio`.
+
+Run the adversarial repository contract and the same aggregate Gradle gate used
+by `.github/workflows/shizuku-bridge-skeleton.yml`:
+
+```bash
+bash tests/shizuku_bridge_android_skeleton_test.sh
+cd android/shizuku-bridge
+./gradlew --no-daemon --no-configuration-cache --warning-mode=fail \
+  --dependency-verification=strict stage2Check \
+  :bridge-contract:testDebugUnitTest \
+  :bridge-app:testDebugUnitTest \
+  :bridge-app:lintDebug \
+  :bridge-app:lintRelease \
+  :bridge-app:assembleDebug \
+  :bridge-app:assembleRelease \
+  :bridge-app:assembleDebugAndroidTest
+```
+
+The workflow independently verifies the wrapper and toolchain before Gradle
+execution, positively parses the two JUnit XML reports and requires exactly
+nine-plus-one passing host tests, proves tracked dependency inputs remain
+unchanged, and positively parses the debug, release, and test APK ZIP/manifest
+structures before checking absence claims. It verifies that both target APKs are
+nondebuggable and have no
+permissions, components, instrumentation, dynamic-feature marker, or native
+library. Source, merged, and packaged target manifests must not declare
+`sharedUserId` or `sharedUserMaxSdkVersion`. It distinguishes the exact expected
+unsigned release result from a malformed APK. It then creates a fresh
+hardware-accelerated
+API-30 AVD, installs the exact debug and androidTest APKs in the same job, and
+runs
+`io.github.cyberbasslord666.termuxmcpedge.bridge.test/io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation`.
+Each no-streaming install arms cleanup before the attempt, captures stdout and
+stderr separately under a file-size ceiling, requires status zero, exact stdout
+`Performing Push Install` followed by `Success`, and exactly one bounded push
+progress line tied to the reviewed APK path and byte size.
+Unexpected framing cannot skip uninstall and emulator cleanup.
+Every uninstall independently requires status zero, exact `Success` stdout, and empty stderr.
+On the pinned API-30 image, an absent-package `pm path` probe must return exact
+status one with empty stdout and stderr; status zero, any other status, or any
+output is not absence evidence. Both cleanup flags remain armed until that
+closed probe proves both package IDs absent. The EXIT trap first accepts the
+same exact already-absent result and otherwise performs the bounded uninstall
+and repeats the absence proof, so a successful normal uninstall cannot be
+misclassified as a cleanup failure and a transcript, timeout, or probe failure
+cannot disable cleanup.
+A successful run must complete exactly the three closed-source inert manifest/parcel
+tests with only result keys `numtests`, `tests`, and `stream`, `OK (3 tests)`,
+final result code `-1`, and no unrecognized status, result, or trailing protocol
+line. The real API-30 `Parcel` test rejects truncation at every four-byte Parcel
+boundary for all four parcelables, malformed/nested frame boundaries,
+noncanonical tokens, and trailing fields while retaining the fixed-field round
+trip. Android 11 `Parcel.unmarshall` aligns and zero-pads a non-word byte prefix;
+that becomes a content mutation rather than a representable truncated frame.
+Stage 2 therefore makes no impossible claim that its decoder can recover the
+sender's pre-canonicalization byte count. Later identity stages must compare
+every fixed commitment byte-exactly. A runner-caught test failure emits only
+one closed checkpoint from `M00`, `R00`, `P00`, or `P01` through `P11`; it
+emits no exception text or stack trace. Failures before the runner catch
+boundary may produce platform diagnostics but still cannot pass the
+closed success parser. Boot, install, test, uninstall, emulator termination,
+process-group reap, and cleanup commands are independently bounded.
+This is emulator evidence for the inert Stage 2 skeleton only; it is not a
+physical-device, Shizuku, Binder-identity, lifecycle, production-control, or
+release-eligibility claim.
+
+The workflow contains no artifact-upload step and produces no governed,
+staged, release, or publication artifact. The existing inventories remain
+exactly seven governed Android postures, nine Android-workflow artifacts,
+twelve staged qualification members, and sixteen public assets. Security adds
+buildless `java-kotlin` CodeQL analysis alongside the unchanged Rust and
+GitHub-Actions analyses; it does not treat a green workflow result as proof of
+runtime authority or Android-device behavior.
+The final tracked-source governed-claim scan uses `git grep` with an explicit
+three-way status contract: status zero finds a forbidden claim, status one is
+the only accepted no-match result, and every other status is a scanner failure.
+Missing tooling can therefore never be interpreted as an empty scan.
+
 Run the same Rust gates enforced by `.github/workflows/ci.yml`:
 
 ```bash

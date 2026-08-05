@@ -1,0 +1,1258 @@
+name: Shizuku Bridge Skeleton
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "android/shizuku-bridge/**"
+      - "tests/shizuku_bridge_android_skeleton_test.sh"
+      - "docs/SHIZUKU_TYPED_BRIDGE_ARCHITECTURE.md"
+      - "docs/VALIDATION.md"
+      - ".github/dependabot.yml"
+      - ".github/workflows/shizuku-bridge-skeleton.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/security.yml"
+      - ".gitattributes"
+      - ".gitignore"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "android/shizuku-bridge/**"
+      - "tests/shizuku_bridge_android_skeleton_test.sh"
+      - "docs/SHIZUKU_TYPED_BRIDGE_ARCHITECTURE.md"
+      - "docs/VALIDATION.md"
+      - ".github/dependabot.yml"
+      - ".github/workflows/shizuku-bridge-skeleton.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/security.yml"
+      - ".gitattributes"
+      - ".gitignore"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Stage 2 contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Validate the inert skeleton contract
+        run: bash tests/shizuku_bridge_android_skeleton_test.sh
+
+  build:
+    name: Build, lint, unit-test, instrument, and inspect
+    needs: contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      BRIDGE_ROOT: android/shizuku-bridge
+      ANDROID_HOME: /tmp/termux-mcp-stage2-android-sdk
+      ANDROID_SDK_ROOT: /tmp/termux-mcp-stage2-android-sdk
+      ANDROID_CMDLINE_TOOLS_REVISION: "22.0"
+      ANDROID_CMDLINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip
+      ANDROID_CMDLINE_TOOLS_LINUX_SHA1: 040d3996a65543d22ec4bf73e4c37aa37a8d4af4
+      ANDROID_CMDLINE_TOOLS_LINUX_SHA256: 4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583
+      ANDROID_EMULATOR_REVISION: "37.1.11"
+      ANDROID_EMULATOR_URL: https://dl.google.com/android/repository/emulator-linux_x64-15917651.zip
+      ANDROID_EMULATOR_LINUX_SHA1: 1b1f78891abf8ec268264356e1365c25519e8379
+      ANDROID_EMULATOR_LINUX_SHA256: 95771e0ae431897b2a4bd2d97fa095f29a8b0624a7b216baf529f9306161c266
+      ANDROID_PLATFORM_TOOLS_REVISION: "37.0.1"
+      ANDROID_PLATFORM_TOOLS_URL: https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip
+      ANDROID_PLATFORM_TOOLS_LINUX_SHA1: 477254aa5f903c15cf51001717bdf347fb6b53e0
+      ANDROID_PLATFORM_TOOLS_LINUX_SHA256: d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1
+      ANDROID_PLATFORM_REVISION: "2"
+      ANDROID_PLATFORM_URL: https://dl.google.com/android/repository/platform-36_r02.zip
+      ANDROID_PLATFORM_LINUX_SHA1: 2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576
+      ANDROID_PLATFORM_LINUX_SHA256: 37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e
+      ANDROID_BUILD_TOOLS_REVISION: "35.0.0"
+      ANDROID_BUILD_TOOLS_URL: https://dl.google.com/android/repository/build-tools_r35_linux.zip
+      ANDROID_BUILD_TOOLS_LINUX_SHA1: 2cfaa0bbb2336e9ec18ed3ecea84fa2e2af607bc
+      ANDROID_BUILD_TOOLS_LINUX_SHA256: bd3a4966912eb8b30ed0d00b0cda6b6543b949d5ffe00bea54c04c81e1561d88
+      ANDROID_SYSTEM_IMAGE: system-images;android-30;google_apis;x86_64
+      ANDROID_SYSTEM_IMAGE_REVISION: "16"
+      ANDROID_SYSTEM_IMAGE_URL: https://dl.google.com/android/repository/sys-img/google_apis/x86_64-30_r16.zip
+      ANDROID_SYSTEM_IMAGE_SHA1: 6ae21030eaadc041078444d3798e4b399f3e787d
+      ANDROID_SYSTEM_IMAGE_SHA256: daae27654be74ae83a484daea4db2c0c77b4f4ad661a645bd5f36d96ce03e4d5
+    steps:
+      - name: Checkout
+        # actions/checkout@v7.0.1 resolved 2026-07-24
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify the pinned Gradle bootstrap before execution
+        env:
+          GRADLE_DISTRIBUTION_SHA256: 20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78
+          GRADLE_WRAPPER_JAR_SHA256: 81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f
+          GRADLEW_SHA256: 2f1c4d0d61790cfa72630eb34a30eca29eda4fab0069d0e2716f4f4f5869e21c
+        run: |
+          test -x "$BRIDGE_ROOT/gradlew"
+          printf '%s  %s\n' \
+            "$GRADLEW_SHA256" \
+            "$BRIDGE_ROOT/gradlew" \
+            | sha256sum --check --strict
+          printf '%s  %s\n' \
+            "$GRADLE_WRAPPER_JAR_SHA256" \
+            "$BRIDGE_ROOT/gradle/wrapper/gradle-wrapper.jar" \
+            | sha256sum --check --strict
+          python3 - "$BRIDGE_ROOT/gradle/wrapper/gradle-wrapper.properties" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          expected = {
+              "distributionBase": "GRADLE_USER_HOME",
+              "distributionPath": "wrapper/dists",
+              "distributionSha256Sum":
+                  "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78",
+              "distributionUrl":
+                  r"https\://services.gradle.org/distributions/gradle-8.13-bin.zip",
+              "networkTimeout": "10000",
+              "validateDistributionUrl": "true",
+              "zipStoreBase": "GRADLE_USER_HOME",
+              "zipStorePath": "wrapper/dists",
+          }
+          actual = {}
+          for line_number, raw_line in enumerate(
+              path.read_text(encoding="utf-8").splitlines(), start=1
+          ):
+              line = raw_line.strip()
+              if not line or line.startswith(("#", "!")):
+                  continue
+              separators = [index for index in (line.find("="), line.find(":")) if index >= 0]
+              if not separators:
+                  raise SystemExit(f"invalid wrapper property at line {line_number}")
+              separator = min(separators)
+              key = line[:separator].strip()
+              value = line[separator + 1:].strip()
+              if key in actual:
+                  raise SystemExit(f"duplicate wrapper property: {key}")
+              actual[key] = value
+          if actual != expected:
+              raise SystemExit(f"wrapper properties changed: {actual!r}")
+          PY
+
+      - name: Download the checksum-bound Temurin JDK
+        env:
+          TEMURIN_JDK_URL: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz
+          TEMURIN_JDK_SHA256: be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35
+          TEMURIN_JDK_SIZE: "193273593"
+        run: |
+          jdk_archive="$RUNNER_TEMP/temurin-17.0.20+8-linux-x64.tar.gz"
+          test -n "$RUNNER_TOOL_CACHE"
+          test ! -e "$RUNNER_TOOL_CACHE/Java_jdkfile_jdk"
+          test ! -e "$jdk_archive"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --connect-timeout 30 --max-time 600 \
+            --output "$jdk_archive" "$TEMURIN_JDK_URL"
+          test "$(stat -c '%s' "$jdk_archive")" = "$TEMURIN_JDK_SIZE"
+          printf '%s  %s\n' "$TEMURIN_JDK_SHA256" "$jdk_archive" \
+            | sha256sum --check --strict
+
+      - name: Install the checksum-bound JDK
+        id: setup-jdk
+        # actions/setup-java local-file mode pinned for the Stage 2 toolchain
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: jdkfile
+          java-version: "17.0.20+8"
+          jdk-file: ${{ runner.temp }}/temurin-17.0.20+8-linux-x64.tar.gz
+
+      - name: Verify the JDK identity
+        env:
+          SETUP_JDK_DISTRIBUTION: ${{ steps.setup-jdk.outputs.distribution }}
+        run: |
+          test "$SETUP_JDK_DISTRIBUTION" = jdkfile
+          java_properties="$(java -XshowSettings:properties -version 2>&1)"
+          test "$(awk -F'= ' '$1 ~ /java.version[[:space:]]*$/ { print $2; exit }' <<<"$java_properties")" = "17.0.20"
+          test "$(awk -F'= ' '$1 ~ /java.runtime.version[[:space:]]*$/ { print $2; exit }' <<<"$java_properties")" = "17.0.20+8"
+          test "$(awk -F'= ' '$1 ~ /java.vendor[[:space:]]*$/ { print $2; exit }' <<<"$java_properties")" = "Eclipse Adoptium"
+          test "$(javac -version 2>&1)" = "javac 17.0.20"
+
+      - name: Verify the published Android package identities
+        run: |
+          repository_metadata="$RUNNER_TEMP/android-repository2-3.xml"
+          system_image_metadata="$RUNNER_TEMP/android-google-apis-sys-img2-3.xml"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --max-time 60 \
+            --output "$repository_metadata" \
+            https://dl.google.com/android/repository/repository2-3.xml
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors --max-time 60 \
+            --output "$system_image_metadata" \
+            https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml
+
+          python3 - "$repository_metadata" "$system_image_metadata" <<'PY'
+          import os
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          repository_path = pathlib.Path(sys.argv[1])
+          system_image_path = pathlib.Path(sys.argv[2])
+
+          def local_name(element):
+              return element.tag.rsplit("}", 1)[-1]
+
+          def child(element, name):
+              for candidate in element:
+                  if local_name(candidate) == name:
+                      return candidate
+              raise SystemExit(f"missing {name} in {element.attrib.get('path', 'package')}")
+
+          def revision(package):
+              revision_node = child(package, "revision")
+              parts = []
+              for name in ("major", "minor", "micro"):
+                  match = next(
+                      (item for item in revision_node if local_name(item) == name),
+                      None,
+                  )
+                  if match is not None:
+                      parts.append(int(match.text))
+              return ".".join(str(part) for part in parts)
+
+          def package(root, path, stable_only=True):
+              matches = []
+              for candidate in root.iter():
+                  if local_name(candidate) != "remotePackage":
+                      continue
+                  if candidate.attrib.get("path") != path:
+                      continue
+                  channel = next(
+                      (item for item in candidate if local_name(item) == "channelRef"),
+                      None,
+                  )
+                  if not stable_only or channel is None or channel.attrib.get("ref") == "channel-0":
+                      matches.append(candidate)
+              if len(matches) != 1:
+                  raise SystemExit(f"expected one published stable {path}, found {len(matches)}")
+              return matches[0]
+
+          def linux_archive(package_node):
+              archives = child(package_node, "archives")
+              matches = []
+              for archive in archives:
+                  if local_name(archive) != "archive":
+                      continue
+                  host_os = next(
+                      (item.text for item in archive if local_name(item) == "host-os"),
+                      None,
+                  )
+                  host_arch = next(
+                      (item.text for item in archive if local_name(item) == "host-arch"),
+                      None,
+                  )
+                  if host_os not in (None, "linux") or host_arch not in (None, "x64"):
+                      continue
+                  complete = child(archive, "complete")
+                  checksum = child(complete, "checksum")
+                  if checksum.attrib.get("type") != "sha1":
+                      raise SystemExit("published archive does not use the expected SHA-1 field")
+                  archive_url = child(complete, "url").text
+                  matches.append((checksum.text, archive_url))
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"expected one Linux x64 archive for {package_node.attrib['path']}, "
+                      f"found {len(matches)}"
+                  )
+              return matches[0]
+
+          repository = ET.parse(repository_path).getroot()
+          system_images = ET.parse(system_image_path).getroot()
+          repository_archive_base = "https://dl.google.com/android/repository/"
+          system_image_archive_base = (
+              "https://dl.google.com/android/repository/sys-img/google_apis/"
+          )
+          expected = (
+              (
+                  repository,
+                  f"cmdline-tools;{os.environ['ANDROID_CMDLINE_TOOLS_REVISION']}",
+                  os.environ["ANDROID_CMDLINE_TOOLS_REVISION"],
+                  os.environ["ANDROID_CMDLINE_TOOLS_LINUX_SHA1"],
+                  os.environ["ANDROID_CMDLINE_TOOLS_URL"],
+                  repository_archive_base,
+              ),
+              (
+                  repository,
+                  "platform-tools",
+                  os.environ["ANDROID_PLATFORM_TOOLS_REVISION"],
+                  os.environ["ANDROID_PLATFORM_TOOLS_LINUX_SHA1"],
+                  os.environ["ANDROID_PLATFORM_TOOLS_URL"],
+                  repository_archive_base,
+              ),
+              (
+                  repository,
+                  "emulator",
+                  os.environ["ANDROID_EMULATOR_REVISION"],
+                  os.environ["ANDROID_EMULATOR_LINUX_SHA1"],
+                  os.environ["ANDROID_EMULATOR_URL"],
+                  repository_archive_base,
+              ),
+              (
+                  repository,
+                  "platforms;android-36",
+                  os.environ["ANDROID_PLATFORM_REVISION"],
+                  os.environ["ANDROID_PLATFORM_LINUX_SHA1"],
+                  os.environ["ANDROID_PLATFORM_URL"],
+                  repository_archive_base,
+              ),
+              (
+                  repository,
+                  f"build-tools;{os.environ['ANDROID_BUILD_TOOLS_REVISION']}",
+                  os.environ["ANDROID_BUILD_TOOLS_REVISION"],
+                  os.environ["ANDROID_BUILD_TOOLS_LINUX_SHA1"],
+                  os.environ["ANDROID_BUILD_TOOLS_URL"],
+                  repository_archive_base,
+              ),
+              (
+                  system_images,
+                  os.environ["ANDROID_SYSTEM_IMAGE"],
+                  os.environ["ANDROID_SYSTEM_IMAGE_REVISION"],
+                  os.environ["ANDROID_SYSTEM_IMAGE_SHA1"],
+                  os.environ["ANDROID_SYSTEM_IMAGE_URL"],
+                  system_image_archive_base,
+              ),
+          )
+          for (
+              document,
+              path,
+              expected_revision,
+              expected_sha1,
+              expected_url,
+              archive_base,
+          ) in expected:
+              selected = package(document, path)
+              actual_revision = revision(selected)
+              actual_sha1, relative_url = linux_archive(selected)
+              actual_url = f"{archive_base}{relative_url}"
+              if (
+                  actual_revision != expected_revision
+                  or actual_sha1 != expected_sha1
+                  or actual_url != expected_url
+              ):
+                  raise SystemExit(
+                      f"published package drift for {path}: "
+                      f"revision={actual_revision} sha1={actual_sha1} url={actual_url}"
+                  )
+          PY
+
+      - name: Install only checksum-bound Android SDK archives
+        run: |
+          set -Eeuo pipefail
+          archive_root="$RUNNER_TEMP/shizuku-bridge-sdk-archives"
+          test ! -e "$ANDROID_SDK_ROOT"
+          install -d -m 700 "$ANDROID_SDK_ROOT" "$archive_root"
+
+          fetch_archive() {
+            local name="$1"
+            local url="$2"
+            local sha1="$3"
+            local sha256="$4"
+            local archive="$archive_root/$name.zip"
+            curl --fail --location --proto '=https' --tlsv1.2 \
+              --retry 3 --retry-all-errors --connect-timeout 30 --max-time 900 \
+              --output "$archive" "$url"
+            printf '%s  %s\n' "$sha1" "$archive" | sha1sum --check --strict
+            printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --strict
+            unzip -tq "$archive" >/dev/null
+          }
+
+          fetch_archive \
+            command-line-tools \
+            "$ANDROID_CMDLINE_TOOLS_URL" \
+            "$ANDROID_CMDLINE_TOOLS_LINUX_SHA1" \
+            "$ANDROID_CMDLINE_TOOLS_LINUX_SHA256"
+          fetch_archive \
+            platform-tools \
+            "$ANDROID_PLATFORM_TOOLS_URL" \
+            "$ANDROID_PLATFORM_TOOLS_LINUX_SHA1" \
+            "$ANDROID_PLATFORM_TOOLS_LINUX_SHA256"
+          fetch_archive \
+            emulator \
+            "$ANDROID_EMULATOR_URL" \
+            "$ANDROID_EMULATOR_LINUX_SHA1" \
+            "$ANDROID_EMULATOR_LINUX_SHA256"
+          fetch_archive \
+            platform \
+            "$ANDROID_PLATFORM_URL" \
+            "$ANDROID_PLATFORM_LINUX_SHA1" \
+            "$ANDROID_PLATFORM_LINUX_SHA256"
+          fetch_archive \
+            build-tools \
+            "$ANDROID_BUILD_TOOLS_URL" \
+            "$ANDROID_BUILD_TOOLS_LINUX_SHA1" \
+            "$ANDROID_BUILD_TOOLS_LINUX_SHA256"
+          fetch_archive \
+            system-image \
+            "$ANDROID_SYSTEM_IMAGE_URL" \
+            "$ANDROID_SYSTEM_IMAGE_SHA1" \
+            "$ANDROID_SYSTEM_IMAGE_SHA256"
+
+          extract_archive() {
+            local name="$1"
+            local top_level="$2"
+            local destination="$3"
+            local archive="$archive_root/$name.zip"
+            local staging
+            staging="$(mktemp -d "$RUNNER_TEMP/shizuku-bridge-sdk-package.XXXXXX")"
+            python3 - "$archive" "$top_level" <<'PY'
+          import pathlib
+          import stat
+          import sys
+          import zipfile
+
+          archive = pathlib.Path(sys.argv[1])
+          top_level = sys.argv[2]
+          with zipfile.ZipFile(archive) as source:
+              names = set()
+              for entry in source.infolist():
+                  pure = pathlib.PurePosixPath(entry.filename)
+                  if (
+                      entry.filename.startswith(("/", "\\"))
+                      or "\\" in entry.filename
+                      or ".." in pure.parts
+                      or not pure.parts
+                      or pure.parts[0] != top_level
+                      or entry.filename in names
+                      or stat.S_ISLNK(entry.external_attr >> 16)
+                  ):
+                      raise SystemExit(f"unsafe or unexpected archive entry: {entry.filename!r}")
+                  names.add(entry.filename)
+              if not names:
+                  raise SystemExit("empty SDK archive")
+          PY
+            unzip -q "$archive" -d "$staging"
+            test -d "$staging/$top_level"
+            test ! -e "$destination"
+            install -d -m 700 "$(dirname "$destination")"
+            mv "$staging/$top_level" "$destination"
+            rmdir "$staging"
+          }
+
+          extract_archive command-line-tools cmdline-tools \
+            "$ANDROID_SDK_ROOT/cmdline-tools/$ANDROID_CMDLINE_TOOLS_REVISION"
+          extract_archive platform-tools platform-tools \
+            "$ANDROID_SDK_ROOT/platform-tools"
+          extract_archive emulator emulator \
+            "$ANDROID_SDK_ROOT/emulator"
+          extract_archive platform android-36 \
+            "$ANDROID_SDK_ROOT/platforms/android-36"
+          extract_archive build-tools android-15 \
+            "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_REVISION"
+          extract_archive system-image x86_64 \
+            "$ANDROID_SDK_ROOT/system-images/android-30/google_apis/x86_64"
+
+          command_line_properties="$ANDROID_SDK_ROOT/cmdline-tools/$ANDROID_CMDLINE_TOOLS_REVISION/source.properties"
+          platform_properties="$ANDROID_SDK_ROOT/platforms/android-36/source.properties"
+          build_tools_properties="$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_REVISION/source.properties"
+          platform_tools_properties="$ANDROID_SDK_ROOT/platform-tools/source.properties"
+          emulator_properties="$ANDROID_SDK_ROOT/emulator/source.properties"
+          system_image_properties="$ANDROID_SDK_ROOT/system-images/android-30/google_apis/x86_64/source.properties"
+          test -f "$ANDROID_SDK_ROOT/platforms/android-36/android.jar"
+          test -x "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_REVISION/aapt"
+          test -x "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_REVISION/apksigner"
+          test -x "$ANDROID_SDK_ROOT/platform-tools/adb"
+          test -x "$ANDROID_SDK_ROOT/emulator/emulator"
+          test -x "$ANDROID_SDK_ROOT/cmdline-tools/$ANDROID_CMDLINE_TOOLS_REVISION/bin/avdmanager"
+          test -x "$ANDROID_SDK_ROOT/cmdline-tools/$ANDROID_CMDLINE_TOOLS_REVISION/bin/apkanalyzer"
+          python3 - \
+            "$command_line_properties" \
+            "$platform_properties" \
+            "$build_tools_properties" \
+            "$platform_tools_properties" \
+            "$emulator_properties" \
+            "$system_image_properties" <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          def properties(path):
+              values = {}
+              for line_number, raw_line in enumerate(
+                  pathlib.Path(path).read_text(encoding="utf-8").splitlines(), start=1
+              ):
+                  line = raw_line.strip()
+                  if not line or line.startswith(("#", "!")):
+                      continue
+                  if "=" not in line:
+                      raise SystemExit(f"invalid property at {path}:{line_number}")
+                  key, value = (item.strip() for item in line.split("=", 1))
+                  if key in values:
+                      raise SystemExit(f"duplicate property {key} in {path}")
+                  values[key] = value
+              return values
+
+          expected = (
+              (sys.argv[1], {"Pkg.Revision": os.environ["ANDROID_CMDLINE_TOOLS_REVISION"]}),
+              (
+                  sys.argv[2],
+                  {
+                      "Pkg.Revision": os.environ["ANDROID_PLATFORM_REVISION"],
+                      "AndroidVersion.ApiLevel": "36",
+                  },
+              ),
+              (sys.argv[3], {"Pkg.Revision": os.environ["ANDROID_BUILD_TOOLS_REVISION"]}),
+              (sys.argv[4], {"Pkg.Revision": os.environ["ANDROID_PLATFORM_TOOLS_REVISION"]}),
+              (sys.argv[5], {"Pkg.Revision": os.environ["ANDROID_EMULATOR_REVISION"]}),
+              (
+                  sys.argv[6],
+                  {
+                      "Pkg.Revision": os.environ["ANDROID_SYSTEM_IMAGE_REVISION"],
+                      "AndroidVersion.ApiLevel": "30",
+                      "SystemImage.Abi": "x86_64",
+                      "SystemImage.TagId": "google_apis",
+                  },
+              ),
+          )
+          for path, required in expected:
+              actual = properties(path)
+              for key, value in required.items():
+                  if actual.get(key) != value:
+                      raise SystemExit(
+                          f"installed package property drift in {path}: "
+                          f"{key}={actual.get(key)!r}"
+                      )
+          PY
+
+          emulator_package_xml="$ANDROID_SDK_ROOT/emulator/package.xml"
+          test ! -e "$emulator_package_xml"
+          python3 - "$emulator_package_xml" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+
+          content = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+          <ns2:repository
+              xmlns:ns2="http://schemas.android.com/repository/android/common/02"
+              xmlns:ns5="http://schemas.android.com/repository/android/generic/02">
+            <localPackage path="emulator" obsolete="false">
+              <type-details xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xsi:type="ns5:genericDetailsType" />
+              <revision>
+                <major>37</major>
+                <minor>1</minor>
+                <micro>11</micro>
+              </revision>
+              <display-name>Android Emulator</display-name>
+            </localPackage>
+          </ns2:repository>
+          '''
+          expected_sha256 = "96f51acc01cabbcc32e158817daef7302add78b77365bf18b189cc3941ddea30"
+          if hashlib.sha256(content).hexdigest() != expected_sha256:
+              raise SystemExit("emulator package registration template changed")
+          path = pathlib.Path(sys.argv[1])
+          path.write_bytes(content)
+          if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+              raise SystemExit("emulator package registration write changed")
+          PY
+
+      - name: Build the complete Stage 2 skeleton
+        working-directory: android/shizuku-bridge
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/shizuku-bridge-gradle
+        run: |
+          test ! -e "$GRADLE_USER_HOME"
+          install -d -m 700 "$GRADLE_USER_HOME"
+          timeout --verbose --signal=TERM --kill-after=30s 20m \
+            ./gradlew \
+              --no-daemon \
+              --no-configuration-cache \
+              --console=plain \
+              --stacktrace \
+              --warning-mode=fail \
+              --dependency-verification=strict \
+              --max-workers=2 \
+              stage2Check \
+              :bridge-contract:testDebugUnitTest \
+              :bridge-app:testDebugUnitTest \
+              :bridge-app:lintDebug \
+              :bridge-app:lintRelease \
+              :bridge-app:assembleDebug \
+              :bridge-app:assembleRelease \
+              :bridge-app:assembleDebugAndroidTest
+
+      - name: Inspect exact host unit-test results
+        run: |
+          python3 - "$BRIDGE_ROOT" <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = pathlib.Path(sys.argv[1])
+          expected = {
+              root / "bridge-app/build/test-results/testDebugUnitTest/TEST-io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeSkeletonTest.xml": (
+                  "io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeSkeletonTest",
+                  {"stageTwoArtifactHasNoRuntimeAuthority"},
+              ),
+              root / "bridge-contract/build/test-results/testDebugUnitTest/TEST-io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeParcelableContractTest.xml": (
+                  "io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeParcelableContractTest",
+                  {
+                      "contextRejectsUnknownVersionAndNonPositiveRequestId",
+                      "contextRejectsEveryNonExactDigestOrNonceLength",
+                      "everyParcelableCreatorBoundsArrayAllocation",
+                      "mutableInputAndOutputArraysNeverAliasContextStorage",
+                      "failureCodeSetIsClosed",
+                      "failureAndIdentityCloneEveryMutableInputAndOutput",
+                      "identityIsClosedBoundedAndDefensivelyCopied",
+                      "identityRejectsUnboundedOrNonAsciiVersionNameAndInvalidUid",
+                      "systemFeaturesResultIsStructurallyInertUntilStageFive",
+                  },
+              ),
+          }
+          actual = set(root.glob("*/build/test-results/testDebugUnitTest/TEST-*.xml"))
+          if actual != set(expected):
+              raise SystemExit(f"host unit-test report inventory changed: {sorted(actual ^ set(expected))}")
+          for report, (suite_name, test_names) in expected.items():
+              suite = ET.parse(report).getroot()
+              if suite.tag != "testsuite":
+                  raise SystemExit(f"unexpected host test report root: {report}")
+              expected_suite_attributes = {
+                  "name", "tests", "skipped", "failures", "errors",
+                  "timestamp", "hostname", "time",
+              }
+              if set(suite.attrib) != expected_suite_attributes:
+                  raise SystemExit(f"host test suite attributes changed: {report}")
+              if suite.attrib["name"] != suite_name:
+                  raise SystemExit(f"host test suite name changed: {report}")
+              if suite.attrib["tests"] != str(len(test_names)):
+                  raise SystemExit(f"host test count changed: {report}")
+              if any(suite.attrib[name] != "0" for name in ("skipped", "failures", "errors")):
+                  raise SystemExit(f"host test failure or skip recorded: {report}")
+              try:
+                  if float(suite.attrib["time"]) < 0:
+                      raise ValueError
+              except ValueError:
+                  raise SystemExit(f"invalid host test duration: {report}")
+              cases = suite.findall("testcase")
+              if len(cases) != len(test_names):
+                  raise SystemExit(f"host testcase count changed: {report}")
+              observed = set()
+              for case in cases:
+                  if set(case.attrib) != {"name", "classname", "time"} or list(case):
+                      raise SystemExit(f"host testcase structure changed: {report}")
+                  if case.attrib["classname"] != suite_name:
+                      raise SystemExit(f"host testcase class changed: {report}")
+                  try:
+                      if float(case.attrib["time"]) < 0:
+                          raise ValueError
+                  except ValueError:
+                      raise SystemExit(f"invalid host testcase duration: {report}")
+                  observed.add(case.attrib["name"])
+              if observed != test_names or len(observed) != len(cases):
+                  raise SystemExit(f"host testcase inventory changed: {report}")
+              children = [child.tag for child in suite]
+              if children.count("properties") != 1 or children.count("system-out") != 1 \
+                      or children.count("system-err") != 1 \
+                      or len(children) != len(test_names) + 3:
+                  raise SystemExit(f"host test report structure changed: {report}")
+              for tag in ("properties", "system-out", "system-err"):
+                  element = suite.find(tag)
+                  if element is None or element.attrib or list(element) or (element.text or ""):
+                      raise SystemExit(f"unexpected host test report payload: {report} {tag}")
+          PY
+
+      - name: Prove dependency inputs remained immutable
+        run: |
+          git diff --exit-code -- "$BRIDGE_ROOT"
+          test -z "$(git status --short --untracked-files=no -- "$BRIDGE_ROOT")"
+
+      - name: Inspect merged manifests and APK contents
+        run: |
+          debug_apk="$BRIDGE_ROOT/bridge-app/build/outputs/apk/debug/bridge-app-debug.apk"
+          release_apk="$BRIDGE_ROOT/bridge-app/build/outputs/apk/release/bridge-app-release-unsigned.apk"
+          android_test_apk="$BRIDGE_ROOT/bridge-app/build/outputs/apk/androidTest/debug/bridge-app-debug-androidTest.apk"
+          aapt="$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_REVISION/aapt"
+          apksigner="$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_REVISION/apksigner"
+          apkanalyzer="$ANDROID_SDK_ROOT/cmdline-tools/$ANDROID_CMDLINE_TOOLS_REVISION/bin/apkanalyzer"
+
+          test -f "$debug_apk"
+          test -f "$release_apk"
+          test -f "$android_test_apk"
+          test -x "$aapt"
+          test -x "$apksigner"
+          test -x "$apkanalyzer"
+
+          debug_manifest="$BRIDGE_ROOT/bridge-app/build/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml"
+          release_manifest="$BRIDGE_ROOT/bridge-app/build/intermediates/merged_manifests/release/processReleaseManifest/AndroidManifest.xml"
+          test -f "$debug_manifest"
+          test -f "$release_manifest"
+          python3 - "$debug_manifest" "$release_manifest" <<'PY'
+          import pathlib
+          import sys
+          import xml.etree.ElementTree as ET
+
+          android = "{http://schemas.android.com/apk/res/android}"
+          forbidden = {
+              "uses-permission", "uses-permission-sdk-23", "permission",
+              "activity", "activity-alias", "service", "receiver", "provider",
+              "instrumentation",
+          }
+          for variant, raw_path in zip(("debug", "release"), sys.argv[1:]):
+              path = pathlib.Path(raw_path)
+              root = ET.parse(path).getroot()
+              expected_root_attributes = {
+                  "package": "io.github.cyberbasslord666.termuxmcpedge.bridge",
+                  f"{android}versionCode": "1",
+                  f"{android}versionName": "0.1.0-stage2-inert",
+              }
+              if root.attrib != expected_root_attributes:
+                  raise SystemExit(f"{variant} merged-manifest root attributes changed")
+              for element in root.iter():
+                  tag = element.tag.rsplit("}", 1)[-1]
+                  if tag in forbidden:
+                      raise SystemExit(f"forbidden manifest element {tag} in {path}")
+              applications = root.findall("application")
+              if len(applications) != 1 or list(applications[0]):
+                  raise SystemExit(f"{variant} merged manifest is not inert")
+              application = applications[0]
+              if f"{android}debuggable" in application.attrib:
+                  raise SystemExit(f"{variant} merged manifest gained debuggable")
+              for name in ("allowBackup", "fullBackupContent", "usesCleartextTraffic"):
+                  if application.attrib.get(f"{android}{name}") != "false":
+                      raise SystemExit(f"{variant} merged manifest weakened {name}")
+              if f"{android}name" in application.attrib:
+                  raise SystemExit(f"{variant} merged manifest gained an application class")
+          PY
+
+          for apk in "$debug_apk" "$release_apk"; do
+            unzip -tq "$apk" >/dev/null
+            permissions_dump="$("$aapt" dump permissions "$apk")"
+            manifest_dump="$("$aapt" dump xmltree "$apk" AndroidManifest.xml)"
+            badging_dump="$("$aapt" dump badging "$apk")"
+            archive_entries="$(unzip -Z1 "$apk")"
+            test "$("$apkanalyzer" manifest debuggable "$apk")" = false
+            test "$(grep -Fc "package: name='io.github.cyberbasslord666.termuxmcpedge.bridge'" <<<"$badging_dump")" = 1
+            test "$(grep -Fxc "sdkVersion:'30'" <<<"$badging_dump")" = 1
+            test "$(grep -Fxc "targetSdkVersion:'36'" <<<"$badging_dump")" = 1
+            if grep -Fq 'uses-permission:' <<<"$permissions_dump"; then
+              printf '%s\n' "APK unexpectedly requests a permission: $apk" >&2
+              exit 1
+            fi
+            if grep -Eq \
+              '^[[:space:]]+E: (activity|activity-alias|service|receiver|provider|uses-permission|permission)' \
+              <<<"$manifest_dump"; then
+              printf '%s\n' "APK unexpectedly declares a component or permission: $apk" >&2
+              exit 1
+            fi
+            if grep -Eq '^[[:space:]]+A: split(=|\()' <<<"$manifest_dump"; then
+              printf '%s\n' "APK unexpectedly declares a dynamic split: $apk" >&2
+              exit 1
+            fi
+            if grep -Eq '^[[:space:]]+A: android:debuggable\(' <<<"$manifest_dump"; then
+              printf '%s\n' "APK unexpectedly declares itself debuggable: $apk" >&2
+              exit 1
+            fi
+            if grep -Eq \
+              '^[[:space:]]+A: android:(sharedUserId|sharedUserMaxSdkVersion)\(' \
+              <<<"$manifest_dump"; then
+              printf '%s\n' "APK unexpectedly declares a shared UID: $apk" >&2
+              exit 1
+            fi
+            if grep -Eq '^lib/' <<<"$archive_entries"; then
+              printf '%s\n' "APK unexpectedly contains a native library: $apk" >&2
+              exit 1
+            fi
+          done
+
+          unzip -tq "$android_test_apk" >/dev/null
+          test_manifest_dump="$("$aapt" dump xmltree "$android_test_apk" AndroidManifest.xml)"
+          test_archive_entries="$(unzip -Z1 "$android_test_apk")"
+          test "$(grep -Fxc \
+            '    E: instrumentation (line=9)' \
+            <<<"$test_manifest_dump")" = 1
+          test "$(grep -Fc \
+            'android:name(0x01010003)="io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation"' \
+            <<<"$test_manifest_dump")" = 1
+          test "$(grep -Fc \
+            'android:targetPackage(0x01010021)="io.github.cyberbasslord666.termuxmcpedge.bridge"' \
+            <<<"$test_manifest_dump")" = 1
+          if grep -Eq '^lib/' <<<"$test_archive_entries"; then
+            printf '%s\n' 'androidTest APK unexpectedly contains a native library' >&2
+            exit 1
+          fi
+
+          "$apksigner" verify "$debug_apk"
+          "$apksigner" verify "$android_test_apk"
+          if "$apksigner" verify "$release_apk" \
+            >"$RUNNER_TEMP/release-apksigner.stdout" \
+            2>"$RUNNER_TEMP/release-apksigner.stderr"; then
+            printf '%s\n' 'release APK unexpectedly contains a valid signature' >&2
+            exit 1
+          fi
+          test ! -s "$RUNNER_TEMP/release-apksigner.stdout"
+          cat >"$RUNNER_TEMP/release-apksigner.expected" <<'EOF'
+          DOES NOT VERIFY
+          ERROR: Missing META-INF/MANIFEST.MF
+          EOF
+          cmp "$RUNNER_TEMP/release-apksigner.expected" "$RUNNER_TEMP/release-apksigner.stderr"
+
+      - name: Run exactly three inert instrumentation tests on API 30
+        env:
+          BRIDGE_APPLICATION_ID: io.github.cyberbasslord666.termuxmcpedge.bridge
+          BRIDGE_TEST_APPLICATION_ID: io.github.cyberbasslord666.termuxmcpedge.bridge.test
+          BRIDGE_TEST_RUNNER: io.github.cyberbasslord666.termuxmcpedge.bridge.BridgeStage2Instrumentation
+          EMULATOR_SERIAL: emulator-5554
+        run: |
+          set -Eeuo pipefail
+          set +m
+
+          adb="$ANDROID_SDK_ROOT/platform-tools/adb"
+          emulator="$ANDROID_SDK_ROOT/emulator/emulator"
+          avdmanager="$ANDROID_SDK_ROOT/cmdline-tools/$ANDROID_CMDLINE_TOOLS_REVISION/bin/avdmanager"
+          avd_home="$RUNNER_TEMP/shizuku-bridge-avd"
+          avd_name=shizuku_bridge_api30
+          debug_apk="$BRIDGE_ROOT/bridge-app/build/outputs/apk/debug/bridge-app-debug.apk"
+          android_test_apk="$BRIDGE_ROOT/bridge-app/build/outputs/apk/androidTest/debug/bridge-app-debug-androidTest.apk"
+          emulator_log="$RUNNER_TEMP/shizuku-bridge-emulator.log"
+          instrumentation_log="$RUNNER_TEMP/shizuku-bridge-instrumentation.log"
+          emulator_pid=''
+          emulator_pgid=''
+          target_cleanup_required=false
+          test_cleanup_required=false
+
+          bounded() {
+            local duration="$1"
+            shift
+            timeout --verbose --signal=TERM --kill-after=5s "$duration" "$@"
+          }
+
+          adb_bounded() {
+            local duration="$1"
+            shift
+            bounded "$duration" "$adb" "$@"
+          }
+
+          validate_adb_install_transcript() {
+            local label="$1"
+            local apk_path="$2"
+            local stdout_path="$RUNNER_TEMP/shizuku-bridge-$label-install.stdout"
+            local stderr_path="$RUNNER_TEMP/shizuku-bridge-$label-install.stderr"
+            local install_status
+            shift 2
+
+            if (
+              ulimit -f 8 || exit 70
+              adb_bounded 2m -s "$EMULATOR_SERIAL" \
+                install --no-streaming -r "$@" "$apk_path"
+            ) >"$stdout_path" 2>"$stderr_path"; then
+              install_status=0
+            else
+              install_status=$?
+            fi
+            if ((install_status != 0)); then
+              printf 'adb install failed for %s with status %d\n' \
+                "$label" "$install_status" >&2
+              cat "$stdout_path" >&2
+              cat "$stderr_path" >&2
+              return 1
+            fi
+
+            python3 - \
+              "$stdout_path" \
+              "$stderr_path" \
+              "$apk_path" \
+              "$(stat -c '%s' "$apk_path")" <<'PY' || return 1
+          import pathlib
+          import re
+          import sys
+
+          stdout_path = pathlib.Path(sys.argv[1])
+          stderr_path = pathlib.Path(sys.argv[2])
+          apk_path = sys.argv[3]
+          apk_size = int(sys.argv[4])
+          expected_stdout = b"Performing Push Install\nSuccess\n"
+          stdout = stdout_path.read_bytes()
+          if stdout != expected_stdout:
+              raise SystemExit(f"unexpected adb install stdout: {stdout!r}")
+          try:
+              stderr = stderr_path.read_bytes().decode("ascii")
+          except UnicodeDecodeError as error:
+              raise SystemExit(f"non-ASCII adb install stderr: {error}") from error
+          megabytes_per_second = r"(?:0|[1-9][0-9]*)\.[0-9]"
+          seconds = r"(?:0|[1-9][0-9]*)\.[0-9]{3}"
+          expected_stderr = (
+              re.escape(apk_path)
+              + r": 1 file pushed, 0 skipped\. "
+              + megabytes_per_second
+              + r" MB/s \("
+              + str(apk_size)
+              + r" bytes in "
+              + seconds
+              + r"s\)\n"
+          )
+          if re.fullmatch(expected_stderr, stderr) is None:
+              raise SystemExit(f"unexpected adb install stderr: {stderr!r}")
+          PY
+          }
+
+          validate_adb_uninstall_transcript() {
+            local label="$1"
+            local package_name="$2"
+            local stdout_path="$RUNNER_TEMP/shizuku-bridge-$label-uninstall.stdout"
+            local stderr_path="$RUNNER_TEMP/shizuku-bridge-$label-uninstall.stderr"
+            local uninstall_status
+
+            if (
+              ulimit -f 8 || exit 70
+              adb_bounded 20s -s "$EMULATOR_SERIAL" uninstall "$package_name"
+            ) >"$stdout_path" 2>"$stderr_path"; then
+              uninstall_status=0
+            else
+              uninstall_status=$?
+            fi
+            if ((uninstall_status != 0)); then
+              printf 'adb uninstall failed for %s with status %d\n' \
+                "$label" "$uninstall_status" >&2
+              cat "$stdout_path" >&2
+              cat "$stderr_path" >&2
+              return 1
+            fi
+
+            python3 - "$stdout_path" "$stderr_path" <<'PY' || return 1
+          import pathlib
+          import sys
+
+          stdout = pathlib.Path(sys.argv[1]).read_bytes()
+          stderr = pathlib.Path(sys.argv[2]).read_bytes()
+          expected_stdout = b"Success\n"
+          expected_stderr = b""
+          if stdout != expected_stdout:
+              raise SystemExit(f"unexpected adb uninstall stdout: {stdout!r}")
+          if stderr != expected_stderr:
+              raise SystemExit(f"unexpected adb uninstall stderr: {stderr!r}")
+          PY
+          }
+
+          validate_package_absent() {
+            local label="$1"
+            local package_name="$2"
+            local stdout_path="$RUNNER_TEMP/shizuku-bridge-$label-path.stdout"
+            local stderr_path="$RUNNER_TEMP/shizuku-bridge-$label-path.stderr"
+            local path_status
+
+            if (
+              ulimit -f 8 || exit 70
+              adb_bounded 15s -s "$EMULATOR_SERIAL" \
+                shell pm path "$package_name"
+            ) >"$stdout_path" 2>"$stderr_path"; then
+              path_status=0
+            else
+              path_status=$?
+            fi
+            if ((path_status != 1)); then
+              printf 'package absence probe failed for %s with status %d\n' \
+                "$label" "$path_status" >&2
+              cat "$stdout_path" >&2
+              cat "$stderr_path" >&2
+              return 1
+            fi
+
+            python3 - "$stdout_path" "$stderr_path" <<'PY' || return 1
+          import pathlib
+          import sys
+
+          stdout = pathlib.Path(sys.argv[1]).read_bytes()
+          stderr = pathlib.Path(sys.argv[2]).read_bytes()
+          if stdout != b"":
+              raise SystemExit(f"unexpected package-absence stdout: {stdout!r}")
+          if stderr != b"":
+              raise SystemExit(f"unexpected package-absence stderr: {stderr!r}")
+          PY
+          }
+
+          cleanup_package_if_needed() {
+            local label="$1"
+            local package_name="$2"
+
+            if validate_package_absent \
+              "$label-already-absent" "$package_name" \
+              >/dev/null 2>&1; then
+              return 0
+            fi
+            validate_adb_uninstall_transcript "$label" "$package_name" \
+              || return 1
+            validate_package_absent "$label-post-uninstall" "$package_name"
+          }
+
+          group_exists() {
+            [[ -n "$emulator_pgid" ]] && kill -0 -- "-$emulator_pgid" 2>/dev/null
+          }
+
+          reap_leader_if_exited() {
+            local state
+            [[ -n "$emulator_pid" ]] || return 0
+            state="$(bounded 2s ps -o stat= -p "$emulator_pid" 2>/dev/null | tr -d ' ' || true)"
+            if [[ -z "$state" || "$state" == Z* ]]; then
+              wait "$emulator_pid" 2>/dev/null || true
+              emulator_pid=''
+            fi
+          }
+
+          wait_for_group_exit() {
+            local attempts="$1"
+            for ((attempt = 0; attempt < attempts; attempt++)); do
+              reap_leader_if_exited
+              group_exists || return 0
+              sleep 0.2
+            done
+            return 1
+          }
+
+          cleanup() {
+            local status="$1"
+            local cleanup_failed=false
+            trap - EXIT
+            set +e
+            if [[ "$test_cleanup_required" == true ]]; then
+              cleanup_package_if_needed \
+                cleanup-test "$BRIDGE_TEST_APPLICATION_ID" \
+                || cleanup_failed=true
+            fi
+            if [[ "$target_cleanup_required" == true ]]; then
+              cleanup_package_if_needed \
+                cleanup-target "$BRIDGE_APPLICATION_ID" \
+                || cleanup_failed=true
+            fi
+            adb_bounded 10s -s "$EMULATOR_SERIAL" emu kill >/dev/null 2>&1 || true
+            if [[ -n "$emulator_pgid" ]]; then
+              if ! wait_for_group_exit 50; then
+                kill -TERM -- "-$emulator_pgid" 2>/dev/null || true
+              fi
+              if ! wait_for_group_exit 50; then
+                kill -KILL -- "-$emulator_pgid" 2>/dev/null || true
+              fi
+              if ! wait_for_group_exit 50; then
+                cleanup_failed=true
+              fi
+            fi
+            reap_leader_if_exited
+            if [[ -n "$emulator_pid" ]]; then
+              cleanup_failed=true
+            fi
+            adb_bounded 10s kill-server >/dev/null 2>&1 || cleanup_failed=true
+            if ((status != 0)) && [[ -f "$emulator_log" ]]; then
+              tail -n 200 "$emulator_log" >&2
+            fi
+            if [[ "$cleanup_failed" == true ]]; then
+              printf '%s\n' 'bounded Stage 2 cleanup did not complete' >&2
+              if ((status == 0)); then
+                status=1
+              fi
+            fi
+            exit "$status"
+          }
+          trap 'cleanup "$?"' EXIT
+
+          test -c /dev/kvm
+          bounded 10s sudo chmod 0666 /dev/kvm
+          [[ -r /dev/kvm && -w /dev/kvm ]]
+          bounded 10s "$emulator" -accel-check
+          bounded 10s "$emulator" -no-window -version \
+            | grep -F "Android emulator version $ANDROID_EMULATOR_REVISION"
+
+          export ANDROID_AVD_HOME="$avd_home"
+          export ANDROID_EMULATOR_HOME="$RUNNER_TEMP/shizuku-bridge-emulator-home"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/shizuku-bridge-android-user"
+          install -d -m 700 \
+            "$ANDROID_AVD_HOME" \
+            "$ANDROID_EMULATOR_HOME" \
+            "$ANDROID_USER_HOME"
+          printf 'no\n' | bounded 2m "$avdmanager" create avd \
+            --force \
+            --name "$avd_name" \
+            --package "$ANDROID_SYSTEM_IMAGE" \
+            --device pixel_2
+
+          adb_bounded 15s kill-server
+          adb_bounded 15s start-server
+          adb_devices="$(adb_bounded 15s devices)"
+          if grep -Eq '^[^[:space:]]+[[:space:]]+(device|offline)$' <<<"$adb_devices"; then
+            printf '%s\n' 'unexpected Android device was already attached' >&2
+            exit 1
+          fi
+
+          setsid --wait "$emulator" \
+            -avd "$avd_name" \
+            -port 5554 \
+            -accel on \
+            -no-window \
+            -no-audio \
+            -no-boot-anim \
+            -no-metrics \
+            -no-snapshot \
+            -wipe-data \
+            -gpu swiftshader_indirect \
+            -camera-back none \
+            -camera-front none \
+            >"$emulator_log" 2>&1 &
+          emulator_pid=$!
+          emulator_pgid="$emulator_pid"
+          observed_pgid="$(bounded 5s ps -o pgid= -p "$emulator_pid" | tr -d ' ')"
+          [[ "$observed_pgid" =~ ^[0-9]+$ ]]
+          test "$observed_pgid" = "$emulator_pgid"
+
+          adb_bounded 4m -s "$EMULATOR_SERIAL" wait-for-device
+          boot_completed=false
+          boot_deadline=$((SECONDS + 240))
+          while ((SECONDS < boot_deadline)); do
+            boot_property="$(
+              adb_bounded 3s -s "$EMULATOR_SERIAL" \
+                shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true
+            )"
+            if [[ "$boot_property" == "1" ]] \
+              && adb_bounded 5s -s "$EMULATOR_SERIAL" \
+                shell cmd package list packages >/dev/null 2>&1; then
+              boot_completed=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "$boot_completed" == true ]]
+          test "$(adb_bounded 10s -s "$EMULATOR_SERIAL" get-state)" = device
+          test "$(
+            adb_bounded 10s -s "$EMULATOR_SERIAL" \
+              shell getprop ro.build.version.sdk | tr -d '\r'
+          )" = 30
+          test "$(
+            adb_bounded 10s -s "$EMULATOR_SERIAL" \
+              shell getprop ro.product.cpu.abi | tr -d '\r'
+          )" = x86_64
+
+          target_cleanup_required=true
+          validate_adb_install_transcript target "$debug_apk"
+          test_cleanup_required=true
+          validate_adb_install_transcript test "$android_test_apk" -t
+          target_paths_output="$(
+            adb_bounded 15s -s "$EMULATOR_SERIAL" \
+              shell pm path "$BRIDGE_APPLICATION_ID" | tr -d '\r'
+          )"
+          test_paths_output="$(
+            adb_bounded 15s -s "$EMULATOR_SERIAL" \
+              shell pm path "$BRIDGE_TEST_APPLICATION_ID" | tr -d '\r'
+          )"
+          mapfile -t target_paths <<<"$target_paths_output"
+          mapfile -t test_paths <<<"$test_paths_output"
+          ((${#target_paths[@]} == 1))
+          ((${#test_paths[@]} == 1))
+          [[ "${target_paths[0]}" == package:*base.apk ]]
+          [[ "${test_paths[0]}" == package:*base.apk ]]
+          instrumentation_inventory="$(
+            adb_bounded 15s -s "$EMULATOR_SERIAL" \
+              shell pm list instrumentation | tr -d '\r'
+          )"
+          test "$(
+            grep -Fxc \
+              "instrumentation:$BRIDGE_TEST_APPLICATION_ID/$BRIDGE_TEST_RUNNER (target=$BRIDGE_APPLICATION_ID)" \
+              <<<"$instrumentation_inventory"
+          )" = 1
+
+          set +e
+          adb_bounded 2m -s "$EMULATOR_SERIAL" shell am instrument -w -r \
+              "$BRIDGE_TEST_APPLICATION_ID/$BRIDGE_TEST_RUNNER" \
+              >"$instrumentation_log" 2>&1
+          instrumentation_status=$?
+          set -e
+          tr -d '\r' <"$instrumentation_log"
+          test "$instrumentation_status" -eq 0
+
+          python3 - "$instrumentation_log" <<'PY'
+          import pathlib
+          import sys
+
+          raw = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").replace("\r", "")
+          expected_tests = (
+              "BridgeManifestInstrumentationTest#testTargetManifestHasNoPermissionOrComponent;"
+              "BridgeParcelInstrumentationTest#testContextRoundTripPreservesOnlyFixedFields;"
+              "BridgeParcelInstrumentationTest#testUnknownContextVersionFailsClosedDuringUnparcel"
+          )
+          lines = raw.splitlines()
+          expected_results = {
+              "numtests": "3",
+              "tests": expected_tests,
+              "stream": "",
+          }
+          results = {}
+          stream_index = None
+          code_indices = []
+          protocol_indices = set()
+          for index, line in enumerate(lines):
+              result_prefix = "INSTRUMENTATION_RESULT: "
+              if line.startswith(result_prefix):
+                  payload = line[len(result_prefix):]
+                  if "=" not in payload:
+                      raise SystemExit(f"malformed instrumentation result: {line!r}")
+                  key, value = payload.split("=", 1)
+                  if key not in expected_results or key in results:
+                      raise SystemExit(f"unexpected or duplicate instrumentation result key: {key!r}")
+                  results[key] = value
+                  protocol_indices.add(index)
+                  if key == "stream":
+                      stream_index = index
+              elif line.startswith("INSTRUMENTATION_CODE: "):
+                  code_indices.append(index)
+                  protocol_indices.add(index)
+              elif line.startswith(("INSTRUMENTATION_RESULT", "INSTRUMENTATION_STATUS")):
+                  raise SystemExit(f"unrecognized instrumentation protocol line: {line!r}")
+          if results != expected_results:
+              raise SystemExit(f"unexpected instrumentation results: {results!r}")
+          if stream_index is None or lines[stream_index + 1:stream_index + 3] != ["OK (3 tests)", ""]:
+              raise SystemExit("instrumentation stream representation changed")
+          protocol_indices.update((stream_index + 1, stream_index + 2))
+          if code_indices != [len(lines) - 1] or lines[-1] != "INSTRUMENTATION_CODE: -1":
+              raise SystemExit("final instrumentation code changed or was not final")
+          unexpected = [line for index, line in enumerate(lines) if index not in protocol_indices]
+          if unexpected:
+              raise SystemExit(f"unexpected instrumentation output: {unexpected!r}")
+          PY
+
+          validate_adb_uninstall_transcript \
+            test "$BRIDGE_TEST_APPLICATION_ID"
+          validate_adb_uninstall_transcript \
+            target "$BRIDGE_APPLICATION_ID"
+          validate_package_absent \
+            test "$BRIDGE_TEST_APPLICATION_ID"
+          validate_package_absent \
+            target "$BRIDGE_APPLICATION_ID"
+          test_cleanup_required=false
+          target_cleanup_required=false
+
+      - name: Confirm this workflow produced no governed output
+        run: |
+          upload_action='actions/upload-'"artifact@"
+          if grep -Fq "$upload_action" .github/workflows/shizuku-bridge-skeleton.yml; then
+            printf '%s\n' 'Stage 2 workflow must not upload an artifact' >&2
+            exit 1
+          fi
+          set +e
+          git grep -nE \
+            'releaseEligible[[:space:]]*:[[:space:]]*true|productionControlQualified[[:space:]]*:[[:space:]]*true' \
+            -- "$BRIDGE_ROOT"
+          governed_scan_status=$?
+          set -e
+          case "$governed_scan_status" in
+            0)
+              printf '%s\n' 'Stage 2 source made a governed-release claim' >&2
+              exit 1
+              ;;
+            1)
+              ;;
+            *)
+              printf 'Stage 2 governed-claim scan failed with status %d\n' \
+                "$governed_scan_status" >&2
+              exit 1
+              ;;
+          esac
+          git diff --exit-code

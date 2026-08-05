@@ -17,6 +17,7 @@ on:
       - "examples/**"
       - "scripts/**"
       - "scripts/resolve_shizuku_rish_candidate.sh"
+      - "android/shizuku-bridge/**"
       - "*.md"
       - "docs/**/*.md"
       - "docs/SHIZUKU_RISH_PHYSICAL_WORKFLOW.md"
@@ -40,7 +41,10 @@ on:
       - "docs/runtime-snapshot-replay-schema-v*.json"
       - "docs/release-evidence/v0.5.1-physical-fe5f7b80.json"
       - ".github/ci-requirements.txt"
+      - ".github/dependabot.yml"
       - ".github/workflows/*"
+      - ".gitattributes"
+      - ".gitignore"
   workflow_dispatch:
 
 permissions:
@@ -263,6 +267,7 @@ jobs:
           bash tests/prepare_release_publication_assets_test.sh
           bash tests/publish_release_assets_test.sh
           bash tests/release_publication_workflow_test.sh
+          bash tests/shizuku_bridge_android_skeleton_test.sh
           bash -n scripts/termux_command_emulated_gate.sh
           jq -e '.type == "object" and .additionalProperties == false' \
             docs/command-emulated-evidence-schema-v3.json >/dev/null
