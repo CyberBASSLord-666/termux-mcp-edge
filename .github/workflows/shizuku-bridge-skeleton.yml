@@ -164,7 +164,7 @@ jobs:
       - name: Install the checksum-bound JDK
         id: setup-jdk
         # actions/setup-java local-file mode pinned for the Stage 2 toolchain
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: jdkfile
           java-version: "17.0.20+8"
